@@ -9,6 +9,8 @@ use std::{error::Error, fmt};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+use crate::balance::BalanceConfig;
+
 /// An input that violates a value object's invariant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValidationError {
@@ -330,12 +332,173 @@ deserialize_validated_positive!(SpeedMetresPerSecond, i64);
 deserialize_validated_positive!(DistanceMetres, i64);
 deserialize_validated_positive!(MoneyPerKilometre, i64);
 
+/// The complete mutable state of one RailQ game.
+///
+/// The Region owns public infrastructure through its Rail Authority. The
+/// Player Company separately owns its Fleet and Passenger Services. Active
+/// Journeys and origin-destination demand belong to the game because they
+/// describe the current operating state rather than either owner's assets.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameState {
+    pub region: Region,
+    pub player_company: PlayerCompany,
+    pub origin_destination_demand: Vec<OriginDestinationDemand>,
+    pub active_journeys: Vec<Journey>,
+    pub financials: Financials,
+    pub rules: GameRules,
+    pub last_processed_at: UtcSeconds,
+}
+
+/// The fictional place in which a game takes place.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Region {
+    pub name: String,
+    pub settlements: Vec<Settlement>,
+    pub rail_authority: RailAuthority,
+}
+
+/// A populated place in a Region, with or without railway access.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Settlement {
+    pub id: SettlementId,
+    pub name: String,
+    pub population: u64,
+}
+
+/// The public owner of a Region's Rail Network.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RailAuthority {
+    pub name: String,
+    pub rail_network: RailNetwork,
+}
+
+/// The physical infrastructure owned by a Rail Authority.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RailNetwork {
+    pub rail_stations: Vec<RailStation>,
+    pub rail_lines: Vec<RailLine>,
+}
+
+/// A facility providing one Settlement access to the Rail Network.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RailStation {
+    pub id: RailStationId,
+    pub settlement_id: SettlementId,
+}
+
+/// A physical connection between two Rail Stations.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RailLine {
+    pub id: RailLineId,
+    pub first_station_id: RailStationId,
+    pub second_station_id: RailStationId,
+    pub distance: DistanceMetres,
+}
+
+/// The passenger railway company controlled by the player.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PlayerCompany {
+    pub name: String,
+    pub funds: Money,
+    pub fleet: Fleet,
+    pub passenger_services: Vec<PassengerService>,
+}
+
+/// All Trains owned by the Player Company.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Fleet {
+    pub trains: Vec<Train>,
+}
+
+/// Passenger rolling stock owned by the Player Company.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Train {
+    pub id: TrainId,
+    pub status: TrainStatus,
+}
+
+/// The mutually exclusive operating status of a Train.
+///
+/// A Train is either ready at a Rail Station or travelling on one Journey;
+/// the enum representation makes it impossible to represent both at once.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TrainStatus {
+    Ready { at: RailStationId },
+    Travelling { journey_id: JourneyId },
+}
+
+/// A persistent commercial offering over ordered Rail Lines.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PassengerService {
+    pub id: ServiceId,
+    pub first_station_id: RailStationId,
+    pub second_station_id: RailStationId,
+    pub rail_line_ids: Vec<RailLineId>,
+}
+
+/// One physical movement of a Train under a Passenger Service.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Journey {
+    pub id: JourneyId,
+    pub service_id: ServiceId,
+    pub train_id: TrainId,
+    pub origin_station_id: RailStationId,
+    pub destination_station_id: RailStationId,
+    pub passengers_carried: u32,
+    pub departed_at: UtcSeconds,
+    pub arrives_at: UtcSeconds,
+}
+
+/// Waiting passengers for one directional origin-destination market.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OriginDestinationDemand {
+    pub origin_station_id: RailStationId,
+    pub destination_station_id: RailStationId,
+    pub waiting_passengers: u32,
+}
+
+/// Cumulative financial data and receipts for the current game.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Financials {
+    pub operating_revenue: Money,
+    pub infrastructure_access_fees: Money,
+    pub fuel_costs: Money,
+    pub recent_journey_receipts: Vec<JourneyReceipt>,
+}
+
+/// The settled financial result of one Journey.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JourneyReceipt {
+    pub journey_id: JourneyId,
+    pub revenue: Money,
+    pub infrastructure_access_fee: Money,
+    pub fuel_cost: Money,
+}
+
+/// Rules saved with a game so its economics do not change after a balance update.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameRules {
+    pub balance: BalanceConfig,
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{any::TypeId, collections::HashSet};
+
     use super::*;
 
     #[test]
     fn domain_ids_are_distinct_value_types() {
+        let ids = [
+            TypeId::of::<SettlementId>(),
+            TypeId::of::<RailStationId>(),
+            TypeId::of::<RailLineId>(),
+            TypeId::of::<TrainId>(),
+            TypeId::of::<ServiceId>(),
+            TypeId::of::<JourneyId>(),
+        ];
+        assert_eq!(HashSet::from(ids).len(), ids.len());
+
         assert_eq!(SettlementId::new(7).get(), 7);
         assert_eq!(RailStationId::new(7).get(), 7);
         assert_eq!(RailLineId::new(7).get(), 7);
@@ -430,5 +593,94 @@ mod tests {
                 operation: "UTC timestamp addition"
             })
         );
+    }
+
+    #[test]
+    fn a_small_valid_game_state_fixture_builds() {
+        let settlement_id = SettlementId::new(1);
+        let station_id = RailStationId::new(1);
+        let train_id = TrainId::new(1);
+        let rate = MoneyPerKilometre::new(1).unwrap();
+        let state = GameState {
+            region: Region {
+                name: "Varelia".into(),
+                settlements: vec![Settlement {
+                    id: settlement_id,
+                    name: "Alden".into(),
+                    population: 1_000,
+                }],
+                rail_authority: RailAuthority {
+                    name: "Varelia Rail Authority".into(),
+                    rail_network: RailNetwork {
+                        rail_stations: vec![RailStation {
+                            id: station_id,
+                            settlement_id,
+                        }],
+                        rail_lines: vec![],
+                    },
+                },
+            },
+            player_company: PlayerCompany {
+                name: "Alden Passenger".into(),
+                funds: Money::from_cents(10_000),
+                fleet: Fleet {
+                    trains: vec![Train {
+                        id: train_id,
+                        status: TrainStatus::Ready { at: station_id },
+                    }],
+                },
+                passenger_services: vec![],
+            },
+            origin_destination_demand: vec![],
+            active_journeys: vec![],
+            financials: Financials {
+                operating_revenue: Money::ZERO,
+                infrastructure_access_fees: Money::ZERO,
+                fuel_costs: Money::ZERO,
+                recent_journey_receipts: vec![],
+            },
+            rules: GameRules {
+                balance: BalanceConfig::new(rate, rate, rate),
+            },
+            last_processed_at: UtcSeconds::from_unix_seconds(0),
+        };
+
+        assert_eq!(state.player_company.fleet.trains[0].id, train_id);
+        assert_eq!(
+            state.region.rail_authority.rail_network.rail_stations[0].id,
+            station_id
+        );
+    }
+
+    #[test]
+    fn rail_authority_and_player_company_are_distinct_owners() {
+        fn owns_network(_: &RailAuthority) {}
+        fn owns_fleet_and_services(_: &PlayerCompany) {}
+
+        let authority = RailAuthority {
+            name: "Varelia Rail Authority".into(),
+            rail_network: RailNetwork::default(),
+        };
+        let company = PlayerCompany {
+            name: "Alden Passenger".into(),
+            funds: Money::ZERO,
+            fleet: Fleet::default(),
+            passenger_services: vec![],
+        };
+
+        owns_network(&authority);
+        owns_fleet_and_services(&company);
+    }
+
+    #[test]
+    fn a_train_has_exactly_one_operating_status() {
+        let station_id = RailStationId::new(1);
+        let ready = TrainStatus::Ready { at: station_id };
+        let travelling = TrainStatus::Travelling {
+            journey_id: JourneyId::new(1),
+        };
+
+        assert!(matches!(ready, TrainStatus::Ready { .. }));
+        assert!(matches!(travelling, TrainStatus::Travelling { .. }));
     }
 }
