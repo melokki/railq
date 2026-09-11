@@ -8,10 +8,11 @@ use rand_chacha::{
 use crate::{
     balance::BalanceConfig,
     model::{
-        Financials, Fleet, GameRules, GameState, Money, PlayerCompany, RailAuthority, RailLine,
-        RailLineId, RailNetwork, RailStation, RailStationId, Region, Settlement, SettlementId,
-        UtcSeconds,
+        DemandRules, Financials, Fleet, GameRules, GameState, Money, PlayerCompany, RailAuthority,
+        RailLine, RailLineId, RailNetwork, RailStation, RailStationId, Region, Settlement,
+        SettlementId, UtcSeconds,
     },
+    sim::demand::seed_directional_demand,
 };
 
 const SETTLEMENT_NAMES: [&str; 16] = [
@@ -102,16 +103,17 @@ pub fn create_new_game(
     started_at: UtcSeconds,
 ) -> GameState {
     let balance = BalanceConfig::provisional();
+    let region = generate_region(world_seed);
     GameState {
         world_seed,
-        region: generate_region(world_seed),
+        origin_destination_demand: seed_directional_demand(&region, world_seed),
+        region,
         player_company: PlayerCompany {
             name: company_name.into(),
             funds: balance.starting_company_funds(),
             fleet: Fleet::default(),
             passenger_services: vec![],
         },
-        origin_destination_demand: vec![],
         active_journeys: vec![],
         financials: Financials {
             operating_revenue: Money::ZERO,
@@ -119,7 +121,10 @@ pub fn create_new_game(
             fuel_costs: Money::ZERO,
             recent_journey_receipts: vec![],
         },
-        rules: GameRules { balance },
+        rules: GameRules {
+            balance,
+            demand: DemandRules::provisional(),
+        },
         last_processed_at: started_at,
     }
 }

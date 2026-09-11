@@ -331,6 +331,7 @@ deserialize_validated_positive!(PassengerCapacity, i64);
 deserialize_validated_positive!(SpeedMetresPerSecond, i64);
 deserialize_validated_positive!(DistanceMetres, i64);
 deserialize_validated_positive!(MoneyPerKilometre, i64);
+deserialize_validated_positive!(PassengerArrivalRate, i64);
 
 /// The complete mutable state of one RailQ game.
 ///
@@ -460,6 +461,37 @@ pub struct OriginDestinationDemand {
     pub origin_station_id: RailStationId,
     pub destination_station_id: RailStationId,
     pub waiting_passengers: u32,
+    /// New Waiting Passengers generated per hour for this direction.
+    pub passenger_arrival_rate_per_hour: PassengerArrivalRate,
+    /// Passenger-seconds left over after the last whole-passenger update.
+    ///
+    /// This is always less than one hour while the pool is below its cap.
+    /// It is cleared when the pool reaches the cap, so capped demand cannot
+    /// become a hidden backlog.
+    pub fractional_passenger_seconds: u64,
+}
+
+/// A positive directional Passenger Demand rate, in passengers per hour.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct PassengerArrivalRate(u32);
+
+impl PassengerArrivalRate {
+    pub fn new(passengers_per_hour: i64) -> Result<Self, ValidationError> {
+        let passengers_per_hour =
+            u32::try_from(passengers_per_hour).map_err(|_| ValidationError::OutOfRange {
+                unit: "passenger arrival rate per hour",
+            })?;
+        if passengers_per_hour == 0 {
+            return Err(ValidationError::NonPositive {
+                unit: "passenger arrival rate per hour",
+            });
+        }
+        Ok(Self(passengers_per_hour))
+    }
+
+    pub const fn passengers_per_hour(self) -> u32 {
+        self.0
+    }
 }
 
 /// Cumulative financial data and receipts for the current game.
@@ -484,6 +516,24 @@ pub struct JourneyReceipt {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct GameRules {
     pub balance: BalanceConfig,
+    pub demand: DemandRules,
+}
+
+/// Tunable Passenger Demand rules saved with a game.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DemandRules {
+    /// The time period of demand a directional pool can retain.
+    pub cap_duration: DurationSeconds,
+}
+
+impl DemandRules {
+    /// The initial playtest rule retains at most 24 hours of each directional
+    /// Passenger Demand rate.
+    pub const fn provisional() -> Self {
+        Self {
+            cap_duration: DurationSeconds::from_seconds(24 * 60 * 60),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -648,6 +698,7 @@ mod tests {
             },
             rules: GameRules {
                 balance: BalanceConfig::new(rate, rate, Money::from_cents(10_000), vec![]),
+                demand: DemandRules::provisional(),
             },
             last_processed_at: UtcSeconds::from_unix_seconds(0),
         };
@@ -689,5 +740,12 @@ mod tests {
 
         assert!(matches!(ready, TrainStatus::Ready { .. }));
         assert!(matches!(travelling, TrainStatus::Travelling { .. }));
+    }
+
+    #[test]
+    fn rejects_non_positive_passenger_arrival_rates() {
+        for rate in [-1, 0] {
+            assert!(PassengerArrivalRate::new(rate).is_err());
+        }
     }
 }
