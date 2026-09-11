@@ -141,6 +141,7 @@ enum FleetFocus {
 pub struct Shell {
     active_view: View,
     dispatch_flow: Option<dispatch::DispatchFlow>,
+    dispatch_returns_to_fleet: bool,
     map_selection: map::StationSelection,
     map_settlement_selection: map::SettlementSelection,
     map_journey_selection: map::JourneySelection,
@@ -168,6 +169,7 @@ impl Shell {
         Self {
             active_view: View::Map,
             dispatch_flow: None,
+            dispatch_returns_to_fleet: false,
             map_selection: map::StationSelection::default(),
             map_settlement_selection: map::SettlementSelection::default(),
             map_journey_selection: map::JourneySelection::default(),
@@ -256,6 +258,11 @@ impl Shell {
                 dispatch::DispatchFlowAction::Continue => ShellAction::Continue,
                 dispatch::DispatchFlowAction::Cancel => {
                     self.dispatch_flow = None;
+                    if self.dispatch_returns_to_fleet {
+                        self.fleet_details_open = false;
+                        self.fleet_focus = FleetFocus::List;
+                    }
+                    self.dispatch_returns_to_fleet = false;
                     self.notice = Some("Manual Dispatch cancelled; no changes were made.".into());
                     ShellAction::Continue
                 }
@@ -447,6 +454,24 @@ impl Shell {
                     }
                 }
             }
+            KeyCode::Char('d' | 'D') if self.active_view == View::Trains => {
+                match self.fleet_selection.selected_train_id(state) {
+                    Some(train_id) => {
+                        match dispatch::DispatchFlow::start_for_train(state, train_id) {
+                            Ok(flow) => {
+                                self.dispatch_flow = Some(flow);
+                                self.dispatch_returns_to_fleet = true;
+                                self.notice = None;
+                            }
+                            Err(message) => self.notice = Some(message),
+                        }
+                    }
+                    None => {
+                        self.notice =
+                            Some("Select a READY Train before starting Manual Dispatch.".into());
+                    }
+                }
+            }
             KeyCode::Tab | KeyCode::BackTab
                 if self.active_view == View::Trains && self.fleet_split_visible =>
             {
@@ -514,6 +539,7 @@ impl Shell {
                     match dispatch::DispatchFlow::start_at_station(state, preferred_station_id) {
                         Ok(flow) => {
                             self.dispatch_flow = Some(flow);
+                            self.dispatch_returns_to_fleet = false;
                             self.notice = None;
                         }
                         Err(message) => self.notice = Some(message.into()),
@@ -542,6 +568,11 @@ impl Shell {
     /// Closes a successful proposal after the application boundary persisted it.
     pub fn confirm_manual_dispatch(&mut self) {
         self.dispatch_flow = None;
+        if self.dispatch_returns_to_fleet {
+            self.fleet_details_open = false;
+            self.fleet_focus = FleetFocus::List;
+        }
+        self.dispatch_returns_to_fleet = false;
         self.notice = Some("Manual Dispatch authorised and saved.".into());
     }
 
@@ -584,6 +615,7 @@ impl Shell {
     pub fn confirm_restart_after_bankruptcy(&mut self) {
         self.active_view = View::Map;
         self.dispatch_flow = None;
+        self.dispatch_returns_to_fleet = false;
         self.fleet_flow = None;
         self.market_flow = None;
         self.restart_confirmation = false;
@@ -973,6 +1005,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         && !is_bankrupt(state)
         && shell.active_view == View::Trains
         && shell.fleet_flow.is_none()
+        && shell.dispatch_flow.is_none()
     {
         shell.fleet_split_visible = content_area.width >= 96 && content_area.height >= 14;
         fleet::render_dashboard(
@@ -984,6 +1017,10 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             shell.fleet_details_open,
             shell.fleet_focus == FleetFocus::Details,
         );
+    } else if shell.active_view == View::Trains && shell.dispatch_flow.is_some() {
+        if let Some(flow) = &mut shell.dispatch_flow {
+            flow.render_panel(frame, content_area, state);
+        }
     } else if shell.active_view == View::Trains {
         if let Some(flow) = &shell.fleet_flow {
             flow.render_review(frame, content_area, state);
@@ -1073,11 +1110,17 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         } else {
             "[R] Safe restart  [Q] Quit  [?] Help"
         }
+    } else if shell.active_view == View::Trains && shell.dispatch_flow.is_some() {
+        if hints_area.width <= 80 {
+            "[↑↓/J K] Route [Enter] Review [Left] Train [Esc] Fleet [?] Help"
+        } else {
+            "[↑↓/J K] Destination  [PgUp/Dn] Scroll  [Enter] Review  [Left/Backspace] Train  [Esc] Fleet  [?] Help  [Q] Quit"
+        }
     } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
         if hints_area.width <= 80 {
-            "[↑↓/J K] Select [Enter] Inspect [S] Resale [?] Help [Q] Quit"
+            "[↑↓/J K] Select [Enter] Inspect [D] Dispatch [S] Resale [?] Help [Q] Quit"
         } else {
-            "[↑↓ / J K] Select Train  [PageUp / PageDown] Scroll  [Enter] Inspect  [S] Resale  [Tab] Panel  [?] Help  [Q] Quit"
+            "[↑↓/J K] Train  [PgUp/Dn] Scroll  [Enter] Inspect  [D] Dispatch  [S] Resale  [Tab] Panel  [?] Help  [Q] Quit"
         }
     } else if shell.active_view == View::Map && shell.dispatch_flow.is_none() {
         if shell.map_focus == map::MapFocus::Journeys {
@@ -1225,7 +1268,7 @@ fn help_text() -> String {
         "Keyboard help",
         "",
         "[M] Map — inspect the Region and press [D] to begin a Manual Dispatch.",
-        "[T] Fleet — press [Enter] to inspect the selected Train; [S] reviews its resale when READY.",
+        "[T] Fleet — [Enter] inspects; [D] starts destination selection for the selected READY Train; [S] reviews resale.",
         "[C] Company — inspect Company Funds and retained receipts; during Insolvency, [R] opens calculated recovery routes.",
         "[B] Buy Trains — press [Enter] to choose a diesel Train and delivery Rail Station.",
         "[Up]/[Down] or [J]/[K] change a selection; [Enter] advances or confirms; [Esc] cancels.",
@@ -1616,6 +1659,7 @@ mod tests {
             "[C] Company",
             "[B] Buy Trains",
             "[D]",
+            "[D] starts destination selection",
             "[Q]",
         ] {
             assert!(help.contains(instruction));

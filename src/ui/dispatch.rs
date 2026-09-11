@@ -1,4 +1,4 @@
-//! Keyboard state and text presentation for a Map Manual Dispatch.
+//! Keyboard state and text presentation for a Manual Dispatch.
 //!
 //! This module only keeps a proposed Train and destination. It previews a
 //! Passenger Service on a cloned state, so the actual Service is not created
@@ -98,6 +98,33 @@ impl DispatchFlow {
                 page_size: 1,
             },
             preferred_station_id,
+            rejection: None,
+        })
+    }
+
+    /// Starts at destination selection for one exact READY Fleet Train.
+    ///
+    /// Fleet dispatch deliberately skips the general Train chooser, while
+    /// Left/Backspace still reconstructs that chooser with this Train selected.
+    /// No game state changes until the application boundary confirms the quote.
+    pub fn start_for_train(state: &GameState, train_id: TrainId) -> Result<Self, String> {
+        let train = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == train_id)
+            .ok_or_else(|| format!("Train {} is no longer in the Fleet.", train_id.get()))?;
+        if matches!(train.status, TrainStatus::Travelling { .. }) {
+            return Err(format!(
+                "Train {} is TRAVELLING and cannot be dispatched until its Journey arrives.",
+                train.id.get()
+            ));
+        }
+
+        Ok(Self {
+            step: destination_step(state, train_id, None)?,
+            preferred_station_id: None,
             rejection: None,
         })
     }
@@ -803,7 +830,11 @@ fn render_destination_chooser(
             Span::styled("2 Destination", theme::focused_title()),
             Span::styled(" → 3 Review", theme::secondary()),
             Span::styled(
-                format!("  Origin: {}", station_label(state, origin_station_id)),
+                format!(
+                    "  Train {:02} · Origin: {}",
+                    train_id.get(),
+                    station_label(state, origin_station_id)
+                ),
                 theme::secondary(),
             ),
         ]))

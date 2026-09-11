@@ -485,7 +485,10 @@ fn render_inspector(
                         &format!("{} passengers", train.passenger_capacity.passengers()),
                     ),
                     Line::from(""),
-                    Line::styled("Enter · inspect", theme::hint()),
+                    Line::styled(
+                        format!("Enter · inspect    {}", fleet_action_hint(train)),
+                        theme::hint(),
+                    ),
                 ]
             },
         );
@@ -569,7 +572,7 @@ fn render_train_details(
     }
     lines.push(Line::from(""));
     lines.push(Line::styled(
-        "Esc · Fleet list    S · resale",
+        format!("Esc · Fleet list    {}", fleet_action_hint(train)),
         theme::hint(),
     ));
     frame.render_widget(
@@ -578,6 +581,15 @@ fn render_train_details(
             .wrap(Wrap { trim: true }),
         details_area,
     );
+}
+
+fn fleet_action_hint(train: &Train) -> &'static str {
+    match train.status {
+        TrainStatus::Ready { .. } => "D · dispatch    S · resale",
+        TrainStatus::Travelling { .. } => {
+            "Dispatch / resale unavailable · Train is TRAVELLING until its Journey arrives"
+        }
+    }
 }
 
 fn journey_progress(train: &Train, state: &GameState, now: UtcSeconds) -> Option<(u16, String)> {
