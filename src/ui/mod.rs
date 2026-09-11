@@ -1044,7 +1044,7 @@ where
 
     loop {
         terminal
-            .draw(&mut shell, &state)
+            .draw(|frame| render_frame(frame, &mut shell, &state))
             .map_err(RunError::Terminal)?;
         let before_reconciliation = state.clone();
         let reconciled_state = command(TerminalCommand::Reconcile {
@@ -1893,10 +1893,8 @@ impl TerminalSession {
         })
     }
 
-    fn draw(&mut self, shell: &mut Shell, state: &GameState) -> io::Result<()> {
-        self.terminal
-            .draw(|frame| render_frame(frame, shell, state))
-            .map(|_| ())
+    pub(crate) fn draw(&mut self, render: impl FnOnce(&mut ratatui::Frame)) -> io::Result<()> {
+        self.terminal.draw(render).map(|_| ())
     }
 
     fn restore(&mut self) -> io::Result<()> {

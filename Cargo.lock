@@ -954,6 +954,7 @@ dependencies = [
  "ratatui",
  "ron",
  "serde",
+ "unicode-width",
 ]
 
 [[package]]

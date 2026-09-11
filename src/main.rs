@@ -1,6 +1,5 @@
 use std::{
     error::Error,
-    io::{self, Write},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -9,7 +8,7 @@ use railq::{
     storage::SaveSlot,
     ui::{
         self,
-        start::{CompanyName, Startup, onboarding_summary, start},
+        start::{Startup, capture_company_name, onboarding_summary, start},
     },
 };
 
@@ -28,22 +27,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn run_onboarding(
     onboarding: railq::ui::start::Onboarding<SaveSlot>,
 ) -> Result<(), Box<dyn Error>> {
-    println!("Welcome to RailQ. Name your Player Company.");
-    let mut company_name = String::new();
-    let game = loop {
-        print!("Player Company name: ");
-        io::stdout().flush()?;
-        company_name.clear();
-        if io::stdin().read_line(&mut company_name)? == 0 {
-            return Err("onboarding ended before a Player Company name was entered".into());
-        }
-        match CompanyName::parse(&company_name) {
-            Ok(name) => {
-                break onboarding.prepare_company(name, startup_seed(), current_utc_seconds());
-            }
-            Err(error) => println!("{error}"),
-        }
+    let Some(company_name) = capture_company_name()? else {
+        return Ok(());
     };
+    let game = onboarding.prepare_company(company_name, startup_seed(), current_utc_seconds());
 
     println!("\n{}\n", onboarding_summary(&game));
     let mut app = onboarding.save(game)?;
