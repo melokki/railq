@@ -3,6 +3,7 @@
 //! Future simulation code stays pure and receives explicit timestamps. The
 //! binary owns terminal, clock, and disk I/O at the application boundary.
 
+pub mod app;
 pub mod balance;
 pub mod model;
 pub mod sim;
