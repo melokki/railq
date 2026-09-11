@@ -790,6 +790,10 @@ fn render_recovery_panel(
                         "Concrete recovery options:",
                         theme::secondary(),
                     ));
+                    lines.push(Line::styled(
+                        "Only routes affordable under the current rules are listed; review before acting.",
+                        theme::hint(),
+                    ));
                     lines.extend(
                         evaluation
                             .recovery_options

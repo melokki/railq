@@ -324,7 +324,7 @@ pub fn render_dashboard(
 ) {
     selection.synchronize(state);
     if state.player_company.fleet.trains.is_empty() {
-        frame.render_widget(empty_fleet_panel(), area);
+        frame.render_widget(empty_fleet_panel(state), area);
         return;
     }
 
@@ -449,13 +449,38 @@ fn render_compact_details(
     render_train_details(frame, area, state, now, selected, true);
 }
 
-fn empty_fleet_panel() -> Paragraph<'static> {
-    Paragraph::new(vec![
+fn empty_fleet_panel(state: &GameState) -> Paragraph<'static> {
+    // The catalogue and delivery network are the same sources used by the
+    // purchase flow. Only suggest B when at least one catalogue Train is
+    // affordable and a connected Rail Station exists.
+    let mut lines = vec![
         Line::styled("No Trains in the Fleet", theme::title()),
-        Line::from("Buy a Train to begin operating. [B] Buy Trains"),
-    ])
-    .block(panel_block("Fleet · owned Trains", true))
-    .style(theme::panel())
+        Line::from("No Train is operating yet."),
+    ];
+    let has_delivery_station = !state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .is_empty();
+    let affordable = has_delivery_station
+        && state
+            .rules
+            .balance
+            .diesel_catalogue()
+            .iter()
+            .any(|train| state.player_company.funds >= train.purchase_price());
+    lines.push(Line::styled(
+        if affordable {
+            "Next useful action · B · Buy Trains"
+        } else {
+            "No catalogue Train is affordable at current Company Funds. Review Company or wait for funds."
+        },
+        theme::hint(),
+    ));
+    Paragraph::new(lines)
+        .block(panel_block("Fleet · owned Trains", true))
+        .style(theme::panel())
 }
 
 fn render_inspector(
@@ -472,10 +497,20 @@ fn render_inspector(
         render_train_details(frame, area, state, now, selected, focused);
     } else {
         let lines = selected.map_or_else(
-            || vec![Line::from("No Train selected")],
+            || {
+                let mut lines = vec![Line::from("No Train selected")];
+                if let Some(eta) = nearest_arrival(state, now) {
+                    lines.push(Line::from("All Fleet Trains are TRAVELLING."));
+                    lines.push(Line::styled(
+                        format!("Next useful action · wait for the nearest arrival ({eta})."),
+                        theme::hint(),
+                    ));
+                }
+                lines
+            },
             |train| {
                 let fields = train_fields(state, train, now);
-                vec![
+                let mut lines = vec![
                     Line::styled(format!("Train {:02}", train.id.get()), theme::title()),
                     labelled_line("Model", &fields.model),
                     labelled_line("Status", &fields.status),
@@ -489,7 +524,24 @@ fn render_inspector(
                         format!("Enter · inspect    {}", fleet_action_hint(train)),
                         theme::hint(),
                     ),
-                ]
+                ];
+                if state
+                    .player_company
+                    .fleet
+                    .trains
+                    .iter()
+                    .all(|train| matches!(train.status, TrainStatus::Travelling { .. }))
+                {
+                    if let Some(eta) = nearest_arrival(state, now) {
+                        lines.push(Line::styled(
+                            format!(
+                                "Next useful action · wait for the nearest arrival (ETA {eta})."
+                            ),
+                            theme::hint(),
+                        ));
+                    }
+                }
+                lines
             },
         );
         frame.render_widget(
@@ -590,6 +642,24 @@ fn fleet_action_hint(train: &Train) -> &'static str {
             "Dispatch / resale unavailable · Train is TRAVELLING until its Journey arrives"
         }
     }
+}
+
+fn nearest_arrival(state: &GameState, now: UtcSeconds) -> Option<String> {
+    state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .filter_map(|train| match train.status {
+            TrainStatus::Travelling { journey_id } => state
+                .active_journeys
+                .iter()
+                .find(|journey| journey.id == journey_id)
+                .map(|journey| remaining_seconds(journey, now)),
+            TrainStatus::Ready { .. } => None,
+        })
+        .min()
+        .map(format_duration)
 }
 
 fn journey_progress(train: &Train, state: &GameState, now: UtcSeconds) -> Option<(u16, String)> {
@@ -733,7 +803,7 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
     if state.player_company.fleet.trains.is_empty() {
         writeln!(
             output,
-            "\nNo Trains in the Fleet. Buy a Train to begin operating."
+            "\nNo Trains in the Fleet. Next useful action: B · Buy Trains."
         )
         .expect("writing to a String cannot fail");
         return output;
@@ -788,6 +858,24 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
         "\nPress S to review resale for the selected READY Train."
     )
     .expect("writing to a String cannot fail");
+    if state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .all(|train| matches!(train.status, TrainStatus::Travelling { .. }))
+    {
+        if let Some(eta) = nearest_arrival(state, now) {
+            writeln!(
+                output,
+                "Next useful action: wait for the nearest Train arrival (ETA {eta})."
+            )
+            .expect("writing to a String cannot fail");
+        }
+    } else {
+        writeln!(output, "READY Trains can enter Manual Dispatch with D.")
+            .expect("writing to a String cannot fail");
+    }
     output
 }
 

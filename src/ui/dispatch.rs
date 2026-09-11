@@ -622,7 +622,7 @@ fn render_quote_review(
     ];
     if quote.boarded_passengers == 0 {
         terms.push(Line::styled(
-            "EMPTY REPOSITIONING · no arrival revenue is expected.",
+            "EMPTY REPOSITIONING · zero passengers is valid; no arrival revenue is expected.",
             theme::warning(),
         ));
     }
