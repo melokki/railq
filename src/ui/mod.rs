@@ -132,6 +132,7 @@ pub enum TerminalCommand {
 /// It is deliberately not saved: reopening a game must not invent old notices.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ActionOutcome {
+    title: &'static str,
     summary: String,
     details: Vec<String>,
 }
@@ -745,6 +746,73 @@ impl Shell {
         self.publish_pending_outcome(state);
     }
 
+    /// Publishes arrivals only from a successfully reconciled state transition.
+    ///
+    /// The shell retains no notification history: comparing the committed
+    /// before/after states makes a repeated redraw or reconciliation a no-op.
+    pub fn publish_committed_arrivals(&mut self, before: &GameState, after: &GameState) {
+        let arrivals = after
+            .financials
+            .recent_journey_receipts
+            .iter()
+            .filter(|receipt| {
+                !before
+                    .financials
+                    .recent_journey_receipts
+                    .iter()
+                    .any(|previous| previous.journey_id == receipt.journey_id)
+            })
+            .filter_map(|receipt| {
+                before
+                    .active_journeys
+                    .iter()
+                    .find(|journey| journey.id == receipt.journey_id)
+                    .map(|journey| (journey, receipt.revenue))
+            })
+            .collect::<Vec<_>>();
+        if arrivals.is_empty() {
+            return;
+        }
+
+        let credited_revenue = arrivals.iter().fold(Money::ZERO, |total, (_, revenue)| {
+            total.checked_add(*revenue).unwrap_or(total)
+        });
+        let funds = format_money(after.player_company.funds);
+        let details = arrivals
+            .iter()
+            .map(|(journey, revenue)| {
+                format!(
+                    "Train {:02} arrived at {} — {} credited.",
+                    journey.train_id.get(),
+                    arrival_station_label(after, journey.destination_station_id),
+                    signed_money(*revenue),
+                )
+            })
+            .chain(std::iter::once(format!("Current Company Funds: {funds}.")))
+            .collect();
+        let summary = match arrivals.as_slice() {
+            [(journey, revenue)] => format!(
+                "Train {:02} arrived at {} — {} credited; Company Funds {}.",
+                journey.train_id.get(),
+                arrival_station_label(after, journey.destination_station_id),
+                signed_money(*revenue),
+                funds,
+            ),
+            _ => format!(
+                "{} Journeys arrived — {} credited; Company Funds {}.",
+                arrivals.len(),
+                signed_money(credited_revenue),
+                funds,
+            ),
+        };
+        self.notice = None;
+        self.action_outcome = Some(ActionOutcome {
+            title: "Arrival summary",
+            summary,
+            details,
+        });
+    }
+
     fn publish_pending_outcome(&mut self, state: &GameState) {
         let Some(pending) = self.pending_action.take() else {
             return;
@@ -764,6 +832,7 @@ impl Shell {
             .push("Saved successfully. This outcome is not stored as notification history.".into());
         self.notice = None;
         self.action_outcome = Some(ActionOutcome {
+            title: "Saved action outcome",
             summary: format!(
                 "{} saved — Company Funds {}.",
                 pending.label,
@@ -958,10 +1027,13 @@ where
         terminal
             .draw(&mut shell, &state)
             .map_err(RunError::Terminal)?;
-        state = command(TerminalCommand::Reconcile {
+        let before_reconciliation = state.clone();
+        let reconciled_state = command(TerminalCommand::Reconcile {
             now: current_utc_seconds(),
         })
         .map_err(RunError::Reconcile)?;
+        shell.publish_committed_arrivals(&before_reconciliation, &reconciled_state);
+        state = reconciled_state;
 
         if !event::poll(ARRIVAL_POLL_INTERVAL).map_err(RunError::Terminal)? {
             continue;
@@ -969,10 +1041,13 @@ where
 
         match event::read().map_err(RunError::Terminal)? {
             Event::Key(key) => {
-                state = command(TerminalCommand::Reconcile {
+                let before_reconciliation = state.clone();
+                let reconciled_state = command(TerminalCommand::Reconcile {
                     now: current_utc_seconds(),
                 })
                 .map_err(RunError::Reconcile)?;
+                shell.publish_committed_arrivals(&before_reconciliation, &reconciled_state);
+                state = reconciled_state;
                 match shell.handle_key(key, &state) {
                     ShellAction::Exit => return Ok(()),
                     ShellAction::ManualDispatch {
@@ -984,8 +1059,10 @@ where
                         now: current_utc_seconds(),
                     }) {
                         Ok(next_state) => {
+                            let before_command = state.clone();
                             state = next_state;
                             shell.confirm_manual_dispatch_saved(&state);
+                            shell.publish_committed_arrivals(&before_command, &state);
                         }
                         Err(error) => shell.reject_manual_dispatch(error.to_string()),
                     },
@@ -998,8 +1075,10 @@ where
                         now: current_utc_seconds(),
                     }) {
                         Ok(next_state) => {
+                            let before_command = state.clone();
                             state = next_state;
                             shell.confirm_purchase_train_saved(&state);
+                            shell.publish_committed_arrivals(&before_command, &state);
                         }
                         Err(error) => shell.reject_purchase_train(error.to_string()),
                     },
@@ -1009,8 +1088,10 @@ where
                             now: current_utc_seconds(),
                         }) {
                             Ok(next_state) => {
+                                let before_command = state.clone();
                                 state = next_state;
                                 shell.confirm_train_resale_saved(&state);
+                                shell.publish_committed_arrivals(&before_command, &state);
                             }
                             Err(error) => shell.reject_train_resale(error.to_string()),
                         }
@@ -1634,7 +1715,7 @@ fn render_outcome_overlay(frame: &mut ratatui::Frame, area: Rect, outcome: &Acti
                 Block::default()
                     .borders(theme::THIN_BORDERS)
                     .border_style(theme::focused_border())
-                    .title("Saved action outcome")
+                    .title(outcome.title)
                     .title_style(theme::focused_title())
                     .style(theme::panel()),
             )
@@ -1678,6 +1759,26 @@ fn signed_money(money: Money) -> String {
     } else {
         amount
     }
+}
+
+fn arrival_station_label(state: &GameState, station_id: RailStationId) -> String {
+    let Some(station) = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .find(|station| station.id == station_id)
+    else {
+        return format!("Rail Station {}", station_id.get());
+    };
+    state
+        .region
+        .settlements
+        .iter()
+        .find(|settlement| settlement.id == station.settlement_id)
+        .map(|settlement| format!("{} Rail Station", settlement.name))
+        .unwrap_or_else(|| format!("Rail Station {}", station_id.get()))
 }
 
 fn pending_dispatch(
