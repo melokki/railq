@@ -1,0 +1,742 @@
+//! Versioned, validated RON representation of a RailQ game.
+//!
+//! This module deliberately owns only the serialization boundary. Save-slot
+//! ownership and atomic file replacement are added by the following task.
+
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    fmt,
+    hash::Hash,
+};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    model::{
+        CalculationError, DistanceMetres, GameState, Journey, PassengerService, RailLine,
+        RailLineId, RailNetwork, RailStationId, ServiceId, Train, TrainId, TrainStatus,
+    },
+    sim::economy::quote_journey,
+};
+
+/// The only save format understood by this build.
+pub const SAVE_VERSION: u32 = 1;
+
+/// Why a decoded game cannot safely enter the simulation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SaveValidationError {
+    /// An ID is duplicated within the collection that owns it.
+    DuplicateId { kind: &'static str },
+    /// An ID is reserved or otherwise not valid for a persisted entity.
+    InvalidId { kind: &'static str },
+    /// A value is outside the valid domain for a saved game.
+    InvalidValue { field: &'static str },
+    /// A reference does not resolve within this game state.
+    DanglingReference { field: &'static str },
+    /// Fields that must agree describe an impossible operating state.
+    ImpossibleState { reason: &'static str },
+    /// A derived value cannot be calculated in its storage unit.
+    Calculation(CalculationError),
+}
+
+impl fmt::Display for SaveValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateId { kind } => write!(formatter, "duplicate {kind} ID"),
+            Self::InvalidId { kind } => write!(formatter, "invalid {kind} ID"),
+            Self::InvalidValue { field } => write!(formatter, "invalid saved value for {field}"),
+            Self::DanglingReference { field } => {
+                write!(
+                    formatter,
+                    "saved {field} references an entity that does not exist"
+                )
+            }
+            Self::ImpossibleState { reason } => {
+                write!(formatter, "impossible saved state: {reason}")
+            }
+            Self::Calculation(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for SaveValidationError {}
+
+impl From<CalculationError> for SaveValidationError {
+    fn from(error: CalculationError) -> Self {
+        Self::Calculation(error)
+    }
+}
+
+/// Why a save cannot be encoded or decoded.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SaveCodecError {
+    /// RON could not represent a valid save.
+    Encode(ron::Error),
+    /// The source was not valid RON for the save envelope.
+    Decode(ron::error::SpannedError),
+    /// The save was written by a format this build does not understand.
+    UnsupportedVersion { found: u32 },
+    /// The RON decoded but cannot safely enter the simulation.
+    InvalidState(SaveValidationError),
+}
+
+impl fmt::Display for SaveCodecError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Encode(error) => write!(formatter, "could not encode save as RON: {error}"),
+            Self::Decode(error) => write!(formatter, "could not decode save RON: {error}"),
+            Self::UnsupportedVersion { found } => {
+                write!(formatter, "save version {found} is not supported")
+            }
+            Self::InvalidState(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for SaveCodecError {}
+
+/// Encodes a valid game state in the current versioned RON envelope.
+pub fn encode_game_state(state: &GameState) -> Result<String, SaveCodecError> {
+    validate_game_state(state).map_err(SaveCodecError::InvalidState)?;
+    ron::ser::to_string_pretty(
+        &SaveEnvelope {
+            version: SAVE_VERSION,
+            state,
+        },
+        ron::ser::PrettyConfig::new(),
+    )
+    .map_err(SaveCodecError::Encode)
+}
+
+/// Decodes RON only after checking its version and every simulation invariant.
+pub fn decode_game_state(source: &str) -> Result<GameState, SaveCodecError> {
+    let envelope: SaveEnvelope = ron::from_str(source).map_err(SaveCodecError::Decode)?;
+    if envelope.version != SAVE_VERSION {
+        return Err(SaveCodecError::UnsupportedVersion {
+            found: envelope.version,
+        });
+    }
+    validate_game_state(&envelope.state).map_err(SaveCodecError::InvalidState)?;
+    Ok(envelope.state)
+}
+
+/// Validates a state before it is saved or admitted from a decoded save.
+pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError> {
+    validate_rules(state)?;
+
+    let settlement_ids = unique_ids(
+        state
+            .region
+            .settlements
+            .iter()
+            .map(|settlement| settlement.id),
+        "Settlement",
+    )?;
+    if state
+        .region
+        .settlements
+        .iter()
+        .any(|settlement| settlement.id.get() == 0)
+    {
+        return Err(SaveValidationError::InvalidId { kind: "Settlement" });
+    }
+    let actual_population =
+        state
+            .region
+            .settlements
+            .iter()
+            .try_fold(0_u64, |total, settlement| {
+                total.checked_add(settlement.population).ok_or(
+                    SaveValidationError::ImpossibleState {
+                        reason: "Region Population overflows its saved unit",
+                    },
+                )
+            })?;
+    if state.region.population != actual_population {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Region Population does not equal its Settlement Populations",
+        });
+    }
+
+    let network = &state.region.rail_authority.rail_network;
+    let station_ids = unique_ids(
+        network.rail_stations.iter().map(|station| station.id),
+        "Rail Station",
+    )?;
+    if network
+        .rail_stations
+        .iter()
+        .any(|station| station.id.get() == 0)
+    {
+        return Err(SaveValidationError::InvalidId {
+            kind: "Rail Station",
+        });
+    }
+    if network
+        .rail_stations
+        .iter()
+        .any(|station| !settlement_ids.contains(&station.settlement_id))
+    {
+        return Err(SaveValidationError::DanglingReference {
+            field: "Rail Station Settlement",
+        });
+    }
+    let station_settlements = network
+        .rail_stations
+        .iter()
+        .map(|station| station.settlement_id)
+        .collect::<HashSet<_>>();
+    if station_settlements.len() != network.rail_stations.len() {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "a Settlement has more than one Rail Station",
+        });
+    }
+
+    let line_ids = unique_ids(network.rail_lines.iter().map(|line| line.id), "Rail Line")?;
+    if network.rail_lines.iter().any(|line| line.id.get() == 0) {
+        return Err(SaveValidationError::InvalidId { kind: "Rail Line" });
+    }
+    for line in &network.rail_lines {
+        if !station_ids.contains(&line.first_station_id)
+            || !station_ids.contains(&line.second_station_id)
+        {
+            return Err(SaveValidationError::DanglingReference {
+                field: "Rail Line endpoint",
+            });
+        }
+        if line.first_station_id == line.second_station_id {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "a Rail Line has the same Rail Station at both endpoints",
+            });
+        }
+    }
+
+    let mut service_distances = HashMap::new();
+    let service_ids = unique_ids(
+        state
+            .player_company
+            .passenger_services
+            .iter()
+            .map(|service| service.id),
+        "Passenger Service",
+    )?;
+    if state
+        .player_company
+        .passenger_services
+        .iter()
+        .any(|service| service.id.get() == 0)
+    {
+        return Err(SaveValidationError::InvalidId {
+            kind: "Passenger Service",
+        });
+    }
+    for service in &state.player_company.passenger_services {
+        if !station_ids.contains(&service.first_station_id)
+            || !station_ids.contains(&service.second_station_id)
+        {
+            return Err(SaveValidationError::DanglingReference {
+                field: "Passenger Service endpoint",
+            });
+        }
+        let distance = service_distance(service, network, &line_ids)?;
+        service_distances.insert(service.id, distance);
+    }
+
+    validate_demand(state, &station_ids)?;
+    validate_financials(state)?;
+
+    let train_ids = unique_ids(
+        state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .map(|train| train.id),
+        "Train",
+    )?;
+    if state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .any(|train| train.id.get() == 0)
+    {
+        return Err(SaveValidationError::InvalidId { kind: "Train" });
+    }
+    let journey_ids = unique_ids(
+        state.active_journeys.iter().map(|journey| journey.id),
+        "Journey",
+    )?;
+    if state
+        .active_journeys
+        .iter()
+        .any(|journey| journey.id.get() == 0)
+    {
+        return Err(SaveValidationError::InvalidId { kind: "Journey" });
+    }
+
+    validate_train_statuses(
+        &state.player_company.fleet.trains,
+        &station_ids,
+        &journey_ids,
+    )?;
+    for journey in &state.active_journeys {
+        validate_journey(
+            state,
+            journey,
+            &train_ids,
+            &service_ids,
+            &station_ids,
+            &service_distances,
+        )?;
+    }
+
+    Ok(())
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SaveEnvelope<T = GameState> {
+    version: u32,
+    state: T,
+}
+
+fn unique_ids<T>(
+    ids: impl IntoIterator<Item = T>,
+    kind: &'static str,
+) -> Result<HashSet<T>, SaveValidationError>
+where
+    T: Copy + Eq + Hash,
+{
+    let mut unique = HashSet::new();
+    for id in ids {
+        if !unique.insert(id) {
+            return Err(SaveValidationError::DuplicateId { kind });
+        }
+    }
+    Ok(unique)
+}
+
+fn validate_rules(state: &GameState) -> Result<(), SaveValidationError> {
+    let balance = &state.rules.balance;
+    if balance.starting_company_funds().cents() < 0 {
+        return Err(SaveValidationError::InvalidValue {
+            field: "starting Company Funds",
+        });
+    }
+    if balance.diesel_catalogue().is_empty() {
+        return Err(SaveValidationError::InvalidValue {
+            field: "diesel Train catalogue",
+        });
+    }
+    if balance
+        .diesel_catalogue()
+        .iter()
+        .any(|record| record.name().trim().is_empty() || record.purchase_price().cents() <= 0)
+    {
+        return Err(SaveValidationError::InvalidValue {
+            field: "diesel Train catalogue record",
+        });
+    }
+    if state.rules.demand.cap_duration.seconds() == 0 {
+        return Err(SaveValidationError::InvalidValue {
+            field: "demand cap duration",
+        });
+    }
+    Ok(())
+}
+
+fn service_distance(
+    service: &PassengerService,
+    network: &RailNetwork,
+    line_ids: &HashSet<RailLineId>,
+) -> Result<DistanceMetres, SaveValidationError> {
+    if service.first_station_id == service.second_station_id || service.rail_line_ids.is_empty() {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "a Passenger Service must have distinct endpoints and a Rail Line path",
+        });
+    }
+
+    let mut current_station_id = service.first_station_id;
+    let mut total_metres = 0_u64;
+    let mut used_line_ids = HashSet::new();
+    for rail_line_id in &service.rail_line_ids {
+        if !line_ids.contains(rail_line_id) {
+            return Err(SaveValidationError::DanglingReference {
+                field: "Passenger Service Rail Line",
+            });
+        }
+        if !used_line_ids.insert(*rail_line_id) {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "a Passenger Service repeats a Rail Line",
+            });
+        }
+        let line = network
+            .rail_lines
+            .iter()
+            .find(|line| line.id == *rail_line_id)
+            .expect("a validated Rail Line ID resolves in the Rail Network");
+        current_station_id = next_station_on_line(line, current_station_id).ok_or(
+            SaveValidationError::ImpossibleState {
+                reason: "Passenger Service Rail Lines do not form a continuous path",
+            },
+        )?;
+        total_metres = total_metres.checked_add(line.distance.metres()).ok_or(
+            SaveValidationError::Calculation(CalculationError::Overflow {
+                operation: "Passenger Service path distance",
+            }),
+        )?;
+    }
+    if current_station_id != service.second_station_id {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Passenger Service Rail Line path does not end at its endpoint",
+        });
+    }
+    let metres = i64::try_from(total_metres).map_err(|_| {
+        SaveValidationError::Calculation(CalculationError::Overflow {
+            operation: "Passenger Service path distance",
+        })
+    })?;
+    DistanceMetres::new(metres).map_err(|_| SaveValidationError::InvalidValue {
+        field: "Passenger Service path distance",
+    })
+}
+
+fn next_station_on_line(line: &RailLine, station_id: RailStationId) -> Option<RailStationId> {
+    if line.first_station_id == station_id {
+        Some(line.second_station_id)
+    } else if line.second_station_id == station_id {
+        Some(line.first_station_id)
+    } else {
+        None
+    }
+}
+
+fn validate_demand(
+    state: &GameState,
+    station_ids: &HashSet<RailStationId>,
+) -> Result<(), SaveValidationError> {
+    let mut directional_pairs = HashSet::new();
+    for demand in &state.origin_destination_demand {
+        if !station_ids.contains(&demand.origin_station_id)
+            || !station_ids.contains(&demand.destination_station_id)
+        {
+            return Err(SaveValidationError::DanglingReference {
+                field: "origin-destination demand",
+            });
+        }
+        if demand.origin_station_id == demand.destination_station_id {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "origin-destination demand has identical endpoints",
+            });
+        }
+        if !directional_pairs.insert((demand.origin_station_id, demand.destination_station_id)) {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "duplicate directional Passenger Demand pool",
+            });
+        }
+        let cap = (u128::from(demand.passenger_arrival_rate_per_hour.passengers_per_hour())
+            * u128::from(state.rules.demand.cap_duration.seconds())
+            / 3_600)
+            .min(u128::from(u32::MAX)) as u32;
+        if demand.waiting_passengers > cap {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Waiting Passengers above demand cap",
+            });
+        }
+        if (demand.waiting_passengers == cap && demand.fractional_passenger_seconds != 0)
+            || (demand.waiting_passengers < cap && demand.fractional_passenger_seconds >= 3_600)
+        {
+            return Err(SaveValidationError::InvalidValue {
+                field: "fractional Passenger Demand remainder",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
+    if state.player_company.funds.cents() < 0
+        || state.financials.operating_revenue.cents() < 0
+        || state.financials.infrastructure_access_fees.cents() < 0
+        || state.financials.fuel_costs.cents() < 0
+    {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Company Funds or financial total",
+        });
+    }
+    let mut receipt_ids = HashSet::new();
+    for receipt in &state.financials.recent_journey_receipts {
+        if receipt.journey_id.get() == 0 || !receipt_ids.insert(receipt.journey_id) {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Journey receipt ID",
+            });
+        }
+        if receipt.revenue.cents() < 0
+            || receipt.infrastructure_access_fee.cents() < 0
+            || receipt.fuel_cost.cents() < 0
+        {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Journey receipt amount",
+            });
+        }
+        receipt
+            .infrastructure_access_fee
+            .checked_add(receipt.fuel_cost)?;
+    }
+    Ok(())
+}
+
+fn validate_train_statuses(
+    trains: &[Train],
+    station_ids: &HashSet<RailStationId>,
+    journey_ids: &HashSet<crate::model::JourneyId>,
+) -> Result<(), SaveValidationError> {
+    let mut travelling_journey_ids = HashSet::new();
+    for train in trains {
+        if train.model_name.trim().is_empty() || train.original_purchase_price.cents() <= 0 {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Train catalogue data",
+            });
+        }
+        match train.status {
+            TrainStatus::Ready { at } if !station_ids.contains(&at) => {
+                return Err(SaveValidationError::DanglingReference {
+                    field: "READY Train location",
+                });
+            }
+            TrainStatus::Travelling { journey_id } => {
+                if !journey_ids.contains(&journey_id) {
+                    return Err(SaveValidationError::DanglingReference {
+                        field: "travelling Train Journey",
+                    });
+                }
+                if !travelling_journey_ids.insert(journey_id) {
+                    return Err(SaveValidationError::ImpossibleState {
+                        reason: "more than one Train is travelling on one Journey",
+                    });
+                }
+            }
+            TrainStatus::Ready { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_journey(
+    state: &GameState,
+    journey: &Journey,
+    train_ids: &HashSet<TrainId>,
+    service_ids: &HashSet<ServiceId>,
+    station_ids: &HashSet<RailStationId>,
+    service_distances: &HashMap<ServiceId, DistanceMetres>,
+) -> Result<(), SaveValidationError> {
+    if !train_ids.contains(&journey.train_id) {
+        return Err(SaveValidationError::DanglingReference {
+            field: "Journey Train",
+        });
+    }
+    if !service_ids.contains(&journey.service_id) {
+        return Err(SaveValidationError::DanglingReference {
+            field: "Journey Passenger Service",
+        });
+    }
+    if !station_ids.contains(&journey.origin_station_id)
+        || !station_ids.contains(&journey.destination_station_id)
+    {
+        return Err(SaveValidationError::DanglingReference {
+            field: "Journey endpoint",
+        });
+    }
+    let train = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == journey.train_id)
+        .expect("a validated Journey Train ID resolves in the Fleet");
+    if train.status
+        != (TrainStatus::Travelling {
+            journey_id: journey.id,
+        })
+    {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "a Journey's Train is not travelling on that Journey",
+        });
+    }
+    if journey.passengers_carried > train.passenger_capacity.passengers() {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "a Journey carries more passengers than its Train capacity",
+        });
+    }
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)
+        .expect("a validated Journey Passenger Service ID resolves in the Service Network");
+    let valid_direction = (journey.origin_station_id == service.first_station_id
+        && journey.destination_station_id == service.second_station_id)
+        || (journey.origin_station_id == service.second_station_id
+            && journey.destination_station_id == service.first_station_id);
+    if !valid_direction {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Journey endpoints do not match its Passenger Service",
+        });
+    }
+    let distance = service_distances
+        .get(&journey.service_id)
+        .copied()
+        .expect("every validated Passenger Service has a calculated distance");
+    let expected_fare = state
+        .rules
+        .balance
+        .fare_per_passenger_kilometre()
+        .checked_charge(distance)?;
+    let expected_revenue = expected_fare.checked_mul(u64::from(journey.passengers_carried))?;
+    let expected_access_fee = state
+        .rules
+        .balance
+        .access_fee_per_train_kilometre()
+        .checked_charge(distance)?;
+    let expected_fuel_cost = train.fuel_cost_per_kilometre.checked_charge(distance)?;
+    expected_access_fee.checked_add(expected_fuel_cost)?;
+    let expected_duration = distance.journey_duration(train.speed)?;
+    let expected_arrival = journey.departed_at.checked_add(expected_duration)?;
+    if journey.fare != expected_fare
+        || journey.operating_revenue != expected_revenue
+        || journey.infrastructure_access_fee != expected_access_fee
+        || journey.fuel_cost != expected_fuel_cost
+        || journey.arrives_at != expected_arrival
+    {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Journey actuals do not match its saved rules and Passenger Service",
+        });
+    }
+
+    // Quoting against a temporarily READY copy also verifies that the Journey's
+    // direction has a live directional demand pool without admitting it first.
+    let mut quote_candidate = state.clone();
+    quote_candidate
+        .player_company
+        .fleet
+        .trains
+        .iter_mut()
+        .find(|candidate| candidate.id == journey.train_id)
+        .expect("validated Journey Train remains present in quote candidate")
+        .status = TrainStatus::Ready {
+        at: journey.origin_station_id,
+    };
+    quote_journey(&quote_candidate, journey.train_id, journey.service_id).map_err(|_| {
+        SaveValidationError::ImpossibleState {
+            reason: "Journey cannot be quoted from its saved Passenger Service",
+        }
+    })?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        model::{DistanceMetres, DurationSeconds, RailLineId, TrainId, TrainStatus, UtcSeconds},
+        sim::{
+            fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
+            world::create_new_game,
+        },
+    };
+
+    use super::*;
+
+    fn active_game() -> GameState {
+        let departed_at = UtcSeconds::from_unix_seconds(1_000);
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let service_id =
+            find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))
+                .unwrap();
+        dispatch_journey(&mut state, train_id, service_id, departed_at).unwrap();
+        state.origin_destination_demand[0].fractional_passenger_seconds = 1_234;
+        state
+    }
+
+    fn raw_save(state: &GameState, version: u32) -> String {
+        ron::ser::to_string(&SaveEnvelope { version, state }).unwrap()
+    }
+
+    #[test]
+    fn round_trips_all_current_operating_state() {
+        let state = active_game();
+        let encoded = encode_game_state(&state).unwrap();
+
+        assert_eq!(decode_game_state(&encoded).unwrap(), state);
+    }
+
+    #[test]
+    fn rejects_an_unsupported_save_version() {
+        let source = raw_save(&active_game(), SAVE_VERSION + 1);
+
+        assert_eq!(
+            decode_game_state(&source),
+            Err(SaveCodecError::UnsupportedVersion {
+                found: SAVE_VERSION + 1
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_dangling_references_and_contradictory_train_status() {
+        let mut state = active_game();
+        state.player_company.passenger_services[0].rail_line_ids = vec![RailLineId::new(99)];
+        assert!(matches!(
+            decode_game_state(&raw_save(&state, SAVE_VERSION)),
+            Err(SaveCodecError::InvalidState(
+                SaveValidationError::DanglingReference { .. }
+            ))
+        ));
+
+        let mut state = active_game();
+        state.player_company.fleet.trains[0].status = TrainStatus::Ready {
+            at: RailStationId::new(1),
+        };
+        assert!(matches!(
+            decode_game_state(&raw_save(&state, SAVE_VERSION)),
+            Err(SaveCodecError::InvalidState(
+                SaveValidationError::ImpossibleState { .. }
+            ))
+        ));
+
+        let mut state = active_game();
+        let mut duplicate_owner = state.player_company.fleet.trains[0].clone();
+        duplicate_owner.id = TrainId::new(2);
+        state.player_company.fleet.trains.push(duplicate_owner);
+        assert!(matches!(
+            decode_game_state(&raw_save(&state, SAVE_VERSION)),
+            Err(SaveCodecError::InvalidState(
+                SaveValidationError::ImpossibleState { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_numbers_and_arithmetic_domain_violations() {
+        let mut state = active_game();
+        state.rules.demand.cap_duration = DurationSeconds::from_seconds(0);
+        assert!(matches!(
+            decode_game_state(&raw_save(&state, SAVE_VERSION)),
+            Err(SaveCodecError::InvalidState(
+                SaveValidationError::InvalidValue { .. }
+            ))
+        ));
+
+        let mut state = active_game();
+        state.region.rail_authority.rail_network.rail_lines[0].distance =
+            DistanceMetres::new(i64::MAX).unwrap();
+        assert!(matches!(
+            decode_game_state(&raw_save(&state, SAVE_VERSION)),
+            Err(SaveCodecError::InvalidState(
+                SaveValidationError::Calculation(_)
+            ))
+        ));
+    }
+}

@@ -7,7 +7,7 @@
 
 use std::{error::Error, fmt};
 
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::balance::BalanceConfig;
 
@@ -142,7 +142,7 @@ impl Money {
 }
 
 /// A positive passenger capacity.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PassengerCapacity(u32);
 
 impl PassengerCapacity {
@@ -164,7 +164,7 @@ impl PassengerCapacity {
 }
 
 /// A positive Train speed stored as metres per second.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SpeedMetresPerSecond(u64);
 
 impl SpeedMetresPerSecond {
@@ -187,7 +187,7 @@ impl SpeedMetresPerSecond {
 }
 
 /// A positive physical distance stored as integer metres.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DistanceMetres(u64);
 
 impl DistanceMetres {
@@ -267,7 +267,7 @@ impl UtcSeconds {
 }
 
 /// A positive monetary rate in cents per kilometre.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MoneyPerKilometre(u64);
 
 impl MoneyPerKilometre {
@@ -315,6 +315,17 @@ impl MoneyPerKilometre {
 
 macro_rules! deserialize_validated_positive {
     ($name:ident, $primitive:ty) => {
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let value = <$primitive>::try_from(self.0)
+                    .expect("validated positive value fits its serialized integer type");
+                value.serialize(serializer)
+            }
+        }
+
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
@@ -490,7 +501,7 @@ pub struct OriginDestinationDemand {
 }
 
 /// A positive directional Passenger Demand rate, in passengers per hour.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PassengerArrivalRate(u32);
 
 impl PassengerArrivalRate {
