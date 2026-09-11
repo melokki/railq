@@ -340,6 +340,9 @@ deserialize_validated_positive!(MoneyPerKilometre, i64);
 /// describe the current operating state rather than either owner's assets.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct GameState {
+    /// The seed that generated this game's Region. It is saved so a loaded
+    /// game never needs to regenerate its world.
+    pub world_seed: u64,
     pub region: Region,
     pub player_company: PlayerCompany,
     pub origin_destination_demand: Vec<OriginDestinationDemand>,
@@ -353,6 +356,8 @@ pub struct GameState {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Region {
     pub name: String,
+    /// The total Population of every Settlement in this Region.
+    pub population: u64,
     pub settlements: Vec<Settlement>,
     pub rail_authority: RailAuthority,
 }
@@ -602,8 +607,10 @@ mod tests {
         let train_id = TrainId::new(1);
         let rate = MoneyPerKilometre::new(1).unwrap();
         let state = GameState {
+            world_seed: 0,
             region: Region {
                 name: "Varelia".into(),
+                population: 1_000,
                 settlements: vec![Settlement {
                     id: settlement_id,
                     name: "Alden".into(),

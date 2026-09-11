@@ -5,6 +5,7 @@
 
 pub mod balance;
 pub mod model;
+pub mod sim;
 
 /// The display name shared by the binary and future presentation code.
 pub const APPLICATION_NAME: &str = "RailQ";
