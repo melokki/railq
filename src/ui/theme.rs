@@ -66,3 +66,7 @@ pub fn hint() -> Style {
 pub fn feedback() -> Style {
     Style::default().fg(WARNING).bg(BACKGROUND)
 }
+
+pub fn error() -> Style {
+    Style::default().fg(ERROR).bg(PANEL)
+}

@@ -115,29 +115,19 @@ pub enum FleetFlowAction {
     Confirm { train_id: TrainId },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum FleetStep {
-    SelectTrain { selected: usize },
-    Confirm { train_id: TrainId },
-}
-
 /// Presentation state for one uncommitted Train resale.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FleetFlow {
-    step: FleetStep,
+    train_id: TrainId,
     rejection: Option<String>,
 }
 
 impl FleetFlow {
-    /// Starts selecting a READY Train for resale without changing the Fleet.
-    pub fn start(state: &GameState) -> Result<Self, &'static str> {
-        if ready_train_ids(state).is_empty() {
-            return Err(
-                "No READY Train is available for resale. Travelling Trains must arrive first.",
-            );
-        }
+    /// Starts reviewing the currently selected READY Train without changing the Fleet.
+    pub fn start(state: &GameState, train_id: TrainId) -> Result<Self, String> {
+        resale_review(state, train_id)?;
         Ok(Self {
-            step: FleetStep::SelectTrain { selected: 0 },
+            train_id,
             rejection: None,
         })
     }
@@ -148,31 +138,17 @@ impl FleetFlow {
             return FleetFlowAction::Cancel;
         }
 
-        match &mut self.step {
-            FleetStep::SelectTrain { selected } => {
-                let trains = ready_train_ids(state);
-                if trains.is_empty() {
-                    self.rejection = Some(
-                        "No READY Train is available for resale. Travelling Trains must arrive first."
-                            .into(),
-                    );
-                    return FleetFlowAction::Continue;
-                }
-                move_selection(selected, trains.len(), key.code);
-                if matches!(key.code, KeyCode::Enter) {
-                    self.step = FleetStep::Confirm {
-                        train_id: trains[*selected],
-                    };
-                    self.rejection = None;
-                }
+        if !matches!(key.code, KeyCode::Enter) {
+            return FleetFlowAction::Continue;
+        }
+        match resale_review(state, self.train_id) {
+            Ok(_) => FleetFlowAction::Confirm {
+                train_id: self.train_id,
+            },
+            Err(reason) => {
+                self.rejection = Some(reason);
                 FleetFlowAction::Continue
             }
-            FleetStep::Confirm { train_id } if matches!(key.code, KeyCode::Enter) => {
-                FleetFlowAction::Confirm {
-                    train_id: *train_id,
-                }
-            }
-            FleetStep::Confirm { .. } => FleetFlowAction::Continue,
         }
     }
 
@@ -181,60 +157,33 @@ impl FleetFlow {
         self.rejection = Some(error.into());
     }
 
-    /// Renders the current proposal and its confirmation instructions.
+    /// Renders the resale review as plain text for legacy textual callers.
     pub fn render(&self, state: &GameState, now: UtcSeconds) -> String {
         let mut output = String::new();
-        match &self.step {
-            FleetStep::SelectTrain { selected } => {
+        match resale_review(state, self.train_id) {
+            Ok(review) => {
                 writeln!(
                     output,
-                    "\nSelect a READY Train to sell (Up/Down, Enter; Esc cancels):"
+                    "\nResell Train {:02} — {}",
+                    review.train.id.get(),
+                    review.train.model_name
                 )
                 .expect("writing to a String cannot fail");
-                for (index, train_id) in ready_train_ids(state).iter().enumerate() {
-                    let marker = if index == *selected { '>' } else { ' ' };
-                    let Some(train) = state
-                        .player_company
-                        .fleet
-                        .trains
-                        .iter()
-                        .find(|train| train.id == *train_id)
-                    else {
-                        continue;
-                    };
-                    writeln!(
-                        output,
-                        " {marker} Train {} ({}) — sale proceeds {}",
-                        train.id.get(),
-                        train.model_name,
-                        format_money(resale_proceeds(train.original_purchase_price)),
-                    )
-                    .expect("writing to a String cannot fail");
-                }
+                writeln!(
+                    output,
+                    "Sale proceeds (70%): {}",
+                    format_money(review.proceeds)
+                )
+                .expect("writing to a String cannot fail");
+                writeln!(
+                    output,
+                    "Company Funds after resale: {}",
+                    format_money(review.funds_after)
+                )
+                .expect("writing to a String cannot fail");
             }
-            FleetStep::Confirm { train_id } => {
-                if let Some(train) = state
-                    .player_company
-                    .fleet
-                    .trains
-                    .iter()
-                    .find(|train| train.id == *train_id)
-                {
-                    writeln!(
-                        output,
-                        "\nSell Train {} ({}) for {} sale proceeds?",
-                        train.id.get(),
-                        train.model_name,
-                        format_money(resale_proceeds(train.original_purchase_price)),
-                    )
-                    .expect("writing to a String cannot fail");
-                } else {
-                    writeln!(output, "\nThat Train is no longer in the Fleet.")
-                        .expect("writing to a String cannot fail");
-                }
-                writeln!(output, "Enter confirms resale (revalidated); Esc cancels.")
-                    .expect("writing to a String cannot fail");
-            }
+            Err(reason) => writeln!(output, "\nResale unavailable: {reason}")
+                .expect("writing to a String cannot fail"),
         }
         if let Some(rejection) = &self.rejection {
             writeln!(output, "Resale rejected: {rejection}")
@@ -242,6 +191,107 @@ impl FleetFlow {
         }
         writeln!(output, "\n{}", render_at(state, now)).expect("writing to a String cannot fail");
         output
+    }
+
+    /// Renders the full review inside the Fleet workspace.
+    pub fn render_review(&self, frame: &mut Frame, area: Rect, state: &GameState) {
+        render_resale_review(frame, area, state, self);
+    }
+}
+
+struct ResaleReview<'a> {
+    train: &'a Train,
+    proceeds: Money,
+    funds_after: Money,
+}
+
+fn resale_review(state: &GameState, train_id: TrainId) -> Result<ResaleReview<'_>, String> {
+    let train = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .ok_or_else(|| format!("Train {} is no longer in the Fleet.", train_id.get()))?;
+    if matches!(train.status, TrainStatus::Travelling { .. }) {
+        return Err(format!(
+            "Train {} is TRAVELLING and cannot be resold until its Journey arrives.",
+            train.id.get()
+        ));
+    }
+    let proceeds = resale_proceeds(train.original_purchase_price).ok_or_else(|| {
+        format!(
+            "Train {} has no valid original purchase price for resale.",
+            train.id.get()
+        )
+    })?;
+    let funds_after = state
+        .player_company
+        .funds
+        .checked_add(proceeds)
+        .map_err(|_| {
+            String::from("Company Funds cannot represent the resale result; no resale was saved.")
+        })?;
+    Ok(ResaleReview {
+        train,
+        proceeds,
+        funds_after,
+    })
+}
+
+fn render_resale_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &FleetFlow) {
+    let block = panel_block("Fleet · resale review", true);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = match resale_review(state, flow.train_id) {
+        Ok(review) => vec![
+            Line::styled(
+                format!("Resell Train {:02}", review.train.id.get()),
+                theme::title(),
+            ),
+            labelled_line("Model", &review.train.model_name),
+            labelled_line("Status", "READY"),
+            labelled_line(
+                "Proceeds",
+                &format!("{} (70%)", format_money(review.proceeds)),
+            ),
+            labelled_line("Funds now", &format_money(state.player_company.funds)),
+            labelled_line("Funds after", &format_money(review.funds_after)),
+            Line::from(""),
+            Line::styled("Enter · confirm resale", theme::focused_title()),
+            Line::styled("Esc · cancel (no changes)", theme::hint()),
+        ],
+        Err(reason) => vec![
+            Line::styled("Resale unavailable", theme::title()),
+            Line::styled(reason, theme::error()),
+            Line::from(""),
+            Line::styled("Esc · return to Fleet", theme::hint()),
+        ],
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
+
+    if let Some(rejection) = &flow.rejection {
+        let rejection_area = Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(inner.height.saturating_sub(2)),
+            width: inner.width,
+            height: inner.height.min(2),
+        };
+        frame.render_widget(
+            Paragraph::new(vec![Line::styled(
+                format!("Resale rejected: {rejection}"),
+                theme::error(),
+            )])
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+            rejection_area,
+        );
     }
 }
 
@@ -549,7 +599,7 @@ fn compact_train_lines(
 
 fn labelled_line(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label:<9}"), theme::secondary()),
+        Span::styled(format!("{label:<12}"), theme::secondary()),
         Span::raw(value.to_owned()),
     ])
 }
@@ -671,7 +721,9 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                     train.id.get(),
                     train.model_name,
                     station_label(state, at),
-                    format_money(resale_proceeds(train.original_purchase_price)),
+                    resale_proceeds(train.original_purchase_price)
+                        .map(format_money)
+                        .unwrap_or_else(|| "unavailable".into()),
                 )
                 .expect("writing to a String cannot fail");
             }
@@ -704,38 +756,23 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
             }
         }
     }
-    writeln!(output, "\nEnter starts a resale for a READY Train.")
-        .expect("writing to a String cannot fail");
+    writeln!(
+        output,
+        "\nPress S to review resale for the selected READY Train."
+    )
+    .expect("writing to a String cannot fail");
     output
 }
 
-fn ready_train_ids(state: &GameState) -> Vec<TrainId> {
-    state
-        .player_company
-        .fleet
-        .trains
-        .iter()
-        .filter_map(|train| match train.status {
-            TrainStatus::Ready { .. } => Some(train.id),
-            TrainStatus::Travelling { .. } => None,
+fn resale_proceeds(original_purchase_price: Money) -> Option<Money> {
+    (original_purchase_price.cents() > 0)
+        .then_some(original_purchase_price)
+        .and_then(|price| {
+            price
+                .cents()
+                .checked_mul(70)
+                .map(|cents| Money::from_cents(cents / 100))
         })
-        .collect()
-}
-
-fn move_selection(selected: &mut usize, length: usize, key: KeyCode) {
-    match key {
-        KeyCode::Up | KeyCode::Char('k') if *selected > 0 => *selected -= 1,
-        KeyCode::Down | KeyCode::Char('j') if *selected + 1 < length => *selected += 1,
-        _ => {}
-    }
-}
-
-fn resale_proceeds(original_purchase_price: Money) -> Money {
-    original_purchase_price
-        .cents()
-        .checked_mul(70)
-        .map(|cents| Money::from_cents(cents / 100))
-        .unwrap_or(Money::ZERO)
 }
 
 fn station_label(state: &GameState, station_id: RailStationId) -> &str {
@@ -798,7 +835,22 @@ fn format_money(money: Money) -> String {
     let cents = i128::from(money.cents());
     let sign = if cents < 0 { "-" } else { "" };
     let cents = cents.abs();
-    format!("{sign}${}.{:02}", cents / 100, cents % 100)
+    let grouped_whole = (cents / 100)
+        .to_string()
+        .chars()
+        .rev()
+        .enumerate()
+        .fold(String::new(), |mut output, (index, digit)| {
+            if index != 0 && index % 3 == 0 {
+                output.push(',');
+            }
+            output.push(digit);
+            output
+        })
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("{sign}${grouped_whole}.{:02}", cents % 100)
 }
 
 #[cfg(test)]
@@ -846,11 +898,7 @@ mod tests {
         assert!(rendered.contains(&format!("READY at {}", settlement.name)));
         assert!(rendered.contains("Eligible sale proceeds:"));
 
-        let mut flow = FleetFlow::start(&state).unwrap();
-        assert_eq!(
-            flow.handle_key(key(KeyCode::Enter), &state),
-            FleetFlowAction::Continue
-        );
+        let mut flow = FleetFlow::start(&state, train_id).unwrap();
         assert_eq!(
             flow.handle_key(key(KeyCode::Enter), &state),
             FleetFlowAction::Confirm { train_id }
@@ -878,7 +926,7 @@ mod tests {
         assert!(rendered.contains("progress: 50%"));
         assert!(rendered.contains("ETA:"));
         assert!(rendered.contains("Sale unavailable"));
-        assert!(FleetFlow::start(&state).is_err());
+        assert!(FleetFlow::start(&state, train_id).is_err());
         assert!(matches!(
             sell_train(&mut state, train_id),
             Err(crate::sim::fleet::FleetError::TrainTravelling { .. })

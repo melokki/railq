@@ -310,12 +310,18 @@ impl Shell {
                 self.fleet_focus = FleetFocus::List;
             }
             KeyCode::Char('s' | 'S') if self.active_view == View::Trains => {
-                match fleet::FleetFlow::start(state) {
-                    Ok(flow) => {
-                        self.fleet_flow = Some(flow);
-                        self.notice = None;
+                match self.fleet_selection.selected_train_id(state) {
+                    Some(train_id) => match fleet::FleetFlow::start(state, train_id) {
+                        Ok(flow) => {
+                            self.fleet_flow = Some(flow);
+                            self.notice = None;
+                        }
+                        Err(message) => self.notice = Some(message),
+                    },
+                    None => {
+                        self.notice =
+                            Some("Select a Train before starting a resale review.".into());
                     }
-                    Err(message) => self.notice = Some(message.into()),
                 }
             }
             KeyCode::Tab | KeyCode::BackTab
@@ -394,6 +400,8 @@ impl Shell {
     /// Closes a saved resale and shows the actual proceeds credited to Company Funds.
     pub fn confirm_train_resale(&mut self, proceeds: crate::model::Money) {
         self.fleet_flow = None;
+        self.fleet_details_open = false;
+        self.fleet_focus = FleetFocus::List;
         self.notice = Some(format!(
             "Train resold and saved. Sale proceeds of {} were added to Company Funds.",
             format_money(proceeds)
@@ -779,6 +787,25 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             shell.fleet_details_open,
             shell.fleet_focus == FleetFocus::Details,
         );
+    } else if shell.active_view == View::Trains {
+        if let Some(flow) = &shell.fleet_flow {
+            flow.render_review(frame, content_area, state);
+        } else {
+            frame.render_widget(
+                Paragraph::new(fleet::render_at(state, now))
+                    .block(
+                        Block::default()
+                            .borders(theme::THIN_BORDERS)
+                            .border_style(theme::border())
+                            .title(shell.active_view.label())
+                            .title_style(theme::title())
+                            .style(theme::panel()),
+                    )
+                    .style(theme::panel())
+                    .wrap(Wrap { trim: false }),
+                content_area,
+            );
+        }
     } else {
         let content = if shell.help_visible {
             help_text()
@@ -790,10 +817,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
                     Some(flow) => flow.render(state),
                     None => map::render_at(state, now),
                 },
-                View::Trains => match &shell.fleet_flow {
-                    Some(flow) => flow.render(state, now),
-                    None => fleet::render_at(state, now),
-                },
+                View::Trains => fleet::render_at(state, now),
                 View::BuyTrains => match &shell.market_flow {
                     Some(flow) => flow.render(state),
                     None => market::render(state),
@@ -946,7 +970,7 @@ fn help_text() -> String {
         "Keyboard help",
         "",
         "[M] Map — inspect the Region and press [D] to begin a Manual Dispatch.",
-        "[T] Fleet — press [Enter] to select a READY Train for resale.",
+        "[T] Fleet — press [Enter] to inspect the selected Train; [S] reviews its resale when READY.",
         "[C] Company — inspect Company Funds, receipts, Insolvency, and recovery options.",
         "[B] Buy Trains — press [Enter] to choose a diesel Train and delivery Rail Station.",
         "[Up]/[Down] or [J]/[K] change a selection; [Enter] advances or confirms; [Esc] cancels.",
@@ -1311,7 +1335,6 @@ mod tests {
 
         assert_eq!(press(&mut shell, KeyCode::Char('t')), ShellAction::Continue);
         assert_eq!(press(&mut shell, KeyCode::Char('s')), ShellAction::Continue);
-        assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
         assert_eq!(
             press(&mut shell, KeyCode::Enter),
             ShellAction::SellTrain { train_id }

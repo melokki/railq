@@ -68,8 +68,9 @@ revalidated at confirmation.
 
 To buy a Train, press `B`, then `Enter`: choose a catalogue Train, choose its
 delivery Rail Station, and press `Enter` on the confirmation. In Fleet, press
-`Enter` to inspect the selected Train or `S` to choose a READY Train for resale
-and press `Enter` again to confirm. A travelling Train cannot be sold.
+`Enter` to inspect the selected Train or `S` to review that selected READY
+Train's resale; the review shows the exact 70% proceeds and resulting Company
+Funds before `Enter` confirms. A travelling Train cannot be sold.
 
 After Bankruptcy, normal operations are blocked. Press `R`, then `Enter` to
 confirm a safe restart, or `Esc` to cancel. The former Player Company save is

@@ -6,8 +6,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
     model::{Money, RailStationId, TrainStatus, UtcSeconds},
     sim::{
-        fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
-        time::advance_time, world::create_new_game,
+        fleet::{purchase_train, sell_train},
+        journeys::dispatch_journey,
+        services::find_or_create_service,
+        time::advance_time,
+        world::create_new_game,
     },
     ui::{
         Shell, ShellAction, capture_rendered_buffer, capture_rendered_buffer_mut,
@@ -18,6 +21,7 @@ use railq::{
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_700_000_000);
 const EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/03";
 const DETAILS_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/04";
+const RESALE_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/05";
 
 fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) {
     assert_eq!(
@@ -189,8 +193,8 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
 }
 
 #[test]
-fn fleet_focus_respects_the_visible_workspace_and_s_starts_resale() {
-    let state = operating_fleet();
+fn fleet_focus_respects_the_visible_workspace_and_s_reviews_the_selected_ready_train() {
+    let mut state = operating_fleet();
     let mut shell = Shell::new();
     press(&mut shell, &state, KeyCode::Char('t'));
 
@@ -205,7 +209,103 @@ fn fleet_focus_respects_the_visible_workspace_and_s_starts_resale() {
     assert!(wide_details.contains("Train details"));
     press(&mut shell, &state, KeyCode::BackTab);
 
+    press(&mut shell, &state, KeyCode::Down);
     press(&mut shell, &state, KeyCode::Char('s'));
     let resale = capture_rendered_buffer(&shell, &state, 120, 40);
-    assert!(resale.contains("Select a READY Train to sell"));
+    assert!(resale.contains("Fleet · resale review"));
+    assert!(resale.contains("Resell Train 02"));
+    assert!(resale.contains("Proceeds"));
+    assert!(resale.contains("Funds after"));
+    assert!(resale.contains("Enter · confirm resale"));
+
+    let train_id = state.player_company.fleet.trains[1].id;
+    assert_eq!(
+        shell.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state),
+        ShellAction::SellTrain { train_id }
+    );
+    let proceeds = sell_train(&mut state, train_id).unwrap();
+    shell.confirm_train_resale(proceeds);
+    let after_resale = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(after_resale.contains("> Train 03"));
+    assert!(after_resale.contains("Train resold and saved"));
+}
+
+#[test]
+fn resale_review_has_complete_themed_evidence_at_normal_and_compact_sizes()
+-> Result<(), Box<dyn Error>> {
+    let state = operating_fleet();
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Down);
+    press(&mut shell, &state, KeyCode::Char('s'));
+
+    let evidence_dir = Path::new(RESALE_EVIDENCE_DIR);
+    fs::create_dir_all(evidence_dir)?;
+    for (columns, rows, file_name) in [
+        (120, 40, "resale-review-120x40.txt"),
+        (80, 24, "resale-review-80x24.txt"),
+    ] {
+        let rendered = capture_rendered_buffer(&shell, &state, columns, rows);
+        assert_eq!(rendered.lines().count(), usize::from(rows));
+        for fact in [
+            "Resell Train 02",
+            "Proceeds",
+            "70%",
+            "Funds now",
+            "Funds after",
+            "Enter · confirm resale",
+            "Esc · cancel",
+        ] {
+            assert!(
+                rendered.contains(fact),
+                "{fact} must fit at {columns}x{rows}"
+            );
+        }
+        let (row, column) = rendered
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find("Enter · confirm resale")
+                    .map(|column| (row, column))
+            })
+            .expect("confirmation instruction must be visible");
+        assert_eq!(
+            capture_rendered_cell_colors(
+                &shell,
+                &state,
+                columns,
+                rows,
+                u16::try_from(column)?,
+                u16::try_from(row)?,
+            ),
+            Some((theme::ACCENT, theme::PANEL)),
+        );
+        fs::write(evidence_dir.join(file_name), rendered)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn resale_review_explains_travelling_and_stale_selected_train_without_a_false_success() {
+    let mut state = operating_fleet();
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('t'));
+
+    press(&mut shell, &state, KeyCode::Char('s'));
+    let travelling = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(travelling.contains("TRAVELLING and cannot be resold"));
+
+    press(&mut shell, &state, KeyCode::Down);
+    press(&mut shell, &state, KeyCode::Char('s'));
+    let selected_train = state.player_company.fleet.trains[1].id;
+    state.player_company.fleet.trains.remove(1);
+    assert_eq!(
+        shell.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state,),
+        ShellAction::Continue
+    );
+    let stale = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(stale.contains(&format!(
+        "Train {} is no longer in the Fleet",
+        selected_train.get()
+    )));
 }

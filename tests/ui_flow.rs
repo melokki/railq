@@ -14,7 +14,13 @@ use railq::{
         start::{CompanyName, Startup, onboarding_summary, start},
     },
 };
-use std::{cell::RefCell, convert::Infallible, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    convert::Infallible,
+    error::Error,
+    fmt,
+    rc::Rc,
+};
 
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 const OUTBOUND_DEPARTURE: UtcSeconds = UtcSeconds::from_unix_seconds(2_000);
@@ -22,6 +28,39 @@ const OUTBOUND_DEPARTURE: UtcSeconds = UtcSeconds::from_unix_seconds(2_000);
 #[derive(Clone, Debug, Default)]
 struct TestStore {
     saved: Rc<RefCell<Option<GameState>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RejectingStore {
+    saved: Rc<RefCell<Option<GameState>>>,
+    reject_next_save: Rc<Cell<bool>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RejectedSave;
+
+impl fmt::Display for RejectedSave {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("simulated save rejection")
+    }
+}
+
+impl Error for RejectedSave {}
+
+impl GameStore for RejectingStore {
+    type Error = RejectedSave;
+
+    fn load(&self) -> Result<Option<GameState>, Self::Error> {
+        Ok(self.saved.borrow().clone())
+    }
+
+    fn save(&self, state: &GameState) -> Result<(), Self::Error> {
+        if self.reject_next_save.replace(false) {
+            return Err(RejectedSave);
+        }
+        self.saved.replace(Some(state.clone()));
+        Ok(())
+    }
 }
 
 impl GameStore for TestStore {
@@ -93,7 +132,6 @@ fn dispatch_first_ready_train(shell: &mut Shell, app: &mut App<TestStore>, now: 
 
 fn sell_first_ready_train(shell: &mut Shell, app: &mut App<TestStore>, now: UtcSeconds) {
     press(shell, app, KeyCode::Char('s'), now);
-    press(shell, app, KeyCode::Enter, now);
     press(shell, app, KeyCode::Enter, now);
 }
 
@@ -225,6 +263,43 @@ fn cancellation_and_rejected_error_paths_preserve_player_company_state() {
     press(&mut shell, &mut app, KeyCode::Esc, OUTBOUND_DEPARTURE);
     assert_eq!(app.state(), &before_cancelled_resale);
     assert_eq!(app.state().player_company.fleet.trains.len(), 1);
+}
+
+#[test]
+fn failed_resale_save_keeps_the_review_open_without_a_success_notice() {
+    let store = RejectingStore::default();
+    let mut state = railq::sim::world::create_new_game(42, "Save Failure Passenger", STARTED_AT);
+    state.player_company.funds = Money::from_cents(1_000_000);
+    let mut app = App::start_new(store.clone(), state).unwrap();
+    let train_id = app
+        .purchase_train(0, RailStationId::new(1), STARTED_AT)
+        .unwrap();
+    let before = app.state().clone();
+    let mut shell = Shell::new();
+
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Char('t')), app.state()),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Char('s')), app.state()),
+        ShellAction::Continue
+    );
+    store.reject_next_save.set(true);
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Enter), app.state()),
+        ShellAction::SellTrain { train_id }
+    );
+    let error = app.sell_train(train_id, STARTED_AT).unwrap_err();
+    shell.reject_train_resale(error.to_string());
+
+    assert_eq!(app.state(), &before);
+    assert_eq!(store.load().unwrap(), Some(before));
+    let rendered = railq::ui::capture_rendered_buffer(&shell, app.state(), 120, 40);
+    assert!(
+        rendered.contains("Resale rejected: could not save game changes: simulated save rejection")
+    );
+    assert!(!rendered.contains("Train resold and saved"));
 }
 
 #[test]
