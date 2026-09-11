@@ -104,7 +104,7 @@ fn retained_receipts_scroll_keep_the_selected_journey_across_arrivals_and_open_d
 
     let compact = capture_rendered_buffer(&shell, &state, 80, 24);
     assert!(compact.contains("19 retained"));
-    assert!(compact.contains("[↑↓/J K] Receipts [Enter] Detail"));
+    assert!(compact.contains("[↑↓] Receipt [Enter] Inspect"));
     fs::write(evidence_dir.join("retained-80x24.txt"), compact)?;
 
     assert_eq!(

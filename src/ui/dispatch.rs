@@ -67,6 +67,22 @@ pub struct DispatchFlow {
 }
 
 impl DispatchFlow {
+    /// Returns the active step so the shell can publish only controls this
+    /// flow actually handles.
+    pub fn is_selecting_train(&self) -> bool {
+        matches!(self.step, DispatchStep::SelectTrain { .. })
+    }
+
+    /// Returns whether the flow is choosing a destination.
+    pub fn is_selecting_destination(&self) -> bool {
+        matches!(self.step, DispatchStep::SelectDestination { .. })
+    }
+
+    /// Returns whether Enter currently confirms the quoted Journey.
+    pub fn is_confirming(&self) -> bool {
+        matches!(self.step, DispatchStep::Confirm { .. })
+    }
+
     /// Starts selecting a READY Train. No game state changes at this point.
     pub fn start(state: &GameState) -> Result<Self, &'static str> {
         Self::start_at_station(state, None)

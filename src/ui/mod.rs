@@ -23,7 +23,7 @@ use ratatui::{
     backend::{CrosstermBackend, TestBackend},
     layout::{Constraint, Layout},
     style::Color,
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Paragraph, Tabs, Wrap},
 };
 
@@ -1137,97 +1137,148 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         feedback_area,
     );
 
-    let controls = if shell.help_visible {
-        "[? / H / Esc] Close help  [Q] Quit"
-    } else if is_bankrupt(state) {
-        if shell.restart_confirmation {
-            "[Enter] Confirm safe restart  [Esc] Cancel  [Q] Quit"
-        } else {
-            "[R] Safe restart  [Q] Quit  [?] Help"
-        }
-    } else if shell.active_view == View::Trains && shell.dispatch_flow.is_some() {
-        if hints_area.width <= 80 {
-            "[↑↓/J K] Route [Enter] Review [Left] Train [Esc] Fleet [?] Help"
-        } else {
-            "[↑↓/J K] Destination  [PgUp/Dn] Scroll  [Enter] Review  [Left/Backspace] Train  [Esc] Fleet  [?] Help  [Q] Quit"
-        }
-    } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
-        if hints_area.width <= 80 {
-            "[↑↓/J K] Select [Enter] Inspect [D] Dispatch [S] Resale [?] Help [Q] Quit"
-        } else {
-            "[↑↓/J K] Train  [PgUp/Dn] Scroll  [Enter] Inspect  [D] Dispatch  [S] Resale  [Tab] Panel  [?] Help  [Q] Quit"
-        }
-    } else if shell.active_view == View::Map && shell.dispatch_flow.is_none() {
-        if shell.map_focus == map::MapFocus::Journeys {
-            if shell.map_details_open {
-                "[Esc] Departure board  [Tab] Rail Stations  [?] Help  [Q] Quit"
-            } else if hints_area.width <= 80 {
-                "[↑↓/J K] Journeys [Enter] Inspect [Tab] Stations [?] Help [Q] Quit"
-            } else {
-                "[↑↓ / J K] Select Journey  [PageUp / PageDown] Scroll  [Enter] Inspect  [Tab] Rail Stations  [?] Help  [Q] Quit"
-            }
-        } else if !shell.map_focus.is_stations() {
-            if shell.map_details_open {
-                "[Esc] Settlements  [Tab] Departure board  [?] Help  [Q] Quit"
-            } else if hints_area.width <= 80 {
-                "[↑↓/J K] Settlements [Enter] Inspect [Tab] Journeys [?] Help [Q] Quit"
-            } else {
-                "[↑↓ / J K] Select Settlement  [PageUp / PageDown] Scroll  [Enter] Inspect  [Tab] Departure board  [?] Help  [Q] Quit"
-            }
-        } else if shell.map_details_open {
-            "[Esc] Rail Stations  [D] Dispatch  [Tab] Settlements  [?] Help  [Q] Quit"
-        } else if hints_area.width <= 80 {
-            "[↑↓/JK] Stations [Enter] View [D] Dispatch [Tab] Settlements [?] Help [Q] Quit"
-        } else {
-            "[↑↓/JK] Select  [PgUp/Dn] Scroll  [Enter] Inspect  [D] Dispatch  [Tab] Settlements  [?] Help  [Q] Quit"
-        }
-    } else if shell.active_view == View::Company {
-        if shell.company_recovery_review_open {
-            if hints_area.width <= 80 {
-                "[↑↓/J K] Route [Enter] Open [Esc] Company [?] Help"
-            } else {
-                "[↑↓ / J K] Select route  [PageUp / PageDown] Scroll  [Enter] Open first review  [M/T/B] Workspace  [Esc] Company  [?] Help  [Q] Quit"
-            }
-        } else if shell.company_receipt_details_open {
-            "[Esc] Retained receipts  [M/T/C/B] Navigate  [?] Help  [Q] Quit"
-        } else if hints_area.width <= 80 {
-            "[↑↓/J K] Receipts [Enter] Detail [R] Recovery [?] Help [Q] Quit"
-        } else {
-            "[↑↓ / J K] Select receipt  [PageUp / PageDown] Scroll  [Enter] Inspect  [R] Recovery review  [Esc] Close detail  [?] Help  [Q] Quit"
-        }
-    } else if shell.active_view == View::BuyTrains && shell.market_flow.is_none() {
-        if hints_area.width <= 80 {
-            "[↑↓/J K] Model [Enter] Delivery [?] Help [Q] Quit"
-        } else {
-            "[↑↓ / J K] Select model  [PgUp/Dn] Scroll  [Enter] Choose delivery Rail Station  [?] Help  [Q] Quit"
-        }
-    } else if shell.active_view == View::BuyTrains && shell.market_flow.is_some() {
-        if shell
-            .market_flow
-            .as_ref()
-            .is_some_and(market::MarketFlow::is_selecting_delivery)
-        {
-            if hints_area.width <= 80 {
-                "[↑↓/J K] Station [Enter] Review [Left] Model [Esc] Cancel [?] Help"
-            } else {
-                "[↑↓ / J K] Select station  [PgUp/Dn] Scroll  [Enter] Review  [Left/Backspace] Model  [Esc] Cancel  [?] Help  [Q] Quit"
-            }
-        } else if hints_area.width <= 80 {
-            "[Enter] Confirm purchase [Esc] Cancel [?] Help"
-        } else {
-            "[Enter] Confirm purchase  [Esc] Cancel  [?] Help  [Q] Quit"
-        }
-    } else if hints_area.width <= 80 {
-        "[M] [T] [C] [B] [D] Dispatch [Enter] Select [?] Help [Q] Quit"
-    } else {
-        "[M] Map  [T] Fleet  [C] Company  [B] Buy  [D] Dispatch  [Enter] Select  [Esc] Cancel  [?] Help  [Q] Quit"
-    };
+    let controls = contextual_controls(shell, state, hints_area.width);
     frame.render_widget(
-        Paragraph::new(controls)
-            .style(theme::hint())
-            .wrap(Wrap { trim: true }),
+        Paragraph::new(Line::from(vec![
+            Span::styled("FOCUS ", theme::focused_title()),
+            Span::styled(controls, theme::hint()),
+        ]))
+        .style(theme::hint())
+        .wrap(Wrap { trim: true }),
         hints_area,
     );
+}
+
+fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> String {
+    let compact = width <= 80;
+    if shell.help_visible {
+        return "[? / H / Esc] Close help  [Q] Quit".into();
+    }
+    if is_bankrupt(state) {
+        return if shell.restart_confirmation {
+            "[Enter] Confirm safe restart  [Esc] Cancel  [Q] Quit".into()
+        } else {
+            "[R] Safe restart  [?] Help  [Q] Quit".into()
+        };
+    }
+    if let Some(flow) = &shell.dispatch_flow {
+        return if flow.is_selecting_train() {
+            "[↑↓] Train [Enter] Next [Esc] Cancel [?] Help [Q] Quit".into()
+        } else if flow.is_selecting_destination() {
+            if compact {
+                "[↑↓] Route [Enter] Review [←] Back [Esc] Cancel [?] Help [Q] Quit".into()
+            } else {
+                "[↑↓/J K] Route  [PgUp/Dn] Scroll  [Enter] Review  [←/Back] Train  [Esc] Cancel  [?] Help  [Q] Quit".into()
+            }
+        } else if compact {
+            "[Enter] Confirm [←] Back [Esc] Cancel [?] Help [Q] Quit".into()
+        } else {
+            "[Enter] Confirm dispatch  [←/Back] Route  [Esc] Cancel  [?] Help  [Q] Quit".into()
+        };
+    }
+    if shell.active_view == View::Trains && shell.fleet_flow.is_some() {
+        return "[Enter] Confirm resale  [Esc] Cancel  [?] Help  [Q] Quit".into();
+    }
+    if shell.active_view == View::Trains && shell.fleet_details_open {
+        let action = shell
+            .fleet_selection
+            .selected_train_id(state)
+            .and_then(|id| {
+                state
+                    .player_company
+                    .fleet
+                    .trains
+                    .iter()
+                    .find(|train| train.id == id)
+            });
+        let (dispatch, resale) = match action {
+            Some(train) if matches!(train.status, TrainStatus::Ready { .. }) => {
+                ("[D] Dispatch", "[S] Resale")
+            }
+            Some(_train) => ("[D] no: travel", "[S] no: travel"),
+            None => ("[D] no: no Train", "[S] no: no Train"),
+        };
+        return format!("[Esc] Fleet  {dispatch}  {resale}  [?] Help  [Q] Quit");
+    }
+    if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
+        let action = shell
+            .fleet_selection
+            .selected_train_id(state)
+            .and_then(|id| {
+                state
+                    .player_company
+                    .fleet
+                    .trains
+                    .iter()
+                    .find(|train| train.id == id)
+            });
+        let actions = match action {
+            Some(train) if matches!(train.status, TrainStatus::Ready { .. }) => {
+                "[D] Dispatch  [S] Resale"
+            }
+            Some(_) => "[D] no: travel  [S] no: travel",
+            None => "[D] no: no Train  [S] no: no Train",
+        };
+        return if compact {
+            format!("[↑↓] Fleet [Enter] View {actions} [?] Help [Q] Quit")
+        } else {
+            format!(
+                "[↑↓/J K] Train  [PgUp/Dn] Scroll  [Enter] Inspect  {actions}  [Tab] Panel  [?] Help  [Q] Quit"
+            )
+        };
+    }
+    if shell.active_view == View::Map && shell.map_details_open {
+        return "[Esc] Close detail  [Tab] Next panel  [?] Help  [Q] Quit".into();
+    }
+    if shell.active_view == View::Map {
+        let focus = if shell.map_focus.is_stations() {
+            "Stations"
+        } else if shell.map_focus.is_journeys() {
+            "Journeys"
+        } else {
+            "Settlements"
+        };
+        let action = if shell.map_focus.is_stations()
+            && state
+                .player_company
+                .fleet
+                .trains
+                .iter()
+                .any(|train| matches!(train.status, TrainStatus::Ready { .. }))
+        {
+            "[D] Dispatch"
+        } else if shell.map_focus.is_stations() {
+            "[D] no: READY Train"
+        } else {
+            "[D] no: inspect-only"
+        };
+        return if compact {
+            format!("[↑↓] {focus} [Enter] Inspect {action} [?] Help [Q] Quit")
+        } else {
+            format!("[↑↓/J K] {focus} [Enter] Inspect {action} [Tab] Panel [?] Help [Q] Quit")
+        };
+    }
+    if shell.active_view == View::Company {
+        if shell.company_recovery_review_open {
+            return "[↑↓/J K] Route  [Enter] Open  [Esc] Company  [?] Help  [Q] Quit".into();
+        }
+        if shell.company_receipt_details_open {
+            return "[Esc] Receipts  [M/T/C/B] Navigate  [?] Help  [Q] Quit".into();
+        }
+        return "[↑↓] Receipt [Enter] Inspect [R] Recovery [?] Help [Q] Quit".into();
+    }
+    if shell.active_view == View::BuyTrains {
+        if let Some(flow) = &shell.market_flow {
+            if flow.is_selecting_delivery() {
+                return "[↑↓] Station [Enter] Review [←] Back [Esc] Cancel [?] Help [Q] Quit"
+                    .into();
+            }
+            return "[Enter] Confirm purchase  [←/Back] Delivery  [Esc] Cancel  [?] Help  [Q] Quit"
+                .into();
+        }
+        return "[↑↓/J K] Model  [Enter] Delivery  [?] Help  [Q] Quit".into();
+    }
+    "[M/T/C/B] Views  [Enter] Inspect  [?] Help  [Q] Quit".into()
 }
 
 fn company_title(state: &GameState, width: u16) -> String {
@@ -1321,7 +1372,9 @@ fn help_text() -> String {
         "[T] Fleet — [Enter] inspects; [D] starts destination selection for the selected READY Train; [S] reviews resale.",
         "[C] Company — inspect Company Funds and retained receipts; during Insolvency, [R] opens calculated recovery routes.",
         "[B] Buy Trains — press [Enter] to choose a diesel Train and delivery Rail Station.",
-        "[Up]/[Down] or [J]/[K] change a selection; [Enter] advances or confirms; [Esc] cancels.",
+        "[Up]/[Down] or [J]/[K] change a selection; [PageUp]/[PageDown] scroll lists; [Tab] changes panel focus.",
+        "[Enter] inspects, advances, or confirms the action named in the footer; [Left]/[Backspace] goes back; [Esc] cancels.",
+        "Unavailable actions show their reason in the footer; [D] dispatches only a READY Train and [S] resells only a READY Train.",
         "[Q] or Ctrl-C exits RailQ. During Bankruptcy, [R] begins a confirmed safe restart that preserves the old save.",
         "",
         "Press [?], [H], or [Esc] to return.",
