@@ -22,14 +22,13 @@ use ratatui::{
     Terminal,
     backend::{CrosstermBackend, TestBackend},
     layout::{Constraint, Layout},
-    style::{Color, Style},
     text::Line,
-    widgets::{Block, Borders, Paragraph, Tabs, Wrap},
+    widgets::{Block, Paragraph, Tabs, Wrap},
 };
 
 use crate::{
     APPLICATION_NAME,
-    model::{GameState, RailStationId, TrainId, UtcSeconds},
+    model::{GameState, RailStationId, TrainId, TrainStatus, UtcSeconds},
     sim::finance::{FinancialStatus, evaluate_financial_recovery},
 };
 
@@ -39,6 +38,7 @@ pub mod fleet;
 pub mod map;
 pub mod market;
 pub mod start;
+pub mod theme;
 
 /// How frequently the shell checks for elapsed arrivals while no key is pressed.
 pub const ARRIVAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -64,9 +64,18 @@ impl View {
     const fn label(self) -> &'static str {
         match self {
             Self::Map => "Map",
-            Self::Trains => "Trains",
+            Self::Trains => "Fleet",
             Self::Company => "Company",
             Self::BuyTrains => "Buy Trains",
+        }
+    }
+
+    const fn shortcut(self) -> char {
+        match self {
+            Self::Map => 'M',
+            Self::Trains => 'T',
+            Self::Company => 'C',
+            Self::BuyTrains => 'B',
         }
     }
 }
@@ -585,49 +594,82 @@ fn is_bankrupt(state: &GameState) -> bool {
 /// cross-platform terminal backend and events; Ratatui owns layout and paint.
 fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
     let area = frame.area();
+    frame.render_widget(Block::default().style(theme::terminal()), area);
     if let Some(hint) = shell.resize_hint(area.width, area.height) {
         frame.render_widget(
             Paragraph::new(hint)
                 .block(
                     Block::default()
-                        .borders(Borders::ALL)
-                        .title(APPLICATION_NAME),
+                        .borders(theme::THIN_BORDERS)
+                        .border_style(theme::border())
+                        .title(APPLICATION_NAME)
+                        .title_style(theme::title())
+                        .style(theme::panel()),
                 )
+                .style(theme::panel())
                 .wrap(Wrap { trim: true }),
             area,
         );
         return;
     }
 
-    let [navigation_area, content_area, footer_area] = Layout::vertical([
+    let [
+        header_area,
+        navigation_area,
+        content_area,
+        feedback_area,
+        hints_area,
+    ] = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Min(8),
         Constraint::Length(3),
+        Constraint::Min(7),
+        Constraint::Length(1),
+        Constraint::Length(1),
     ])
     .areas(area);
+
+    let now = state.last_processed_at;
+    frame.render_widget(
+        Paragraph::new(company_status_text(state, now, header_area.width))
+            .block(
+                Block::default()
+                    .borders(theme::THIN_BORDERS)
+                    .border_style(theme::border())
+                    .title(company_title(state, header_area.width))
+                    .title_style(theme::title())
+                    .style(theme::panel()),
+            )
+            .style(theme::panel()),
+        header_area,
+    );
+
     let views = [View::Map, View::Trains, View::Company, View::BuyTrains];
     let selected = views
         .iter()
         .position(|view| *view == shell.active_view)
         .unwrap_or(0);
+    let compact_tabs = navigation_area.width <= 80;
     let titles = views
         .iter()
-        .map(|view| Line::from(view.label()))
+        .map(|view| Line::from(tab_label(*view, compact_tabs)))
         .collect::<Vec<_>>();
     frame.render_widget(
         Tabs::new(titles)
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
-                    .title(APPLICATION_NAME),
+                    .borders(theme::THIN_BORDERS)
+                    .border_style(theme::border())
+                    .title("Navigation")
+                    .title_style(theme::title())
+                    .style(theme::panel()),
             )
+            .style(theme::panel())
             .select(selected)
-            .highlight_style(Style::default().fg(Color::Cyan).bold())
+            .highlight_style(theme::active_tab())
             .divider(" | "),
         navigation_area,
     );
 
-    let now = state.last_processed_at;
     let content = if shell.help_visible {
         help_text()
     } else if is_bankrupt(state) {
@@ -653,11 +695,22 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
         Paragraph::new(content)
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
-                    .title(shell.active_view.label()),
+                    .borders(theme::THIN_BORDERS)
+                    .border_style(theme::border())
+                    .title(shell.active_view.label())
+                    .title_style(theme::title())
+                    .style(theme::panel()),
             )
+            .style(theme::panel())
             .wrap(Wrap { trim: false }),
         content_area,
+    );
+
+    frame.render_widget(
+        Paragraph::new(shell.notice.as_deref().unwrap_or_default())
+            .style(theme::feedback())
+            .wrap(Wrap { trim: true }),
+        feedback_area,
     );
 
     let controls = if shell.help_visible {
@@ -668,19 +721,107 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
         } else {
             "[R] Safe restart  [Q] Quit  [?] Help"
         }
+    } else if hints_area.width <= 80 {
+        "[M] [T] [C] [B] [D] Dispatch [Enter] Select [?] Help [Q] Quit"
     } else {
-        "[M] Map  [T] Fleet  [C] Company  [B] Buy Trains  [D] Dispatch on Map  [Enter] Select / confirm  [Esc] Cancel  [?] Help  [Q] Quit"
-    };
-    let footer = match &shell.notice {
-        Some(notice) => format!("{notice}\n{controls}"),
-        None => controls.into(),
+        "[M] Map  [T] Fleet  [C] Company  [B] Buy  [D] Dispatch  [Enter] Select  [Esc] Cancel  [?] Help  [Q] Quit"
     };
     frame.render_widget(
-        Paragraph::new(footer)
-            .style(Style::default().fg(Color::Gray))
+        Paragraph::new(controls)
+            .style(theme::hint())
             .wrap(Wrap { trim: true }),
-        footer_area,
+        hints_area,
     );
+}
+
+fn company_title(state: &GameState, width: u16) -> String {
+    let max_name_cells = if width >= 100 { 40 } else { 18 };
+    format!(
+        "{APPLICATION_NAME} · {}",
+        shorten(&state.player_company.name, max_name_cells)
+    )
+}
+
+fn company_status_text(state: &GameState, now: UtcSeconds, width: u16) -> String {
+    let ready = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
+        .count();
+    let travelling = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .filter(|train| matches!(train.status, TrainStatus::Travelling { .. }))
+        .count();
+    let eta = nearest_eta(state, now)
+        .map(|remaining| format!("NEXT ETA {remaining}"))
+        .unwrap_or_else(|| "NEXT ETA —".into());
+
+    if width >= 100 {
+        format!(
+            "Company Funds {}  |  READY {}  |  TRAVELLING {}  |  {eta}",
+            format_money(state.player_company.funds),
+            ready,
+            travelling,
+        )
+    } else {
+        format!(
+            "Funds {}  |  R {}  |  T {}  |  {}",
+            format_money(state.player_company.funds),
+            ready,
+            travelling,
+            eta.replace("NEXT ETA ", "ETA "),
+        )
+    }
+}
+
+fn nearest_eta(state: &GameState, now: UtcSeconds) -> Option<String> {
+    state
+        .active_journeys
+        .iter()
+        .map(|journey| {
+            journey
+                .arrives_at
+                .unix_seconds()
+                .saturating_sub(now.unix_seconds())
+                .max(0) as u64
+        })
+        .min()
+        .map(format_remaining_time)
+}
+
+fn format_remaining_time(seconds: u64) -> String {
+    let minutes = seconds.saturating_add(59) / 60;
+    let hours = minutes / 60;
+    let minutes = minutes % 60;
+    if hours == 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{hours}h {minutes:02}m")
+    }
+}
+
+fn tab_label(view: View, compact: bool) -> String {
+    let label = match (view, compact) {
+        (View::Company, true) => "Co.",
+        (View::BuyTrains, true) => "Buy",
+        _ => view.label(),
+    };
+    format!("[{}] {label}", view.shortcut())
+}
+
+fn shorten(value: &str, max_characters: usize) -> String {
+    let mut characters = value.chars();
+    let shortened = characters.by_ref().take(max_characters).collect::<String>();
+    if characters.next().is_some() {
+        format!("{shortened}…")
+    } else {
+        shortened
+    }
 }
 
 fn help_text() -> String {
@@ -726,7 +867,22 @@ fn format_money(money: crate::model::Money) -> String {
     let cents = i128::from(money.cents());
     let sign = if cents < 0 { "-" } else { "" };
     let cents = cents.abs();
-    format!("{sign}${}.{:02}", cents / 100, cents % 100)
+    let whole = (cents / 100).to_string();
+    let grouped_whole = whole
+        .chars()
+        .rev()
+        .enumerate()
+        .fold(String::new(), |mut output, (index, digit)| {
+            if index != 0 && index % 3 == 0 {
+                output.push(',');
+            }
+            output.push(digit);
+            output
+        })
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("{sign}${grouped_whole}.{:02}", cents % 100)
 }
 
 fn resale_proceeds_for(state: &GameState, train_id: TrainId) -> crate::model::Money {
@@ -810,10 +966,13 @@ mod tests {
 
     use crate::{
         model::{Money, RailStationId, UtcSeconds},
-        sim::{fleet::purchase_train, world::create_new_game},
+        sim::{
+            fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
+            world::create_new_game,
+        },
     };
 
-    use super::{Shell, ShellAction, View};
+    use super::{Shell, ShellAction, View, capture_rendered_buffer, theme};
 
     #[test]
     fn routes_the_four_primary_views() {
@@ -885,6 +1044,69 @@ mod tests {
 
         assert!(rendered.contains("Terminal too small"));
         assert!(rendered.contains("RailQ"));
+    }
+
+    #[test]
+    fn control_room_shell_reports_company_status_with_adaptive_tabs_and_semantic_surfaces() {
+        let started_at = UtcSeconds::from_unix_seconds(1_000);
+        let mut state = create_new_game(42, "Northstar Passenger", started_at);
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let service_id =
+            find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))
+                .unwrap();
+        dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
+        let shell = Shell::new();
+        let funds = super::format_money(state.player_company.funds);
+
+        let wide = capture_rendered_buffer(&shell, &state, 120, 40);
+        assert!(wide.contains("RailQ · Northstar Passenger"));
+        assert!(wide.contains(&format!("Company Funds {funds}")));
+        assert!(wide.contains("READY 0"));
+        assert!(wide.contains("TRAVELLING 1"));
+        assert!(wide.contains("NEXT ETA"));
+        assert!(wide.contains("[M] Map"));
+        assert!(wide.contains("[T] Fleet"));
+        assert!(wide.contains("[Q] Quit"));
+
+        let compact = capture_rendered_buffer(&shell, &state, 80, 24);
+        assert!(compact.contains(&format!("Funds {funds}")));
+        assert!(compact.contains("R 0"));
+        assert!(compact.contains("T 1"));
+        assert!(compact.contains("ETA"));
+        assert!(compact.contains("[C] Co."));
+        assert!(compact.contains("[B] Buy"));
+        assert!(compact.contains("[Q] Quit"));
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_frame(frame, &shell, &state))
+            .unwrap();
+        let cells = terminal.backend().buffer().content();
+        assert!(cells.iter().any(|cell| cell.bg == theme::BACKGROUND));
+        assert!(cells.iter().any(|cell| cell.bg == theme::PANEL));
+        assert!(cells.iter().any(|cell| cell.fg == theme::ACCENT));
+
+        let feedback_state = create_new_game(42, "Feedback Passenger", started_at);
+        let mut feedback_shell = Shell::new();
+        feedback_shell.handle_key(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+            &feedback_state,
+        );
+        let feedback = capture_rendered_buffer(&feedback_shell, &feedback_state, 120, 40);
+        let feedback_lines = feedback.lines().collect::<Vec<_>>();
+        assert!(feedback_lines[38].contains("No READY Train"));
+        assert!(feedback_lines[39].contains("[Q] Quit"));
+
+        let feedback_backend = TestBackend::new(120, 40);
+        let mut feedback_terminal = Terminal::new(feedback_backend).unwrap();
+        feedback_terminal
+            .draw(|frame| super::render_frame(frame, &feedback_shell, &feedback_state))
+            .unwrap();
+        let feedback_cell = &feedback_terminal.backend().buffer().content()[120 * 38];
+        assert_eq!(feedback_cell.symbol(), "N");
+        assert_eq!(feedback_cell.fg, theme::WARNING);
+        assert_eq!(feedback_cell.bg, theme::BACKGROUND);
     }
 
     #[test]
