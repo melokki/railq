@@ -149,6 +149,8 @@ pub struct Shell {
     market_flow: Option<market::MarketFlow>,
     company_receipt_selection: company::ReceiptSelection,
     company_receipt_details_open: bool,
+    company_recovery_selection: company::RecoverySelection,
+    company_recovery_review_open: bool,
     notice: Option<String>,
     help_visible: bool,
     restart_confirmation: bool,
@@ -168,6 +170,8 @@ impl Shell {
             market_flow: None,
             company_receipt_selection: company::ReceiptSelection::default(),
             company_receipt_details_open: false,
+            company_recovery_selection: company::RecoverySelection::default(),
+            company_recovery_review_open: false,
             notice: None,
             help_visible: false,
             restart_confirmation: false,
@@ -283,6 +287,58 @@ impl Shell {
             };
         }
 
+        if self.company_recovery_review_open {
+            match key.code {
+                KeyCode::Esc => {
+                    self.company_recovery_review_open = false;
+                    self.notice = Some("Recovery review closed; no changes were made.".into());
+                }
+                KeyCode::Enter => {
+                    let Some(destination) =
+                        self.company_recovery_selection.selected_destination(state)
+                    else {
+                        self.company_recovery_review_open = false;
+                        self.notice = Some(
+                            "Recovery route changed; review the current Company status again."
+                                .into(),
+                        );
+                        return ShellAction::Continue;
+                    };
+                    self.company_recovery_review_open = false;
+                    self.active_view = match destination {
+                        company::RecoveryDestination::Fleet => View::Trains,
+                        company::RecoveryDestination::BuyTrains => View::BuyTrains,
+                        company::RecoveryDestination::Map => View::Map,
+                    };
+                    self.notice = Some(
+                        "Recovery route opened for review only; no action has been authorised."
+                            .into(),
+                    );
+                }
+                KeyCode::Char('m' | 'M') => {
+                    self.company_recovery_review_open = false;
+                    self.active_view = View::Map;
+                }
+                KeyCode::Char('t' | 'T') => {
+                    self.company_recovery_review_open = false;
+                    self.active_view = View::Trains;
+                }
+                KeyCode::Char('b' | 'B') => {
+                    self.company_recovery_review_open = false;
+                    self.active_view = View::BuyTrains;
+                }
+                KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Char('j' | 'J' | 'k' | 'K') => {
+                    self.company_recovery_selection.handle_key(key.code, state);
+                }
+                _ => {}
+            }
+            return ShellAction::Continue;
+        }
+
         match key.code {
             KeyCode::Char('m' | 'M') => self.active_view = View::Map,
             KeyCode::Char('t' | 'T') => {
@@ -294,6 +350,23 @@ impl Shell {
             KeyCode::Char('c' | 'C') => {
                 self.active_view = View::Company;
                 self.company_receipt_details_open = false;
+                self.company_recovery_review_open = false;
+            }
+            KeyCode::Char('r' | 'R') if self.active_view == View::Company => {
+                if self
+                    .company_recovery_selection
+                    .selected_destination(state)
+                    .is_some()
+                {
+                    self.company_recovery_review_open = true;
+                    self.company_receipt_details_open = false;
+                    self.notice = None;
+                } else {
+                    self.notice = Some(
+                        "No finite recovery route is available while the Player Company is operating."
+                            .into(),
+                    );
+                }
             }
             KeyCode::Char('b' | 'B') => self.active_view = View::BuyTrains,
             KeyCode::Enter if self.active_view == View::Company => {
@@ -442,6 +515,7 @@ impl Shell {
         self.fleet_flow = None;
         self.market_flow = None;
         self.restart_confirmation = false;
+        self.company_recovery_review_open = false;
         self.notice = Some(
             "Fresh game saved. The former Player Company save was preserved in a restart backup."
                 .into(),
@@ -833,6 +907,17 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
                 content_area,
             );
         }
+    } else if shell.active_view == View::Company
+        && shell.company_recovery_review_open
+        && !shell.help_visible
+        && !is_bankrupt(state)
+    {
+        company::render_recovery_review(
+            frame,
+            content_area,
+            state,
+            &mut shell.company_recovery_selection,
+        );
     } else if shell.active_view == View::Company && !shell.help_visible && !is_bankrupt(state) {
         company::render_dashboard(
             frame,
@@ -898,12 +983,18 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             "[↑↓ / J K] Select Train  [PageUp / PageDown] Scroll  [Enter] Inspect  [S] Resale  [Tab] Panel  [?] Help  [Q] Quit"
         }
     } else if shell.active_view == View::Company {
-        if shell.company_receipt_details_open {
+        if shell.company_recovery_review_open {
+            if hints_area.width <= 80 {
+                "[↑↓/J K] Route [Enter] Open [Esc] Company [?] Help"
+            } else {
+                "[↑↓ / J K] Select route  [PageUp / PageDown] Scroll  [Enter] Open first review  [M/T/B] Workspace  [Esc] Company  [?] Help  [Q] Quit"
+            }
+        } else if shell.company_receipt_details_open {
             "[Esc] Retained receipts  [M/T/C/B] Navigate  [?] Help  [Q] Quit"
         } else if hints_area.width <= 80 {
-            "[↑↓/J K] Receipts [Enter] Detail [?] Help [Q] Quit"
+            "[↑↓/J K] Receipts [Enter] Detail [R] Recovery [?] Help [Q] Quit"
         } else {
-            "[↑↓ / J K] Select receipt  [PageUp / PageDown] Scroll  [Enter] Inspect  [Esc] Close detail  [?] Help  [Q] Quit"
+            "[↑↓ / J K] Select receipt  [PageUp / PageDown] Scroll  [Enter] Inspect  [R] Recovery review  [Esc] Close detail  [?] Help  [Q] Quit"
         }
     } else if hints_area.width <= 80 {
         "[M] [T] [C] [B] [D] Dispatch [Enter] Select [?] Help [Q] Quit"
@@ -1014,7 +1105,7 @@ fn help_text() -> String {
         "",
         "[M] Map — inspect the Region and press [D] to begin a Manual Dispatch.",
         "[T] Fleet — press [Enter] to inspect the selected Train; [S] reviews its resale when READY.",
-        "[C] Company — inspect Company Funds, receipts, Insolvency, and recovery options.",
+        "[C] Company — inspect Company Funds and retained receipts; during Insolvency, [R] opens calculated recovery routes.",
         "[B] Buy Trains — press [Enter] to choose a diesel Train and delivery Rail Station.",
         "[Up]/[Down] or [J]/[K] change a selection; [Enter] advances or confirms; [Esc] cancels.",
         "[Q] or Ctrl-C exits RailQ. During Bankruptcy, [R] begins a confirmed safe restart that preserves the old save.",
@@ -1030,7 +1121,7 @@ fn bankruptcy_text(restart_confirmation: bool) -> String {
             "[X] BANKRUPTCY",
             "No finite sell, retain, rebuy, and dispatch option can return the Player Company to operation.",
             "",
-            "Safe restart will create a fresh game only after preserving this Player Company save in a unique backup file.",
+            "Safe restart review: a fresh game is created only after this Player Company save is preserved in a unique archive backup.",
             "Press Enter to confirm the safe restart, Esc to keep the Bankrupt save, or Q to exit.",
         ]
         .join("\n")
@@ -1040,7 +1131,7 @@ fn bankruptcy_text(restart_confirmation: bool) -> String {
             "No finite sell, retain, rebuy, and dispatch option can return the Player Company to operation.",
             "Normal operations are disabled. You may exit safely or start a fresh game.",
             "",
-            "Press R to begin a safe restart. The existing Player Company save will be preserved; it is never silently overwritten.",
+            "Press R to review a safe restart. The existing Player Company save is archived first and is never silently overwritten.",
             "Press Q to exit or ? for keyboard help.",
         ]
         .join("\n")
@@ -1437,7 +1528,7 @@ mod tests {
             shell.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state),
             ShellAction::RestartAfterBankruptcy
         );
-        assert!(super::bankruptcy_text(true).contains("preserving this Player Company save"));
+        assert!(super::bankruptcy_text(true).contains("archive backup"));
         assert!(super::bankruptcy_text(true).contains("Press Enter to confirm"));
 
         let mut exiting_shell = Shell::new();

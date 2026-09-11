@@ -12,7 +12,10 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{
+        Block, Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
+        TableState, Wrap,
+    },
 };
 
 use crate::{
@@ -25,6 +28,87 @@ use crate::{
 };
 
 const MAXIMUM_RECOVERY_OPTIONS_SHOWN: usize = 3;
+
+/// A workspace that can present the next review in a financial recovery route.
+/// Opening one never performs the suggested action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryDestination {
+    /// The Fleet workspace, where Train resale remains separately reviewed.
+    Fleet,
+    /// The Buy Trains workspace, where a replacement remains separately reviewed.
+    BuyTrains,
+    /// The Map workspace, where Manual Dispatch remains separately reviewed.
+    Map,
+}
+
+/// Presentation-only selection for the finite recovery routes calculated by
+/// the simulation. The index deliberately has no simulation meaning.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RecoverySelection {
+    list_state: ListState,
+    page_size: usize,
+}
+
+impl RecoverySelection {
+    /// Moves between calculated recovery routes without modifying the Player Company.
+    pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
+        let Some(evaluation) = recovery_evaluation(state) else {
+            return;
+        };
+        self.synchronize(evaluation.recovery_options.len());
+        let Some(selected) = self.list_state.selected() else {
+            return;
+        };
+        let next = match key {
+            KeyCode::Up | KeyCode::Char('k') => selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected
+                .saturating_add(1)
+                .min(evaluation.recovery_options.len().saturating_sub(1)),
+            KeyCode::PageUp => selected.saturating_sub(self.page_size.max(1)),
+            KeyCode::PageDown => selected
+                .saturating_add(self.page_size.max(1))
+                .min(evaluation.recovery_options.len().saturating_sub(1)),
+            _ => selected,
+        };
+        self.list_state.select(Some(next));
+    }
+
+    /// Returns the workspace for the selected route's first deliberate review.
+    pub fn selected_destination(&mut self, state: &GameState) -> Option<RecoveryDestination> {
+        let evaluation = recovery_evaluation(state)?;
+        self.synchronize(evaluation.recovery_options.len());
+        let option = evaluation
+            .recovery_options
+            .get(self.list_state.selected()?)?;
+        Some(match option {
+            RecoveryOption::CashOnly { .. } => RecoveryDestination::Map,
+            RecoveryOption::SellOthersAndRetain { .. } | RecoveryOption::SellAllAndRebuy { .. } => {
+                RecoveryDestination::Fleet
+            }
+        })
+    }
+
+    fn synchronize(&mut self, option_count: usize) {
+        let selected = if option_count == 0 {
+            None
+        } else {
+            Some(
+                self.list_state
+                    .selected()
+                    .unwrap_or(0)
+                    .min(option_count.saturating_sub(1)),
+            )
+        };
+        if selected.is_none() {
+            *self.list_state.offset_mut() = 0;
+        }
+        self.list_state.select(selected);
+    }
+
+    fn set_page_size(&mut self, page_size: usize) {
+        self.page_size = page_size.max(1);
+    }
+}
 
 /// Persistent receipt browsing state. A receipt is selected by Journey ID, not
 /// table position, so a newly settled Journey cannot move the reader to a
@@ -144,6 +228,258 @@ pub fn render_dashboard(
         render_compact_dashboard(frame, area, state, selection);
     } else {
         render_tiny_dashboard(frame, area, state);
+    }
+}
+
+/// Renders the calculated recovery routes as an explicit, read-only review.
+/// Each route points to the workspace where its first action can be reviewed;
+/// no Train sale, purchase, or Manual Dispatch is authorised from this screen.
+pub fn render_recovery_review(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut RecoverySelection,
+) {
+    let Some(evaluation) = recovery_evaluation(state) else {
+        frame.render_widget(
+            Paragraph::new(
+                "Recovery routes are available only while the Player Company is Insolvent.",
+            )
+            .block(panel_block("Recovery review", true))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    };
+
+    selection.synchronize(evaluation.recovery_options.len());
+    if area.width >= 96 && area.height >= 16 {
+        let [routes_area, instructions_area] =
+            Layout::horizontal([Constraint::Length(36), Constraint::Fill(1)])
+                .spacing(1)
+                .areas(area);
+        render_recovery_routes(frame, routes_area, state, &evaluation, selection);
+        render_recovery_instructions(frame, instructions_area, state, &evaluation, selection);
+    } else {
+        let [routes_area, instructions_area] =
+            Layout::vertical([Constraint::Length(4), Constraint::Fill(1)])
+                .spacing(1)
+                .areas(area);
+        render_recovery_routes(frame, routes_area, state, &evaluation, selection);
+        render_recovery_instructions(frame, instructions_area, state, &evaluation, selection);
+    }
+}
+
+fn recovery_evaluation(state: &GameState) -> Option<FinancialEvaluation> {
+    evaluate_financial_recovery(state)
+        .ok()
+        .filter(|evaluation| {
+            evaluation.status == FinancialStatus::Insolvent
+                && !evaluation.recovery_options.is_empty()
+        })
+}
+
+fn render_recovery_routes(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    evaluation: &FinancialEvaluation,
+    selection: &mut RecoverySelection,
+) {
+    selection.set_page_size(usize::from(area.height.saturating_sub(3)).max(1));
+    let routes = evaluation
+        .recovery_options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| {
+            ListItem::new(Line::styled(
+                format!("{:>2}. {}", index + 1, recovery_route_label(state, option)),
+                theme::primary_value(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let list = List::new(routes)
+        .block(panel_block("Finite recovery routes", true))
+        .highlight_style(theme::selected_row())
+        .highlight_symbol("> ")
+        .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(list, area, &mut selection.list_state);
+}
+
+fn render_recovery_instructions(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    evaluation: &FinancialEvaluation,
+    selection: &mut RecoverySelection,
+) {
+    let Some(option) = selection
+        .list_state
+        .selected()
+        .and_then(|index| evaluation.recovery_options.get(index))
+    else {
+        return;
+    };
+    let destination = selection
+        .selected_destination(state)
+        .expect("a selected recovery route has a destination");
+    let mut lines = vec![Line::styled(
+        format!(
+            "Route {} · {}",
+            selection.list_state.selected().unwrap_or(0) + 1,
+            recovery_route_label(state, option)
+        ),
+        theme::title(),
+    )];
+    lines.push(Line::from(""));
+    lines.extend(recovery_steps(state, option));
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        format!(
+            "Enter opens {} for review only. Nothing is sold, bought, or dispatched here.",
+            recovery_destination_label(destination)
+        ),
+        theme::secondary(),
+    ));
+    lines.push(Line::styled(
+        "Esc returns to Company. Use M/T/B at any step to inspect another workspace.",
+        theme::secondary(),
+    ));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel_block("Ordered recovery instructions", true))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn recovery_route_label(state: &GameState, option: &RecoveryOption) -> String {
+    match option {
+        RecoveryOption::CashOnly { journey } => format!(
+            "Dispatch Train {} to {}",
+            journey.train_id.get(),
+            station_label(state, journey.destination_station_id),
+        ),
+        RecoveryOption::SellOthersAndRetain {
+            retained_train_id, ..
+        } => format!("Retain Train {}; sell others", retained_train_id.get()),
+        RecoveryOption::SellAllAndRebuy {
+            catalogue_index, ..
+        } => {
+            let catalogue_name = state
+                .rules
+                .balance
+                .diesel_catalogue()
+                .get(*catalogue_index)
+                .map_or("catalogue Train", |train| train.name());
+            format!("Sell Fleet; rebuy {catalogue_name}")
+        }
+    }
+}
+
+fn recovery_steps(state: &GameState, option: &RecoveryOption) -> Vec<Line<'static>> {
+    match option {
+        RecoveryOption::CashOnly { journey } => vec![
+            recovery_step(
+                1,
+                format!(
+                    "Review Manual Dispatch of Train {} from {} to {}.",
+                    journey.train_id.get(),
+                    station_label(state, journey.origin_station_id),
+                    station_label(state, journey.destination_station_id),
+                ),
+            ),
+            recovery_step(
+                2,
+                format!(
+                    "Confirm only if the displayed operating cost of {} is still affordable.",
+                    format_money(journey.operating_cost),
+                ),
+            ),
+        ],
+        RecoveryOption::SellOthersAndRetain {
+            retained_train_id,
+            sold_train_ids,
+            resale_proceeds,
+            journey,
+        } => vec![
+            recovery_step(1, format!("Retain Train {}.", retained_train_id.get())),
+            recovery_step(
+                2,
+                format!(
+                    "Review resale of {} for {} in Fleet.",
+                    train_ids_label(sold_train_ids),
+                    format_money(*resale_proceeds),
+                ),
+            ),
+            recovery_step(
+                3,
+                format!(
+                    "Review Manual Dispatch of retained Train {} from {} to {} for {}.",
+                    journey.train_id.get(),
+                    station_label(state, journey.origin_station_id),
+                    station_label(state, journey.destination_station_id),
+                    format_money(journey.operating_cost),
+                ),
+            ),
+        ],
+        RecoveryOption::SellAllAndRebuy {
+            sold_train_ids,
+            resale_proceeds,
+            catalogue_index,
+            delivery_station_id,
+            journey,
+        } => {
+            let catalogue_name = state
+                .rules
+                .balance
+                .diesel_catalogue()
+                .get(*catalogue_index)
+                .map_or("catalogue Train", |train| train.name());
+            vec![
+                recovery_step(
+                    1,
+                    format!(
+                        "Review resale of {} for {} in Fleet.",
+                        train_ids_label(sold_train_ids),
+                        format_money(*resale_proceeds),
+                    ),
+                ),
+                recovery_step(
+                    2,
+                    format!(
+                        "Review purchase of {catalogue_name} delivered to {} in Buy Trains.",
+                        station_label(state, *delivery_station_id),
+                    ),
+                ),
+                recovery_step(
+                    3,
+                    format!(
+                        "Review Manual Dispatch from {} to {} for {} after the replacement is READY.",
+                        station_label(state, journey.origin_station_id),
+                        station_label(state, journey.destination_station_id),
+                        format_money(journey.operating_cost),
+                    ),
+                ),
+            ]
+        }
+    }
+}
+
+fn recovery_step(number: usize, text: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{number}. "), theme::warning().bold()),
+        Span::styled(text, theme::primary_value()),
+    ])
+}
+
+fn recovery_destination_label(destination: RecoveryDestination) -> &'static str {
+    match destination {
+        RecoveryDestination::Fleet => "Fleet",
+        RecoveryDestination::BuyTrains => "Buy Trains",
+        RecoveryDestination::Map => "Map",
     }
 }
 
