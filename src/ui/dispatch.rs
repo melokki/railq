@@ -5,6 +5,12 @@
 //! until the application boundary confirms the Manual Dispatch.
 
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
+};
 
 use crate::{
     model::{GameState, Money, RailStationId, TrainId, TrainStatus},
@@ -12,6 +18,7 @@ use crate::{
         economy::{JourneyQuote, quote_journey},
         services::find_or_create_service,
     },
+    ui::theme,
 };
 
 /// The result of handling a key within the Map Manual Dispatch flow.
@@ -31,7 +38,9 @@ pub enum DispatchFlowAction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DispatchStep {
     SelectTrain {
-        selected: usize,
+        selected_train_id: Option<TrainId>,
+        table_state: TableState,
+        page_size: usize,
     },
     SelectDestination {
         train_id: TrainId,
@@ -49,17 +58,42 @@ enum DispatchStep {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DispatchFlow {
     step: DispatchStep,
+    preferred_station_id: Option<RailStationId>,
     rejection: Option<String>,
 }
 
 impl DispatchFlow {
     /// Starts selecting a READY Train. No game state changes at this point.
     pub fn start(state: &GameState) -> Result<Self, &'static str> {
-        if ready_train_ids(state).is_empty() {
-            return Err("No READY Train is available for a Manual Dispatch.");
+        Self::start_at_station(state, None)
+    }
+
+    /// Starts at a focused Rail Station, preferring one of its READY Trains.
+    /// The player can still deliberately choose any other available Fleet Train.
+    pub fn start_at_station(
+        state: &GameState,
+        preferred_station_id: Option<RailStationId>,
+    ) -> Result<Self, &'static str> {
+        let train_ids = ready_train_ids(state);
+        if train_ids.is_empty() {
+            return Err(no_ready_train_reason(state));
         }
+        let selected = preferred_station_id
+            .and_then(|station_id| {
+                train_ids
+                    .iter()
+                    .position(|train_id| ready_train_station(state, *train_id) == Some(station_id))
+            })
+            .unwrap_or(0);
+        let mut table_state = TableState::default();
+        table_state.select(Some(selected));
         Ok(Self {
-            step: DispatchStep::SelectTrain { selected: 0 },
+            step: DispatchStep::SelectTrain {
+                selected_train_id: Some(train_ids[selected]),
+                table_state,
+                page_size: 1,
+            },
+            preferred_station_id,
             rejection: None,
         })
     }
@@ -71,16 +105,36 @@ impl DispatchFlow {
         }
 
         match &mut self.step {
-            DispatchStep::SelectTrain { selected } => {
+            DispatchStep::SelectTrain {
+                selected_train_id,
+                table_state,
+                page_size,
+            } => {
                 let trains = ready_train_ids(state);
                 if trains.is_empty() {
-                    self.rejection =
-                        Some("No READY Train is available for a Manual Dispatch.".into());
+                    self.rejection = Some(no_ready_train_reason(state).into());
                     return DispatchFlowAction::Continue;
                 }
-                move_selection(selected, trains.len(), key.code);
+                if synchronize_train_selection(selected_train_id, table_state, &trains) {
+                    self.rejection = Some(
+                        "The previously selected Train is no longer READY; choose an available Train."
+                            .into(),
+                    );
+                }
+                move_train_selection(
+                    selected_train_id,
+                    table_state,
+                    &trains,
+                    *page_size,
+                    key.code,
+                );
                 if matches!(key.code, KeyCode::Enter) {
-                    let train_id = trains[*selected];
+                    let Some(train_id) = *selected_train_id else {
+                        if self.rejection.is_none() {
+                            self.rejection = Some("Select a READY Train before continuing.".into());
+                        }
+                        return DispatchFlowAction::Continue;
+                    };
                     let Some(origin_station_id) = ready_train_station(state, train_id) else {
                         self.rejection =
                             Some("That Train is no longer READY; select a Train again.".into());
@@ -155,20 +209,26 @@ impl DispatchFlow {
     pub fn render(&self, state: &GameState) -> String {
         let mut output = String::from("Manual Dispatch\n");
         match &self.step {
-            DispatchStep::SelectTrain { selected } => {
+            DispatchStep::SelectTrain {
+                selected_train_id, ..
+            } => {
                 output.push_str("Select a READY Train (Up/Down, Enter; Esc cancels):\n");
-                for (index, train_id) in ready_train_ids(state).iter().enumerate() {
-                    let marker = if index == *selected { '>' } else { ' ' };
+                for train_id in ready_train_ids(state) {
+                    let marker = if Some(train_id) == *selected_train_id {
+                        '>'
+                    } else {
+                        ' '
+                    };
                     let Some(train) = state
                         .player_company
                         .fleet
                         .trains
                         .iter()
-                        .find(|train| train.id == *train_id)
+                        .find(|train| train.id == train_id)
                     else {
                         continue;
                     };
-                    let location = ready_train_station(state, *train_id)
+                    let location = ready_train_station(state, train_id)
                         .map(|station_id| station_label(state, station_id))
                         .unwrap_or("unknown Rail Station");
                     output.push_str(&format!(
@@ -247,6 +307,191 @@ impl DispatchFlow {
         }
         output
     }
+
+    /// Renders the stateful READY Train chooser and leaves later flow steps on
+    /// their existing presentation until their dedicated flow cards replace them.
+    pub fn render_panel(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        let selection_changed = match &mut self.step {
+            DispatchStep::SelectTrain {
+                selected_train_id,
+                table_state,
+                ..
+            } => {
+                synchronize_train_selection(selected_train_id, table_state, &ready_train_ids(state))
+            }
+            DispatchStep::SelectDestination { .. } | DispatchStep::Confirm { .. } => false,
+        };
+        if selection_changed {
+            self.rejection = Some(
+                "The previously selected Train is no longer READY; choose an available Train."
+                    .into(),
+            );
+        }
+
+        match &mut self.step {
+            DispatchStep::SelectTrain {
+                selected_train_id,
+                table_state,
+                page_size,
+            } => render_train_chooser(
+                frame,
+                area,
+                TrainChooserContext {
+                    state,
+                    preferred_station_id: self.preferred_station_id,
+                    selected_train_id: *selected_train_id,
+                    rejection: self.rejection.as_deref(),
+                },
+                table_state,
+                page_size,
+            ),
+            DispatchStep::SelectDestination { .. } | DispatchStep::Confirm { .. } => {
+                frame.render_widget(
+                    Paragraph::new(self.render(state))
+                        .block(dispatch_panel_block("Manual Dispatch", true))
+                        .style(theme::panel())
+                        .wrap(Wrap { trim: false }),
+                    area,
+                );
+            }
+        }
+    }
+}
+
+struct TrainChooserContext<'a> {
+    state: &'a GameState,
+    preferred_station_id: Option<RailStationId>,
+    selected_train_id: Option<TrainId>,
+    rejection: Option<&'a str>,
+}
+
+fn render_train_chooser(
+    frame: &mut Frame,
+    area: Rect,
+    chooser: TrainChooserContext<'_>,
+    table_state: &mut TableState,
+    page_size: &mut usize,
+) {
+    let state = chooser.state;
+    let trains = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
+        .collect::<Vec<_>>();
+    let station_context = chooser.preferred_station_id.map_or_else(
+        || "Choose a READY Train from the available Fleet.".to_owned(),
+        |station_id| {
+            let station = station_label(state, station_id);
+            if trains
+                .iter()
+                .any(|train| matches!(train.status, TrainStatus::Ready { at } if at == station_id))
+            {
+                format!("{station}: a READY Train here is preselected.")
+            } else {
+                format!("No READY Train at {station}; showing the available Fleet.")
+            }
+        },
+    );
+    let footer_rows = u16::from(chooser.rejection.is_some() || chooser.selected_train_id.is_none())
+        .saturating_add(1);
+    let [context_area, table_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(footer_rows),
+    ])
+    .areas(area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("1 Train", theme::focused_title()),
+            Span::styled(" → 2 Destination → 3 Review", theme::secondary()),
+            Span::styled(format!("  {station_context}"), theme::secondary()),
+        ]))
+        .style(theme::panel())
+        .wrap(Wrap { trim: true }),
+        context_area,
+    );
+
+    *page_size = usize::from(table_area.height.saturating_sub(4)).max(1);
+    let rows = trains
+        .iter()
+        .map(|train| {
+            let TrainStatus::Ready { at } = train.status else {
+                unreachable!("READY Train chooser only includes READY Trains");
+            };
+            Row::new([
+                Cell::from(format!("Train {:02}", train.id.get())),
+                Cell::from(train.model_name.clone()),
+                Cell::from("READY"),
+                Cell::from(format!("At {}", station_label(state, at))),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),
+            Constraint::Percentage(36),
+            Constraint::Length(9),
+            Constraint::Percentage(44),
+        ],
+    )
+    .header(
+        Row::new(["Train", "Model", "Status", "Location"])
+            .style(theme::table_header())
+            .bottom_margin(1),
+    )
+    .block(dispatch_panel_block(
+        "Manual Dispatch · available Fleet",
+        true,
+    ))
+    .row_highlight_style(theme::selected_row())
+    .highlight_symbol("> ")
+    .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, table_area, table_state);
+
+    let controls = if area.width <= 80 {
+        "↑↓ / J K · select   PgUp/Dn · scroll   Enter · next   Esc · cancel"
+    } else {
+        "↑↓ / J K · select   PageUp / PageDown · scroll   Enter · destination   Esc · cancel"
+    };
+    let mut footer = vec![Line::styled(controls, theme::hint())];
+    if let Some(rejection) = chooser.rejection {
+        footer.insert(
+            0,
+            Line::styled(format!("Dispatch unavailable: {rejection}"), theme::error()),
+        );
+    }
+    if chooser.selected_train_id.is_none() && chooser.rejection.is_none() {
+        footer.insert(
+            0,
+            Line::styled("Choose a READY Train to continue.", theme::warning()),
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        footer_area,
+    );
+}
+
+fn dispatch_panel_block(title: &str, focused: bool) -> Block<'_> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(if focused {
+            theme::focused_border()
+        } else {
+            theme::border()
+        })
+        .title(title)
+        .title_style(if focused {
+            theme::focused_title()
+        } else {
+            theme::title()
+        })
+        .style(theme::panel())
 }
 
 fn ready_train_ids(state: &GameState) -> Vec<TrainId> {
@@ -260,6 +505,67 @@ fn ready_train_ids(state: &GameState) -> Vec<TrainId> {
             TrainStatus::Travelling { .. } => None,
         })
         .collect()
+}
+
+fn no_ready_train_reason(state: &GameState) -> &'static str {
+    if state.player_company.fleet.trains.is_empty() {
+        "No READY Train in the Fleet. Press B to buy a Train."
+    } else {
+        "No READY Train: all Fleet Trains are TRAVELLING. Wait for an arrival, then dispatch from Map."
+    }
+}
+
+/// Reconciles table focus by stable Train ID. A missing selected Train is
+/// deliberately cleared rather than replaced with a different Fleet entry.
+fn synchronize_train_selection(
+    selected_train_id: &mut Option<TrainId>,
+    table_state: &mut TableState,
+    train_ids: &[TrainId],
+) -> bool {
+    let Some(train_id) = *selected_train_id else {
+        table_state.select(None);
+        return false;
+    };
+    if let Some(index) = train_ids
+        .iter()
+        .position(|candidate| *candidate == train_id)
+    {
+        table_state.select(Some(index));
+        false
+    } else {
+        *selected_train_id = None;
+        table_state.select(None);
+        *table_state.offset_mut() = 0;
+        true
+    }
+}
+
+fn move_train_selection(
+    selected_train_id: &mut Option<TrainId>,
+    table_state: &mut TableState,
+    train_ids: &[TrainId],
+    page_size: usize,
+    key: KeyCode,
+) {
+    let current = selected_train_id.and_then(|train_id| {
+        train_ids
+            .iter()
+            .position(|candidate| *candidate == train_id)
+    });
+    let last = train_ids.len().saturating_sub(1);
+    let next = match key {
+        KeyCode::Up | KeyCode::Char('k') => current.map_or(0, |index| index.saturating_sub(1)),
+        KeyCode::Down | KeyCode::Char('j') => {
+            current.map_or(0, |index| index.saturating_add(1).min(last))
+        }
+        KeyCode::PageUp => current.map_or(0, |index| index.saturating_sub(page_size.max(1))),
+        KeyCode::PageDown => {
+            current.map_or(0, |index| index.saturating_add(page_size.max(1)).min(last))
+        }
+        _ => return,
+    };
+    *selected_train_id = train_ids.get(next).copied();
+    table_state.select(Some(next));
 }
 
 fn ready_train_station(state: &GameState, train_id: TrainId) -> Option<RailStationId> {
@@ -482,7 +788,9 @@ mod tests {
         };
         assert_eq!(
             DispatchFlow::start(&state),
-            Err("No READY Train is available for a Manual Dispatch.")
+            Err(
+                "No READY Train: all Fleet Trains are TRAVELLING. Wait for an arrival, then dispatch from Map."
+            )
         );
         assert_eq!(train_id.get(), 1);
     }

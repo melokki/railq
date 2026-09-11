@@ -510,7 +510,8 @@ impl Shell {
             }
             KeyCode::Char('d' | 'D') if self.active_view == View::Map => {
                 if self.map_focus.is_stations() {
-                    match dispatch::DispatchFlow::start(state) {
+                    let preferred_station_id = self.map_selection.selected_station_id(state);
+                    match dispatch::DispatchFlow::start_at_station(state, preferred_station_id) {
                         Ok(flow) => {
                             self.dispatch_flow = Some(flow);
                             self.notice = None;
@@ -1021,6 +1022,10 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             &mut shell.company_receipt_selection,
             shell.company_receipt_details_open,
         );
+    } else if shell.active_view == View::Map && shell.dispatch_flow.is_some() {
+        if let Some(flow) = &mut shell.dispatch_flow {
+            flow.render_panel(frame, content_area, state);
+        }
     } else {
         let content = if shell.help_visible {
             help_text()
@@ -1028,10 +1033,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             bankruptcy_text(shell.restart_confirmation)
         } else {
             match shell.active_view {
-                View::Map => match &shell.dispatch_flow {
-                    Some(flow) => flow.render(state),
-                    None => map::render_at(state, now),
-                },
+                View::Map => map::render_at(state, now),
                 View::Trains => fleet::render_at(state, now),
                 View::BuyTrains => match &shell.market_flow {
                     Some(flow) => flow.render(state),
