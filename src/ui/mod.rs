@@ -23,8 +23,12 @@ use crossterm::{
     },
 };
 
-use crate::{APPLICATION_NAME, model::UtcSeconds};
+use crate::{
+    APPLICATION_NAME,
+    model::{GameState, UtcSeconds},
+};
 
+pub mod map;
 pub mod start;
 
 /// How frequently the shell checks for elapsed arrivals while no key is pressed.
@@ -154,14 +158,15 @@ impl<E: Error + 'static> Error for RunError<E> {
 /// so a Player Company's due Journeys settle before the next action is accepted.
 /// The terminal is restored on ordinary errors and while unwinding a panic.
 pub fn run_terminal<E>(
-    mut reconcile: impl FnMut(UtcSeconds) -> Result<(), E>,
+    initial_state: GameState,
+    mut reconcile: impl FnMut(UtcSeconds) -> Result<GameState, E>,
 ) -> Result<(), RunError<E>>
 where
     E: fmt::Display,
 {
     let mut terminal = TerminalSession::enter().map_err(RunError::Terminal)?;
     let result = catch_unwind(AssertUnwindSafe(|| {
-        run_event_loop(&mut terminal, &mut reconcile)
+        run_event_loop(&mut terminal, initial_state, &mut reconcile)
     }));
     let restore_result = terminal.restore();
 
@@ -180,13 +185,14 @@ where
 
 fn run_event_loop<E>(
     terminal: &mut TerminalSession,
-    reconcile: &mut impl FnMut(UtcSeconds) -> Result<(), E>,
+    mut state: GameState,
+    reconcile: &mut impl FnMut(UtcSeconds) -> Result<GameState, E>,
 ) -> Result<(), RunError<E>> {
     let mut shell = Shell::new();
 
     loop {
-        terminal.draw(shell).map_err(RunError::Terminal)?;
-        reconcile(current_utc_seconds()).map_err(RunError::Reconcile)?;
+        terminal.draw(shell, &state).map_err(RunError::Terminal)?;
+        state = reconcile(current_utc_seconds()).map_err(RunError::Reconcile)?;
 
         if !event::poll(ARRIVAL_POLL_INTERVAL).map_err(RunError::Terminal)? {
             continue;
@@ -229,7 +235,7 @@ impl TerminalSession {
         })
     }
 
-    fn draw(&mut self, shell: Shell) -> io::Result<()> {
+    fn draw(&mut self, shell: Shell, state: &GameState) -> io::Result<()> {
         let (columns, rows) = terminal::size()?;
         queue!(
             self.stdout,
@@ -247,8 +253,14 @@ impl TerminalSession {
             queue!(
                 self.stdout,
                 Print("[M] Map  [T] Trains  [C] Company  [B] Buy Trains  [Q] Quit\n\n"),
-                Print("Player Company startup and each view's details follow in the next tasks.")
             )?;
+            match shell.active_view {
+                View::Map => queue!(self.stdout, Print(map::render(state)))?,
+                _ => queue!(
+                    self.stdout,
+                    Print("This view's details follow in its dedicated task.")
+                )?,
+            }
         }
         self.stdout.flush()
     }
