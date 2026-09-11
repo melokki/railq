@@ -1,15 +1,21 @@
 //! Versioned, validated RON representation of a RailQ game.
 //!
-//! This module deliberately owns only the serialization boundary. Save-slot
-//! ownership and atomic file replacement are added by the following task.
+//! This module owns the versioned serialization boundary and one local save
+//! slot. The slot keeps an exclusive sidecar lock for its lifetime, so a
+//! malformed save can be reported without being overwritten by another game.
 
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
     fmt,
+    fs::{self, File, OpenOptions},
     hash::Hash,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
+use fs4::{FileExt, TryLockError};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -22,6 +28,262 @@ use crate::{
 
 /// The only save format understood by this build.
 pub const SAVE_VERSION: u32 = 1;
+
+/// The local save filename used when no explicit save path is supplied.
+pub const DEFAULT_SAVE_PATH: &str = "railq.ron";
+
+static NEXT_TEMPORARY_FILE_ID: AtomicU64 = AtomicU64::new(0);
+
+/// A path-bound, exclusively owned local save slot.
+///
+/// The sidecar lock remains open for the lifetime of this value. Its lock is
+/// released automatically when the slot is dropped. `open` accepts an
+/// explicit path for command-line overrides and temporary test scenarios.
+#[derive(Debug)]
+pub struct SaveSlot {
+    path: PathBuf,
+    _lock_file: File,
+}
+
+/// Why a local save slot cannot be opened, read, or replaced safely.
+#[derive(Debug)]
+pub enum SaveSlotError {
+    /// The requested path cannot name a save file and its sidecar lock.
+    InvalidPath { path: PathBuf },
+    /// Another process already owns this save slot.
+    AlreadyOwned { path: PathBuf },
+    /// Disk I/O failed before the replacement could safely complete.
+    Io {
+        action: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
+    /// The existing save is corrupt, unsupported, or invalid and was left in place.
+    InvalidSave {
+        path: PathBuf,
+        source: Box<SaveCodecError>,
+    },
+}
+
+impl fmt::Display for SaveSlotError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidPath { path } => {
+                write!(formatter, "save path {} has no file name", path.display())
+            }
+            Self::AlreadyOwned { path } => {
+                write!(formatter, "save slot {} is already owned", path.display())
+            }
+            Self::Io {
+                action,
+                path,
+                source,
+            } => write!(formatter, "could not {action} {}: {source}", path.display()),
+            Self::InvalidSave { path, source } => {
+                write!(
+                    formatter,
+                    "save {} is invalid and was preserved: {source}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
+impl Error for SaveSlotError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::InvalidSave { source, .. } => Some(source),
+            Self::InvalidPath { .. } | Self::AlreadyOwned { .. } => None,
+        }
+    }
+}
+
+impl SaveSlot {
+    /// Opens the default local save slot in the current directory.
+    pub fn open_default() -> Result<Self, SaveSlotError> {
+        Self::open(DEFAULT_SAVE_PATH)
+    }
+
+    /// Opens and exclusively owns the save slot at `path`.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, SaveSlotError> {
+        let path = path.into();
+        let lock_path = sidecar_lock_path(&path)?;
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|source| SaveSlotError::Io {
+                action: "open save lock",
+                path: lock_path.clone(),
+                source,
+            })?;
+        match FileExt::try_lock(&lock_file) {
+            Ok(()) => Ok(Self {
+                path,
+                _lock_file: lock_file,
+            }),
+            Err(TryLockError::WouldBlock) => Err(SaveSlotError::AlreadyOwned { path }),
+            Err(TryLockError::Error(source)) => Err(SaveSlotError::Io {
+                action: "lock save slot",
+                path,
+                source,
+            }),
+        }
+    }
+
+    /// Returns the explicit path this slot owns.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Loads a validated game, or reports that no save exists yet.
+    ///
+    /// An invalid existing save is never interpreted as a fresh Player
+    /// Company; callers receive `InvalidSave` and the source remains intact.
+    pub fn load(&self) -> Result<Option<GameState>, SaveSlotError> {
+        let source = match fs::read(&self.path) {
+            Ok(source) => source,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(SaveSlotError::Io {
+                    action: "read save",
+                    path: self.path.clone(),
+                    source,
+                });
+            }
+        };
+        let source = String::from_utf8(source).map_err(|_| SaveSlotError::InvalidSave {
+            path: self.path.clone(),
+            source: Box::new(SaveCodecError::InvalidTextEncoding),
+        })?;
+        decode_game_state(&source)
+            .map(Some)
+            .map_err(|source| SaveSlotError::InvalidSave {
+                path: self.path.clone(),
+                source: Box::new(source),
+            })
+    }
+
+    /// Validates and atomically replaces this slot's save.
+    ///
+    /// Before replacing anything, an existing save is decoded and validated.
+    /// This refuses to overwrite corrupt or unsupported data, even if the
+    /// caller is trying to create a new Player Company.
+    pub fn save(&self, state: &GameState) -> Result<(), SaveSlotError> {
+        self.save_with_before_replace(state, |_| Ok(()))
+    }
+
+    fn save_with_before_replace<F>(
+        &self,
+        state: &GameState,
+        before_replace: F,
+    ) -> Result<(), SaveSlotError>
+    where
+        F: FnOnce(&Path) -> io::Result<()>,
+    {
+        self.load()?;
+        let encoded = encode_game_state(state).map_err(|source| SaveSlotError::InvalidSave {
+            path: self.path.clone(),
+            source: Box::new(source),
+        })?;
+        write_save_atomically(&self.path, encoded.as_bytes(), before_replace).map_err(|source| {
+            SaveSlotError::Io {
+                action: "replace save atomically",
+                path: self.path.clone(),
+                source,
+            }
+        })
+    }
+}
+
+fn sidecar_lock_path(path: &Path) -> Result<PathBuf, SaveSlotError> {
+    let Some(file_name) = path.file_name() else {
+        return Err(SaveSlotError::InvalidPath {
+            path: path.to_path_buf(),
+        });
+    };
+    let mut lock_name = file_name.to_os_string();
+    lock_name.push(".lock");
+    Ok(path.with_file_name(lock_name))
+}
+
+fn write_save_atomically<F>(path: &Path, encoded: &[u8], before_replace: F) -> io::Result<()>
+where
+    F: FnOnce(&Path) -> io::Result<()>,
+{
+    let mut temporary_save = TemporarySave::create_beside(path)?;
+    temporary_save.file_mut().write_all(encoded)?;
+    temporary_save.file_mut().sync_all()?;
+    before_replace(temporary_save.path())?;
+    temporary_save.replace(path)
+}
+
+/// A same-directory temporary save that removes itself if replacement fails.
+struct TemporarySave {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl TemporarySave {
+    fn create_beside(save_path: &Path) -> io::Result<Self> {
+        let parent = save_path.parent().unwrap_or_else(|| Path::new("."));
+        let file_name = save_path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "save path has no file name")
+        })?;
+        for _ in 0..128 {
+            let sequence = NEXT_TEMPORARY_FILE_ID.fetch_add(1, Ordering::Relaxed);
+            let temporary_path = parent.join(format!(
+                ".{}.{}.{}.tmp",
+                file_name.to_string_lossy(),
+                std::process::id(),
+                sequence
+            ));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_path)
+            {
+                Ok(file) => {
+                    return Ok(Self {
+                        path: temporary_path,
+                        file: Some(file),
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique same-directory temporary save",
+        ))
+    }
+
+    fn file_mut(&mut self) -> &mut File {
+        self.file
+            .as_mut()
+            .expect("temporary save file exists before replacement")
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn replace(mut self, save_path: &Path) -> io::Result<()> {
+        drop(self.file.take());
+        fs::rename(&self.path, save_path)
+    }
+}
+
+impl Drop for TemporarySave {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
 
 /// Why a decoded game cannot safely enter the simulation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,6 +335,8 @@ impl From<CalculationError> for SaveValidationError {
 pub enum SaveCodecError {
     /// RON could not represent a valid save.
     Encode(ron::Error),
+    /// The source is not valid UTF-8 text and therefore cannot be RON.
+    InvalidTextEncoding,
     /// The source was not valid RON for the save envelope.
     Decode(ron::error::SpannedError),
     /// The save was written by a format this build does not understand.
@@ -85,6 +349,7 @@ impl fmt::Display for SaveCodecError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Encode(error) => write!(formatter, "could not encode save as RON: {error}"),
+            Self::InvalidTextEncoding => write!(formatter, "save is not valid UTF-8 RON text"),
             Self::Decode(error) => write!(formatter, "could not decode save RON: {error}"),
             Self::UnsupportedVersion { found } => {
                 write!(formatter, "save version {found} is not supported")
@@ -638,6 +903,12 @@ fn validate_journey(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs, io,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
     use crate::{
         model::{DistanceMetres, DurationSeconds, RailLineId, TrainId, TrainStatus, UtcSeconds},
         sim::{
@@ -647,6 +918,34 @@ mod tests {
     };
 
     use super::*;
+
+    static NEXT_TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDirectory {
+        path: PathBuf,
+    }
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "railq-storage-test-{}-{}",
+                std::process::id(),
+                NEXT_TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self { path }
+        }
+
+        fn save_path(&self) -> PathBuf {
+            self.path.join("company.ron")
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 
     fn active_game() -> GameState {
         let departed_at = UtcSeconds::from_unix_seconds(1_000);
@@ -738,5 +1037,92 @@ mod tests {
                 SaveValidationError::Calculation(_)
             ))
         ));
+    }
+
+    #[test]
+    fn missing_save_file_is_reported_without_creating_a_fresh_game() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let slot = SaveSlot::open(&path).unwrap();
+
+        assert_eq!(slot.load().unwrap(), None);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn corrupt_save_is_preserved_and_cannot_be_replaced() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let corrupt_contents = "this is not valid RON";
+        fs::write(&path, corrupt_contents).unwrap();
+        let slot = SaveSlot::open(&path).unwrap();
+
+        assert!(matches!(
+            slot.load(),
+            Err(SaveSlotError::InvalidSave { .. })
+        ));
+        assert!(matches!(
+            slot.save(&active_game()),
+            Err(SaveSlotError::InvalidSave { .. })
+        ));
+        assert_eq!(fs::read_to_string(path).unwrap(), corrupt_contents);
+    }
+
+    #[test]
+    fn second_opener_cannot_own_the_same_save_slot() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let _first_slot = SaveSlot::open(&path).unwrap();
+
+        assert!(matches!(
+            SaveSlot::open(path),
+            Err(SaveSlotError::AlreadyOwned { .. })
+        ));
+    }
+
+    #[test]
+    fn failed_write_leaves_the_old_valid_save_intact() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let slot = SaveSlot::open(&path).unwrap();
+        let state = active_game();
+        slot.save(&state).unwrap();
+        let old_contents = fs::read_to_string(&path).unwrap();
+
+        assert!(matches!(
+            slot.save_with_before_replace(&state, |_| {
+                Err(io::Error::other("simulated write failure"))
+            }),
+            Err(SaveSlotError::Io { .. })
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), old_contents);
+        assert_eq!(slot.load().unwrap(), Some(state));
+    }
+
+    #[test]
+    fn successful_write_uses_a_same_directory_temporary_before_replacement() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let slot = SaveSlot::open(&path).unwrap();
+        let state = active_game();
+        slot.save(&state).unwrap();
+        let old_contents = fs::read_to_string(&path).unwrap();
+        let mut replacement = state.clone();
+        replacement.player_company.name.push_str(" Renewed");
+
+        slot.save_with_before_replace(&replacement, |temporary_path| {
+            assert_eq!(temporary_path.parent(), Some(directory.path.as_path()));
+            assert_eq!(fs::read_to_string(&path).unwrap(), old_contents);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(slot.load().unwrap(), Some(replacement));
+        assert!(fs::read_dir(&directory.path).unwrap().all(|entry| {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            !(name.starts_with(".company.ron.") && name.ends_with(".tmp"))
+        }));
     }
 }
