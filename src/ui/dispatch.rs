@@ -9,7 +9,9 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{
+        Block, Borders, Cell, Gauge, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
+    },
 };
 
 use crate::{
@@ -227,7 +229,8 @@ impl DispatchFlow {
             DispatchStep::Confirm {
                 train_id,
                 destination_station_id,
-                ..
+                quote,
+                reuses_service,
             } => {
                 if matches!(key.code, KeyCode::Left | KeyCode::Backspace) {
                     match destination_step(state, *train_id, Some(*destination_station_id)) {
@@ -239,9 +242,29 @@ impl DispatchFlow {
                     }
                     DispatchFlowAction::Continue
                 } else if matches!(key.code, KeyCode::Enter) {
-                    DispatchFlowAction::Confirm {
-                        train_id: *train_id,
-                        destination_station_id: *destination_station_id,
+                    match preview_quote(state, *train_id, *destination_station_id) {
+                        Ok((current_quote, current_reuses_service))
+                            if current_quote != *quote
+                                || current_reuses_service != *reuses_service =>
+                        {
+                            *quote = current_quote;
+                            *reuses_service = current_reuses_service;
+                            self.rejection = Some(
+                                "Journey quote updated from current conditions. Review the revised consequences and press Enter again."
+                                    .into(),
+                            );
+                            DispatchFlowAction::Continue
+                        }
+                        Ok(_) => DispatchFlowAction::Confirm {
+                            train_id: *train_id,
+                            destination_station_id: *destination_station_id,
+                        },
+                        Err(error) => {
+                            self.rejection = Some(format!(
+                                "Journey quote could not be revalidated: {error}. Your choices are still available."
+                            ));
+                            DispatchFlowAction::Continue
+                        }
                     }
                 } else {
                     DispatchFlowAction::Continue
@@ -334,32 +357,40 @@ impl DispatchFlow {
                     quote.rail_line_path.len(),
                 ));
                 output.push_str(&format!(
-                    "Directional Demand: {} Waiting Passengers; {} boarding\n",
+                    "Directional Demand: {} Waiting Passengers; {} boarding / {} capacity\n",
                     waiting_passengers(
                         state,
                         quote.origin_station_id,
                         quote.destination_station_id
                     ),
                     quote.boarded_passengers,
+                    train_capacity(state, quote.train_id),
                 ));
                 output.push_str(&format!(
-                    "Distance: {} m | Fare: {} each | Revenue on arrival: {}\n",
-                    quote.distance.metres(),
-                    format_money(quote.fare),
+                    "Route: {} | Duration: {} | Arrival revenue: {}\n",
+                    format_path(state, quote),
+                    format_duration(quote.duration.seconds()),
                     format_money(quote.operating_revenue),
                 ));
                 output.push_str(&format!(
-                    "Infrastructure Access Fee: {} | Fuel Cost: {} | Departure cost: {}\n",
+                    "Infrastructure Access Fee: {} | Fuel Cost: {} | Paid-now total: {}\n",
                     format_money(quote.infrastructure_access_fee),
                     format_money(quote.fuel_cost),
                     format_money(quote.operating_cost),
                 ));
                 output.push_str(&format!(
-                    "Journey Profitability: {} | Duration: {}s | Company Funds after departure: {}\n",
+                    "Estimated profit: {} | Company Funds after departure: {}\n",
                     format_money(quote.journey_profitability),
-                    quote.duration.seconds(),
                     format_money(quote.cash_after_cost),
                 ));
+                if quote.boarded_passengers == 0 {
+                    output.push_str("EMPTY REPOSITIONING: no arrival revenue is expected.\n");
+                }
+                if quote.cash_after_cost < Money::ZERO {
+                    output.push_str(
+                        "INSUFFICIENT FUNDS: paid-now total exceeds current Company Funds.\n",
+                    );
+                }
                 output.push_str("Enter confirms Manual Dispatch (revalidated); Esc cancels.\n");
             }
         }
@@ -423,16 +454,179 @@ impl DispatchFlow {
                 page_size,
             ),
             DispatchStep::Confirm { .. } => {
-                frame.render_widget(
-                    Paragraph::new(self.render(state))
-                        .block(dispatch_panel_block("Manual Dispatch", true))
-                        .style(theme::panel())
-                        .wrap(Wrap { trim: false }),
+                let DispatchStep::Confirm {
+                    quote,
+                    reuses_service,
+                    ..
+                } = &self.step
+                else {
+                    unreachable!("Manual Dispatch review requires a Journey quote");
+                };
+                render_quote_review(
+                    frame,
                     area,
+                    state,
+                    quote,
+                    *reuses_service,
+                    self.rejection.as_deref(),
                 );
             }
         }
     }
+}
+
+fn render_quote_review(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    quote: &JourneyQuote,
+    reuses_service: bool,
+    rejection: Option<&str>,
+) {
+    let block = dispatch_panel_block("Manual Dispatch · Journey quote", true);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let insufficient_funds = quote.cash_after_cost < Money::ZERO;
+    let footer_rows = u16::from(insufficient_funds) + u16::from(rejection.is_some()) + 1;
+    let [route_area, occupancy_area, terms_area, footer_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(3),
+        Constraint::Min(5),
+        Constraint::Length(footer_rows),
+    ])
+    .areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    if reuses_service {
+                        "Existing Passenger Service  "
+                    } else {
+                        "New Passenger Service preview  "
+                    },
+                    theme::focused_title(),
+                ),
+                Span::styled(
+                    format!(
+                        "{} → {}",
+                        station_label(state, quote.origin_station_id),
+                        station_label(state, quote.destination_station_id)
+                    ),
+                    theme::primary_value(),
+                ),
+            ]),
+            Line::styled(
+                format!(
+                    "Route: {} · {} · {} Rail Lines",
+                    format_path(state, quote),
+                    format_duration(quote.duration.seconds()),
+                    quote.rail_line_path.len(),
+                ),
+                theme::secondary(),
+            ),
+        ])
+        .style(theme::panel())
+        .wrap(Wrap { trim: true }),
+        route_area,
+    );
+
+    let capacity = train_capacity(state, quote.train_id);
+    let occupancy_ratio = if capacity == 0 {
+        0.0
+    } else {
+        f64::from(quote.boarded_passengers.min(capacity)) / f64::from(capacity)
+    };
+    frame.render_widget(
+        Gauge::default()
+            .block(dispatch_panel_block("Occupancy", false))
+            .gauge_style(theme::focused_title())
+            .ratio(occupancy_ratio)
+            .label(format!(
+                "{} boarded / {} capacity · {} Waiting Passengers",
+                quote.boarded_passengers,
+                capacity,
+                waiting_passengers(state, quote.origin_station_id, quote.destination_station_id)
+            )),
+        occupancy_area,
+    );
+
+    let mut terms = vec![
+        Line::styled("DEPARTURE · paid now", theme::warning()),
+        money_pair_line(
+            "Infrastructure Access Fee",
+            quote.infrastructure_access_fee,
+            "Fuel Cost",
+            quote.fuel_cost,
+        ),
+        money_pair_line(
+            "Paid-now total",
+            quote.operating_cost,
+            "Funds after departure",
+            quote.cash_after_cost,
+        ),
+        Line::styled(
+            "ARRIVAL · credited when the Journey arrives",
+            theme::success(),
+        ),
+        money_pair_line(
+            "Arrival revenue",
+            quote.operating_revenue,
+            "Estimated profit",
+            quote.journey_profitability,
+        ),
+    ];
+    if quote.boarded_passengers == 0 {
+        terms.push(Line::styled(
+            "EMPTY REPOSITIONING · no arrival revenue is expected.",
+            theme::warning(),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(terms)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        terms_area,
+    );
+
+    let mut footer = Vec::new();
+    if insufficient_funds {
+        footer.push(Line::styled(
+            "INSUFFICIENT FUNDS · paid-now total exceeds current Company Funds.",
+            theme::error(),
+        ));
+    }
+    if let Some(rejection) = rejection {
+        footer.push(Line::styled(
+            format!("Departure review: {rejection}"),
+            theme::error(),
+        ));
+    }
+    footer.push(Line::styled(
+        "Enter · revalidate and confirm   Left / Backspace · destination   Esc · cancel",
+        theme::hint(),
+    ));
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        footer_area,
+    );
+}
+
+fn money_pair_line(
+    first_label: &str,
+    first_value: Money,
+    second_label: &str,
+    second_value: Money,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{first_label}: "), theme::secondary()),
+        Span::styled(format_money(first_value), theme::primary_value()),
+        Span::styled(format!("  {second_label}: "), theme::secondary()),
+        Span::styled(format_money(second_value), theme::primary_value()),
+    ])
 }
 
 struct TrainChooserContext<'a> {
@@ -925,6 +1119,16 @@ fn ready_train_station(state: &GameState, train_id: TrainId) -> Option<RailStati
         })
 }
 
+fn train_capacity(state: &GameState, train_id: TrainId) -> u32 {
+    state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .map_or(0, |train| train.passenger_capacity.passengers())
+}
+
 fn train_selection_step(state: &GameState, selected_train_id: Option<TrainId>) -> DispatchStep {
     let train_ids = ready_train_ids(state);
     let selected = selected_train_id.and_then(|train_id| {
@@ -1140,6 +1344,19 @@ fn format_path(state: &GameState, quote: &JourneyQuote) -> String {
 
 fn format_distance(metres: u64) -> String {
     format!("{}.{:01} km", metres / 1_000, (metres % 1_000) / 100)
+}
+
+fn format_duration(seconds: u64) -> String {
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 fn format_money(money: Money) -> String {

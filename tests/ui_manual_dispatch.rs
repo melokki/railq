@@ -15,6 +15,7 @@ use railq::{
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_700_000_000);
 const EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/13";
 const DESTINATION_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/14";
+const QUOTE_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/15";
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -333,4 +334,148 @@ fn chooser_never_substitutes_a_changed_train_id_and_empty_fleet_explains_the_nex
     );
     let rendered = capture_rendered_buffer(&empty_shell, &empty, 120, 40);
     assert!(rendered.contains("No READY Train in the Fleet. Press B to buy a Train."));
+}
+
+#[test]
+fn quote_review_groups_departure_and_arrival_terms_with_an_occupancy_gauge()
+-> Result<(), Box<dyn Error>> {
+    let state = state_with_ready_trains();
+    let before = state.clone();
+    let mut shell = Shell::new();
+    fs::create_dir_all(QUOTE_EVIDENCE_DIR)?;
+
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Char('d')),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Continue
+    );
+
+    let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    for text in [
+        "Manual Dispatch · Journey quote",
+        "Occupancy",
+        "boarded /",
+        "DEPARTURE · paid now",
+        "Infrastructure Access Fee",
+        "Fuel Cost",
+        "Paid-now total",
+        "Funds after departure",
+        "ARRIVAL · credited when the Journey arrives",
+        "Arrival revenue",
+        "Estimated profit",
+        "revalidate and confirm",
+    ] {
+        assert!(wide.contains(text), "wide quote must contain {text:?}");
+    }
+    fs::write(
+        Path::new(QUOTE_EVIDENCE_DIR).join("journey-quote-120x40.txt"),
+        &wide,
+    )?;
+
+    let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
+    for text in [
+        "Occupancy",
+        "Paid-now total",
+        "Funds after departure",
+        "Arrival revenue",
+        "Estimated profit",
+    ] {
+        assert!(
+            compact.contains(text),
+            "compact quote must contain {text:?}"
+        );
+    }
+    fs::write(
+        Path::new(QUOTE_EVIDENCE_DIR).join("journey-quote-80x24.txt"),
+        compact,
+    )?;
+
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Esc),
+        ShellAction::Continue
+    );
+    assert_eq!(state, before, "review and cancellation must not dispatch");
+    Ok(())
+}
+
+#[test]
+fn quote_confirmation_refreshes_changed_terms_and_keeps_insufficient_funds_rejection_open() {
+    let mut state = state_with_ready_trains();
+    let mut shell = Shell::new();
+    let train_id = state.player_company.fleet.trains[0].id;
+
+    press(&mut shell, &state, KeyCode::Char('d'));
+    press(&mut shell, &state, KeyCode::Enter);
+    press(&mut shell, &state, KeyCode::Enter);
+    state
+        .origin_destination_demand
+        .iter_mut()
+        .find(|demand| {
+            demand.origin_station_id == RailStationId::new(1)
+                && demand.destination_station_id == RailStationId::new(2)
+        })
+        .expect("selected route has directional demand")
+        .waiting_passengers = 0;
+    let after_external_change = state.clone();
+
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Continue,
+        "a changed quote must be reviewed before it reaches the application boundary"
+    );
+    let refreshed = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(refreshed.contains("Journey quote updated from current conditions"));
+    assert!(refreshed.contains("0 boarded /"));
+    assert!(refreshed.contains("EMPTY REPOSITIONING"));
+    assert_eq!(
+        state, after_external_change,
+        "refreshing a quote changes no game state"
+    );
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::ManualDispatch {
+            train_id,
+            destination_station_id: RailStationId::new(2),
+        }
+    );
+
+    let mut insufficient = state_with_ready_trains();
+    insufficient.player_company.funds = Money::ZERO;
+    let before_rejection = insufficient.clone();
+    let mut insufficient_shell = Shell::new();
+    press(&mut insufficient_shell, &insufficient, KeyCode::Char('d'));
+    press(&mut insufficient_shell, &insufficient, KeyCode::Enter);
+    press(&mut insufficient_shell, &insufficient, KeyCode::Enter);
+    let review = capture_rendered_buffer_mut(&mut insufficient_shell, &insufficient, 120, 40);
+    assert!(review.contains("INSUFFICIENT FUNDS"));
+
+    insufficient_shell.reject_manual_dispatch(
+        "Company Funds of 0 cents cannot cover Journey departure costs of 150 cents",
+    );
+    let rejected = capture_rendered_buffer_mut(&mut insufficient_shell, &insufficient, 120, 40);
+    assert!(rejected.contains("Departure review: Company Funds of 0 cents"));
+    assert_eq!(
+        press(&mut insufficient_shell, &insufficient, KeyCode::Left),
+        ShellAction::Continue
+    );
+    assert!(
+        capture_rendered_buffer_mut(&mut insufficient_shell, &insufficient, 120, 40)
+            .contains("reachable destinations"),
+        "the rejected proposal retains its selected Train and destination path"
+    );
+    assert_eq!(
+        press(&mut insufficient_shell, &insufficient, KeyCode::Esc),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        insufficient, before_rejection,
+        "an insufficient-funds rejection creates no Service or Journey"
+    );
 }
