@@ -298,6 +298,11 @@ impl Shell {
                     self.notice = Some("Train purchase cancelled; no changes were made.".into());
                     ShellAction::Continue
                 }
+                market::MarketFlowAction::ReturnToCatalogue => {
+                    self.market_flow = None;
+                    self.notice = None;
+                    ShellAction::Continue
+                }
                 market::MarketFlowAction::Confirm {
                     catalogue_index,
                     delivery_station_id,
@@ -1087,6 +1092,10 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         && !is_bankrupt(state)
     {
         market::render_dashboard(frame, content_area, state, &mut shell.market_selection);
+    } else if shell.active_view == View::BuyTrains && shell.market_flow.is_some() {
+        if let Some(flow) = &mut shell.market_flow {
+            flow.render_panel(frame, content_area, state);
+        }
     } else {
         let content = if shell.help_visible {
             help_text()
@@ -1189,6 +1198,22 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             "[↑↓/J K] Model [Enter] Delivery [?] Help [Q] Quit"
         } else {
             "[↑↓ / J K] Select model  [PgUp/Dn] Scroll  [Enter] Choose delivery Rail Station  [?] Help  [Q] Quit"
+        }
+    } else if shell.active_view == View::BuyTrains && shell.market_flow.is_some() {
+        if shell
+            .market_flow
+            .as_ref()
+            .is_some_and(market::MarketFlow::is_selecting_delivery)
+        {
+            if hints_area.width <= 80 {
+                "[↑↓/J K] Station [Enter] Review [Left] Model [Esc] Cancel [?] Help"
+            } else {
+                "[↑↓ / J K] Select station  [PgUp/Dn] Scroll  [Enter] Review  [Left/Backspace] Model  [Esc] Cancel  [?] Help  [Q] Quit"
+            }
+        } else if hints_area.width <= 80 {
+            "[Enter] Confirm purchase [Esc] Cancel [?] Help"
+        } else {
+            "[Enter] Confirm purchase  [Esc] Cancel  [?] Help  [Q] Quit"
         }
     } else if hints_area.width <= 80 {
         "[M] [T] [C] [B] [D] Dispatch [Enter] Select [?] Help [Q] Quit"

@@ -11,7 +11,10 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     text::Line,
-    widgets::{Block, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{
+        Block, Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
+        TableState, Wrap,
+    },
 };
 
 use crate::{
@@ -83,6 +86,8 @@ pub enum MarketFlowAction {
     Continue,
     /// The player abandoned the proposed purchase.
     Cancel,
+    /// The player returned from delivery selection to the catalogue.
+    ReturnToCatalogue,
     /// The application boundary must revalidate and purchase the Train.
     Confirm {
         catalogue_index: usize,
@@ -94,7 +99,9 @@ pub enum MarketFlowAction {
 enum MarketStep {
     SelectDelivery {
         catalogue_index: usize,
-        selected: usize,
+        selected_delivery_station_id: Option<RailStationId>,
+        list_state: ListState,
+        page_size: usize,
     },
     Confirm {
         catalogue_index: usize,
@@ -110,6 +117,11 @@ pub struct MarketFlow {
 }
 
 impl MarketFlow {
+    /// Returns whether this flow currently owns delivery Rail Station input.
+    pub fn is_selecting_delivery(&self) -> bool {
+        matches!(self.step, MarketStep::SelectDelivery { .. })
+    }
+
     /// Starts delivery selection for a focused catalogue Train without changing
     /// the Fleet or Company Funds.
     pub fn start(state: &GameState, catalogue_index: usize) -> Result<Self, &'static str> {
@@ -128,10 +140,15 @@ impl MarketFlow {
         if delivery_station_ids(state).is_empty() {
             return Err("No connected Rail Station is available for delivery.");
         }
+        let mut list_state = ListState::default();
+        let selected_delivery_station_id = delivery_station_ids(state).first().copied();
+        list_state.select(selected_delivery_station_id.map(|_| 0));
         Ok(Self {
             step: MarketStep::SelectDelivery {
                 catalogue_index,
-                selected: 0,
+                selected_delivery_station_id,
+                list_state,
+                page_size: 1,
             },
             rejection: None,
         })
@@ -146,21 +163,63 @@ impl MarketFlow {
         match &mut self.step {
             MarketStep::SelectDelivery {
                 catalogue_index,
-                selected,
+                selected_delivery_station_id,
+                list_state,
+                page_size,
             } => {
+                if matches!(key.code, KeyCode::Left | KeyCode::Backspace) {
+                    return MarketFlowAction::ReturnToCatalogue;
+                }
                 let stations = delivery_station_ids(state);
                 if stations.is_empty() {
                     self.rejection =
                         Some("No connected Rail Station is available for delivery.".into());
                     return MarketFlowAction::Continue;
                 }
-                move_selection(selected, stations.len(), key.code);
+                if state
+                    .rules
+                    .balance
+                    .diesel_catalogue()
+                    .get(*catalogue_index)
+                    .is_none()
+                {
+                    self.rejection = Some(
+                        "The selected catalogue Train is no longer available; return to the catalogue and choose a current model."
+                            .into(),
+                    );
+                    return MarketFlowAction::Continue;
+                }
+                if synchronize_delivery_selection(
+                    selected_delivery_station_id,
+                    list_state,
+                    &stations,
+                ) {
+                    self.rejection = Some(
+                        "The previously selected delivery Rail Station is no longer available; choose a current Rail Station."
+                            .into(),
+                    );
+                    return MarketFlowAction::Continue;
+                }
+                move_delivery_selection(
+                    selected_delivery_station_id,
+                    list_state,
+                    &stations,
+                    *page_size,
+                    key.code,
+                );
                 if matches!(key.code, KeyCode::Enter) {
-                    self.step = MarketStep::Confirm {
-                        catalogue_index: *catalogue_index,
-                        delivery_station_id: stations[*selected],
-                    };
-                    self.rejection = None;
+                    if let Some(delivery_station_id) = *selected_delivery_station_id {
+                        self.step = MarketStep::Confirm {
+                            catalogue_index: *catalogue_index,
+                            delivery_station_id,
+                        };
+                        self.rejection = None;
+                    } else {
+                        self.rejection = Some(
+                            "Select a current delivery Rail Station before review, or return to the catalogue."
+                                .into(),
+                        );
+                    }
                 }
                 MarketFlowAction::Continue
             }
@@ -180,6 +239,37 @@ impl MarketFlow {
         self.rejection = Some(error.into());
     }
 
+    /// Renders the stateful delivery chooser while keeping its selected Rail
+    /// Station visible as the list scrolls.
+    pub fn render_panel(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        match &mut self.step {
+            MarketStep::SelectDelivery {
+                catalogue_index,
+                selected_delivery_station_id,
+                list_state,
+                page_size,
+            } => render_delivery_chooser(
+                frame,
+                area,
+                DeliveryChooserContext {
+                    state,
+                    catalogue_index: *catalogue_index,
+                    rejection: self.rejection.as_deref(),
+                },
+                selected_delivery_station_id,
+                list_state,
+                page_size,
+            ),
+            MarketStep::Confirm { .. } => frame.render_widget(
+                Paragraph::new(self.render(state))
+                    .block(panel_block("Buy Trains · purchase review", true))
+                    .style(theme::panel())
+                    .wrap(Wrap { trim: false }),
+                area,
+            ),
+        }
+    }
+
     /// Renders the proposed purchase and its current-step instructions.
     pub fn render(&self, state: &GameState) -> String {
         let selected_catalogue_index = match &self.step {
@@ -195,16 +285,21 @@ impl MarketFlow {
         match &self.step {
             MarketStep::SelectDelivery {
                 catalogue_index: _,
-                selected,
+                selected_delivery_station_id,
+                ..
             } => {
                 writeln!(
                     output,
                     "Select a delivery Rail Station (Up/Down, Enter; Esc cancels):"
                 )
                 .expect("writing to a String cannot fail");
-                for (index, station_id) in delivery_station_ids(state).iter().enumerate() {
-                    let marker = if index == *selected { '>' } else { ' ' };
-                    writeln!(output, " {marker} {}", station_label(state, *station_id))
+                for station_id in delivery_station_ids(state) {
+                    let marker = if Some(station_id) == *selected_delivery_station_id {
+                        '>'
+                    } else {
+                        ' '
+                    };
+                    writeln!(output, " {marker} {}", station_label(state, station_id))
                         .expect("writing to a String cannot fail");
                 }
             }
@@ -404,6 +499,158 @@ fn render_catalogue_inspector(
     );
 }
 
+struct DeliveryChooserContext<'a> {
+    state: &'a GameState,
+    catalogue_index: usize,
+    rejection: Option<&'a str>,
+}
+
+fn render_delivery_chooser(
+    frame: &mut Frame,
+    area: Rect,
+    chooser: DeliveryChooserContext<'_>,
+    selected_delivery_station_id: &mut Option<RailStationId>,
+    list_state: &mut ListState,
+    page_size: &mut usize,
+) {
+    let state = chooser.state;
+    let stations = delivery_station_ids(state);
+    if stations.is_empty() {
+        render_delivery_unavailable(
+            frame,
+            area,
+            "No connected Rail Station is available for delivery.",
+        );
+        return;
+    }
+    let _ = synchronize_delivery_selection(selected_delivery_station_id, list_state, &stations);
+
+    let footer_rows = u16::from(chooser.rejection.is_some()).saturating_add(1);
+    let [step_area, body_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(footer_rows),
+    ])
+    .areas(area);
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "1 Train → 2 Delivery Rail Station → 3 Review",
+            theme::focused_title(),
+        ))
+        .style(theme::panel()),
+        step_area,
+    );
+
+    let wide = body_area.width >= 96 && body_area.height >= 10;
+    let (list_area, inspector_area) = if wide {
+        let [list_area, inspector_area] =
+            Layout::horizontal([Constraint::Min(48), Constraint::Length(34)])
+                .spacing(1)
+                .areas(body_area);
+        (list_area, Some(inspector_area))
+    } else {
+        (body_area, None)
+    };
+    let visible_items = usize::from(list_area.height.saturating_sub(2)).max(1);
+    *page_size = visible_items;
+    keep_delivery_selection_visible(list_state, visible_items);
+
+    let items = stations
+        .iter()
+        .map(|station_id| ListItem::new(station_label(state, *station_id).to_owned()))
+        .collect::<Vec<_>>();
+    let list = List::new(items)
+        .block(panel_block("Delivery Rail Stations", true))
+        .style(theme::panel())
+        .highlight_style(theme::selected_row())
+        .highlight_symbol("> ")
+        .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(list, list_area, list_state);
+
+    if let Some(inspector_area) = inspector_area {
+        render_delivery_inspector(
+            frame,
+            inspector_area,
+            state,
+            chooser.catalogue_index,
+            *selected_delivery_station_id,
+        );
+    }
+
+    let controls = if area.width <= 80 {
+        "↑↓/J K · station  Enter · review  Left · model  Esc · cancel"
+    } else {
+        "↑↓ / J K · select station   PageUp / PageDown · scroll   Enter · review   Left / Backspace · model   Esc · cancel"
+    };
+    let mut footer = vec![Line::styled(controls, theme::hint())];
+    if let Some(rejection) = chooser.rejection {
+        footer.insert(
+            0,
+            Line::styled(format!("Delivery unavailable: {rejection}"), theme::error()),
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        footer_area,
+    );
+}
+
+fn render_delivery_unavailable(frame: &mut Frame, area: Rect, reason: &str) {
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                "1 Train → 2 Delivery Rail Station → 3 Review",
+                theme::focused_title(),
+            ),
+            Line::styled(reason, theme::error()),
+            Line::styled("Left / Backspace · model   Esc · cancel", theme::hint()),
+        ])
+        .block(panel_block("Buy Trains · delivery unavailable", true))
+        .style(theme::panel())
+        .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_delivery_inspector(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    catalogue_index: usize,
+    selected_delivery_station_id: Option<RailStationId>,
+) {
+    let selected_station = selected_delivery_station_id
+        .map(|station_id| station_label(state, station_id))
+        .unwrap_or("No Rail Station selected");
+    let selected_train = state
+        .rules
+        .balance
+        .diesel_catalogue()
+        .get(catalogue_index)
+        .map_or(
+            "Selected catalogue Train unavailable",
+            DieselTrainCatalogueRecord::name,
+        );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Delivering", theme::secondary()),
+            Line::styled(selected_train, theme::title()),
+            Line::from(""),
+            Line::styled("Rail Station", theme::secondary()),
+            Line::styled(selected_station, theme::focused_title()),
+            Line::from(""),
+            Line::styled("Delivery has no fee.", theme::secondary()),
+            Line::styled("Enter · continue to review", theme::hint()),
+        ])
+        .block(panel_block("Selected delivery", false))
+        .style(theme::panel())
+        .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
 fn panel_block(title: &str, focused: bool) -> Block<'_> {
     Block::default()
         .borders(theme::THIN_BORDERS)
@@ -564,11 +811,71 @@ fn delivery_station_ids(state: &GameState) -> Vec<RailStationId> {
         .collect()
 }
 
-fn move_selection(selected: &mut usize, length: usize, key: KeyCode) {
-    match key {
-        KeyCode::Up | KeyCode::Char('k') if *selected > 0 => *selected -= 1,
-        KeyCode::Down | KeyCode::Char('j') if *selected + 1 < length => *selected += 1,
-        _ => {}
+fn synchronize_delivery_selection(
+    selected_delivery_station_id: &mut Option<RailStationId>,
+    list_state: &mut ListState,
+    stations: &[RailStationId],
+) -> bool {
+    let previous = *selected_delivery_station_id;
+    let fallback = list_state.selected().unwrap_or(0).min(stations.len() - 1);
+    let selected = previous
+        .and_then(|station_id| {
+            stations
+                .iter()
+                .position(|candidate| *candidate == station_id)
+        })
+        .or_else(|| (!stations.is_empty()).then_some(fallback));
+    if let Some(index) = selected {
+        *selected_delivery_station_id = Some(stations[index]);
+        list_state.select(Some(index));
+    } else {
+        *selected_delivery_station_id = None;
+        list_state.select(None);
+        *list_state.offset_mut() = 0;
+    }
+    previous.is_some() && previous != *selected_delivery_station_id
+}
+
+fn move_delivery_selection(
+    selected_delivery_station_id: &mut Option<RailStationId>,
+    list_state: &mut ListState,
+    stations: &[RailStationId],
+    page_size: usize,
+    key: KeyCode,
+) {
+    let current = selected_delivery_station_id.and_then(|station_id| {
+        stations
+            .iter()
+            .position(|candidate| *candidate == station_id)
+    });
+    let last = stations.len().saturating_sub(1);
+    let next = match key {
+        KeyCode::Up | KeyCode::Char('k' | 'K') => {
+            current.map_or(0, |index| index.saturating_sub(1))
+        }
+        KeyCode::Down | KeyCode::Char('j' | 'J') => {
+            current.map_or(0, |index| index.saturating_add(1).min(last))
+        }
+        KeyCode::PageUp => current.map_or(0, |index| index.saturating_sub(page_size.max(1))),
+        KeyCode::PageDown => {
+            current.map_or(0, |index| index.saturating_add(page_size.max(1)).min(last))
+        }
+        _ => return,
+    };
+    *selected_delivery_station_id = stations.get(next).copied();
+    list_state.select(Some(next));
+}
+
+fn keep_delivery_selection_visible(list_state: &mut ListState, visible_items: usize) {
+    let Some(selected) = list_state.selected() else {
+        return;
+    };
+    let visible_items = visible_items.max(1);
+    let offset = list_state.offset();
+    if selected < offset {
+        *list_state.offset_mut() = selected;
+    } else if selected >= offset.saturating_add(visible_items) {
+        *list_state.offset_mut() = selected.saturating_add(1).saturating_sub(visible_items);
     }
 }
 
