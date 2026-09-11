@@ -89,7 +89,7 @@ pub fn dispatch_journey(
         });
     }
 
-    let journey_id = next_journey_id(&state.active_journeys)?;
+    let journey_id = next_journey_id(state)?;
     let arrives_at = departed_at.checked_add(quote.duration)?;
     let funds_after_departure = state
         .player_company
@@ -150,10 +150,18 @@ pub fn dispatch_journey(
     Ok(journey_id)
 }
 
-fn next_journey_id(active_journeys: &[Journey]) -> Result<JourneyId, DispatchError> {
-    active_journeys
+fn next_journey_id(state: &GameState) -> Result<JourneyId, DispatchError> {
+    state
+        .active_journeys
         .iter()
         .map(|journey| journey.id.get())
+        .chain(
+            state
+                .financials
+                .recent_journey_receipts
+                .iter()
+                .map(|receipt| receipt.journey_id.get()),
+        )
         .max()
         .unwrap_or(0)
         .checked_add(1)
@@ -167,7 +175,7 @@ mod tests {
         model::{Money, RailStationId, TrainStatus, UtcSeconds},
         sim::{
             economy::quote_journey, fleet::purchase_train, services::find_or_create_service,
-            world::create_new_game,
+            time::advance_time, world::create_new_game,
         },
     };
 
@@ -265,5 +273,31 @@ mod tests {
             })
         );
         assert_eq!(state, before);
+    }
+
+    #[test]
+    fn dispatch_after_an_arrival_uses_a_new_journey_id() {
+        let (mut state, train_id, service_id) = prepared_game();
+        let first_journey =
+            dispatch_journey(&mut state, train_id, service_id, DEPARTED_AT).unwrap();
+        let first_arrival = state.active_journeys[0].arrives_at;
+        advance_time(&mut state, first_arrival).unwrap();
+
+        let second_journey = dispatch_journey(
+            &mut state,
+            train_id,
+            service_id,
+            first_arrival
+                .checked_add(crate::model::DurationSeconds::from_seconds(1))
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(first_journey.get(), 1);
+        assert_eq!(second_journey.get(), 2);
+        assert_eq!(
+            state.financials.recent_journey_receipts[0].journey_id,
+            first_journey
+        );
     }
 }

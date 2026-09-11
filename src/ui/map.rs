@@ -4,14 +4,22 @@
 //! state without changing either. Markers make connection state understandable
 //! in terminals where colour is unavailable.
 
-use std::fmt::Write;
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    fmt::Write,
+};
 
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
+    symbols::Marker,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Wrap,
+        canvas::{Canvas, Line as CanvasLine},
+    },
 };
 
 use crate::{
@@ -126,17 +134,259 @@ pub fn render_dashboard(
 ) {
     selection.synchronize(state);
     if area.width >= 96 && area.height >= 14 {
-        let [list_area, inspector_area] =
+        let [network_area, inspector_area] =
             Layout::horizontal([Constraint::Min(48), Constraint::Length(38)])
                 .spacing(1)
                 .areas(area);
-        render_station_list(frame, list_area, state, selection, true);
+        render_network_workspace(frame, network_area, state, selection);
         render_station_inspector(frame, inspector_area, state, selection, false);
     } else if details_open {
         render_station_inspector(frame, area, state, selection, true);
     } else {
         render_station_list(frame, area, state, selection, true);
     }
+}
+
+/// Stable, presentation-only coordinates for one Rail Network schematic.
+///
+/// Coordinates are assigned from the Rail Network graph: a highest-degree,
+/// lowest-ID station roots each component, breadth-first depth sets the
+/// horizontal lane, and the stable ID order separates stations vertically.
+/// They intentionally describe a schematic, not geography.
+#[derive(Clone, Debug, PartialEq)]
+struct SchematicLayout {
+    stations: Vec<SchematicStation>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SchematicStation {
+    station_id: RailStationId,
+    x: f64,
+    y: f64,
+    name: String,
+}
+
+fn render_network_workspace(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut StationSelection,
+) {
+    let station_count = state.region.rail_authority.rail_network.rail_stations.len();
+    let list_height = u16::try_from(station_count)
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+        .clamp(5, area.height.saturating_sub(13));
+    let [diagram_area, list_area] =
+        Layout::vertical([Constraint::Min(12), Constraint::Length(list_height)])
+            .spacing(1)
+            .areas(area);
+
+    let diagram_width = diagram_area.width.saturating_sub(2);
+    let diagram_height = diagram_area.height.saturating_sub(2);
+    if let Some(layout) = schematic_layout(state, diagram_width, diagram_height) {
+        render_schematic(frame, diagram_area, state, selection, &layout);
+        render_station_list(frame, list_area, state, selection, true);
+    } else {
+        // Full labels are more useful than a clipped sketch. The station List
+        // stays as the selection source whenever the Canvas cannot fit.
+        render_station_list(frame, area, state, selection, true);
+    }
+}
+
+fn render_schematic(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut StationSelection,
+    layout: &SchematicLayout,
+) {
+    let selected_station_id = selection.selected_station_id(state);
+    let network = &state.region.rail_authority.rail_network;
+    let positions = layout
+        .stations
+        .iter()
+        .map(|station| (station.station_id, station))
+        .collect::<BTreeMap<_, _>>();
+    let width = area.width.saturating_sub(3);
+    let height = area.height.saturating_sub(3);
+    let canvas = Canvas::default()
+        .block(panel_block("Rail Network · schematic", true))
+        .background_color(theme::PANEL)
+        .marker(Marker::Braille)
+        .x_bounds([0.0, f64::from(width)])
+        .y_bounds([0.0, f64::from(height)])
+        .paint(|context| {
+            for rail_line in &network.rail_lines {
+                let (Some(first), Some(second)) = (
+                    positions.get(&rail_line.first_station_id),
+                    positions.get(&rail_line.second_station_id),
+                ) else {
+                    continue;
+                };
+                let incident_to_selected = selected_station_id.is_some_and(|selected| {
+                    rail_line.first_station_id == selected
+                        || rail_line.second_station_id == selected
+                });
+                context.draw(&CanvasLine::new(
+                    first.x,
+                    first.y,
+                    second.x,
+                    second.y,
+                    if incident_to_selected {
+                        theme::ACCENT
+                    } else {
+                        theme::SECONDARY
+                    },
+                ));
+            }
+            context.layer();
+            for station in &layout.stations {
+                let is_selected = selected_station_id == Some(station.station_id);
+                let marker = if is_selected { "[>]" } else { "[o]" };
+                context.print(
+                    station.x,
+                    station.y,
+                    Line::styled(
+                        format!(
+                            "{marker} [{:02}] {}",
+                            station.station_id.get(),
+                            station.name
+                        ),
+                        if is_selected {
+                            theme::focused_title()
+                        } else {
+                            theme::primary_value()
+                        },
+                    ),
+                );
+            }
+        });
+    frame.render_widget(canvas, area);
+}
+
+fn schematic_layout(
+    state: &GameState,
+    canvas_width: u16,
+    canvas_height: u16,
+) -> Option<SchematicLayout> {
+    let network = &state.region.rail_authority.rail_network;
+    let station_names = network
+        .rail_stations
+        .iter()
+        .map(|station| (station.id, station_name(state, station.id)))
+        .collect::<BTreeMap<_, _>>();
+    if station_names.is_empty() {
+        return None;
+    }
+
+    let longest_label = station_names
+        .iter()
+        .map(|(station_id, name)| format!("[{:02}] {name}", station_id.get()).chars().count())
+        .max()
+        .unwrap_or(0);
+    let longest_label = u16::try_from(longest_label).unwrap_or(u16::MAX);
+    // Twenty-six cells leave a visible route field, station markers, and a
+    // one-cell margin around the longest full name.
+    if canvas_width < longest_label.saturating_add(26) || canvas_height < 12 {
+        return None;
+    }
+
+    let mut adjacent = station_names
+        .keys()
+        .copied()
+        .map(|station_id| (station_id, Vec::new()))
+        .collect::<BTreeMap<_, Vec<_>>>();
+    for rail_line in &network.rail_lines {
+        if adjacent.contains_key(&rail_line.first_station_id)
+            && adjacent.contains_key(&rail_line.second_station_id)
+        {
+            adjacent
+                .entry(rail_line.first_station_id)
+                .or_default()
+                .push(rail_line.second_station_id);
+            adjacent
+                .entry(rail_line.second_station_id)
+                .or_default()
+                .push(rail_line.first_station_id);
+        }
+    }
+    for neighbours in adjacent.values_mut() {
+        neighbours.sort_unstable();
+        neighbours.dedup();
+    }
+
+    let mut unplaced = station_names.keys().copied().collect::<BTreeSet<_>>();
+    let mut depths = BTreeMap::new();
+    let mut component = 0_usize;
+    while !unplaced.is_empty() {
+        let root = unplaced.iter().copied().min_by_key(|station_id| {
+            (
+                Reverse(adjacent.get(station_id).map_or(0, Vec::len)),
+                *station_id,
+            )
+        })?;
+        let mut queue = VecDeque::from([(root, 0_usize)]);
+        unplaced.remove(&root);
+        while let Some((station_id, depth)) = queue.pop_front() {
+            depths.insert(station_id, (component, depth));
+            for neighbour in adjacent.get(&station_id).into_iter().flatten() {
+                if unplaced.remove(neighbour) {
+                    queue.push_back((*neighbour, depth.saturating_add(1)));
+                }
+            }
+        }
+        component = component.saturating_add(1);
+    }
+
+    let maximum_depth = depths.values().map(|(_, depth)| *depth).max().unwrap_or(0);
+    let mut rows_by_depth = BTreeMap::<usize, Vec<RailStationId>>::new();
+    for (&station_id, &(_, depth)) in &depths {
+        rows_by_depth.entry(depth).or_default().push(station_id);
+    }
+    let label_start_limit = canvas_width.saturating_sub(longest_label.saturating_add(3));
+    let route_width = label_start_limit.saturating_sub(2);
+    let bottom = canvas_height.saturating_sub(2);
+    let vertical_span = bottom.saturating_sub(1);
+    let mut coordinates = BTreeMap::new();
+    for (depth, stations) in rows_by_depth {
+        let x = if maximum_depth == 0 {
+            label_start_limit / 2
+        } else {
+            1_u16.saturating_add(
+                route_width.saturating_mul(u16::try_from(depth).unwrap_or(u16::MAX))
+                    / u16::try_from(maximum_depth).unwrap_or(1),
+            )
+        };
+        let station_count = stations.len().saturating_sub(1);
+        for (index, station_id) in stations.into_iter().enumerate() {
+            let y = if station_count == 0 {
+                1_u16.saturating_add(vertical_span / 2)
+            } else {
+                1_u16.saturating_add(
+                    vertical_span.saturating_mul(u16::try_from(index).unwrap_or(u16::MAX))
+                        / u16::try_from(station_count).unwrap_or(1),
+                )
+            };
+            coordinates.insert(station_id, (f64::from(x), f64::from(y)));
+        }
+    }
+
+    Some(SchematicLayout {
+        stations: station_names
+            .into_iter()
+            .filter_map(|(station_id, name)| {
+                coordinates
+                    .get(&station_id)
+                    .map(|&(x, y)| SchematicStation {
+                        station_id,
+                        x,
+                        y,
+                        name,
+                    })
+            })
+            .collect(),
+    })
 }
 
 fn render_station_list(
@@ -189,6 +439,43 @@ fn render_station_inspector(
     );
     let mut lines = Vec::new();
     if let Some(station) = selected {
+        let incident_lines = state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_lines
+            .iter()
+            .filter(|rail_line| {
+                rail_line.first_station_id == station.id
+                    || rail_line.second_station_id == station.id
+            })
+            .collect::<Vec<_>>();
+        lines.push(Line::styled(
+            format!("Incident Rail Lines ({})", incident_lines.len()),
+            theme::title(),
+        ));
+        if incident_lines.is_empty() {
+            lines.push(Line::styled(
+                "No Rail Lines are recorded for this Rail Station.",
+                theme::warning(),
+            ));
+        } else {
+            lines.extend(incident_lines.into_iter().map(|rail_line| {
+                let first = station_name(state, rail_line.first_station_id);
+                let second = station_name(state, rail_line.second_station_id);
+                Line::from(vec![
+                    Span::styled(
+                        format!("Rail Line {:02}  ", rail_line.id.get()),
+                        theme::secondary(),
+                    ),
+                    Span::raw(format!(
+                        "{first} → {second} · {}",
+                        format_distance(rail_line.distance.metres())
+                    )),
+                ])
+            }));
+        }
+        lines.push(Line::from(""));
         let ready = ready_trains(state, station.id);
         lines.push(Line::styled(
             format!("Ready Trains ({})", ready.len()),
@@ -539,7 +826,7 @@ mod tests {
         },
     };
 
-    use super::render_at;
+    use super::{render_at, schematic_layout};
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 
@@ -608,5 +895,39 @@ mod tests {
         assert!(travelling_map.contains("progress: 50%"));
         assert!(travelling_map.contains("ETA:"));
         assert!(travelling_map.contains("Alden") || travelling_map.contains("Bellhaven"));
+    }
+
+    #[test]
+    fn schematic_layout_is_stable_and_separates_the_actual_branching_edges() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let first = schematic_layout(&state, 72, 20).expect("starter labels fit the Canvas");
+        let second = schematic_layout(&state, 72, 20).expect("starter labels fit the Canvas");
+        assert_eq!(first, second, "placement must not depend on render order");
+
+        let positions = first
+            .stations
+            .iter()
+            .map(|station| (station.station_id, (station.x, station.y)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let network = &state.region.rail_authority.rail_network;
+        for rail_line in &network.rail_lines {
+            assert!(positions.contains_key(&rail_line.first_station_id));
+            assert!(positions.contains_key(&rail_line.second_station_id));
+        }
+
+        let branch = positions
+            .get(&RailStationId::new(2))
+            .expect("the starter topology branches at Rail Station 02");
+        let branch_neighbours = [
+            RailStationId::new(1),
+            RailStationId::new(3),
+            RailStationId::new(4),
+        ]
+        .into_iter()
+        .map(|station_id| positions.get(&station_id).expect("branch neighbour exists"))
+        .collect::<Vec<_>>();
+        assert!(branch_neighbours.iter().all(|(x, _)| x > &branch.0));
+        assert_ne!(branch_neighbours[0].1, branch_neighbours[1].1);
+        assert_ne!(branch_neighbours[1].1, branch_neighbours[2].1);
     }
 }
