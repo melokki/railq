@@ -21,10 +21,10 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::{CrosstermBackend, TestBackend},
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Rect},
     style::Color,
     text::{Line, Span},
-    widgets::{Block, Paragraph, Tabs, Wrap},
+    widgets::{Block, Clear, Paragraph, Tabs, Wrap},
 };
 
 use crate::{
@@ -162,6 +162,7 @@ pub struct Shell {
     company_recovery_review_open: bool,
     notice: Option<String>,
     help_visible: bool,
+    help_offset: usize,
     restart_confirmation: bool,
 }
 
@@ -191,6 +192,7 @@ impl Shell {
             company_recovery_review_open: false,
             notice: None,
             help_visible: false,
+            help_offset: 0,
             restart_confirmation: false,
         }
     }
@@ -219,14 +221,37 @@ impl Shell {
         }
 
         if self.help_visible {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'h' | 'H')) {
-                self.help_visible = false;
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?' | 'h' | 'H') => {
+                    self.help_visible = false;
+                    self.help_offset = 0;
+                }
+                KeyCode::Up | KeyCode::Char('k' | 'K') => {
+                    self.help_offset = self.help_offset.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j' | 'J') => {
+                    self.help_offset = self
+                        .help_offset
+                        .saturating_add(1)
+                        .min(HELP_LINES.len().saturating_sub(1));
+                }
+                KeyCode::PageUp => {
+                    self.help_offset = self.help_offset.saturating_sub(HELP_PAGE_STEP);
+                }
+                KeyCode::PageDown => {
+                    self.help_offset = self
+                        .help_offset
+                        .saturating_add(HELP_PAGE_STEP)
+                        .min(HELP_LINES.len().saturating_sub(1));
+                }
+                _ => {}
             }
             return ShellAction::Continue;
         }
 
         if matches!(key.code, KeyCode::Char('?' | 'h' | 'H')) {
             self.help_visible = true;
+            self.help_offset = 0;
             return ShellAction::Continue;
         }
 
@@ -1002,11 +1027,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         navigation_area,
     );
 
-    if !shell.help_visible
-        && !is_bankrupt(state)
-        && shell.active_view == View::Map
-        && shell.dispatch_flow.is_none()
-    {
+    if !is_bankrupt(state) && shell.active_view == View::Map && shell.dispatch_flow.is_none() {
         shell.map_split_visible = content_area.width >= 96 && content_area.height >= 14;
         if shell.map_focus.is_journeys() {
             if let Some(train_id) = shell.map_journey_selection.selected_train_id(state) {
@@ -1026,8 +1047,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             shell.map_focus,
             shell.map_details_open,
         );
-    } else if !shell.help_visible
-        && !is_bankrupt(state)
+    } else if !is_bankrupt(state)
         && shell.active_view == View::Trains
         && shell.fleet_flow.is_none()
         && shell.dispatch_flow.is_none()
@@ -1067,7 +1087,6 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         }
     } else if shell.active_view == View::Company
         && shell.company_recovery_review_open
-        && !shell.help_visible
         && !is_bankrupt(state)
     {
         company::render_recovery_review(
@@ -1076,7 +1095,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             state,
             &mut shell.company_recovery_selection,
         );
-    } else if shell.active_view == View::Company && !shell.help_visible && !is_bankrupt(state) {
+    } else if shell.active_view == View::Company && !is_bankrupt(state) {
         company::render_dashboard(
             frame,
             content_area,
@@ -1090,7 +1109,6 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         }
     } else if shell.active_view == View::BuyTrains
         && shell.market_flow.is_none()
-        && !shell.help_visible
         && !is_bankrupt(state)
     {
         market::render_dashboard(frame, content_area, state, &mut shell.market_selection);
@@ -1099,9 +1117,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             flow.render_panel(frame, content_area, state);
         }
     } else {
-        let content = if shell.help_visible {
-            help_text()
-        } else if is_bankrupt(state) {
+        let content = if is_bankrupt(state) {
             bankruptcy_text(shell.restart_confirmation)
         } else {
             match shell.active_view {
@@ -1147,12 +1163,16 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         .wrap(Wrap { trim: true }),
         hints_area,
     );
+
+    if shell.help_visible {
+        render_help_overlay(frame, area, shell.help_offset);
+    }
 }
 
 fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> String {
     let compact = width <= 80;
     if shell.help_visible {
-        return "[? / H / Esc] Close help  [Q] Quit".into();
+        return "[↑↓/J K] Scroll  [PgUp/Dn] Page  [? / H / Esc] Close  [Q] Quit".into();
     }
     if is_bankrupt(state) {
         return if shell.restart_confirmation {
@@ -1364,22 +1384,97 @@ fn shorten(value: &str, max_characters: usize) -> String {
     }
 }
 
-fn help_text() -> String {
-    [
-        "Keyboard help",
-        "",
-        "[M] Map — inspect the Region and press [D] to begin a Manual Dispatch.",
-        "[T] Fleet — [Enter] inspects; [D] starts destination selection for the selected READY Train; [S] reviews resale.",
-        "[C] Company — inspect Company Funds and retained receipts; during Insolvency, [R] opens calculated recovery routes.",
-        "[B] Buy Trains — press [Enter] to choose a diesel Train and delivery Rail Station.",
-        "[Up]/[Down] or [J]/[K] change a selection; [PageUp]/[PageDown] scroll lists; [Tab] changes panel focus.",
-        "[Enter] inspects, advances, or confirms the action named in the footer; [Left]/[Backspace] goes back; [Esc] cancels.",
-        "Unavailable actions show their reason in the footer; [D] dispatches only a READY Train and [S] resells only a READY Train.",
-        "[Q] or Ctrl-C exits RailQ. During Bankruptcy, [R] begins a confirmed safe restart that preserves the old save.",
-        "",
-        "Press [?], [H], or [Esc] to return.",
-    ]
-    .join("\n")
+const HELP_PAGE_STEP: usize = 5;
+
+const HELP_LINES: [&str; 39] = [
+    "Global controls",
+    "[M] Map  [T] Fleet  [C] Company  [B] Buy Trains switch primary views.",
+    "[?] or [H] opens help. [Q] or Ctrl-C exits RailQ outside text entry.",
+    "[Tab]/[Shift-Tab] changes visible panel focus; the footer names active controls.",
+    "",
+    "Panels and lists",
+    "[Up]/[Down] or [J]/[K] changes the focused selection.",
+    "[PageUp]/[PageDown] scrolls lists. [Enter] inspects the selected item.",
+    "Fleet: [D] starts destination selection for a selected READY Train; [S] opens resale.",
+    "Map: [D] begins Manual Dispatch from the selected Rail Station.",
+    "Company: [R] opens calculated recovery routes during Insolvency.",
+    "",
+    "Flows",
+    "[Enter] advances or confirms only the action named in the footer.",
+    "[Left]/[Backspace] returns to the prior flow step; [Esc] cancels the current flow.",
+    "Unavailable actions state their reason. Confirmation remains at the application boundary.",
+    "",
+    "Current flow reminders",
+    "Manual Dispatch: select a READY Train, select a destination Rail Station, then review.",
+    "Train purchase: select a catalogue Train, choose its delivery Rail Station, then review.",
+    "Train resale: review the selected READY Train before confirming its sale.",
+    "No ordinary key reaches a covered panel while this help page is open.",
+    "",
+    "RailQ terminology",
+    "The Player Company owns its Fleet and operates passenger Journeys.",
+    "The Rail Authority owns the public Rail Network and its Rail Stations.",
+    "A Journey is one physical movement of a Train; it is not a Passenger Service.",
+    "",
+    "Safety",
+    "Opening, closing, scrolling, or resizing help does not authorise an action.",
+    "It preserves the current focus, list position, and any pending proposal.",
+    "Save and transaction checks still occur only after an explicit confirmation.",
+    "",
+    "Layout",
+    "Wide terminals show help as a centred overlay above the control room.",
+    "Compact terminals show it as a focused page so every visible row remains readable.",
+    "Resize at any time; close help to resume the same workspace.",
+    "",
+    "[↑↓/J K] Scroll help  [PgUp/Dn] Page  [? / H / Esc] Return",
+];
+
+fn render_help_overlay(frame: &mut ratatui::Frame, area: Rect, offset: usize) {
+    let compact = area.width < 96 || area.height < 26;
+    let overlay_area = if compact {
+        area
+    } else {
+        let width = area.width.saturating_mul(4) / 5;
+        let height = area.height.saturating_mul(4) / 5;
+        Rect::new(
+            area.x
+                .saturating_add((area.width.saturating_sub(width)) / 2),
+            area.y
+                .saturating_add((area.height.saturating_sub(height)) / 2),
+            width,
+            height,
+        )
+    };
+    let visible_lines = usize::from(overlay_area.height.saturating_sub(2));
+    let max_offset = HELP_LINES.len().saturating_sub(visible_lines.max(1));
+    let offset = offset.min(max_offset);
+    let content = HELP_LINES
+        .iter()
+        .skip(offset)
+        .take(visible_lines)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let title = if compact {
+        "Help · focused page"
+    } else {
+        "Keyboard help"
+    };
+
+    frame.render_widget(Clear, overlay_area);
+    frame.render_widget(
+        Paragraph::new(content)
+            .block(
+                Block::default()
+                    .borders(theme::THIN_BORDERS)
+                    .border_style(theme::focused_border())
+                    .title(title)
+                    .title_style(theme::focused_title())
+                    .style(theme::panel()),
+            )
+            .style(theme::panel())
+            .wrap(Wrap { trim: false }),
+        overlay_area,
+    );
 }
 
 fn bankruptcy_text(restart_confirmation: bool) -> String {
@@ -1736,7 +1831,7 @@ mod tests {
             ShellAction::Continue
         );
         assert!(shell.help_visible());
-        let help = super::help_text();
+        let help = super::HELP_LINES.join("\n");
         for instruction in [
             "[M] Map",
             "[T] Fleet",
