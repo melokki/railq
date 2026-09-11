@@ -88,6 +88,8 @@ pub enum MarketFlowAction {
     Cancel,
     /// The player returned from delivery selection to the catalogue.
     ReturnToCatalogue,
+    /// The player returned from purchase review to delivery selection.
+    ReturnToDelivery,
     /// The application boundary must revalidate and purchase the Train.
     Confirm {
         catalogue_index: usize,
@@ -226,6 +228,27 @@ impl MarketFlow {
             MarketStep::Confirm {
                 catalogue_index,
                 delivery_station_id,
+            } if matches!(key.code, KeyCode::Left | KeyCode::Backspace) => {
+                let catalogue_index = *catalogue_index;
+                let delivery_station_id = *delivery_station_id;
+                let stations = delivery_station_ids(state);
+                let selected_index = stations
+                    .iter()
+                    .position(|station_id| *station_id == delivery_station_id);
+                let mut list_state = ListState::default();
+                list_state.select(selected_index);
+                self.step = MarketStep::SelectDelivery {
+                    catalogue_index,
+                    selected_delivery_station_id: selected_index.map(|_| delivery_station_id),
+                    list_state,
+                    page_size: 1,
+                };
+                self.rejection = None;
+                MarketFlowAction::ReturnToDelivery
+            }
+            MarketStep::Confirm {
+                catalogue_index,
+                delivery_station_id,
             } if matches!(key.code, KeyCode::Enter) => MarketFlowAction::Confirm {
                 catalogue_index: *catalogue_index,
                 delivery_station_id: *delivery_station_id,
@@ -260,12 +283,16 @@ impl MarketFlow {
                 list_state,
                 page_size,
             ),
-            MarketStep::Confirm { .. } => frame.render_widget(
-                Paragraph::new(self.render(state))
-                    .block(panel_block("Buy Trains · purchase review", true))
-                    .style(theme::panel())
-                    .wrap(Wrap { trim: false }),
+            MarketStep::Confirm {
+                catalogue_index,
+                delivery_station_id,
+            } => render_purchase_review(
+                frame,
                 area,
+                state,
+                *catalogue_index,
+                *delivery_station_id,
+                self.rejection.as_deref(),
             ),
         }
     }
@@ -309,24 +336,11 @@ impl MarketFlow {
             } => {
                 let train = state.rules.balance.diesel_catalogue().get(*catalogue_index);
                 if let Some(train) = train {
-                    writeln!(
-                        output,
-                        "Deliver {} to {} at no delivery fee.",
-                        train.name(),
-                        station_label(state, *delivery_station_id)
-                    )
-                    .expect("writing to a String cannot fail");
-                    if low_reserve(state, train) {
-                        writeln!(
-                            output,
-                            "LOW RESERVE WARNING: Company Funds after purchase cannot cover the sample trip's departure cost."
-                        )
-                        .expect("writing to a String cannot fail");
-                    }
+                    render_purchase_review_text(&mut output, state, train, *delivery_station_id);
                 }
                 writeln!(
                     output,
-                    "Enter confirms purchase (revalidated); Esc cancels."
+                    "Enter confirms purchase (revalidated); Left / Backspace returns to delivery; Esc cancels."
                 )
                 .expect("writing to a String cannot fail");
             }
@@ -336,6 +350,303 @@ impl MarketFlow {
                 .expect("writing to a String cannot fail");
         }
         output
+    }
+}
+
+fn render_purchase_review(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    catalogue_index: usize,
+    delivery_station_id: RailStationId,
+    rejection: Option<&str>,
+) {
+    let Some(train) = state.rules.balance.diesel_catalogue().get(catalogue_index) else {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    "1 Train → 2 Delivery Rail Station → 3 Review",
+                    theme::focused_title(),
+                ),
+                Line::styled(
+                    "The selected catalogue Train is no longer available. Return to the catalogue and choose a current model.",
+                    theme::error(),
+                ),
+                Line::styled("Left / Backspace · delivery   Esc · cancel", theme::hint()),
+            ])
+            .block(panel_block("Buy Trains · purchase review", true))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    };
+
+    let footer_rows = 2_u16.saturating_add(u16::from(rejection.is_some()));
+    let [step_area, body_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(5),
+        Constraint::Length(footer_rows),
+    ])
+    .areas(area);
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "1 Train → 2 Delivery Rail Station → 3 Review",
+            theme::focused_title(),
+        ))
+        .style(theme::panel()),
+        step_area,
+    );
+
+    if body_area.width >= 96 && body_area.height >= 10 {
+        let [purchase_area, reserve_area] =
+            Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)])
+                .spacing(1)
+                .areas(body_area);
+        frame.render_widget(
+            Paragraph::new(purchase_review_lines(state, train, delivery_station_id))
+                .block(panel_block("Purchase", true))
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            purchase_area,
+        );
+        frame.render_widget(
+            Paragraph::new(sample_reserve_lines(state, train))
+                .block(panel_block("Sample departure reserve", false))
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            reserve_area,
+        );
+    } else if body_area.height >= 16 {
+        let mut lines = purchase_review_lines(state, train, delivery_station_id);
+        lines.push(Line::from(""));
+        lines.extend(sample_reserve_lines(state, train));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(panel_block("Buy Trains · purchase review", true))
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            body_area,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(compact_purchase_review_lines(
+                state,
+                train,
+                delivery_station_id,
+            ))
+            .block(panel_block("Buy Trains · purchase review", true))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+            body_area,
+        );
+    }
+
+    let mut footer = Vec::new();
+    if low_reserve(state, train) {
+        footer.push(Line::styled(
+            "LOW RESERVE · funds after purchase cannot cover this sample departure cost.",
+            theme::warning(),
+        ));
+    } else {
+        footer.push(Line::styled(
+            "Reserve check · funds after purchase cover this sample departure cost.",
+            theme::success(),
+        ));
+    }
+    if let Some(rejection) = rejection {
+        footer.push(Line::styled(
+            format!("Purchase rejected: {rejection}"),
+            theme::error(),
+        ));
+    }
+    footer.push(Line::styled(
+        "Enter · confirm purchase (revalidated)   Left / Backspace · delivery   Esc · cancel",
+        theme::hint(),
+    ));
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        footer_area,
+    );
+}
+
+fn purchase_review_lines(
+    state: &GameState,
+    train: &DieselTrainCatalogueRecord,
+    delivery_station_id: RailStationId,
+) -> Vec<Line<'static>> {
+    vec![
+        Line::styled(train.name().to_owned(), theme::focused_title()),
+        Line::from(format!(
+            "Delivery Rail Station: {}",
+            station_label(state, delivery_station_id)
+        )),
+        Line::from("Delivery fee: $0.00"),
+        Line::from(""),
+        Line::from(format!("Price: {}", format_money(train.purchase_price()))),
+        Line::from(format!(
+            "Company Funds before purchase: {}",
+            format_money(state.player_company.funds)
+        )),
+        Line::styled(
+            format!(
+                "Company Funds after purchase: {}",
+                funds_after_purchase(state, train)
+            ),
+            theme::primary_value(),
+        ),
+    ]
+}
+
+fn sample_reserve_lines(
+    state: &GameState,
+    train: &DieselTrainCatalogueRecord,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        "Sample Rail Line · reserve example only",
+        theme::secondary(),
+    )];
+    if let Some(sample) = sample_trip(state, train) {
+        lines.extend([
+            Line::from(format!("Route: {} · {}", sample.route, sample.distance)),
+            Line::from(format!(
+                "Infrastructure Access Fee: {}",
+                format_money(sample.access_fee)
+            )),
+            Line::from(format!("Fuel Cost: {}", format_money(sample.fuel_cost))),
+            Line::styled(
+                format!(
+                    "Sample departure cost: {}",
+                    format_money(sample.departure_cost)
+                ),
+                theme::primary_value(),
+            ),
+        ]);
+    } else {
+        lines.push(Line::styled(
+            "Sample departure cost is unavailable for the current Rail Network.",
+            theme::error(),
+        ));
+    }
+    lines.push(Line::from(
+        "This is one Rail Line example, not a planned Passenger Service or required Journey.",
+    ));
+    lines
+}
+
+fn compact_purchase_review_lines(
+    state: &GameState,
+    train: &DieselTrainCatalogueRecord,
+    delivery_station_id: RailStationId,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::styled(format!("Model: {}", train.name()), theme::focused_title()),
+        Line::from(format!(
+            "Delivery Rail Station: {}",
+            station_label(state, delivery_station_id)
+        )),
+        Line::from(format!("Price: {}", format_money(train.purchase_price()))),
+        Line::from(format!(
+            "Company Funds before purchase: {}",
+            format_money(state.player_company.funds)
+        )),
+        Line::styled(
+            format!(
+                "Company Funds after purchase: {}",
+                funds_after_purchase(state, train)
+            ),
+            theme::primary_value(),
+        ),
+    ];
+    if let Some(sample) = sample_trip(state, train) {
+        lines.push(Line::from(format!("Sample Rail Line: {}", sample.route)));
+        lines.push(Line::styled(
+            format!(
+                "Sample departure cost: {}",
+                format_money(sample.departure_cost)
+            ),
+            theme::primary_value(),
+        ));
+    } else {
+        lines.push(Line::styled(
+            "Sample departure cost unavailable.",
+            theme::error(),
+        ));
+    }
+    lines.push(Line::from(
+        "Sample only; not a planned Passenger Service or required Journey.",
+    ));
+    lines
+}
+
+fn funds_after_purchase(state: &GameState, train: &DieselTrainCatalogueRecord) -> String {
+    match state
+        .player_company
+        .funds
+        .checked_sub(train.purchase_price())
+    {
+        Ok(remaining) => format_money(remaining),
+        Err(_) => "unavailable".into(),
+    }
+}
+
+fn render_purchase_review_text(
+    output: &mut String,
+    state: &GameState,
+    train: &DieselTrainCatalogueRecord,
+    delivery_station_id: RailStationId,
+) {
+    writeln!(output, "Purchase review").expect("writing to a String cannot fail");
+    writeln!(output, "Model: {}", train.name()).expect("writing to a String cannot fail");
+    writeln!(
+        output,
+        "Delivery Rail Station: {}",
+        station_label(state, delivery_station_id)
+    )
+    .expect("writing to a String cannot fail");
+    writeln!(output, "Price: {}", format_money(train.purchase_price()))
+        .expect("writing to a String cannot fail");
+    writeln!(
+        output,
+        "Company Funds before purchase: {}",
+        format_money(state.player_company.funds)
+    )
+    .expect("writing to a String cannot fail");
+    writeln!(
+        output,
+        "Company Funds after purchase: {}",
+        funds_after_purchase(state, train)
+    )
+    .expect("writing to a String cannot fail");
+    if let Some(sample) = sample_trip(state, train) {
+        writeln!(
+            output,
+            "Sample Rail Line: {} ({})",
+            sample.route, sample.distance
+        )
+        .expect("writing to a String cannot fail");
+        writeln!(
+            output,
+            "Sample departure cost: Infrastructure Access Fee {} + Fuel Cost {} = {}",
+            format_money(sample.access_fee),
+            format_money(sample.fuel_cost),
+            format_money(sample.departure_cost),
+        )
+        .expect("writing to a String cannot fail");
+    }
+    writeln!(
+        output,
+        "Reserve example only: it is not a planned Passenger Service or required Journey."
+    )
+    .expect("writing to a String cannot fail");
+    if low_reserve(state, train) {
+        writeln!(
+            output,
+            "LOW RESERVE: funds after purchase cannot cover this sample departure cost."
+        )
+        .expect("writing to a String cannot fail");
     }
 }
 
@@ -1009,7 +1320,7 @@ mod tests {
 
         let rendered = flow.render(&state);
         assert!(rendered.contains("Company Funds after purchase: $0.00"));
-        assert!(rendered.contains("LOW RESERVE WARNING"));
+        assert!(rendered.contains("LOW RESERVE:"));
         assert!(rendered.contains("Enter confirms purchase"));
     }
 }

@@ -1,11 +1,21 @@
-//! Rendered-buffer and keyboard coverage for delivery Rail Station selection.
+//! Rendered-buffer and keyboard coverage for the Train purchase flow.
 
-use std::{error::Error, fs, path::Path};
+use std::{
+    cell::{Cell, RefCell},
+    error::Error,
+    fmt, fs,
+    path::Path,
+    rc::Rc,
+};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
-    model::{RailStation, RailStationId, Settlement, SettlementId, UtcSeconds},
-    sim::world::create_new_game,
+    app::{App, GameStore},
+    model::{
+        GameState, Money, RailStation, RailStationId, Settlement, SettlementId, TrainStatus,
+        UtcSeconds,
+    },
+    sim::{fleet::purchase_train, world::create_new_game},
     ui::{
         Shell, ShellAction, capture_rendered_buffer_mut, capture_rendered_cell_colors,
         market::MarketFlow, theme,
@@ -14,6 +24,40 @@ use railq::{
 
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_700_000_000);
 const EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/18";
+const PURCHASE_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/19";
+
+#[derive(Clone, Debug, Default)]
+struct RejectingStore {
+    saved: Rc<RefCell<Option<GameState>>>,
+    reject_next_save: Rc<Cell<bool>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RejectedSave;
+
+impl fmt::Display for RejectedSave {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("simulated save rejection")
+    }
+}
+
+impl Error for RejectedSave {}
+
+impl GameStore for RejectingStore {
+    type Error = RejectedSave;
+
+    fn load(&self) -> Result<Option<GameState>, Self::Error> {
+        Ok(self.saved.borrow().clone())
+    }
+
+    fn save(&self, state: &GameState) -> Result<(), Self::Error> {
+        if self.reject_next_save.replace(false) {
+            return Err(RejectedSave);
+        }
+        self.saved.replace(Some(state.clone()));
+        Ok(())
+    }
+}
 
 fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) -> ShellAction {
     shell.handle_key(KeyEvent::new(code, KeyModifiers::NONE), state)
@@ -178,8 +222,8 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         ShellAction::Continue
     );
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(review.contains("Deliver Express 120 to"));
-    assert!(review.contains("Enter confirms purchase (revalidated)"));
+    assert!(review.contains("Express 120"));
+    assert!(review.contains("Enter · confirm purchase (revalidated)"));
     fs::write(evidence_dir.join("delivery-review-120x40.txt"), review)?;
 
     assert_eq!(
@@ -201,6 +245,149 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         state, before,
         "delivery selection, review, and cancellation are presentation-only"
     );
+    Ok(())
+}
+
+#[test]
+fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
+-> Result<(), Box<dyn Error>> {
+    let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let price = state.rules.balance.diesel_catalogue()[0].purchase_price();
+    purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    state.player_company.funds = price.checked_add(Money::from_cents(500)).unwrap();
+    let store = RejectingStore::default();
+    let mut app = App::start_new(store.clone(), state).unwrap();
+    let mut shell = Shell::new();
+    let evidence_dir = Path::new(PURCHASE_EVIDENCE_DIR);
+    fs::create_dir_all(evidence_dir)?;
+
+    assert_eq!(
+        press(&mut shell, app.state(), KeyCode::Char('b')),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut shell, app.state(), KeyCode::Enter),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut shell, app.state(), KeyCode::Enter),
+        ShellAction::Continue
+    );
+
+    let review = capture_rendered_buffer_mut(&mut shell, app.state(), 120, 40);
+    fs::write(evidence_dir.join("purchase-review-120x40.txt"), &review)?;
+    for expected in [
+        "1 Train → 2 Delivery Rail Station → 3 Review",
+        "Purchase",
+        "Local 70",
+        "Delivery Rail Station:",
+        "Price: $3,000.00",
+        "Company Funds before purchase: $3,005.00",
+        "Company Funds after purchase: $5.00",
+        "Sample Rail Line · reserve example only",
+        "Route:",
+        "Sample departure cost:",
+        "not a planned Passenger",
+        "Service or required Journey.",
+        "LOW RESERVE",
+        "Enter · confirm purchase (revalidated)",
+    ] {
+        assert!(review.contains(expected), "review should show {expected}");
+    }
+    let (warning_row, warning_column) = review
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("LOW RESERVE").map(|column| (row, column)))
+        .expect("the low reserve warning should be visible beside confirmation");
+    assert_eq!(
+        capture_rendered_cell_colors(
+            &shell,
+            app.state(),
+            120,
+            40,
+            u16::try_from(warning_column)?,
+            u16::try_from(warning_row)?,
+        ),
+        Some((theme::WARNING, theme::PANEL))
+    );
+    let compact = capture_rendered_buffer_mut(&mut shell, app.state(), 80, 24);
+    for expected in [
+        "Local 70",
+        "Company Funds after purchase: $5.00",
+        "Sample departure cost:",
+        "LOW RESERVE",
+        "Enter · confirm purchase",
+    ] {
+        assert!(
+            compact.contains(expected),
+            "compact review should show {expected}"
+        );
+    }
+    fs::write(evidence_dir.join("purchase-review-80x24.txt"), compact)?;
+
+    assert_eq!(
+        press(&mut shell, app.state(), KeyCode::Left),
+        ShellAction::Continue
+    );
+    let returned = capture_rendered_buffer_mut(&mut shell, app.state(), 120, 40);
+    assert!(returned.contains("Delivery Rail Stations"));
+    assert!(returned.contains("> Pinewatch"));
+    assert_eq!(
+        press(&mut shell, app.state(), KeyCode::Enter),
+        ShellAction::Continue
+    );
+
+    let before_rejection = app.state().clone();
+    store.reject_next_save.set(true);
+    let rejected_action = press(&mut shell, app.state(), KeyCode::Enter);
+    let ShellAction::PurchaseTrain {
+        catalogue_index,
+        delivery_station_id,
+    } = rejected_action
+    else {
+        panic!("only explicit review confirmation may request a purchase");
+    };
+    let rejection = app
+        .purchase_train(catalogue_index, delivery_station_id, STARTED_AT)
+        .unwrap_err();
+    shell.reject_purchase_train(rejection.to_string());
+    assert_eq!(
+        app.state(),
+        &before_rejection,
+        "failed save must not publish a Train"
+    );
+    let rejected = capture_rendered_buffer_mut(&mut shell, app.state(), 120, 40);
+    assert!(rejected.contains("Purchase rejected: could not save game changes"));
+    assert!(rejected.contains("LOW RESERVE"));
+    assert!(!rejected.contains("authorised and saved"));
+    fs::write(
+        evidence_dir.join("purchase-save-rejected-120x40.txt"),
+        rejected,
+    )?;
+
+    let confirmed_action = press(&mut shell, app.state(), KeyCode::Enter);
+    assert_eq!(
+        confirmed_action,
+        ShellAction::PurchaseTrain {
+            catalogue_index,
+            delivery_station_id,
+        }
+    );
+    let train_id = app
+        .purchase_train(catalogue_index, delivery_station_id, STARTED_AT)
+        .unwrap();
+    shell.confirm_purchase_train();
+    assert_eq!(app.state().player_company.fleet.trains.len(), 2);
+    assert_eq!(app.state().player_company.funds, Money::from_cents(500));
+    let purchased_train = app.state().player_company.fleet.trains.last().unwrap();
+    assert_eq!(purchased_train.id, train_id);
+    assert_eq!(
+        purchased_train.status,
+        TrainStatus::Ready {
+            at: delivery_station_id
+        }
+    );
+    assert_eq!(store.load().unwrap(), Some(app.state().clone()));
     Ok(())
 }
 

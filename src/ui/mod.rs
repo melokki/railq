@@ -303,6 +303,7 @@ impl Shell {
                     self.notice = None;
                     ShellAction::Continue
                 }
+                market::MarketFlowAction::ReturnToDelivery => ShellAction::Continue,
                 market::MarketFlowAction::Confirm {
                     catalogue_index,
                     delivery_station_id,
