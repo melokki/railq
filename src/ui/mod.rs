@@ -32,6 +32,7 @@ use crate::{
     model::{GameState, RailStationId, TrainId, UtcSeconds},
 };
 
+pub mod company;
 pub mod dispatch;
 pub mod fleet;
 pub mod map;
@@ -501,7 +502,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
             Some(flow) => flow.render(state),
             None => market::render(state),
         },
-        View::Company => "Company details follow in their dedicated task.".into(),
+        View::Company => company::render(state),
     };
     frame.render_widget(
         Paragraph::new(content)
