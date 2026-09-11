@@ -20,7 +20,7 @@ use crossterm::{
 };
 use ratatui::{
     Terminal,
-    backend::CrosstermBackend,
+    backend::{CrosstermBackend, TestBackend},
     layout::{Constraint, Layout},
     style::{Color, Style},
     text::Line,
@@ -367,6 +367,44 @@ impl Shell {
             None
         }
     }
+}
+
+/// Renders the current shell into a deterministic text copy of Ratatui's buffer.
+///
+/// This is intentionally narrow capture access for regression evidence. It
+/// uses the same frame renderer as the live terminal while avoiding terminal
+/// modes, clocks, and disk I/O.
+pub fn capture_rendered_buffer(
+    shell: &Shell,
+    state: &GameState,
+    columns: u16,
+    rows: u16,
+) -> String {
+    if columns == 0 || rows == 0 {
+        return String::new();
+    }
+
+    let backend = TestBackend::new(columns, rows);
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(error) => match error {},
+    };
+    match terminal.draw(|frame| render_frame(frame, shell, state)) {
+        Ok(_) => {}
+        Err(error) => match error {},
+    }
+
+    let width = usize::from(columns);
+    let height = usize::from(rows);
+    let content = terminal.backend().buffer().content();
+    let mut rendered = String::with_capacity((width + 1).saturating_mul(height));
+    for row in content.chunks(width).take(height) {
+        for cell in row {
+            rendered.push_str(cell.symbol());
+        }
+        rendered.push('\n');
+    }
+    rendered
 }
 
 /// An error from the terminal shell or its supplied reconciliation boundary.
