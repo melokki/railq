@@ -141,6 +141,9 @@ enum FleetFocus {
 pub struct Shell {
     active_view: View,
     dispatch_flow: Option<dispatch::DispatchFlow>,
+    map_selection: map::StationSelection,
+    map_details_open: bool,
+    map_split_visible: bool,
     fleet_flow: Option<fleet::FleetFlow>,
     fleet_selection: fleet::FleetSelection,
     fleet_details_open: bool,
@@ -162,6 +165,9 @@ impl Shell {
         Self {
             active_view: View::Map,
             dispatch_flow: None,
+            map_selection: map::StationSelection::default(),
+            map_details_open: false,
+            map_split_visible: false,
             fleet_flow: None,
             fleet_selection: fleet::FleetSelection::default(),
             fleet_details_open: false,
@@ -369,6 +375,15 @@ impl Shell {
                 }
             }
             KeyCode::Char('b' | 'B') => self.active_view = View::BuyTrains,
+            KeyCode::Enter if self.active_view == View::Map => {
+                if self.map_selection.selected_station_id(state).is_some() {
+                    self.map_details_open = true;
+                    self.notice = None;
+                }
+            }
+            KeyCode::Esc if self.active_view == View::Map && self.map_details_open => {
+                self.map_details_open = false;
+            }
             KeyCode::Enter if self.active_view == View::Company => {
                 if self.company_receipt_selection.has_selection(state) {
                     self.company_receipt_details_open = true;
@@ -434,6 +449,16 @@ impl Shell {
                 if self.active_view == View::Trains =>
             {
                 self.fleet_selection.handle_key(key.code, state);
+            }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K')
+                if self.active_view == View::Map
+                    && (!self.map_details_open || self.map_split_visible) =>
+            {
+                self.map_selection.handle_key(key.code, state);
             }
             KeyCode::Up
             | KeyCode::Down
@@ -875,6 +900,19 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 
     if !shell.help_visible
         && !is_bankrupt(state)
+        && shell.active_view == View::Map
+        && shell.dispatch_flow.is_none()
+    {
+        shell.map_split_visible = content_area.width >= 96 && content_area.height >= 14;
+        map::render_dashboard(
+            frame,
+            content_area,
+            state,
+            &mut shell.map_selection,
+            shell.map_details_open,
+        );
+    } else if !shell.help_visible
+        && !is_bankrupt(state)
         && shell.active_view == View::Trains
         && shell.fleet_flow.is_none()
     {
@@ -981,6 +1019,14 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             "[↑↓/J K] Select [Enter] Inspect [S] Resale [?] Help [Q] Quit"
         } else {
             "[↑↓ / J K] Select Train  [PageUp / PageDown] Scroll  [Enter] Inspect  [S] Resale  [Tab] Panel  [?] Help  [Q] Quit"
+        }
+    } else if shell.active_view == View::Map && shell.dispatch_flow.is_none() {
+        if shell.map_details_open {
+            "[Esc] Rail Stations  [D] Dispatch  [?] Help  [Q] Quit"
+        } else if hints_area.width <= 80 {
+            "[↑↓/J K] Stations [Enter] Inspect [D] Dispatch [?] Help [Q] Quit"
+        } else {
+            "[↑↓ / J K] Select Rail Station  [PageUp / PageDown] Scroll  [Enter] Inspect  [D] Manual Dispatch  [?] Help  [Q] Quit"
         }
     } else if shell.active_view == View::Company {
         if shell.company_recovery_review_open {

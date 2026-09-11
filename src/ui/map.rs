@@ -6,7 +6,326 @@
 
 use std::fmt::Write;
 
-use crate::model::{GameState, Journey, Money, RailStationId, TrainStatus, UtcSeconds};
+use crossterm::event::KeyCode;
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+};
+
+use crate::{
+    model::{
+        GameState, Journey, Money, RailStation, RailStationId, Train, TrainStatus, UtcSeconds,
+    },
+    ui::theme,
+};
+
+/// Presentation-only selection for the connected Rail Station list.
+///
+/// The selected stable ID, rather than a list index, keeps the inspector on
+/// the same Rail Station when the game is reconciled or the terminal resizes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StationSelection {
+    selected_station_id: Option<RailStationId>,
+    list_state: ListState,
+    page_size: usize,
+}
+
+impl StationSelection {
+    /// Returns the selected connected Rail Station after reconciling its ID.
+    pub fn selected_station_id(&mut self, state: &GameState) -> Option<RailStationId> {
+        self.synchronize(state);
+        self.selected_station_id
+    }
+
+    /// Moves through connected Rail Stations without changing the Rail Network
+    /// or Passenger Demand.
+    pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
+        self.synchronize(state);
+        let stations = &state.region.rail_authority.rail_network.rail_stations;
+        let Some(selected) = self.list_state.selected() else {
+            return;
+        };
+        let page_size = self.page_size.max(1);
+        let next = match key {
+            KeyCode::Up | KeyCode::Char('k') => selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected
+                .saturating_add(1)
+                .min(stations.len().saturating_sub(1)),
+            KeyCode::PageUp => selected.saturating_sub(page_size),
+            KeyCode::PageDown => selected
+                .saturating_add(page_size)
+                .min(stations.len().saturating_sub(1)),
+            _ => selected,
+        };
+        self.select_index(state, next);
+    }
+
+    fn synchronize(&mut self, state: &GameState) {
+        let stations = &state.region.rail_authority.rail_network.rail_stations;
+        let previous_index = self.list_state.selected().unwrap_or(0);
+        let selected = self
+            .selected_station_id
+            .and_then(|station_id| stations.iter().position(|station| station.id == station_id))
+            .or_else(|| {
+                (!stations.is_empty())
+                    .then_some(previous_index.min(stations.len().saturating_sub(1)))
+            });
+        if let Some(index) = selected {
+            self.selected_station_id = Some(stations[index].id);
+        } else {
+            self.selected_station_id = None;
+            *self.list_state.offset_mut() = 0;
+        }
+        self.list_state.select(selected);
+    }
+
+    fn select_index(&mut self, state: &GameState, index: usize) {
+        let Some(station) = state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .get(index)
+        else {
+            return;
+        };
+        self.selected_station_id = Some(station.id);
+        self.list_state.select(Some(index));
+    }
+
+    fn set_page_size(&mut self, page_size: usize) {
+        self.page_size = page_size.max(1);
+    }
+
+    fn keep_compact_selection_visible(&mut self, visible_items: usize) {
+        let Some(selected) = self.list_state.selected() else {
+            return;
+        };
+        let visible_items = visible_items.max(1);
+        let offset = self.list_state.offset();
+        if selected < offset {
+            *self.list_state.offset_mut() = selected;
+        } else if selected >= offset.saturating_add(visible_items) {
+            *self.list_state.offset_mut() =
+                selected.saturating_add(1).saturating_sub(visible_items);
+        }
+    }
+}
+
+/// Renders the Map's connected Rail Station list and selected-station
+/// inspector. Compact terminals use a focused inspector page opened with
+/// Enter; wide terminals keep both panels visible.
+pub fn render_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut StationSelection,
+    details_open: bool,
+) {
+    selection.synchronize(state);
+    if area.width >= 96 && area.height >= 14 {
+        let [list_area, inspector_area] =
+            Layout::horizontal([Constraint::Min(48), Constraint::Length(38)])
+                .spacing(1)
+                .areas(area);
+        render_station_list(frame, list_area, state, selection, true);
+        render_station_inspector(frame, inspector_area, state, selection, false);
+    } else if details_open {
+        render_station_inspector(frame, area, state, selection, true);
+    } else {
+        render_station_list(frame, area, state, selection, true);
+    }
+}
+
+fn render_station_list(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut StationSelection,
+    focused: bool,
+) {
+    let visible_items = usize::from(area.height.saturating_sub(2)).max(1);
+    selection.set_page_size(visible_items);
+    selection.keep_compact_selection_visible(visible_items);
+    let stations = &state.region.rail_authority.rail_network.rail_stations;
+    let items = stations
+        .iter()
+        .map(|station| {
+            let ready = ready_trains(state, station.id).len();
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("[{:02}] ", station.id.get()), theme::secondary()),
+                Span::raw(station_name(state, station.id)),
+                Span::styled(format!("  {ready} READY"), theme::secondary()),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let list = List::new(items)
+        .block(panel_block("Rail Stations · connected", focused))
+        .highlight_style(theme::selected_row())
+        .highlight_symbol("> ")
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
+    frame.render_stateful_widget(list, area, &mut selection.list_state);
+}
+
+fn render_station_inspector(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut StationSelection,
+    focused: bool,
+) {
+    let selected = selected_station(state, selection);
+    let title = selected.map_or_else(
+        || "Selected Rail Station".to_owned(),
+        |station| {
+            format!(
+                "Rail Station {:02} · {}",
+                station.id.get(),
+                station_name(state, station.id)
+            )
+        },
+    );
+    let mut lines = Vec::new();
+    if let Some(station) = selected {
+        let ready = ready_trains(state, station.id);
+        lines.push(Line::styled(
+            format!("Ready Trains ({})", ready.len()),
+            theme::title(),
+        ));
+        if ready.is_empty() {
+            lines.push(Line::styled(
+                "No READY Trains at this Rail Station.",
+                theme::secondary(),
+            ));
+        } else {
+            lines.extend(ready.into_iter().map(|train| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("Train {:02}  ", train.id.get()),
+                        theme::primary_value(),
+                    ),
+                    Span::raw(train.model_name.clone()),
+                ])
+            }));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Directional Waiting Passengers",
+            theme::title(),
+        ));
+        for destination in state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .iter()
+            .filter(|destination| destination.id != station.id)
+        {
+            let destination_name = station_name(state, destination.id);
+            match state.origin_destination_demand.iter().find(|pool| {
+                pool.origin_station_id == station.id
+                    && pool.destination_station_id == destination.id
+            }) {
+                Some(pool) => lines.push(Line::from(vec![
+                    Span::styled(format!("→ {destination_name:<12}"), theme::secondary()),
+                    Span::raw(format!(
+                        "{} waiting · +{}/h",
+                        pool.waiting_passengers,
+                        pool.passenger_arrival_rate_per_hour.passengers_per_hour()
+                    )),
+                ])),
+                None => lines.push(Line::from(vec![
+                    Span::styled(format!("→ {destination_name:<12}"), theme::secondary()),
+                    Span::styled("Waiting Passengers unavailable", theme::warning()),
+                ])),
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            if focused {
+                "Esc · Rail Stations    D · dispatch"
+            } else {
+                "Enter · focused details    D · dispatch"
+            },
+            theme::hint(),
+        ));
+    } else {
+        lines.push(Line::styled(
+            "Rail Station data unavailable.",
+            theme::warning(),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel_block(&title, focused))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn selected_station<'a>(
+    state: &'a GameState,
+    selection: &mut StationSelection,
+) -> Option<&'a RailStation> {
+    selection.selected_station_id(state).and_then(|station_id| {
+        state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .iter()
+            .find(|station| station.id == station_id)
+    })
+}
+
+fn ready_trains(state: &GameState, station_id: RailStationId) -> Vec<&Train> {
+    state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .filter(|train| matches!(train.status, TrainStatus::Ready { at } if at == station_id))
+        .collect()
+}
+
+fn station_name(state: &GameState, station_id: RailStationId) -> String {
+    state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .find(|station| station.id == station_id)
+        .and_then(|station| {
+            state
+                .region
+                .settlements
+                .iter()
+                .find(|settlement| settlement.id == station.settlement_id)
+        })
+        .map(|settlement| settlement.name.clone())
+        .unwrap_or_else(|| format!("Unknown Rail Station {}", station_id.get()))
+}
+
+fn panel_block(title: &str, focused: bool) -> Block<'_> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(if focused {
+            theme::focused_border()
+        } else {
+            theme::border()
+        })
+        .title(title)
+        .title_style(if focused {
+            theme::focused_title()
+        } else {
+            theme::title()
+        })
+        .style(theme::panel())
+}
 
 /// Renders the current Region, Rail Network, Fleet locations, and Company Funds.
 pub fn render(state: &GameState) -> String {
