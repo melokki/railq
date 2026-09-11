@@ -9,8 +9,8 @@ use std::{error::Error, fmt};
 
 use crate::{
     model::{
-        CalculationError, GameState, Journey, JourneyId, JourneyReceipt, Money, TrainId,
-        TrainStatus, UtcSeconds,
+        CalculationError, GameState, Journey, JourneyId, JourneyReceipt, Money, RailStationId,
+        TrainId, TrainStatus, UtcSeconds,
     },
     sim::demand::replenish_directional_demand,
 };
@@ -59,12 +59,33 @@ impl From<CalculationError> for AdvanceTimeError {
     }
 }
 
+/// One Journey settlement produced by a single reconciliation pass.
+///
+/// This is an in-memory application handoff, not save data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SettledJourney {
+    pub journey_id: JourneyId,
+    pub train_id: TrainId,
+    pub destination_station_id: RailStationId,
+    pub credited_revenue: Money,
+}
+
 /// Advances demand and settles every Journey due at `now`.
 ///
 /// The effective timestamp is the later of `now` and the last processed time.
 /// Every due Journey is removed before a later call can observe it again, so
 /// equal or backward timestamps cannot credit Operating Revenue twice.
 pub fn advance_time(state: &mut GameState, now: UtcSeconds) -> Result<(), AdvanceTimeError> {
+    advance_time_with_arrivals(state, now).map(|_| ())
+}
+
+/// Advances time and returns the Journeys settled during this call.
+///
+/// Callers publish the outcomes only after the candidate state is saved.
+pub fn advance_time_with_arrivals(
+    state: &mut GameState,
+    now: UtcSeconds,
+) -> Result<Vec<SettledJourney>, AdvanceTimeError> {
     let effective_now = now.max(state.last_processed_at);
     let due_journeys: Vec<Journey> = state
         .active_journeys
@@ -138,7 +159,15 @@ pub fn advance_time(state: &mut GameState, now: UtcSeconds) -> Result<(), Advanc
             fuel_cost: journey.fuel_cost,
         }));
 
-    Ok(())
+    Ok(due_journeys
+        .into_iter()
+        .map(|journey| SettledJourney {
+            journey_id: journey.id,
+            train_id: journey.train_id,
+            destination_station_id: journey.destination_station_id,
+            credited_revenue: journey.operating_revenue,
+        })
+        .collect())
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use crate::{
         fleet::{FleetError, purchase_train, sell_train},
         journeys::{DispatchError, dispatch_journey},
         services::{ServiceError, find_or_create_service},
-        time::{AdvanceTimeError, advance_time},
+        time::{AdvanceTimeError, SettledJourney, advance_time, advance_time_with_arrivals},
         world::create_new_game,
     },
     storage::{SaveSlot, SaveSlotError},
@@ -116,6 +116,20 @@ pub struct App<S> {
     store: S,
 }
 
+/// A loaded application together with arrivals durably settled during loading.
+#[derive(Debug)]
+pub struct LoadedApp<S> {
+    app: App<S>,
+    settled_arrivals: Vec<SettledJourney>,
+}
+
+impl<S> LoadedApp<S> {
+    /// Separates the playable application from its one-time startup outcomes.
+    pub fn into_parts(self) -> (App<S>, Vec<SettledJourney>) {
+        (self.app, self.settled_arrivals)
+    }
+}
+
 impl<S: GameStore> App<S> {
     /// Persists a freshly created Player Company before allowing play.
     pub fn start_new(store: S, state: GameState) -> Result<Self, AppError<S::Error>> {
@@ -127,19 +141,28 @@ impl<S: GameStore> App<S> {
     /// before exposing it to the caller. A missing save remains an onboarding
     /// condition rather than a silently generated fresh game.
     pub fn load(store: S, now: UtcSeconds) -> Result<Option<Self>, AppError<S::Error>> {
-        Ok(Self::load_or_empty(store, now)?.ok())
+        Ok(Self::load_or_empty(store, now)?
+            .ok()
+            .map(|loaded| loaded.into_parts().0))
     }
 
     /// Loads a saved Player Company or returns the still-owned empty store for
     /// onboarding. This keeps the exclusive save-slot lock open between a
     /// missing-save check and the first persisted Player Company.
-    pub fn load_or_empty(store: S, now: UtcSeconds) -> Result<Result<Self, S>, AppError<S::Error>> {
+    pub fn load_or_empty(
+        store: S,
+        now: UtcSeconds,
+    ) -> Result<Result<LoadedApp<S>, S>, AppError<S::Error>> {
         let Some(mut state) = store.load().map_err(AppError::Load)? else {
             return Ok(Err(store));
         };
-        advance_time(&mut state, now).map_err(AppError::Advance)?;
+        let settled_arrivals =
+            advance_time_with_arrivals(&mut state, now).map_err(AppError::Advance)?;
         store.save(&state).map_err(AppError::Save)?;
-        Ok(Ok(Self { state, store }))
+        Ok(Ok(LoadedApp {
+            app: Self { state, store },
+            settled_arrivals,
+        }))
     }
 
     /// Returns the last successfully persisted, published game state.
@@ -566,6 +589,44 @@ mod tests {
             second_load.state().financials.recent_journey_receipts.len(),
             1
         );
+    }
+
+    #[test]
+    fn loading_hands_off_only_the_arrivals_committed_by_that_load() {
+        let store = TestStore::default();
+        let state = dispatched_game();
+        let journey = state.active_journeys[0].clone();
+        App::start_new(store.clone(), state).unwrap();
+
+        let loaded = App::load_or_empty(store.clone(), journey.arrives_at)
+            .unwrap()
+            .unwrap();
+        let (first_load, arrivals) = loaded.into_parts();
+        assert_eq!(arrivals.len(), 1);
+        assert_eq!(arrivals[0].journey_id, journey.id);
+        assert_eq!(arrivals[0].credited_revenue, journey.operating_revenue);
+        drop(first_load);
+
+        let loaded = App::load_or_empty(store, journey.arrives_at)
+            .unwrap()
+            .unwrap();
+        let (_, arrivals) = loaded.into_parts();
+        assert!(arrivals.is_empty());
+    }
+
+    #[test]
+    fn failed_load_reconciliation_does_not_hand_off_arrivals() {
+        let store = TestStore::default();
+        let state = dispatched_game();
+        let arrives_at = state.active_journeys[0].arrives_at;
+        App::start_new(store.clone(), state.clone()).unwrap();
+        store.fail_next_save.set(true);
+
+        assert!(matches!(
+            App::load_or_empty(store.clone(), arrives_at),
+            Err(AppError::Save(TestStoreError::SimulatedWriteFailure))
+        ));
+        assert_eq!(store.load().unwrap(), Some(state));
     }
 
     #[test]

@@ -16,11 +16,15 @@ use railq::{
         fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
         time::advance_time, world::create_new_game,
     },
-    ui::{Shell, capture_rendered_buffer},
+    ui::{
+        Shell, capture_rendered_buffer,
+        start::{Startup, start},
+    },
 };
 
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_700_000_000);
 const EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/24";
+const STARTUP_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/24a";
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -134,4 +138,79 @@ fn rejected_reconciliation_publishes_no_arrival_or_revenue_notice() {
     let rendered = capture_rendered_buffer(&shell, app.state(), 120, 40);
     assert!(!rendered.contains("arrived"));
     assert!(!rendered.contains("credited"));
+}
+
+#[test]
+fn startup_arrivals_use_the_live_summary_once_after_the_save_succeeds() -> Result<(), Box<dyn Error>>
+{
+    let store = RejectingStore::default();
+    let state = travelling_state();
+    let arrives_at = state.active_journeys[0].arrives_at;
+    App::start_new(store.clone(), state.clone()).expect("initial save");
+
+    let Startup::Dashboard(dashboard) = start(store.clone(), arrives_at).expect("startup") else {
+        panic!("saved Player Company opens the dashboard");
+    };
+    let (app, arrivals) = dashboard.into_parts();
+    assert_eq!(arrivals.len(), 2);
+    assert!(app.state().active_journeys.is_empty());
+    let mut shell = Shell::new();
+    shell.publish_settled_arrivals(app.state(), &arrivals);
+    let summary = capture_rendered_buffer(&shell, app.state(), 120, 40);
+    assert!(summary.contains("2 Journeys arrived"));
+    assert!(summary.contains("Company Funds"));
+    fs::create_dir_all(STARTUP_EVIDENCE_DIR)?;
+    fs::write(
+        Path::new(STARTUP_EVIDENCE_DIR).join("offline-arrival-summary-120x40.txt"),
+        &summary,
+    )?;
+
+    shell.handle_key(key(KeyCode::Enter), app.state());
+    let details = capture_rendered_buffer(&shell, app.state(), 80, 24);
+    assert!(details.contains("Arrival summary"));
+    assert!(details.contains("Train 01 arrived at"));
+    assert!(details.contains("Train 02 arrived at"));
+    fs::write(
+        Path::new(STARTUP_EVIDENCE_DIR).join("offline-arrival-details-80x24.txt"),
+        &details,
+    )?;
+    drop(app);
+
+    let Startup::Dashboard(dashboard) = start(store, arrives_at).expect("reopen") else {
+        panic!("saved Player Company opens the dashboard");
+    };
+    let (app, arrivals) = dashboard.into_parts();
+    assert!(arrivals.is_empty());
+    let shell = Shell::new();
+    let reopened = capture_rendered_buffer(&shell, app.state(), 120, 40);
+    assert!(!reopened.contains("arrived"));
+    Ok(())
+}
+
+#[test]
+fn failed_startup_save_has_no_arrival_summary() {
+    let store = RejectingStore::default();
+    let state = travelling_state();
+    let arrives_at = state.active_journeys[0].arrives_at;
+    App::start_new(store.clone(), state.clone()).expect("initial save");
+    store.reject_next_save.set(true);
+
+    assert!(start(store.clone(), arrives_at).is_err());
+    assert_eq!(store.load().expect("saved state"), Some(state));
+}
+
+#[test]
+fn startup_before_eta_has_no_completed_arrival() {
+    let store = RejectingStore::default();
+    let state = travelling_state();
+    let before_eta =
+        UtcSeconds::from_unix_seconds(state.active_journeys[0].arrives_at.unix_seconds() - 1);
+    App::start_new(store.clone(), state).expect("initial save");
+
+    let Startup::Dashboard(dashboard) = start(store, before_eta).expect("startup") else {
+        panic!("saved Player Company opens the dashboard");
+    };
+    let (app, arrivals) = dashboard.into_parts();
+    assert!(arrivals.is_empty());
+    assert_eq!(app.state().active_journeys.len(), 2);
 }

@@ -9,6 +9,7 @@ use std::{error::Error, fmt};
 use crate::{
     app::{App, AppError, GameStore},
     model::{GameState, UtcSeconds},
+    sim::time::SettledJourney,
     sim::world::create_new_game,
 };
 
@@ -80,9 +81,23 @@ impl Error for CompanyNameError {}
 #[derive(Debug)]
 pub enum Startup<S> {
     /// A validated Player Company is ready for the terminal dashboard.
-    Dashboard(Box<App<S>>),
+    Dashboard(StartupDashboard<S>),
     /// No save exists, so the player must name a new Player Company.
     Onboarding(Onboarding<S>),
+}
+
+/// The initial dashboard application and arrivals committed while loading.
+#[derive(Debug)]
+pub struct StartupDashboard<S> {
+    app: Box<App<S>>,
+    settled_arrivals: Vec<SettledJourney>,
+}
+
+impl<S> StartupDashboard<S> {
+    /// Consumes the one-time startup handoff before entering the shell.
+    pub fn into_parts(self) -> (Box<App<S>>, Vec<SettledJourney>) {
+        (self.app, self.settled_arrivals)
+    }
 }
 
 /// An exclusively owned empty save slot awaiting a new Player Company.
@@ -116,7 +131,13 @@ pub fn start<S: GameStore>(
     now: UtcSeconds,
 ) -> Result<Startup<S>, StartupError<S::Error>> {
     match App::load_or_empty(store, now).map_err(StartupError::Load)? {
-        Ok(app) => Ok(Startup::Dashboard(Box::new(app))),
+        Ok(loaded) => {
+            let (app, settled_arrivals) = loaded.into_parts();
+            Ok(Startup::Dashboard(StartupDashboard {
+                app: Box::new(app),
+                settled_arrivals,
+            }))
+        }
         Err(store) => Ok(Startup::Onboarding(Onboarding { store })),
     }
 }
@@ -265,7 +286,9 @@ mod tests {
         let Startup::Dashboard(app) = start(store, STARTED_AT).unwrap() else {
             panic!("an existing save opens the dashboard");
         };
+        let (app, settled_arrivals) = app.into_parts();
         assert_eq!(app.state(), &saved_game);
+        assert!(settled_arrivals.is_empty());
     }
 
     #[test]

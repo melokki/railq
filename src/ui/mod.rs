@@ -30,7 +30,10 @@ use ratatui::{
 use crate::{
     APPLICATION_NAME,
     model::{GameState, Money, RailStationId, TrainId, TrainStatus, UtcSeconds},
-    sim::finance::{FinancialStatus, evaluate_financial_recovery},
+    sim::{
+        finance::{FinancialStatus, evaluate_financial_recovery},
+        time::SettledJourney,
+    },
 };
 
 pub mod company;
@@ -751,51 +754,53 @@ impl Shell {
     /// The shell retains no notification history: comparing the committed
     /// before/after states makes a repeated redraw or reconciliation a no-op.
     pub fn publish_committed_arrivals(&mut self, before: &GameState, after: &GameState) {
-        let arrivals = after
-            .financials
-            .recent_journey_receipts
+        let arrivals = before
+            .active_journeys
             .iter()
-            .filter(|receipt| {
-                !before
-                    .financials
-                    .recent_journey_receipts
-                    .iter()
-                    .any(|previous| previous.journey_id == receipt.journey_id)
-            })
-            .filter_map(|receipt| {
-                before
+            .filter(|journey| {
+                !after
                     .active_journeys
                     .iter()
-                    .find(|journey| journey.id == receipt.journey_id)
-                    .map(|journey| (journey, receipt.revenue))
+                    .any(|next| next.id == journey.id)
+            })
+            .map(|journey| SettledJourney {
+                journey_id: journey.id,
+                train_id: journey.train_id,
+                destination_station_id: journey.destination_station_id,
+                credited_revenue: journey.operating_revenue,
             })
             .collect::<Vec<_>>();
+        self.publish_settled_arrivals(after, &arrivals);
+    }
+
+    /// Shows arrivals supplied by a reconciliation that has already saved.
+    pub fn publish_settled_arrivals(&mut self, state: &GameState, arrivals: &[SettledJourney]) {
         if arrivals.is_empty() {
             return;
         }
 
-        let credited_revenue = arrivals.iter().fold(Money::ZERO, |total, (_, revenue)| {
-            total.checked_add(*revenue).unwrap_or(total)
+        let credited_revenue = arrivals.iter().fold(Money::ZERO, |total, arrival| {
+            total.checked_add(arrival.credited_revenue).unwrap_or(total)
         });
-        let funds = format_money(after.player_company.funds);
+        let funds = format_money(state.player_company.funds);
         let details = arrivals
             .iter()
-            .map(|(journey, revenue)| {
+            .map(|arrival| {
                 format!(
                     "Train {:02} arrived at {} — {} credited.",
-                    journey.train_id.get(),
-                    arrival_station_label(after, journey.destination_station_id),
-                    signed_money(*revenue),
+                    arrival.train_id.get(),
+                    arrival_station_label(state, arrival.destination_station_id),
+                    signed_money(arrival.credited_revenue),
                 )
             })
             .chain(std::iter::once(format!("Current Company Funds: {funds}.")))
             .collect();
-        let summary = match arrivals.as_slice() {
-            [(journey, revenue)] => format!(
+        let summary = match arrivals {
+            [arrival] => format!(
                 "Train {:02} arrived at {} — {} credited; Company Funds {}.",
-                journey.train_id.get(),
-                arrival_station_label(after, journey.destination_station_id),
-                signed_money(*revenue),
+                arrival.train_id.get(),
+                arrival_station_label(state, arrival.destination_station_id),
+                signed_money(arrival.credited_revenue),
                 funds,
             ),
             _ => format!(
@@ -989,6 +994,18 @@ impl<E: Error + 'static> Error for RunError<E> {
 /// on ordinary errors and while unwinding a panic.
 pub fn run_terminal<E>(
     initial_state: GameState,
+    command: impl FnMut(TerminalCommand) -> Result<GameState, E>,
+) -> Result<(), RunError<E>>
+where
+    E: fmt::Display,
+{
+    run_terminal_with_arrivals(initial_state, Vec::new(), command)
+}
+
+/// Runs the terminal shell with arrivals committed while loading a save.
+pub fn run_terminal_with_arrivals<E>(
+    initial_state: GameState,
+    startup_arrivals: Vec<SettledJourney>,
     mut command: impl FnMut(TerminalCommand) -> Result<GameState, E>,
 ) -> Result<(), RunError<E>>
 where
@@ -996,7 +1013,7 @@ where
 {
     let mut terminal = TerminalSession::enter().map_err(RunError::Terminal)?;
     let result = catch_unwind(AssertUnwindSafe(|| {
-        run_event_loop(&mut terminal, initial_state, &mut command)
+        run_event_loop(&mut terminal, initial_state, startup_arrivals, &mut command)
     }));
     let restore_result = terminal.restore();
 
@@ -1016,12 +1033,14 @@ where
 fn run_event_loop<E>(
     terminal: &mut TerminalSession,
     mut state: GameState,
+    startup_arrivals: Vec<SettledJourney>,
     command: &mut impl FnMut(TerminalCommand) -> Result<GameState, E>,
 ) -> Result<(), RunError<E>>
 where
     E: fmt::Display,
 {
     let mut shell = Shell::new();
+    shell.publish_settled_arrivals(&state, &startup_arrivals);
 
     loop {
         terminal

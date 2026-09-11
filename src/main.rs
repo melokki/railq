@@ -16,7 +16,10 @@ use railq::{
 fn main() -> Result<(), Box<dyn Error>> {
     let slot = SaveSlot::open_default()?;
     match start(slot, current_utc_seconds())? {
-        Startup::Dashboard(mut app) => run_dashboard(&mut app)?,
+        Startup::Dashboard(dashboard) => {
+            let (mut app, settled_arrivals) = dashboard.into_parts();
+            run_dashboard(&mut app, settled_arrivals)?;
+        }
         Startup::Onboarding(onboarding) => run_onboarding(onboarding)?,
     }
     Ok(())
@@ -45,12 +48,15 @@ fn run_onboarding(
     println!("\n{}\n", onboarding_summary(&game));
     let mut app = onboarding.save(game)?;
     println!("Player Company saved. Opening dashboard...");
-    run_dashboard(&mut app)?;
+    run_dashboard(&mut app, Vec::new())?;
     Ok(())
 }
 
-fn run_dashboard(app: &mut railq::app::App<SaveSlot>) -> Result<(), Box<dyn Error>> {
-    ui::run_terminal(app.state().clone(), |command| {
+fn run_dashboard(
+    app: &mut railq::app::App<SaveSlot>,
+    settled_arrivals: Vec<railq::sim::time::SettledJourney>,
+) -> Result<(), Box<dyn Error>> {
+    ui::run_terminal_with_arrivals(app.state().clone(), settled_arrivals, |command| {
         match command {
             ui::TerminalCommand::Reconcile { now } => app.reconcile(now)?,
             ui::TerminalCommand::ManualDispatch {
