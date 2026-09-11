@@ -147,6 +147,8 @@ pub struct Shell {
     fleet_focus: FleetFocus,
     fleet_split_visible: bool,
     market_flow: Option<market::MarketFlow>,
+    company_receipt_selection: company::ReceiptSelection,
+    company_receipt_details_open: bool,
     notice: Option<String>,
     help_visible: bool,
     restart_confirmation: bool,
@@ -164,6 +166,8 @@ impl Shell {
             fleet_focus: FleetFocus::List,
             fleet_split_visible: false,
             market_flow: None,
+            company_receipt_selection: company::ReceiptSelection::default(),
+            company_receipt_details_open: false,
             notice: None,
             help_visible: false,
             restart_confirmation: false,
@@ -287,8 +291,22 @@ impl Shell {
                 self.fleet_focus = FleetFocus::List;
                 self.fleet_split_visible = false;
             }
-            KeyCode::Char('c' | 'C') => self.active_view = View::Company,
+            KeyCode::Char('c' | 'C') => {
+                self.active_view = View::Company;
+                self.company_receipt_details_open = false;
+            }
             KeyCode::Char('b' | 'B') => self.active_view = View::BuyTrains,
+            KeyCode::Enter if self.active_view == View::Company => {
+                if self.company_receipt_selection.has_selection(state) {
+                    self.company_receipt_details_open = true;
+                    self.notice = None;
+                }
+            }
+            KeyCode::Esc
+                if self.active_view == View::Company && self.company_receipt_details_open =>
+            {
+                self.company_receipt_details_open = false;
+            }
             KeyCode::Enter if self.active_view == View::BuyTrains => {
                 match market::MarketFlow::start(state) {
                     Ok(flow) => {
@@ -343,6 +361,15 @@ impl Shell {
                 if self.active_view == View::Trains =>
             {
                 self.fleet_selection.handle_key(key.code, state);
+            }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K')
+                if self.active_view == View::Company && !self.company_receipt_details_open =>
+            {
+                self.company_receipt_selection.handle_key(key.code, state);
             }
             KeyCode::Char('d' | 'D') if self.active_view == View::Map => {
                 match dispatch::DispatchFlow::start(state) {
@@ -807,7 +834,13 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             );
         }
     } else if shell.active_view == View::Company && !shell.help_visible && !is_bankrupt(state) {
-        company::render_dashboard(frame, content_area, state);
+        company::render_dashboard(
+            frame,
+            content_area,
+            state,
+            &mut shell.company_receipt_selection,
+            shell.company_receipt_details_open,
+        );
     } else {
         let content = if shell.help_visible {
             help_text()
@@ -863,6 +896,14 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             "[↑↓/J K] Select [Enter] Inspect [S] Resale [?] Help [Q] Quit"
         } else {
             "[↑↓ / J K] Select Train  [PageUp / PageDown] Scroll  [Enter] Inspect  [S] Resale  [Tab] Panel  [?] Help  [Q] Quit"
+        }
+    } else if shell.active_view == View::Company {
+        if shell.company_receipt_details_open {
+            "[Esc] Retained receipts  [M/T/C/B] Navigate  [?] Help  [Q] Quit"
+        } else if hints_area.width <= 80 {
+            "[↑↓/J K] Receipts [Enter] Detail [?] Help [Q] Quit"
+        } else {
+            "[↑↓ / J K] Select receipt  [PageUp / PageDown] Scroll  [Enter] Inspect  [Esc] Close detail  [?] Help  [Q] Quit"
         }
     } else if hints_area.width <= 80 {
         "[M] [T] [C] [B] [D] Dispatch [Enter] Select [?] Help [Q] Quit"

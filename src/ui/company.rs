@@ -6,16 +6,17 @@
 
 use std::fmt::Write;
 
+use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Cell, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
 };
 
 use crate::{
-    model::{GameState, Money, RailStationId},
+    model::{GameState, JourneyId, JourneyReceipt, Money, RailStationId},
     sim::finance::{
         FinancialEvaluation, FinancialStatus, RecoveryJourney, RecoveryOption,
         evaluate_financial_recovery,
@@ -23,23 +24,136 @@ use crate::{
     ui::theme,
 };
 
-const MAXIMUM_RECEIPTS_SHOWN: usize = 5;
 const MAXIMUM_RECOVERY_OPTIONS_SHOWN: usize = 3;
 
-/// Renders the Company workspace as aligned Ratatui panels. The compact
-/// layouts keep the same source totals but trade the receipt table for dense,
-/// labelled rows so the financial picture remains readable while resizing.
-pub fn render_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
+/// Persistent receipt browsing state. A receipt is selected by Journey ID, not
+/// table position, so a newly settled Journey cannot move the reader to a
+/// different receipt.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ReceiptSelection {
+    selected_journey_id: Option<JourneyId>,
+    table_state: TableState,
+    page_size: usize,
+}
+
+impl ReceiptSelection {
+    /// Moves the retained-receipt selection without changing the saved game.
+    pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
+        self.synchronize(state);
+        let receipt_count = state.financials.recent_journey_receipts.len();
+        let Some(selected) = self.table_state.selected() else {
+            return;
+        };
+        let page_size = self.page_size.max(1);
+        let next = match key {
+            KeyCode::Up | KeyCode::Char('k') => selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected
+                .saturating_add(1)
+                .min(receipt_count.saturating_sub(1)),
+            KeyCode::PageUp => selected.saturating_sub(page_size),
+            KeyCode::PageDown => selected
+                .saturating_add(page_size)
+                .min(receipt_count.saturating_sub(1)),
+            _ => selected,
+        };
+        self.select_index(state, next);
+    }
+
+    /// Returns whether a receipt can be inspected after reconciling arrivals.
+    pub fn has_selection(&mut self, state: &GameState) -> bool {
+        self.synchronize(state);
+        self.selected_journey_id.is_some()
+    }
+
+    fn synchronize(&mut self, state: &GameState) {
+        let receipts = &state.financials.recent_journey_receipts;
+        let previous_index = self.table_state.selected().unwrap_or(0);
+        let selected = self
+            .selected_journey_id
+            .and_then(|journey_id| {
+                receipts
+                    .iter()
+                    .rev()
+                    .position(|receipt| receipt.journey_id == journey_id)
+            })
+            .or_else(|| {
+                (!receipts.is_empty())
+                    .then_some(previous_index.min(receipts.len().saturating_sub(1)))
+            });
+        self.selected_journey_id = selected.and_then(|index| {
+            receipts
+                .iter()
+                .rev()
+                .nth(index)
+                .map(|receipt| receipt.journey_id)
+        });
+        if selected.is_none() {
+            *self.table_state.offset_mut() = 0;
+        }
+        self.table_state.select(selected);
+    }
+
+    fn select_index(&mut self, state: &GameState, index: usize) {
+        let Some(receipt) = state
+            .financials
+            .recent_journey_receipts
+            .iter()
+            .rev()
+            .nth(index)
+        else {
+            return;
+        };
+        self.selected_journey_id = Some(receipt.journey_id);
+        self.table_state.select(Some(index));
+    }
+
+    fn selected_receipt<'a>(&mut self, state: &'a GameState) -> Option<&'a JourneyReceipt> {
+        self.synchronize(state);
+        self.selected_journey_id.and_then(|journey_id| {
+            state
+                .financials
+                .recent_journey_receipts
+                .iter()
+                .find(|receipt| receipt.journey_id == journey_id)
+        })
+    }
+
+    fn set_page_size(&mut self, page_size: usize) {
+        self.page_size = page_size.max(1);
+    }
+}
+
+/// Renders the Company workspace as aligned Ratatui panels. Compact layouts
+/// keep the financial totals beside a scrollable receipt table; full receipt
+/// detail opens as a focused page when the inspector cannot fit.
+pub fn render_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut ReceiptSelection,
+    receipt_details_open: bool,
+) {
+    selection.synchronize(state);
+    if receipt_details_open && !(area.width >= 100 && area.height >= 20) {
+        render_compact_receipt_details(frame, area, state, selection);
+        return;
+    }
     if area.width >= 100 && area.height >= 20 {
-        render_wide_dashboard(frame, area, state);
+        render_wide_dashboard(frame, area, state, selection, receipt_details_open);
     } else if area.width >= 76 && area.height >= 12 {
-        render_compact_dashboard(frame, area, state);
+        render_compact_dashboard(frame, area, state, selection);
     } else {
         render_tiny_dashboard(frame, area, state);
     }
 }
 
-fn render_wide_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
+fn render_wide_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut ReceiptSelection,
+    receipt_details_open: bool,
+) {
     let evaluation = evaluate_financial_recovery(state);
     let [summary_area, totals_area, history_area] = Layout::vertical([
         Constraint::Length(5),
@@ -61,11 +175,25 @@ fn render_wide_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
         Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
             .spacing(1)
             .areas(history_area);
-    render_receipts_table(frame, receipts_area, state);
-    render_recovery_panel(frame, recovery_area, state, &evaluation);
+    render_receipts_table(frame, receipts_area, state, selection, true);
+    if receipt_details_open {
+        render_receipt_details(
+            frame,
+            recovery_area,
+            selection.selected_receipt(state),
+            true,
+        );
+    } else {
+        render_recovery_panel(frame, recovery_area, state, &evaluation);
+    }
 }
 
-fn render_compact_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
+fn render_compact_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut ReceiptSelection,
+) {
     let evaluation = evaluate_financial_recovery(state);
     let block = panel_block("Financial overview", true);
     let inner = block.inner(area);
@@ -75,8 +203,8 @@ fn render_compact_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Fill(1)])
             .spacing(1)
             .areas(inner);
-    render_compact_summary(frame, summary_area, state);
-    render_compact_status(frame, status_area, state, &evaluation);
+    render_compact_summary(frame, summary_area, state, &evaluation);
+    render_receipts_table(frame, status_area, state, selection, false);
 }
 
 fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
@@ -223,52 +351,78 @@ fn render_totals_table(frame: &mut Frame, area: Rect, state: &GameState) {
     frame.render_widget(table, area);
 }
 
-fn render_receipts_table(frame: &mut Frame, area: Rect, state: &GameState) {
-    let rows = if state.financials.recent_journey_receipts.is_empty() {
-        vec![Row::new(["—", "No", "settled", "receipts", "yet"])]
+fn render_receipts_table(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut ReceiptSelection,
+    wide: bool,
+) {
+    let receipts = &state.financials.recent_journey_receipts;
+    let title = format!("Journey receipts · {} retained history", receipts.len());
+    if receipts.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No retained Journey receipts yet. Operating Revenue is credited when a Journey arrives.")
+                .block(panel_block(&title, true))
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+
+    let visible_items = usize::from(area.height.saturating_sub(5)).max(1);
+    selection.set_page_size(visible_items);
+    let rows = receipts.iter().rev().map(|receipt| {
+        let result = receipt_result_cents(
+            receipt.revenue,
+            receipt.infrastructure_access_fee,
+            receipt.fuel_cost,
+        );
+        if wide {
+            Row::new([
+                Cell::from(format!("J{:02}", receipt.journey_id.get())),
+                Cell::from(format_money(receipt.revenue)),
+                Cell::from(format_money(receipt.infrastructure_access_fee)),
+                Cell::from(format_money(receipt.fuel_cost)),
+                Cell::from(format_signed_cents(result)).style(result_style(result)),
+            ])
+        } else {
+            Row::new([
+                Cell::from(format!("J{}", receipt.journey_id.get())),
+                Cell::from(format_money(receipt.revenue)),
+                Cell::from(format_signed_cents(result)).style(result_style(result)),
+            ])
+        }
+    });
+    let (header, widths) = if wide {
+        (
+            Row::new(["Journey", "Revenue", "Access fees", "Fuel", "Signed result"]),
+            vec![
+                Constraint::Length(7),
+                Constraint::Length(15),
+                Constraint::Length(15),
+                Constraint::Length(13),
+                Constraint::Length(15),
+            ],
+        )
     } else {
-        state
-            .financials
-            .recent_journey_receipts
-            .iter()
-            .rev()
-            .take(MAXIMUM_RECEIPTS_SHOWN)
-            .map(|receipt| {
-                let result = receipt_result_cents(
-                    receipt.revenue,
-                    receipt.infrastructure_access_fee,
-                    receipt.fuel_cost,
-                );
-                Row::new([
-                    Cell::from(format!("J{:02}", receipt.journey_id.get())),
-                    Cell::from(format_money(receipt.revenue)),
-                    Cell::from(format_money(receipt.infrastructure_access_fee)),
-                    Cell::from(format_money(receipt.fuel_cost)),
-                    Cell::from(format_signed_cents(result)).style(result_style(result)),
-                ])
-            })
-            .collect()
+        (
+            Row::new(["ID", "Revenue", "Result"]),
+            vec![
+                Constraint::Length(5),
+                Constraint::Fill(1),
+                Constraint::Length(12),
+            ],
+        )
     };
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(7),
-            Constraint::Length(15),
-            Constraint::Length(15),
-            Constraint::Length(13),
-            Constraint::Length(15),
-        ],
-    )
-    .header(
-        Row::new(["Journey", "Revenue", "Access fees", "Fuel", "Signed result"])
-            .style(theme::table_header())
-            .bottom_margin(1),
-    )
-    .block(panel_block(
-        "Latest Journey receipts · retained history",
-        false,
-    ));
-    frame.render_widget(table, area);
+    let table = Table::new(rows, widths)
+        .header(header.style(theme::table_header()).bottom_margin(1))
+        .block(panel_block(&title, true))
+        .row_highlight_style(theme::selected_row())
+        .highlight_symbol("> ")
+        .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, area, &mut selection.table_state);
 }
 
 fn render_recovery_panel(
@@ -333,13 +487,25 @@ fn render_recovery_panel(
     );
 }
 
-fn render_compact_summary(frame: &mut Frame, area: Rect, state: &GameState) {
+fn render_compact_summary(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
+) {
     let block = panel_block("At a glance", false);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let lines = vec![
+    let mut lines = vec![
+        match evaluation {
+            Ok(evaluation) => Line::styled(
+                status_label(evaluation.status),
+                status_style(Some(evaluation.status)),
+            ),
+            Err(error) => Line::styled(format!("[?] STATUS UNAVAILABLE: {error}"), theme::error()),
+        },
         financial_line(
-            "Funds",
+            "Company Funds",
             format_money(state.player_company.funds),
             theme::title(),
         ),
@@ -370,6 +536,15 @@ fn render_compact_summary(frame: &mut Frame, area: Rect, state: &GameState) {
             result_style(operating_result_cents(state)),
         ),
     ];
+    if let Ok(evaluation) = evaluation
+        && let Some(option) = evaluation.recovery_options.first()
+    {
+        lines.push(Line::styled("Recovery option", theme::secondary()));
+        lines.push(Line::styled(
+            compact_recovery_description(state, option),
+            theme::primary_value(),
+        ));
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::panel())
@@ -378,70 +553,78 @@ fn render_compact_summary(frame: &mut Frame, area: Rect, state: &GameState) {
     );
 }
 
-fn render_compact_status(
+fn render_receipt_details(
     frame: &mut Frame,
     area: Rect,
-    state: &GameState,
-    evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
+    receipt: Option<&JourneyReceipt>,
+    compact: bool,
 ) {
-    let block = panel_block("Status & history", false);
+    let title = if compact {
+        "Journey receipt · retained history"
+    } else {
+        "Selected Journey receipt"
+    };
+    let block = panel_block(title, true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let mut lines = match evaluation {
-        Ok(evaluation) => vec![
-            Line::styled(
-                status_label(evaluation.status),
-                status_style(Some(evaluation.status)),
-            ),
-            Line::styled(status_explanation(evaluation.status), theme::secondary()),
-        ],
-        Err(error) => vec![Line::styled(
-            format!("Status unavailable: {error}"),
-            theme::error(),
+    let lines = match receipt {
+        Some(receipt) => {
+            let result = receipt_result_cents(
+                receipt.revenue,
+                receipt.infrastructure_access_fee,
+                receipt.fuel_cost,
+            );
+            vec![
+                Line::styled(
+                    format!("Journey {} · retained receipt", receipt.journey_id.get()),
+                    theme::title(),
+                ),
+                Line::from(""),
+                financial_line(
+                    "Operating Revenue",
+                    format_money(receipt.revenue),
+                    theme::primary_value(),
+                ),
+                financial_line(
+                    "Access fees",
+                    format_money(receipt.infrastructure_access_fee),
+                    theme::primary_value(),
+                ),
+                financial_line(
+                    "Fuel cost",
+                    format_money(receipt.fuel_cost),
+                    theme::primary_value(),
+                ),
+                financial_line(
+                    "Signed profit",
+                    format_signed_cents(result),
+                    result_style(result),
+                ),
+                Line::from(""),
+                Line::styled("Esc returns to retained receipts.", theme::secondary()),
+            ]
+        }
+        None => vec![Line::styled(
+            "The selected receipt is no longer retained.",
+            theme::secondary(),
         )],
     };
-    lines.push(Line::from(""));
-    let receipts = &state.financials.recent_journey_receipts;
-    lines.push(Line::styled(
-        format!("Receipts · {} retained", receipts.len()),
-        theme::secondary(),
-    ));
-    if let Some(receipt) = receipts.last() {
-        let result = receipt_result_cents(
-            receipt.revenue,
-            receipt.infrastructure_access_fee,
-            receipt.fuel_cost,
-        );
-        lines.push(Line::styled(
-            format!(
-                "Latest J{:02} · {}",
-                receipt.journey_id.get(),
-                format_signed_cents(result)
-            ),
-            result_style(result),
-        ));
-    } else {
-        lines.push(Line::styled("No settled receipts yet.", theme::secondary()));
-    }
-    if let Ok(evaluation) = evaluation {
-        lines.push(Line::from(""));
-        lines.push(Line::styled(
-            format!("Recovery options · {}", evaluation.recovery_options.len()),
-            theme::secondary(),
-        ));
-        if let Some(option) = evaluation.recovery_options.first() {
-            lines.push(Line::styled(
-                compact_recovery_description(state, option),
-                theme::primary_value(),
-            ));
-        }
-    }
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         inner,
     );
+}
+
+fn render_compact_receipt_details(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut ReceiptSelection,
+) {
+    let receipt = selection.selected_receipt(state);
+    render_receipt_details(frame, area, receipt, true);
 }
 
 fn panel_block(title: &str, focused: bool) -> Block<'_> {
@@ -632,7 +815,7 @@ fn render_receipts(output: &mut String, state: &GameState) {
         return;
     }
 
-    for receipt in receipts.iter().rev().take(MAXIMUM_RECEIPTS_SHOWN) {
+    for receipt in receipts.iter().rev() {
         let profitability = i128::from(receipt.revenue.cents())
             - i128::from(receipt.infrastructure_access_fee.cents())
             - i128::from(receipt.fuel_cost.cents());
@@ -644,14 +827,6 @@ fn render_receipts(output: &mut String, state: &GameState) {
             format_money(receipt.infrastructure_access_fee),
             format_money(receipt.fuel_cost),
             format_cents(profitability),
-        )
-        .expect("writing to a String cannot fail");
-    }
-    if receipts.len() > MAXIMUM_RECEIPTS_SHOWN {
-        writeln!(
-            output,
-            "  Showing the latest {MAXIMUM_RECEIPTS_SHOWN} of {} receipts.",
-            receipts.len(),
         )
         .expect("writing to a String cannot fail");
     }
