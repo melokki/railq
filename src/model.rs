@@ -421,6 +421,16 @@ pub struct Fleet {
 pub struct Train {
     pub id: TrainId,
     pub status: TrainStatus,
+    /// The catalogue name captured when this Train joined the Fleet.
+    pub model_name: String,
+    /// The amount paid when this Train was purchased.
+    ///
+    /// Resale is calculated from this original price, not a later catalogue
+    /// price.
+    pub original_purchase_price: Money,
+    pub passenger_capacity: PassengerCapacity,
+    pub speed: SpeedMetresPerSecond,
+    pub fuel_cost_per_kilometre: MoneyPerKilometre,
 }
 
 /// The mutually exclusive operating status of a Train.
@@ -684,6 +694,11 @@ mod tests {
                     trains: vec![Train {
                         id: train_id,
                         status: TrainStatus::Ready { at: station_id },
+                        model_name: "Test diesel".into(),
+                        original_purchase_price: Money::from_cents(5_000),
+                        passenger_capacity: PassengerCapacity::new(40).unwrap(),
+                        speed: SpeedMetresPerSecond::new(20).unwrap(),
+                        fuel_cost_per_kilometre: rate,
                     }],
                 },
                 passenger_services: vec![],
