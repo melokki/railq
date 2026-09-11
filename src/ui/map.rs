@@ -70,7 +70,11 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
 
     writeln!(output, "Trains:").expect("writing to a String cannot fail");
     if state.player_company.fleet.trains.is_empty() {
-        writeln!(output, "  No Trains in the Fleet.").expect("writing to a String cannot fail");
+        writeln!(
+            output,
+            "  No Trains in the Fleet. Press B to open Buy Trains and purchase one."
+        )
+        .expect("writing to a String cannot fail");
     }
     for train in &state.player_company.fleet.trains {
         match train.status {
@@ -257,6 +261,7 @@ mod tests {
             assert!(map.contains(&format!("Rail Line {}", line.id.get())));
         }
         assert!(map.contains("Company Funds: $"));
+        assert!(map.contains("Press B to open Buy Trains"));
     }
 
     #[test]

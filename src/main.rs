@@ -70,6 +70,9 @@ fn run_dashboard(app: &mut railq::app::App<SaveSlot>) -> Result<(), Box<dyn Erro
             ui::TerminalCommand::SellTrain { train_id, now } => {
                 app.sell_train(train_id, now)?;
             }
+            ui::TerminalCommand::RestartAfterBankruptcy { world_seed, now } => {
+                app.restart_after_bankruptcy(world_seed, now)?;
+            }
         }
         Ok::<_, railq::app::AppError<railq::storage::SaveSlotError>>(app.state().clone())
     })?;

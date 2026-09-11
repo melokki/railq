@@ -4,16 +4,18 @@
 //! is written before it replaces the state visible to the rest of the app, so
 //! a failed save never publishes a partial Player Company action.
 
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, path::PathBuf};
 
 use crate::{
     model::{GameState, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds},
     sim::{
         economy::EconomyError,
+        finance::{FinanceError, FinancialStatus, evaluate_financial_recovery},
         fleet::{FleetError, purchase_train, sell_train},
         journeys::{DispatchError, dispatch_journey},
         services::{ServiceError, find_or_create_service},
         time::{AdvanceTimeError, advance_time},
+        world::create_new_game,
     },
     storage::{SaveSlot, SaveSlotError},
 };
@@ -62,6 +64,12 @@ pub enum AppError<E> {
     Dispatch(DispatchError),
     /// A Passenger Service could not be created or reused for a Manual Dispatch.
     Service(ServiceError),
+    /// The financial recovery evaluator could not determine whether operations remain allowed.
+    Finance(FinanceError),
+    /// Bankruptcy prevents purchases, resale, and Manual Dispatch.
+    Bankruptcy,
+    /// A safe restart was requested before the Player Company reached Bankruptcy.
+    RestartUnavailable { status: FinancialStatus },
 }
 
 impl<E: fmt::Display> fmt::Display for AppError<E> {
@@ -74,6 +82,15 @@ impl<E: fmt::Display> fmt::Display for AppError<E> {
             Self::Resale(error) => error.fmt(formatter),
             Self::Dispatch(error) => error.fmt(formatter),
             Self::Service(error) => error.fmt(formatter),
+            Self::Finance(error) => error.fmt(formatter),
+            Self::Bankruptcy => write!(
+                formatter,
+                "Bankruptcy prevents normal operations; exit or start a confirmed safe restart"
+            ),
+            Self::RestartUnavailable { status } => write!(
+                formatter,
+                "safe restart is only available after Bankruptcy (current financial status: {status:?})"
+            ),
         }
     }
 }
@@ -84,8 +101,10 @@ impl<E: Error + 'static> Error for AppError<E> {
             Self::Load(error) | Self::Save(error) => Some(error),
             Self::Advance(error) => Some(error),
             Self::Service(error) => Some(error),
+            Self::Finance(error) => Some(error),
             Self::Purchase(error) | Self::Resale(error) => Some(error),
             Self::Dispatch(error) => Some(error),
+            Self::Bankruptcy | Self::RestartUnavailable { .. } => None,
         }
     }
 }
@@ -136,7 +155,14 @@ impl<S: GameStore> App<S> {
         now: UtcSeconds,
     ) -> Result<TrainId, AppError<S::Error>> {
         self.transact(now, |state, _| {
-            purchase_train(state, catalogue_index, delivery_station_id).map_err(AppError::Purchase)
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            let train_id = purchase_train(state, catalogue_index, delivery_station_id)
+                .map_err(AppError::Purchase)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(train_id)
+            }
         })
     }
 
@@ -147,7 +173,13 @@ impl<S: GameStore> App<S> {
         now: UtcSeconds,
     ) -> Result<crate::model::Money, AppError<S::Error>> {
         self.transact(now, |state, _| {
-            sell_train(state, train_id).map_err(AppError::Resale)
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            let proceeds = sell_train(state, train_id).map_err(AppError::Resale)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(proceeds)
+            }
         })
     }
 
@@ -160,7 +192,14 @@ impl<S: GameStore> App<S> {
         now: UtcSeconds,
     ) -> Result<crate::model::JourneyId, AppError<S::Error>> {
         self.transact(now, |state, effective_now| {
-            dispatch_journey(state, train_id, service_id, effective_now).map_err(AppError::Dispatch)
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            let journey_id = dispatch_journey(state, train_id, service_id, effective_now)
+                .map_err(AppError::Dispatch)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(journey_id)
+            }
         })
     }
 
@@ -177,6 +216,7 @@ impl<S: GameStore> App<S> {
         now: UtcSeconds,
     ) -> Result<crate::model::JourneyId, AppError<S::Error>> {
         self.transact(now, |state, effective_now| {
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
             let origin_station_id = state
                 .player_company
                 .fleet
@@ -195,7 +235,13 @@ impl<S: GameStore> App<S> {
             let service_id =
                 find_or_create_service(state, origin_station_id, destination_station_id)
                     .map_err(AppError::Service)?;
-            dispatch_journey(state, train_id, service_id, effective_now).map_err(AppError::Dispatch)
+            let journey_id = dispatch_journey(state, train_id, service_id, effective_now)
+                .map_err(AppError::Dispatch)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(journey_id)
+            }
         })
     }
 
@@ -218,6 +264,35 @@ impl<S: GameStore> App<S> {
         self.state = candidate;
         Ok(result)
     }
+}
+
+impl App<SaveSlot> {
+    /// Starts a fresh game only after Bankruptcy, preserving the former Player
+    /// Company save in a unique sibling backup before publishing the restart.
+    pub fn restart_after_bankruptcy(
+        &mut self,
+        world_seed: u64,
+        now: UtcSeconds,
+    ) -> Result<PathBuf, AppError<SaveSlotError>> {
+        let evaluation = evaluate_financial_recovery(&self.state).map_err(AppError::Finance)?;
+        if evaluation.status != FinancialStatus::Bankruptcy {
+            return Err(AppError::RestartUnavailable {
+                status: evaluation.status,
+            });
+        }
+        let replacement = create_new_game(world_seed, self.state.player_company.name.clone(), now);
+        let backup_path = self
+            .store
+            .save_after_backup(&replacement)
+            .map_err(AppError::Save)?;
+        self.state = replacement;
+        Ok(backup_path)
+    }
+}
+
+fn bankruptcy_prevents_operations<E>(state: &GameState) -> Result<bool, AppError<E>> {
+    let evaluation = evaluate_financial_recovery(state).map_err(AppError::Finance)?;
+    Ok(evaluation.status == FinancialStatus::Bankruptcy)
 }
 
 #[cfg(test)]
@@ -500,5 +575,20 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn bankruptcy_blocks_normal_operations_without_publishing_a_change() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        state.player_company.funds = state.rules.balance.diesel_catalogue()[0].purchase_price();
+        let mut app = App::start_new(store.clone(), state.clone()).unwrap();
+
+        assert!(matches!(
+            app.purchase_train(0, ORIGIN, STARTED_AT),
+            Err(AppError::Bankruptcy)
+        ));
+        assert_eq!(app.state(), &state);
+        assert_eq!(store.load().unwrap(), Some(state));
     }
 }

@@ -177,6 +177,33 @@ impl SaveSlot {
         self.save_with_before_replace(state, |_| Ok(()))
     }
 
+    /// Preserves the current valid save under a unique sibling name before
+    /// atomically replacing the slot with a fresh Player Company.
+    ///
+    /// The archive is created before the live save is replaced. If writing the
+    /// replacement fails, both the live save and its preserved archive remain
+    /// available to the player.
+    pub fn save_after_backup(&self, state: &GameState) -> Result<PathBuf, SaveSlotError> {
+        self.load()?;
+        let encoded = encode_game_state(state).map_err(|source| SaveSlotError::InvalidSave {
+            path: self.path.clone(),
+            source: Box::new(source),
+        })?;
+        let backup_path = archive_save(&self.path).map_err(|source| SaveSlotError::Io {
+            action: "archive existing save before restart",
+            path: self.path.clone(),
+            source,
+        })?;
+        write_save_atomically(&self.path, encoded.as_bytes(), |_| Ok(())).map_err(|source| {
+            SaveSlotError::Io {
+                action: "replace save atomically after restart backup",
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        Ok(backup_path)
+    }
+
     fn save_with_before_replace<F>(
         &self,
         state: &GameState,
@@ -209,6 +236,50 @@ fn sidecar_lock_path(path: &Path) -> Result<PathBuf, SaveSlotError> {
     let mut lock_name = file_name.to_os_string();
     lock_name.push(".lock");
     Ok(path.with_file_name(lock_name))
+}
+
+/// Copies an existing save to a unique, visible sibling archive without ever
+/// selecting an already-existing archive name.
+fn archive_save(path: &Path) -> io::Result<PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "save path has no file name"))?;
+    for _ in 0..128 {
+        let sequence = NEXT_TEMPORARY_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let archive_path = parent.join(format!(
+            "{}.bankrupt-backup-{}.{}.ron",
+            file_name.to_string_lossy(),
+            std::process::id(),
+            sequence
+        ));
+        let mut archive = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&archive_path)
+        {
+            Ok(archive) => archive,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let copy_result = (|| {
+            let mut source = File::open(path)?;
+            io::copy(&mut source, &mut archive)?;
+            archive.sync_all()
+        })();
+        match copy_result {
+            Ok(()) => return Ok(archive_path),
+            Err(error) => {
+                drop(archive);
+                let _ = fs::remove_file(&archive_path);
+                return Err(error);
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique restart backup save",
+    ))
 }
 
 fn write_save_atomically<F>(path: &Path, encoded: &[u8], before_replace: F) -> io::Result<()>
@@ -1097,6 +1168,24 @@ mod tests {
         ));
         assert_eq!(fs::read_to_string(&path).unwrap(), old_contents);
         assert_eq!(slot.load().unwrap(), Some(state));
+    }
+
+    #[test]
+    fn restart_backup_preserves_the_old_save_before_replacing_it() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let slot = SaveSlot::open(&path).unwrap();
+        let old_state = active_game();
+        slot.save(&old_state).unwrap();
+        let old_contents = fs::read_to_string(&path).unwrap();
+        let replacement = create_new_game(99, "New Passenger", UtcSeconds::from_unix_seconds(2));
+
+        let backup_path = slot.save_after_backup(&replacement).unwrap();
+
+        assert!(backup_path.exists());
+        assert_eq!(fs::read_to_string(&backup_path).unwrap(), old_contents);
+        assert_eq!(slot.load().unwrap(), Some(replacement));
+        assert_ne!(fs::read_to_string(&path).unwrap(), old_contents);
     }
 
     #[test]

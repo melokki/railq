@@ -8,5 +8,6 @@ rust-version = "1.85"
 crossterm = "0.29"
 fs4 = { version = "1", features = ["sync"] }
 rand_chacha = "0.10"
+ratatui = "0.30"
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }

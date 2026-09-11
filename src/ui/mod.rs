@@ -30,6 +30,7 @@ use ratatui::{
 use crate::{
     APPLICATION_NAME,
     model::{GameState, RailStationId, TrainId, UtcSeconds},
+    sim::finance::{FinancialStatus, evaluate_financial_recovery},
 };
 
 pub mod company;
@@ -89,6 +90,8 @@ pub enum ShellAction {
     },
     /// Confirmed player input requiring an application-boundary Train resale.
     SellTrain { train_id: TrainId },
+    /// Confirmed Bankruptcy restart requiring an archived-save application action.
+    RestartAfterBankruptcy,
 }
 
 /// One command accepted by the terminal shell at the application boundary.
@@ -110,6 +113,8 @@ pub enum TerminalCommand {
     },
     /// Revalidate and resell a selected READY Train.
     SellTrain { train_id: TrainId, now: UtcSeconds },
+    /// Archive the Bankrupt Player Company save and start a fresh game.
+    RestartAfterBankruptcy { world_seed: u64, now: UtcSeconds },
 }
 
 /// Presentation-only state shared by the four primary views.
@@ -120,6 +125,8 @@ pub struct Shell {
     fleet_flow: Option<fleet::FleetFlow>,
     market_flow: Option<market::MarketFlow>,
     notice: Option<String>,
+    help_visible: bool,
+    restart_confirmation: bool,
 }
 
 impl Shell {
@@ -131,12 +138,19 @@ impl Shell {
             fleet_flow: None,
             market_flow: None,
             notice: None,
+            help_visible: false,
+            restart_confirmation: false,
         }
     }
 
     /// Returns the selected primary view.
     pub fn active_view(&self) -> View {
         self.active_view
+    }
+
+    /// Returns whether the keyboard help overlay is currently visible.
+    pub fn help_visible(&self) -> bool {
+        self.help_visible
     }
 
     /// Routes global navigation and exit keys.
@@ -151,6 +165,44 @@ impl Shell {
         {
             return ShellAction::Exit;
         }
+
+        if self.help_visible {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'h' | 'H')) {
+                self.help_visible = false;
+            }
+            return ShellAction::Continue;
+        }
+
+        if matches!(key.code, KeyCode::Char('?' | 'h' | 'H')) {
+            self.help_visible = true;
+            return ShellAction::Continue;
+        }
+
+        if is_bankrupt(state) {
+            if self.restart_confirmation {
+                return match key.code {
+                    KeyCode::Enter => ShellAction::RestartAfterBankruptcy,
+                    KeyCode::Esc => {
+                        self.restart_confirmation = false;
+                        self.notice = Some("Safe restart cancelled; the Bankrupt Player Company save is unchanged.".into());
+                        ShellAction::Continue
+                    }
+                    _ => ShellAction::Continue,
+                };
+            }
+            if matches!(key.code, KeyCode::Char('r' | 'R')) {
+                self.restart_confirmation = true;
+                self.notice = None;
+            } else {
+                self.notice = Some(
+                    "Bankruptcy prevents normal operations. Press R for a safe restart or Q to exit."
+                        .into(),
+                );
+            }
+            return ShellAction::Continue;
+        }
+
+        self.restart_confirmation = false;
 
         if let Some(flow) = &mut self.dispatch_flow {
             return match flow.handle_key(key, state) {
@@ -282,6 +334,28 @@ impl Shell {
         self.notice = Some(format!(
             "Train resold and saved. Sale proceeds of {} were added to Company Funds.",
             format_money(proceeds)
+        ));
+    }
+
+    /// Shows the persisted outcome of an explicitly confirmed Bankruptcy restart.
+    pub fn confirm_restart_after_bankruptcy(&mut self) {
+        self.active_view = View::Map;
+        self.dispatch_flow = None;
+        self.fleet_flow = None;
+        self.market_flow = None;
+        self.restart_confirmation = false;
+        self.notice = Some(
+            "Fresh game saved. The former Player Company save was preserved in a restart backup."
+                .into(),
+        );
+    }
+
+    /// Keeps a failed safe restart actionable without losing the prior save.
+    pub fn reject_restart_after_bankruptcy(&mut self, error: impl Into<String>) {
+        self.restart_confirmation = true;
+        self.notice = Some(format!(
+            "Safe restart failed; the existing save was not overwritten: {}",
+            error.into()
         ));
     }
 
@@ -426,6 +500,18 @@ where
                             Err(error) => shell.reject_train_resale(error.to_string()),
                         }
                     }
+                    ShellAction::RestartAfterBankruptcy => {
+                        match command(TerminalCommand::RestartAfterBankruptcy {
+                            world_seed: restart_seed(),
+                            now: current_utc_seconds(),
+                        }) {
+                            Ok(next_state) => {
+                                state = next_state;
+                                shell.confirm_restart_after_bankruptcy();
+                            }
+                            Err(error) => shell.reject_restart_after_bankruptcy(error.to_string()),
+                        }
+                    }
                     ShellAction::Continue => {}
                 }
             }
@@ -440,6 +526,21 @@ fn current_utc_seconds() -> UtcSeconds {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs());
     UtcSeconds::from_unix_seconds(i64::try_from(seconds).unwrap_or(i64::MAX))
+}
+
+fn restart_seed() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let nanos = u64::try_from(nanos).unwrap_or(u64::MAX);
+    nanos ^ u64::from(std::process::id())
+}
+
+fn is_bankrupt(state: &GameState) -> bool {
+    matches!(
+        evaluate_financial_recovery(state),
+        Ok(evaluation) if evaluation.status == FinancialStatus::Bankruptcy
+    )
 }
 
 /// Draws the complete dashboard with Ratatui widgets. Crossterm supplies the
@@ -489,20 +590,26 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
     );
 
     let now = state.last_processed_at;
-    let content = match shell.active_view {
-        View::Map => match &shell.dispatch_flow {
-            Some(flow) => flow.render(state),
-            None => map::render_at(state, now),
-        },
-        View::Trains => match &shell.fleet_flow {
-            Some(flow) => flow.render(state, now),
-            None => fleet::render_at(state, now),
-        },
-        View::BuyTrains => match &shell.market_flow {
-            Some(flow) => flow.render(state),
-            None => market::render(state),
-        },
-        View::Company => company::render(state),
+    let content = if shell.help_visible {
+        help_text()
+    } else if is_bankrupt(state) {
+        bankruptcy_text(shell.restart_confirmation)
+    } else {
+        match shell.active_view {
+            View::Map => match &shell.dispatch_flow {
+                Some(flow) => flow.render(state),
+                None => map::render_at(state, now),
+            },
+            View::Trains => match &shell.fleet_flow {
+                Some(flow) => flow.render(state, now),
+                None => fleet::render_at(state, now),
+            },
+            View::BuyTrains => match &shell.market_flow {
+                Some(flow) => flow.render(state),
+                None => market::render(state),
+            },
+            View::Company => company::render(state),
+        }
     };
     frame.render_widget(
         Paragraph::new(content)
@@ -515,9 +622,20 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
         content_area,
     );
 
+    let controls = if shell.help_visible {
+        "[? / H / Esc] Close help  [Q] Quit"
+    } else if is_bankrupt(state) {
+        if shell.restart_confirmation {
+            "[Enter] Confirm safe restart  [Esc] Cancel  [Q] Quit"
+        } else {
+            "[R] Safe restart  [Q] Quit  [?] Help"
+        }
+    } else {
+        "[M] Map  [T] Fleet  [C] Company  [B] Buy Trains  [D] Dispatch on Map  [Enter] Select / confirm  [Esc] Cancel  [?] Help  [Q] Quit"
+    };
     let footer = match &shell.notice {
-        Some(notice) => format!("{notice}\n[M] Map  [T] Fleet  [C] Company  [B] Buy Trains  [Q] Quit"),
-        None => "[M] Map  [T] Fleet  [C] Company  [B] Buy Trains  [D] Dispatch on Map  [Enter] Select / confirm  [Esc] Cancel  [Q] Quit".into(),
+        Some(notice) => format!("{notice}\n{controls}"),
+        None => controls.into(),
     };
     frame.render_widget(
         Paragraph::new(footer)
@@ -525,6 +643,45 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
             .wrap(Wrap { trim: true }),
         footer_area,
     );
+}
+
+fn help_text() -> String {
+    [
+        "Keyboard help",
+        "",
+        "[M] Map — inspect the Region and press [D] to begin a Manual Dispatch.",
+        "[T] Fleet — press [Enter] to select a READY Train for resale.",
+        "[C] Company — inspect Company Funds, receipts, Insolvency, and recovery options.",
+        "[B] Buy Trains — press [Enter] to choose a diesel Train and delivery Rail Station.",
+        "[Up]/[Down] or [J]/[K] change a selection; [Enter] advances or confirms; [Esc] cancels.",
+        "[Q] or Ctrl-C exits RailQ. During Bankruptcy, [R] begins a confirmed safe restart that preserves the old save.",
+        "",
+        "Press [?], [H], or [Esc] to return.",
+    ]
+    .join("\n")
+}
+
+fn bankruptcy_text(restart_confirmation: bool) -> String {
+    if restart_confirmation {
+        [
+            "BANKRUPTCY",
+            "No finite sell, retain, rebuy, and dispatch option can return the Player Company to operation.",
+            "",
+            "Safe restart will create a fresh game only after preserving this Player Company save in a unique backup file.",
+            "Press Enter to confirm the safe restart, Esc to keep the Bankrupt save, or Q to exit.",
+        ]
+        .join("\n")
+    } else {
+        [
+            "BANKRUPTCY",
+            "No finite sell, retain, rebuy, and dispatch option can return the Player Company to operation.",
+            "Normal operations are disabled. You may exit safely or start a fresh game.",
+            "",
+            "Press R to begin a safe restart. The existing Player Company save will be preserved; it is never silently overwritten.",
+            "Press Q to exit or ? for keyboard help.",
+        ]
+        .join("\n")
+    }
 }
 
 fn format_money(money: crate::model::Money) -> String {
@@ -613,7 +770,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use crate::{
-        model::{RailStationId, UtcSeconds},
+        model::{Money, RailStationId, UtcSeconds},
         sim::{fleet::purchase_train, world::create_new_game},
     };
 
@@ -728,6 +885,72 @@ mod tests {
         assert_eq!(
             press(&mut shell, KeyCode::Enter),
             ShellAction::SellTrain { train_id }
+        );
+    }
+
+    #[test]
+    fn help_explains_all_keyboard_reachable_core_actions() {
+        let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        let mut shell = Shell::new();
+
+        assert_eq!(
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+                &state
+            ),
+            ShellAction::Continue
+        );
+        assert!(shell.help_visible());
+        let help = super::help_text();
+        for instruction in [
+            "[M] Map",
+            "[T] Fleet",
+            "[C] Company",
+            "[B] Buy Trains",
+            "[D]",
+            "[Q]",
+        ] {
+            assert!(help.contains(instruction));
+        }
+        shell.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state);
+        assert!(!shell.help_visible());
+    }
+
+    #[test]
+    fn bankruptcy_blocks_normal_actions_but_allows_exit_and_confirmed_safe_restart() {
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        state.player_company.funds = Money::ZERO;
+        let mut shell = Shell::new();
+
+        assert_eq!(
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+                &state
+            ),
+            ShellAction::Continue
+        );
+        assert_eq!(shell.active_view(), View::Map);
+        assert_eq!(
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+                &state
+            ),
+            ShellAction::Continue
+        );
+        assert_eq!(
+            shell.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state),
+            ShellAction::RestartAfterBankruptcy
+        );
+        assert!(super::bankruptcy_text(true).contains("preserving this Player Company save"));
+        assert!(super::bankruptcy_text(true).contains("Press Enter to confirm"));
+
+        let mut exiting_shell = Shell::new();
+        assert_eq!(
+            exiting_shell.handle_key(
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+                &state
+            ),
+            ShellAction::Exit
         );
     }
 }
