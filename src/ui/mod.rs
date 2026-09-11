@@ -142,6 +142,8 @@ pub struct Shell {
     active_view: View,
     dispatch_flow: Option<dispatch::DispatchFlow>,
     map_selection: map::StationSelection,
+    map_settlement_selection: map::SettlementSelection,
+    map_focus: map::MapFocus,
     map_details_open: bool,
     map_split_visible: bool,
     fleet_flow: Option<fleet::FleetFlow>,
@@ -166,6 +168,8 @@ impl Shell {
             active_view: View::Map,
             dispatch_flow: None,
             map_selection: map::StationSelection::default(),
+            map_settlement_selection: map::SettlementSelection::default(),
+            map_focus: map::MapFocus::default(),
             map_details_open: false,
             map_split_visible: false,
             fleet_flow: None,
@@ -376,7 +380,14 @@ impl Shell {
             }
             KeyCode::Char('b' | 'B') => self.active_view = View::BuyTrains,
             KeyCode::Enter if self.active_view == View::Map => {
-                if self.map_selection.selected_station_id(state).is_some() {
+                let has_selection = if self.map_focus.is_stations() {
+                    self.map_selection.selected_station_id(state).is_some()
+                } else {
+                    self.map_settlement_selection
+                        .selected_settlement_id(state)
+                        .is_some()
+                };
+                if has_selection {
                     self.map_details_open = true;
                     self.notice = None;
                 }
@@ -458,7 +469,22 @@ impl Shell {
                 if self.active_view == View::Map
                     && (!self.map_details_open || self.map_split_visible) =>
             {
-                self.map_selection.handle_key(key.code, state);
+                if self.map_focus.is_stations() {
+                    self.map_selection.handle_key(key.code, state);
+                } else {
+                    self.map_settlement_selection.handle_key(key.code, state);
+                }
+            }
+            KeyCode::Tab | KeyCode::BackTab
+                if self.active_view == View::Map && self.dispatch_flow.is_none() =>
+            {
+                self.map_focus = if self.map_focus.is_stations() {
+                    map::MapFocus::Settlements
+                } else {
+                    map::MapFocus::Stations
+                };
+                self.map_details_open = false;
+                self.notice = None;
             }
             KeyCode::Up
             | KeyCode::Down
@@ -470,12 +496,19 @@ impl Shell {
                 self.company_receipt_selection.handle_key(key.code, state);
             }
             KeyCode::Char('d' | 'D') if self.active_view == View::Map => {
-                match dispatch::DispatchFlow::start(state) {
-                    Ok(flow) => {
-                        self.dispatch_flow = Some(flow);
-                        self.notice = None;
+                if self.map_focus.is_stations() {
+                    match dispatch::DispatchFlow::start(state) {
+                        Ok(flow) => {
+                            self.dispatch_flow = Some(flow);
+                            self.notice = None;
+                        }
+                        Err(message) => self.notice = Some(message.into()),
                     }
-                    Err(message) => self.notice = Some(message.into()),
+                } else {
+                    self.notice = Some(
+                        "Unconnected Settlements are inspect-only; dispatch/construction unavailable."
+                            .into(),
+                    );
                 }
             }
             _ => {}
@@ -909,6 +942,8 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             content_area,
             state,
             &mut shell.map_selection,
+            &mut shell.map_settlement_selection,
+            shell.map_focus,
             shell.map_details_open,
         );
     } else if !shell.help_visible
@@ -1021,12 +1056,20 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             "[↑↓ / J K] Select Train  [PageUp / PageDown] Scroll  [Enter] Inspect  [S] Resale  [Tab] Panel  [?] Help  [Q] Quit"
         }
     } else if shell.active_view == View::Map && shell.dispatch_flow.is_none() {
-        if shell.map_details_open {
+        if !shell.map_focus.is_stations() {
+            if shell.map_details_open {
+                "[Esc] Settlements  [Tab] Rail Stations  [?] Help  [Q] Quit"
+            } else if hints_area.width <= 80 {
+                "[↑↓/J K] Settlements [Enter] Inspect [Tab] Stations [?] Help [Q] Quit"
+            } else {
+                "[↑↓ / J K] Select Settlement  [PageUp / PageDown] Scroll  [Enter] Inspect  [Tab] Rail Stations  [?] Help  [Q] Quit"
+            }
+        } else if shell.map_details_open {
             "[Esc] Rail Stations  [D] Dispatch  [?] Help  [Q] Quit"
         } else if hints_area.width <= 80 {
-            "[↑↓/J K] Stations [Enter] Inspect [D] Dispatch [?] Help [Q] Quit"
+            "[↑↓/JK] Stations [Enter] View [D] Dispatch [Tab] Other list [?] Help [Q] Quit"
         } else {
-            "[↑↓ / J K] Select Rail Station  [PageUp / PageDown] Scroll  [Enter] Inspect  [D] Manual Dispatch  [?] Help  [Q] Quit"
+            "[↑↓/JK] Select  [PgUp/Dn] Scroll  [Enter] Inspect  [D] Dispatch  [Tab] Settlements  [?] Help  [Q] Quit"
         }
     } else if shell.active_view == View::Company {
         if shell.company_recovery_review_open {

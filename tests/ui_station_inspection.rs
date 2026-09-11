@@ -14,6 +14,7 @@ use railq::{
 
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_700_000_000);
 const EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/09";
+const SETTLEMENT_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/11";
 
 fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) {
     assert_eq!(
@@ -124,4 +125,95 @@ fn compact_station_details_are_a_focused_page_and_unavailable_demand_is_not_zero
         "Map input must not change game state"
     );
     Ok(())
+}
+
+#[test]
+fn map_switches_to_unconnected_settlements_with_independent_selection_and_no_dispatch()
+-> Result<(), Box<dyn Error>> {
+    let state = state_with_ready_trains();
+    let before_presentation = state.clone();
+    let mut shell = Shell::new();
+    fs::create_dir_all(SETTLEMENT_EVIDENCE_DIR)?;
+
+    press(&mut shell, &state, KeyCode::Down);
+    let station_two = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(station_two.contains("Rail Station 02"));
+
+    press(&mut shell, &state, KeyCode::Tab);
+    let settlements = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(settlements.contains("Unconnected Settlements · inspect-only"));
+    assert!(settlements.contains("UNCONNECTED"));
+    for settlement in state.region.settlements.iter().filter(|settlement| {
+        !state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .iter()
+            .any(|station| station.settlement_id == settlement.id)
+    }) {
+        assert!(settlements.contains(&settlement.name));
+        assert!(settlements.contains(&format_population(settlement.population)));
+    }
+    fs::write(
+        Path::new(SETTLEMENT_EVIDENCE_DIR).join("unconnected-settlements-120x40.txt"),
+        &settlements,
+    )?;
+
+    press(&mut shell, &state, KeyCode::PageDown);
+    let last_settlement = state
+        .region
+        .settlements
+        .iter()
+        .rev()
+        .find(|settlement| {
+            !state
+                .region
+                .rail_authority
+                .rail_network
+                .rail_stations
+                .iter()
+                .any(|station| station.settlement_id == settlement.id)
+        })
+        .expect("seeded game has an unconnected Settlement");
+    let compact_list = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
+    assert!(compact_list.contains(&format!("> [{:02}]", last_settlement.id.get())));
+    fs::write(
+        Path::new(SETTLEMENT_EVIDENCE_DIR).join("unconnected-settlements-80x24.txt"),
+        &compact_list,
+    )?;
+
+    press(&mut shell, &state, KeyCode::Enter);
+    let details = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
+    assert!(details.contains("Connection status"));
+    assert!(details.contains("No Rail Station"));
+    assert!(details.contains("Inspection only"));
+    assert!(!details.contains("Directional Waiting Passengers"));
+
+    press(&mut shell, &state, KeyCode::Char('d'));
+    let rejected_dispatch = capture_rendered_buffer(&shell, &state, 80, 24);
+    assert!(rejected_dispatch.contains("dispatch/construction unavailable"));
+    assert!(!rejected_dispatch.contains("Manual Dispatch"));
+
+    press(&mut shell, &state, KeyCode::Esc);
+    press(&mut shell, &state, KeyCode::Tab);
+    let restored_station = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(restored_station.contains("Rail Station 02"));
+    assert_eq!(
+        state, before_presentation,
+        "switching and inspecting must remain presentation-only"
+    );
+    Ok(())
+}
+
+fn format_population(population: u64) -> String {
+    let digits = population.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
 }

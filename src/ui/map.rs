@@ -24,7 +24,8 @@ use ratatui::{
 
 use crate::{
     model::{
-        GameState, Journey, Money, RailStation, RailStationId, Train, TrainStatus, UtcSeconds,
+        GameState, Journey, Money, RailStation, RailStationId, Settlement, SettlementId, Train,
+        TrainStatus, UtcSeconds,
     },
     ui::theme,
 };
@@ -38,6 +39,104 @@ pub struct StationSelection {
     selected_station_id: Option<RailStationId>,
     list_state: ListState,
     page_size: usize,
+}
+
+/// The secondary dataset visible in the Map workspace.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MapFocus {
+    #[default]
+    Stations,
+    Settlements,
+}
+
+impl MapFocus {
+    pub const fn is_stations(self) -> bool {
+        matches!(self, Self::Stations)
+    }
+}
+
+/// Presentation-only selection for Settlements without a Rail Station.
+///
+/// The filtered list is rebuilt from the Region on every interaction, while
+/// the selected stable ID keeps the user's place through redraws and resize.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SettlementSelection {
+    selected_settlement_id: Option<SettlementId>,
+    list_state: ListState,
+    page_size: usize,
+}
+
+impl SettlementSelection {
+    pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
+        self.synchronize(state);
+        let settlements = unconnected_settlements(state);
+        let Some(selected) = self.list_state.selected() else {
+            return;
+        };
+        let page_size = self.page_size.max(1);
+        let last = settlements.len().saturating_sub(1);
+        let next = match key {
+            KeyCode::Up | KeyCode::Char('k') => selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected.saturating_add(1).min(last),
+            KeyCode::PageUp => selected.saturating_sub(page_size),
+            KeyCode::PageDown => selected.saturating_add(page_size).min(last),
+            _ => selected,
+        };
+        self.select_index(&settlements, next);
+    }
+
+    pub fn selected_settlement_id(&mut self, state: &GameState) -> Option<SettlementId> {
+        self.synchronize(state);
+        self.selected_settlement_id
+    }
+
+    fn synchronize(&mut self, state: &GameState) {
+        let settlements = unconnected_settlements(state);
+        let previous_index = self.list_state.selected().unwrap_or(0);
+        let selected = self
+            .selected_settlement_id
+            .and_then(|settlement_id| {
+                settlements
+                    .iter()
+                    .position(|settlement| settlement.id == settlement_id)
+            })
+            .or_else(|| {
+                (!settlements.is_empty()).then_some(previous_index.min(settlements.len() - 1))
+            });
+        if let Some(index) = selected {
+            self.selected_settlement_id = Some(settlements[index].id);
+        } else {
+            self.selected_settlement_id = None;
+            *self.list_state.offset_mut() = 0;
+        }
+        self.list_state.select(selected);
+    }
+
+    fn select_index(&mut self, settlements: &[&Settlement], index: usize) {
+        let Some(settlement) = settlements.get(index) else {
+            return;
+        };
+        self.selected_settlement_id = Some(settlement.id);
+        self.list_state.select(Some(index));
+    }
+
+    fn set_page_size(&mut self, page_size: usize) {
+        self.page_size = page_size.max(1);
+    }
+
+    fn keep_compact_selection_visible(&mut self, visible_items: usize) {
+        let Some(selected) = self.list_state.selected() else {
+            return;
+        };
+        let visible_items = visible_items.max(1);
+        let offset = self.list_state.offset();
+        if selected < offset {
+            *self.list_state.offset_mut() = selected;
+        } else if selected >= offset.saturating_add(visible_items) {
+            *self.list_state.offset_mut() =
+                selected.saturating_add(1).saturating_sub(visible_items);
+        }
+    }
 }
 
 impl StationSelection {
@@ -130,10 +229,24 @@ pub fn render_dashboard(
     area: Rect,
     state: &GameState,
     selection: &mut StationSelection,
+    settlement_selection: &mut SettlementSelection,
+    focus: MapFocus,
     details_open: bool,
 ) {
-    selection.synchronize(state);
-    if area.width >= 96 && area.height >= 14 {
+    if focus.is_stations() {
+        selection.synchronize(state);
+    } else {
+        settlement_selection.synchronize(state);
+    }
+    if !focus.is_stations() {
+        if area.width >= 96 && area.height >= 14 {
+            render_settlement_workspace(frame, area, state, settlement_selection);
+        } else if details_open {
+            render_settlement_inspector(frame, area, state, settlement_selection, true);
+        } else {
+            render_settlement_list(frame, area, state, settlement_selection, true);
+        }
+    } else if area.width >= 96 && area.height >= 14 {
         let [network_area, inspector_area] =
             Layout::horizontal([Constraint::Min(48), Constraint::Length(38)])
                 .spacing(1)
@@ -145,6 +258,20 @@ pub fn render_dashboard(
     } else {
         render_station_list(frame, area, state, selection, true);
     }
+}
+
+fn render_settlement_workspace(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut SettlementSelection,
+) {
+    let [list_area, inspector_area] =
+        Layout::horizontal([Constraint::Min(42), Constraint::Length(38)])
+            .spacing(1)
+            .areas(area);
+    render_settlement_list(frame, list_area, state, selection, true);
+    render_settlement_inspector(frame, inspector_area, state, selection, false);
 }
 
 /// Stable, presentation-only coordinates for one Rail Network schematic.
@@ -419,6 +546,104 @@ fn render_station_list(
     frame.render_stateful_widget(list, area, &mut selection.list_state);
 }
 
+fn render_settlement_list(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut SettlementSelection,
+    focused: bool,
+) {
+    let visible_items = usize::from(area.height.saturating_sub(2)).max(1);
+    selection.set_page_size(visible_items);
+    selection.keep_compact_selection_visible(visible_items);
+    let items = unconnected_settlements(state)
+        .into_iter()
+        .map(|settlement| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("[{:02}] ", settlement.id.get()), theme::secondary()),
+                Span::raw(settlement.name.clone()),
+                Span::styled(
+                    format!(
+                        "  POP {}  UNCONNECTED",
+                        format_population(settlement.population)
+                    ),
+                    theme::secondary(),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let list = List::new(items)
+        .block(panel_block(
+            "Unconnected Settlements · inspect-only",
+            focused,
+        ))
+        .highlight_style(theme::selected_row())
+        .highlight_symbol("> ")
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
+    frame.render_stateful_widget(list, area, &mut selection.list_state);
+}
+
+fn render_settlement_inspector(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut SettlementSelection,
+    focused: bool,
+) {
+    let selected = selected_settlement(state, selection);
+    let title = selected.map_or_else(
+        || "Selected Settlement".to_owned(),
+        |settlement| {
+            format!(
+                "Settlement {:02} · {}",
+                settlement.id.get(),
+                settlement.name
+            )
+        },
+    );
+    let mut lines = Vec::new();
+    if let Some(settlement) = selected {
+        lines.push(Line::styled("Connection status", theme::title()));
+        lines.push(Line::from(vec![
+            Span::styled("UNCONNECTED  ", theme::warning()),
+            Span::styled("No Rail Station", theme::secondary()),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::styled("Population", theme::title()));
+        lines.push(Line::styled(
+            format_population(settlement.population),
+            theme::primary_value(),
+        ));
+        lines.push(Line::from(""));
+        lines.push(Line::styled("Operations", theme::title()));
+        lines.push(Line::styled(
+            "Inspection only — no dispatch, construction, or demand data.",
+            theme::secondary(),
+        ));
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            if focused {
+                "Esc · Settlements    Tab · Rail Stations"
+            } else {
+                "Enter · focused details    Tab · Rail Stations"
+            },
+            theme::hint(),
+        ));
+    } else {
+        lines.push(Line::styled(
+            "No unconnected Settlements are recorded.",
+            theme::secondary(),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel_block(&title, focused))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
 fn render_station_inspector(
     frame: &mut Frame,
     area: Rect,
@@ -566,6 +791,48 @@ fn selected_station<'a>(
             .iter()
             .find(|station| station.id == station_id)
     })
+}
+
+fn selected_settlement<'a>(
+    state: &'a GameState,
+    selection: &mut SettlementSelection,
+) -> Option<&'a Settlement> {
+    selection
+        .selected_settlement_id(state)
+        .and_then(|settlement_id| {
+            unconnected_settlements(state)
+                .into_iter()
+                .find(|settlement| settlement.id == settlement_id)
+        })
+}
+
+fn unconnected_settlements(state: &GameState) -> Vec<&Settlement> {
+    let connected = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .map(|station| station.settlement_id)
+        .collect::<BTreeSet<_>>();
+    state
+        .region
+        .settlements
+        .iter()
+        .filter(|settlement| !connected.contains(&settlement.id))
+        .collect()
+}
+
+fn format_population(population: u64) -> String {
+    let digits = population.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
 }
 
 fn ready_trains(state: &GameState, station_id: RailStationId) -> Vec<&Train> {
