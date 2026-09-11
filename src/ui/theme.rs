@@ -39,6 +39,18 @@ pub fn secondary() -> Style {
     Style::default().fg(SECONDARY).bg(PANEL)
 }
 
+pub fn primary_value() -> Style {
+    Style::default().fg(PRIMARY).bg(PANEL)
+}
+
+pub fn success() -> Style {
+    Style::default().fg(SUCCESS).bg(PANEL)
+}
+
+pub fn warning() -> Style {
+    Style::default().fg(WARNING).bg(PANEL)
+}
+
 pub fn focused_border() -> Style {
     Style::default().fg(ACCENT).bg(PANEL)
 }

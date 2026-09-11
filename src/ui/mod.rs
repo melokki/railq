@@ -806,6 +806,8 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
                 content_area,
             );
         }
+    } else if shell.active_view == View::Company && !shell.help_visible && !is_bankrupt(state) {
+        company::render_dashboard(frame, content_area, state);
     } else {
         let content = if shell.help_visible {
             help_text()
@@ -984,7 +986,7 @@ fn help_text() -> String {
 fn bankruptcy_text(restart_confirmation: bool) -> String {
     if restart_confirmation {
         [
-            "BANKRUPTCY",
+            "[X] BANKRUPTCY",
             "No finite sell, retain, rebuy, and dispatch option can return the Player Company to operation.",
             "",
             "Safe restart will create a fresh game only after preserving this Player Company save in a unique backup file.",
@@ -993,7 +995,7 @@ fn bankruptcy_text(restart_confirmation: bool) -> String {
         .join("\n")
     } else {
         [
-            "BANKRUPTCY",
+            "[X] BANKRUPTCY",
             "No finite sell, retain, rebuy, and dispatch option can return the Player Company to operation.",
             "Normal operations are disabled. You may exit safely or start a fresh game.",
             "",
