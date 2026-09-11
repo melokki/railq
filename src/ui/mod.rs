@@ -768,6 +768,7 @@ impl Drop for TerminalSession {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
 
     use crate::{
         model::{Money, RailStationId, UtcSeconds},
@@ -824,6 +825,28 @@ mod tests {
         assert!(Shell::new().resize_hint(63, 16).is_some());
         assert!(Shell::new().resize_hint(64, 15).is_some());
         assert!(Shell::new().resize_hint(64, 16).is_none());
+    }
+
+    #[test]
+    fn narrow_terminal_frame_renders_resize_hint_without_panicking() {
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let shell = Shell::new();
+        let state = create_new_game(42, "Narrow Passenger", UtcSeconds::from_unix_seconds(1_000));
+
+        terminal
+            .draw(|frame| super::render_frame(frame, &shell, &state))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Terminal too small"));
+        assert!(rendered.contains("RailQ"));
     }
 
     #[test]
