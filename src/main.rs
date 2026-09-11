@@ -50,8 +50,17 @@ fn run_onboarding(
 }
 
 fn run_dashboard(app: &mut railq::app::App<SaveSlot>) -> Result<(), Box<dyn Error>> {
-    ui::run_terminal(app.state().clone(), |now| {
-        app.reconcile(now)?;
+    ui::run_terminal(app.state().clone(), |command| {
+        match command {
+            ui::TerminalCommand::Reconcile { now } => app.reconcile(now)?,
+            ui::TerminalCommand::ManualDispatch {
+                train_id,
+                destination_station_id,
+                now,
+            } => {
+                app.dispatch_to_destination(train_id, destination_station_id, now)?;
+            }
+        }
         Ok::<_, railq::app::AppError<railq::storage::SaveSlotError>>(app.state().clone())
     })?;
     Ok(())

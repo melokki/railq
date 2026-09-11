@@ -25,9 +25,10 @@ use crossterm::{
 
 use crate::{
     APPLICATION_NAME,
-    model::{GameState, UtcSeconds},
+    model::{GameState, RailStationId, TrainId, UtcSeconds},
 };
 
+pub mod dispatch;
 pub mod map;
 pub mod start;
 
@@ -63,18 +64,38 @@ impl View {
 }
 
 /// The outcome of a keyboard event handled by the shell.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ShellAction {
     /// Continue running; the active view may have changed.
     Continue,
     /// Exit the terminal shell.
     Exit,
+    /// Confirmed player input requiring an application-boundary Manual Dispatch.
+    ManualDispatch {
+        train_id: TrainId,
+        destination_station_id: RailStationId,
+    },
+}
+
+/// One command accepted by the terminal shell at the application boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalCommand {
+    /// Reconcile elapsed demand and due Journey arrivals before presentation or input.
+    Reconcile { now: UtcSeconds },
+    /// Revalidate and authorise a player-requested Manual Dispatch.
+    ManualDispatch {
+        train_id: TrainId,
+        destination_station_id: RailStationId,
+        now: UtcSeconds,
+    },
 }
 
 /// Presentation-only state shared by the four primary views.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Shell {
     active_view: View,
+    dispatch_flow: Option<dispatch::DispatchFlow>,
+    notice: Option<String>,
 }
 
 impl Shell {
@@ -82,16 +103,18 @@ impl Shell {
     pub const fn new() -> Self {
         Self {
             active_view: View::Map,
+            dispatch_flow: None,
+            notice: None,
         }
     }
 
     /// Returns the selected primary view.
-    pub const fn active_view(self) -> View {
+    pub fn active_view(&self) -> View {
         self.active_view
     }
 
     /// Routes global navigation and exit keys.
-    pub fn handle_key(&mut self, key: KeyEvent) -> ShellAction {
+    pub fn handle_key(&mut self, key: KeyEvent, state: &GameState) -> ShellAction {
         if key.kind != KeyEventKind::Press {
             return ShellAction::Continue;
         }
@@ -103,18 +126,60 @@ impl Shell {
             return ShellAction::Exit;
         }
 
+        if let Some(flow) = &mut self.dispatch_flow {
+            return match flow.handle_key(key, state) {
+                dispatch::DispatchFlowAction::Continue => ShellAction::Continue,
+                dispatch::DispatchFlowAction::Cancel => {
+                    self.dispatch_flow = None;
+                    self.notice = Some("Manual Dispatch cancelled; no changes were made.".into());
+                    ShellAction::Continue
+                }
+                dispatch::DispatchFlowAction::Confirm {
+                    train_id,
+                    destination_station_id,
+                } => ShellAction::ManualDispatch {
+                    train_id,
+                    destination_station_id,
+                },
+            };
+        }
+
         match key.code {
             KeyCode::Char('m' | 'M') => self.active_view = View::Map,
             KeyCode::Char('t' | 'T') => self.active_view = View::Trains,
             KeyCode::Char('c' | 'C') => self.active_view = View::Company,
             KeyCode::Char('b' | 'B') => self.active_view = View::BuyTrains,
+            KeyCode::Char('d' | 'D') if self.active_view == View::Map => {
+                match dispatch::DispatchFlow::start(state) {
+                    Ok(flow) => {
+                        self.dispatch_flow = Some(flow);
+                        self.notice = None;
+                    }
+                    Err(message) => self.notice = Some(message.into()),
+                }
+            }
             _ => {}
         }
         ShellAction::Continue
     }
 
+    /// Keeps a rejected confirmation visible to explain the actual current-state cause.
+    pub fn reject_manual_dispatch(&mut self, error: impl Into<String>) {
+        if let Some(flow) = &mut self.dispatch_flow {
+            flow.reject(error);
+        } else {
+            self.notice = Some(error.into());
+        }
+    }
+
+    /// Closes a successful proposal after the application boundary persisted it.
+    pub fn confirm_manual_dispatch(&mut self) {
+        self.dispatch_flow = None;
+        self.notice = Some("Manual Dispatch authorised and saved.".into());
+    }
+
     /// Returns a readable instruction when the terminal cannot safely fit a view.
-    pub const fn resize_hint(self, columns: u16, rows: u16) -> Option<&'static str> {
+    pub fn resize_hint(&self, columns: u16, rows: u16) -> Option<&'static str> {
         if columns < MINIMUM_COLUMNS || rows < MINIMUM_ROWS {
             Some("Terminal too small — resize to at least 64 columns by 16 rows.")
         } else {
@@ -154,19 +219,20 @@ impl<E: Error + 'static> Error for RunError<E> {
 
 /// Runs the four-view terminal shell until the player exits.
 ///
-/// `reconcile` is invoked while idle and immediately before every input event,
+/// `command` is invoked while idle and immediately before every input event,
 /// so a Player Company's due Journeys settle before the next action is accepted.
-/// The terminal is restored on ordinary errors and while unwinding a panic.
+/// It also owns persisted Manual Dispatch confirmation. The terminal is restored
+/// on ordinary errors and while unwinding a panic.
 pub fn run_terminal<E>(
     initial_state: GameState,
-    mut reconcile: impl FnMut(UtcSeconds) -> Result<GameState, E>,
+    mut command: impl FnMut(TerminalCommand) -> Result<GameState, E>,
 ) -> Result<(), RunError<E>>
 where
     E: fmt::Display,
 {
     let mut terminal = TerminalSession::enter().map_err(RunError::Terminal)?;
     let result = catch_unwind(AssertUnwindSafe(|| {
-        run_event_loop(&mut terminal, initial_state, &mut reconcile)
+        run_event_loop(&mut terminal, initial_state, &mut command)
     }));
     let restore_result = terminal.restore();
 
@@ -186,21 +252,50 @@ where
 fn run_event_loop<E>(
     terminal: &mut TerminalSession,
     mut state: GameState,
-    reconcile: &mut impl FnMut(UtcSeconds) -> Result<GameState, E>,
-) -> Result<(), RunError<E>> {
+    command: &mut impl FnMut(TerminalCommand) -> Result<GameState, E>,
+) -> Result<(), RunError<E>>
+where
+    E: fmt::Display,
+{
     let mut shell = Shell::new();
 
     loop {
-        terminal.draw(shell, &state).map_err(RunError::Terminal)?;
-        state = reconcile(current_utc_seconds()).map_err(RunError::Reconcile)?;
+        terminal.draw(&shell, &state).map_err(RunError::Terminal)?;
+        state = command(TerminalCommand::Reconcile {
+            now: current_utc_seconds(),
+        })
+        .map_err(RunError::Reconcile)?;
 
         if !event::poll(ARRIVAL_POLL_INTERVAL).map_err(RunError::Terminal)? {
             continue;
         }
 
         match event::read().map_err(RunError::Terminal)? {
-            Event::Key(key) if shell.handle_key(key) == ShellAction::Exit => return Ok(()),
-            Event::Resize(_, _) | Event::Key(_) => {}
+            Event::Key(key) => {
+                state = command(TerminalCommand::Reconcile {
+                    now: current_utc_seconds(),
+                })
+                .map_err(RunError::Reconcile)?;
+                match shell.handle_key(key, &state) {
+                    ShellAction::Exit => return Ok(()),
+                    ShellAction::ManualDispatch {
+                        train_id,
+                        destination_station_id,
+                    } => match command(TerminalCommand::ManualDispatch {
+                        train_id,
+                        destination_station_id,
+                        now: current_utc_seconds(),
+                    }) {
+                        Ok(next_state) => {
+                            state = next_state;
+                            shell.confirm_manual_dispatch();
+                        }
+                        Err(error) => shell.reject_manual_dispatch(error.to_string()),
+                    },
+                    ShellAction::Continue => {}
+                }
+            }
+            Event::Resize(_, _) => {}
             _ => {}
         }
     }
@@ -235,7 +330,7 @@ impl TerminalSession {
         })
     }
 
-    fn draw(&mut self, shell: Shell, state: &GameState) -> io::Result<()> {
+    fn draw(&mut self, shell: &Shell, state: &GameState) -> io::Result<()> {
         let (columns, rows) = terminal::size()?;
         queue!(
             self.stdout,
@@ -252,14 +347,24 @@ impl TerminalSession {
         } else {
             queue!(
                 self.stdout,
-                Print("[M] Map  [T] Trains  [C] Company  [B] Buy Trains  [Q] Quit\n\n"),
+                Print(
+                    "[M] Map  [T] Trains  [C] Company  [B] Buy Trains  [D] Manual Dispatch  [Q] Quit\n\n"
+                ),
             )?;
             match shell.active_view {
-                View::Map => queue!(self.stdout, Print(map::render(state)))?,
+                View::Map => {
+                    queue!(self.stdout, Print(map::render(state)))?;
+                    if let Some(flow) = &shell.dispatch_flow {
+                        queue!(self.stdout, Print("\n"), Print(flow.render(state)))?;
+                    }
+                }
                 _ => queue!(
                     self.stdout,
                     Print("This view's details follow in its dedicated task.")
                 )?,
+            }
+            if let Some(notice) = &shell.notice {
+                queue!(self.stdout, Print(format!("\n{notice}\n")))?;
             }
         }
         self.stdout.flush()
@@ -287,11 +392,17 @@ impl Drop for TerminalSession {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+    use crate::{
+        model::{RailStationId, UtcSeconds},
+        sim::{fleet::purchase_train, world::create_new_game},
+    };
+
     use super::{Shell, ShellAction, View};
 
     #[test]
     fn routes_the_four_primary_views() {
         let mut shell = Shell::new();
+        let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
         for (key, expected_view) in [
             ('t', View::Trains),
@@ -300,7 +411,10 @@ mod tests {
             ('m', View::Map),
         ] {
             assert_eq!(
-                shell.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+                shell.handle_key(
+                    KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                    &state
+                ),
                 ShellAction::Continue
             );
             assert_eq!(shell.active_view(), expected_view);
@@ -310,13 +424,20 @@ mod tests {
     #[test]
     fn routes_quit_and_control_c_to_clean_exit() {
         let mut shell = Shell::new();
+        let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
         assert_eq!(
-            shell.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+                &state
+            ),
             ShellAction::Exit
         );
         assert_eq!(
-            shell.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                &state
+            ),
             ShellAction::Exit
         );
     }
@@ -326,5 +447,27 @@ mod tests {
         assert!(Shell::new().resize_hint(63, 16).is_some());
         assert!(Shell::new().resize_hint(64, 15).is_some());
         assert!(Shell::new().resize_hint(64, 16).is_none());
+    }
+
+    #[test]
+    fn map_routes_a_keyboard_manual_dispatch_to_the_application_boundary() {
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let mut shell = Shell::new();
+        let press = |shell: &mut Shell, key| {
+            shell.handle_key(KeyEvent::new(key, KeyModifiers::NONE), &state)
+        };
+
+        assert_eq!(press(&mut shell, KeyCode::Char('d')), ShellAction::Continue);
+        assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
+        assert_eq!(press(&mut shell, KeyCode::Down), ShellAction::Continue);
+        assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
+        assert_eq!(
+            press(&mut shell, KeyCode::Enter),
+            ShellAction::ManualDispatch {
+                train_id,
+                destination_station_id: RailStationId::new(3),
+            }
+        );
     }
 }

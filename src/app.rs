@@ -7,10 +7,12 @@
 use std::{error::Error, fmt};
 
 use crate::{
-    model::{GameState, RailStationId, ServiceId, TrainId, UtcSeconds},
+    model::{GameState, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds},
     sim::{
+        economy::EconomyError,
         fleet::{FleetError, purchase_train},
         journeys::{DispatchError, dispatch_journey},
+        services::{ServiceError, find_or_create_service},
         time::{AdvanceTimeError, advance_time},
     },
     storage::{SaveSlot, SaveSlotError},
@@ -56,6 +58,8 @@ pub enum AppError<E> {
     Purchase(FleetError),
     /// A Manual Dispatch was rejected by the simulation.
     Dispatch(DispatchError),
+    /// A Passenger Service could not be created or reused for a Manual Dispatch.
+    Service(ServiceError),
 }
 
 impl<E: fmt::Display> fmt::Display for AppError<E> {
@@ -66,6 +70,7 @@ impl<E: fmt::Display> fmt::Display for AppError<E> {
             Self::Advance(error) => error.fmt(formatter),
             Self::Purchase(error) => error.fmt(formatter),
             Self::Dispatch(error) => error.fmt(formatter),
+            Self::Service(error) => error.fmt(formatter),
         }
     }
 }
@@ -75,6 +80,7 @@ impl<E: Error + 'static> Error for AppError<E> {
         match self {
             Self::Load(error) | Self::Save(error) => Some(error),
             Self::Advance(error) => Some(error),
+            Self::Service(error) => Some(error),
             Self::Purchase(error) => Some(error),
             Self::Dispatch(error) => Some(error),
         }
@@ -144,6 +150,41 @@ impl<S: GameStore> App<S> {
         })
     }
 
+    /// Creates or reuses the selected Passenger Service and authorises its
+    /// Manual Dispatch as one persisted transaction.
+    ///
+    /// The origin is deliberately read from the current READY Train inside
+    /// the candidate transaction. A destination selected while reviewing a
+    /// quote is therefore never trusted as a stale route or Train location.
+    pub fn dispatch_to_destination(
+        &mut self,
+        train_id: TrainId,
+        destination_station_id: RailStationId,
+        now: UtcSeconds,
+    ) -> Result<crate::model::JourneyId, AppError<S::Error>> {
+        self.transact(now, |state, effective_now| {
+            let origin_station_id = state
+                .player_company
+                .fleet
+                .trains
+                .iter()
+                .find(|train| train.id == train_id)
+                .ok_or(AppError::Dispatch(DispatchError::Quote(
+                    EconomyError::TrainNotFound { train_id },
+                )))
+                .and_then(|train| match train.status {
+                    TrainStatus::Ready { at } => Ok(at),
+                    TrainStatus::Travelling { .. } => Err(AppError::Dispatch(
+                        DispatchError::Quote(EconomyError::TrainTravelling { train_id }),
+                    )),
+                })?;
+            let service_id =
+                find_or_create_service(state, origin_station_id, destination_station_id)
+                    .map_err(AppError::Service)?;
+            dispatch_journey(state, train_id, service_id, effective_now).map_err(AppError::Dispatch)
+        })
+    }
+
     /// Reconciles due Journeys and persists their settlement before publishing
     /// the resulting Train, receipts, and Company Funds.
     pub fn reconcile(&mut self, now: UtcSeconds) -> Result<(), AppError<S::Error>> {
@@ -177,8 +218,8 @@ mod tests {
     use crate::{
         model::{GameState, RailStationId, TrainStatus, UtcSeconds},
         sim::{
-            fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
-            world::create_new_game,
+            economy::quote_journey, fleet::purchase_train, journeys::dispatch_journey,
+            services::find_or_create_service, world::create_new_game,
         },
     };
 
@@ -282,6 +323,78 @@ mod tests {
         ));
         assert_eq!(app.state(), &before);
         assert_eq!(store.load().unwrap(), Some(before));
+    }
+
+    #[test]
+    fn destination_dispatch_creates_a_service_only_with_a_persisted_journey() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let mut app = App::start_new(store.clone(), state).unwrap();
+        let before = app.state().clone();
+        store.fail_next_save.set(true);
+
+        assert!(matches!(
+            app.dispatch_to_destination(train_id, DESTINATION, DEPARTED_AT),
+            Err(AppError::Save(TestStoreError::SimulatedWriteFailure))
+        ));
+        assert_eq!(app.state(), &before);
+        assert!(app.state().player_company.passenger_services.is_empty());
+
+        app.dispatch_to_destination(train_id, DESTINATION, DEPARTED_AT)
+            .unwrap();
+        assert_eq!(app.state().player_company.passenger_services.len(), 1);
+        assert_eq!(app.state().active_journeys.len(), 1);
+        assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
+    }
+
+    #[test]
+    fn destination_dispatch_revalidates_a_stale_quote_without_creating_a_service() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let mut preview = state.clone();
+        let service_id = find_or_create_service(&mut preview, ORIGIN, DESTINATION).unwrap();
+        let stale_quote = quote_journey(&preview, train_id, service_id).unwrap();
+        state.player_company.funds =
+            crate::model::Money::from_cents(stale_quote.operating_cost.cents() - 1);
+        let mut app = App::start_new(store.clone(), state).unwrap();
+        let before = app.state().clone();
+
+        let error = app
+            .dispatch_to_destination(train_id, DESTINATION, DEPARTED_AT)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Company Funds"));
+        assert_eq!(app.state(), &before);
+        assert!(app.state().player_company.passenger_services.is_empty());
+        assert_eq!(store.load().unwrap(), Some(before));
+    }
+
+    #[test]
+    fn destination_dispatch_uses_the_train_current_location_and_route() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let mut preview = state.clone();
+        let stale_service_id = find_or_create_service(&mut preview, ORIGIN, DESTINATION).unwrap();
+        let _stale_quote = quote_journey(&preview, train_id, stale_service_id).unwrap();
+        state.player_company.fleet.trains[0].status = TrainStatus::Ready {
+            at: RailStationId::new(3),
+        };
+        let mut app = App::start_new(store, state).unwrap();
+
+        app.dispatch_to_destination(train_id, DESTINATION, DEPARTED_AT)
+            .unwrap();
+
+        assert_eq!(
+            app.state().active_journeys[0].origin_station_id,
+            RailStationId::new(3)
+        );
+        assert_eq!(
+            app.state().player_company.passenger_services[0].first_station_id,
+            RailStationId::new(3)
+        );
     }
 
     #[test]
