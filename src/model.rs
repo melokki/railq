@@ -461,6 +461,14 @@ pub struct Journey {
     pub origin_station_id: RailStationId,
     pub destination_station_id: RailStationId,
     pub passengers_carried: u32,
+    /// The fare actually quoted and accepted for each carried passenger.
+    pub fare: Money,
+    /// Revenue due when this Journey arrives, fixed at departure.
+    pub operating_revenue: Money,
+    /// The Rail Authority infrastructure charge paid at departure.
+    pub infrastructure_access_fee: Money,
+    /// The diesel fuel cost paid at departure.
+    pub fuel_cost: Money,
     pub departed_at: UtcSeconds,
     pub arrives_at: UtcSeconds,
 }

@@ -3,5 +3,6 @@
 pub mod demand;
 pub mod economy;
 pub mod fleet;
+pub mod journeys;
 pub mod services;
 pub mod world;
