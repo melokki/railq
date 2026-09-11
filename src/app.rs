@@ -10,7 +10,7 @@ use crate::{
     model::{GameState, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds},
     sim::{
         economy::EconomyError,
-        fleet::{FleetError, purchase_train},
+        fleet::{FleetError, purchase_train, sell_train},
         journeys::{DispatchError, dispatch_journey},
         services::{ServiceError, find_or_create_service},
         time::{AdvanceTimeError, advance_time},
@@ -56,6 +56,8 @@ pub enum AppError<E> {
     Advance(AdvanceTimeError),
     /// A Train purchase was rejected by the simulation.
     Purchase(FleetError),
+    /// A Train resale was rejected by the simulation.
+    Resale(FleetError),
     /// A Manual Dispatch was rejected by the simulation.
     Dispatch(DispatchError),
     /// A Passenger Service could not be created or reused for a Manual Dispatch.
@@ -69,6 +71,7 @@ impl<E: fmt::Display> fmt::Display for AppError<E> {
             Self::Save(error) => write!(formatter, "could not save game changes: {error}"),
             Self::Advance(error) => error.fmt(formatter),
             Self::Purchase(error) => error.fmt(formatter),
+            Self::Resale(error) => error.fmt(formatter),
             Self::Dispatch(error) => error.fmt(formatter),
             Self::Service(error) => error.fmt(formatter),
         }
@@ -81,7 +84,7 @@ impl<E: Error + 'static> Error for AppError<E> {
             Self::Load(error) | Self::Save(error) => Some(error),
             Self::Advance(error) => Some(error),
             Self::Service(error) => Some(error),
-            Self::Purchase(error) => Some(error),
+            Self::Purchase(error) | Self::Resale(error) => Some(error),
             Self::Dispatch(error) => Some(error),
         }
     }
@@ -134,6 +137,17 @@ impl<S: GameStore> App<S> {
     ) -> Result<TrainId, AppError<S::Error>> {
         self.transact(now, |state, _| {
             purchase_train(state, catalogue_index, delivery_station_id).map_err(AppError::Purchase)
+        })
+    }
+
+    /// Sells a READY Train only if the advanced candidate can be saved.
+    pub fn sell_train(
+        &mut self,
+        train_id: TrainId,
+        now: UtcSeconds,
+    ) -> Result<crate::model::Money, AppError<S::Error>> {
+        self.transact(now, |state, _| {
+            sell_train(state, train_id).map_err(AppError::Resale)
         })
     }
 
@@ -345,6 +359,30 @@ mod tests {
             .unwrap();
         assert_eq!(app.state().player_company.passenger_services.len(), 1);
         assert_eq!(app.state().active_journeys.len(), 1);
+        assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
+    }
+
+    #[test]
+    fn ready_train_resale_is_persisted_and_credits_its_proceeds() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let expected_proceeds = state.player_company.fleet.trains[0]
+            .original_purchase_price
+            .cents()
+            * 70
+            / 100;
+        let funds_before_sale = state.player_company.funds;
+        let mut app = App::start_new(store.clone(), state).unwrap();
+
+        let proceeds = app.sell_train(train_id, STARTED_AT).unwrap();
+
+        assert_eq!(proceeds.cents(), expected_proceeds);
+        assert_eq!(
+            app.state().player_company.funds.cents(),
+            funds_before_sale.cents() + expected_proceeds
+        );
+        assert!(app.state().player_company.fleet.trains.is_empty());
         assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
     }
 

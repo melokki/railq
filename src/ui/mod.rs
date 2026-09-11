@@ -7,20 +7,24 @@
 use std::{
     error::Error,
     fmt,
-    io::{self, Stdout, Write},
+    io::{self, Stdout},
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crossterm::{
-    cursor::{Hide, MoveTo, Show},
+    cursor::{Hide, Show},
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
-    execute, queue,
-    style::Print,
-    terminal::{
-        self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
-        enable_raw_mode,
-    },
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{
+    Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Layout},
+    style::{Color, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph, Tabs, Wrap},
 };
 
 use crate::{
@@ -29,6 +33,7 @@ use crate::{
 };
 
 pub mod dispatch;
+pub mod fleet;
 pub mod map;
 pub mod market;
 pub mod start;
@@ -81,6 +86,8 @@ pub enum ShellAction {
         catalogue_index: usize,
         delivery_station_id: RailStationId,
     },
+    /// Confirmed player input requiring an application-boundary Train resale.
+    SellTrain { train_id: TrainId },
 }
 
 /// One command accepted by the terminal shell at the application boundary.
@@ -100,6 +107,8 @@ pub enum TerminalCommand {
         delivery_station_id: RailStationId,
         now: UtcSeconds,
     },
+    /// Revalidate and resell a selected READY Train.
+    SellTrain { train_id: TrainId, now: UtcSeconds },
 }
 
 /// Presentation-only state shared by the four primary views.
@@ -107,6 +116,7 @@ pub enum TerminalCommand {
 pub struct Shell {
     active_view: View,
     dispatch_flow: Option<dispatch::DispatchFlow>,
+    fleet_flow: Option<fleet::FleetFlow>,
     market_flow: Option<market::MarketFlow>,
     notice: Option<String>,
 }
@@ -117,6 +127,7 @@ impl Shell {
         Self {
             active_view: View::Map,
             dispatch_flow: None,
+            fleet_flow: None,
             market_flow: None,
             notice: None,
         }
@@ -158,6 +169,18 @@ impl Shell {
             };
         }
 
+        if let Some(flow) = &mut self.fleet_flow {
+            return match flow.handle_key(key, state) {
+                fleet::FleetFlowAction::Continue => ShellAction::Continue,
+                fleet::FleetFlowAction::Cancel => {
+                    self.fleet_flow = None;
+                    self.notice = Some("Train resale cancelled; no changes were made.".into());
+                    ShellAction::Continue
+                }
+                fleet::FleetFlowAction::Confirm { train_id } => ShellAction::SellTrain { train_id },
+            };
+        }
+
         if let Some(flow) = &mut self.market_flow {
             return match flow.handle_key(key, state) {
                 market::MarketFlowAction::Continue => ShellAction::Continue,
@@ -185,6 +208,15 @@ impl Shell {
                 match market::MarketFlow::start(state) {
                     Ok(flow) => {
                         self.market_flow = Some(flow);
+                        self.notice = None;
+                    }
+                    Err(message) => self.notice = Some(message.into()),
+                }
+            }
+            KeyCode::Enter if self.active_view == View::Trains => {
+                match fleet::FleetFlow::start(state) {
+                    Ok(flow) => {
+                        self.fleet_flow = Some(flow);
                         self.notice = None;
                     }
                     Err(message) => self.notice = Some(message.into()),
@@ -232,6 +264,24 @@ impl Shell {
     pub fn confirm_purchase_train(&mut self) {
         self.market_flow = None;
         self.notice = Some("Train purchase authorised and saved to the Fleet.".into());
+    }
+
+    /// Keeps a rejected resale visible to explain the actual current-state cause.
+    pub fn reject_train_resale(&mut self, error: impl Into<String>) {
+        if let Some(flow) = &mut self.fleet_flow {
+            flow.reject(error);
+        } else {
+            self.notice = Some(error.into());
+        }
+    }
+
+    /// Closes a saved resale and shows the actual proceeds credited to Company Funds.
+    pub fn confirm_train_resale(&mut self, proceeds: crate::model::Money) {
+        self.fleet_flow = None;
+        self.notice = Some(format!(
+            "Train resold and saved. Sale proceeds of {} were added to Company Funds.",
+            format_money(proceeds)
+        ));
     }
 
     /// Returns a readable instruction when the terminal cannot safely fit a view.
@@ -362,6 +412,19 @@ where
                         }
                         Err(error) => shell.reject_purchase_train(error.to_string()),
                     },
+                    ShellAction::SellTrain { train_id } => {
+                        let expected_proceeds = resale_proceeds_for(&state, train_id);
+                        match command(TerminalCommand::SellTrain {
+                            train_id,
+                            now: current_utc_seconds(),
+                        }) {
+                            Ok(next_state) => {
+                                state = next_state;
+                                shell.confirm_train_resale(expected_proceeds);
+                            }
+                            Err(error) => shell.reject_train_resale(error.to_string()),
+                        }
+                    }
                     ShellAction::Continue => {}
                 }
             }
@@ -378,9 +441,118 @@ fn current_utc_seconds() -> UtcSeconds {
     UtcSeconds::from_unix_seconds(i64::try_from(seconds).unwrap_or(i64::MAX))
 }
 
+/// Draws the complete dashboard with Ratatui widgets. Crossterm supplies the
+/// cross-platform terminal backend and events; Ratatui owns layout and paint.
+fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
+    let area = frame.area();
+    if let Some(hint) = shell.resize_hint(area.width, area.height) {
+        frame.render_widget(
+            Paragraph::new(hint)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(APPLICATION_NAME),
+                )
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+
+    let [navigation_area, content_area, footer_area] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(8),
+        Constraint::Length(3),
+    ])
+    .areas(area);
+    let views = [View::Map, View::Trains, View::Company, View::BuyTrains];
+    let selected = views
+        .iter()
+        .position(|view| *view == shell.active_view)
+        .unwrap_or(0);
+    let titles = views
+        .iter()
+        .map(|view| Line::from(view.label()))
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Tabs::new(titles)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(APPLICATION_NAME),
+            )
+            .select(selected)
+            .highlight_style(Style::default().fg(Color::Cyan).bold())
+            .divider(" | "),
+        navigation_area,
+    );
+
+    let now = state.last_processed_at;
+    let content = match shell.active_view {
+        View::Map => match &shell.dispatch_flow {
+            Some(flow) => flow.render(state),
+            None => map::render_at(state, now),
+        },
+        View::Trains => match &shell.fleet_flow {
+            Some(flow) => flow.render(state, now),
+            None => fleet::render_at(state, now),
+        },
+        View::BuyTrains => match &shell.market_flow {
+            Some(flow) => flow.render(state),
+            None => market::render(state),
+        },
+        View::Company => "Company details follow in their dedicated task.".into(),
+    };
+    frame.render_widget(
+        Paragraph::new(content)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(shell.active_view.label()),
+            )
+            .wrap(Wrap { trim: false }),
+        content_area,
+    );
+
+    let footer = match &shell.notice {
+        Some(notice) => format!("{notice}\n[M] Map  [T] Fleet  [C] Company  [B] Buy Trains  [Q] Quit"),
+        None => "[M] Map  [T] Fleet  [C] Company  [B] Buy Trains  [D] Dispatch on Map  [Enter] Select / confirm  [Esc] Cancel  [Q] Quit".into(),
+    };
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: true }),
+        footer_area,
+    );
+}
+
+fn format_money(money: crate::model::Money) -> String {
+    let cents = i128::from(money.cents());
+    let sign = if cents < 0 { "-" } else { "" };
+    let cents = cents.abs();
+    format!("{sign}${}.{:02}", cents / 100, cents % 100)
+}
+
+fn resale_proceeds_for(state: &GameState, train_id: TrainId) -> crate::model::Money {
+    state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .and_then(|train| {
+            train
+                .original_purchase_price
+                .cents()
+                .checked_mul(70)
+                .map(|cents| crate::model::Money::from_cents(cents / 100))
+        })
+        .unwrap_or(crate::model::Money::ZERO)
+}
+
 /// RAII guard for the terminal modes owned by the shell.
 struct TerminalSession {
-    stdout: Stdout,
+    terminal: Terminal<CrosstermBackend<Stdout>>,
     active: bool,
 }
 
@@ -394,57 +566,26 @@ impl TerminalSession {
             return Err(error);
         }
 
+        let terminal = match Terminal::new(CrosstermBackend::new(stdout)) {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                let mut stdout = io::stdout();
+                let _ = execute!(stdout, Show, LeaveAlternateScreen);
+                let _ = disable_raw_mode();
+                return Err(error);
+            }
+        };
+
         Ok(Self {
-            stdout,
+            terminal,
             active: true,
         })
     }
 
     fn draw(&mut self, shell: &Shell, state: &GameState) -> io::Result<()> {
-        let (columns, rows) = terminal::size()?;
-        queue!(
-            self.stdout,
-            MoveTo(0, 0),
-            Clear(ClearType::All),
-            Print(format!(
-                "{APPLICATION_NAME} — {}\n\n",
-                shell.active_view.label()
-            )),
-        )?;
-
-        if let Some(hint) = shell.resize_hint(columns, rows) {
-            queue!(self.stdout, Print(hint))?;
-        } else {
-            queue!(
-                self.stdout,
-                Print(
-                    "[M] Map  [T] Trains  [C] Company  [B] Buy Trains  [D] Manual Dispatch  [Q] Quit\n\n"
-                ),
-            )?;
-            match shell.active_view {
-                View::Map => {
-                    queue!(self.stdout, Print(map::render(state)))?;
-                    if let Some(flow) = &shell.dispatch_flow {
-                        queue!(self.stdout, Print("\n"), Print(flow.render(state)))?;
-                    }
-                }
-                View::BuyTrains => {
-                    if let Some(flow) = &shell.market_flow {
-                        queue!(self.stdout, Print(flow.render(state)))?;
-                    } else {
-                        queue!(self.stdout, Print(market::render(state)))?;
-                    }
-                }
-                _ => queue!(
-                    self.stdout,
-                    Print("This view's details follow in its dedicated task.")
-                )?,
-            }
-            if let Some(notice) = &shell.notice {
-                queue!(self.stdout, Print(format!("\n{notice}\n")))?;
-            }
-        }
-        self.stdout.flush()
+        self.terminal
+            .draw(|frame| render_frame(frame, shell, state))
+            .map(|_| ())
     }
 
     fn restore(&mut self) -> io::Result<()> {
@@ -453,9 +594,10 @@ impl TerminalSession {
         }
         self.active = false;
 
-        let screen_result = execute!(self.stdout, Show, LeaveAlternateScreen);
         let raw_mode_result = disable_raw_mode();
-        screen_result.and(raw_mode_result)
+        let screen_result = execute!(self.terminal.backend_mut(), Show, LeaveAlternateScreen);
+        let cursor_result = self.terminal.show_cursor();
+        raw_mode_result.and(screen_result).and(cursor_result)
     }
 }
 
@@ -567,6 +709,24 @@ mod tests {
                 catalogue_index: 1,
                 delivery_station_id: RailStationId::new(1),
             }
+        );
+    }
+
+    #[test]
+    fn fleet_resale_routes_only_a_confirmed_ready_train_to_the_application_boundary() {
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let mut shell = Shell::new();
+        let press = |shell: &mut Shell, key| {
+            shell.handle_key(KeyEvent::new(key, KeyModifiers::NONE), &state)
+        };
+
+        assert_eq!(press(&mut shell, KeyCode::Char('t')), ShellAction::Continue);
+        assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
+        assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
+        assert_eq!(
+            press(&mut shell, KeyCode::Enter),
+            ShellAction::SellTrain { train_id }
         );
     }
 }
