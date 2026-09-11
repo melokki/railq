@@ -1,0 +1,7 @@
+//! RailQ's application library.
+//!
+//! Future simulation code stays pure and receives explicit timestamps. The
+//! binary owns terminal, clock, and disk I/O at the application boundary.
+
+/// The display name shared by the binary and future presentation code.
+pub const APPLICATION_NAME: &str = "RailQ";
