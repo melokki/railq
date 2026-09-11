@@ -1334,32 +1334,13 @@ fn format_money(money: Money) -> String {
 }
 
 fn format_signed_cents(cents: i128) -> String {
-    if cents > 0 {
-        format!("+{}", format_cents(cents))
-    } else {
-        format_cents(cents)
-    }
+    crate::ui::format::signed_cents(cents)
 }
 
 fn format_cents(cents: i128) -> String {
-    let sign = if cents < 0 { "-" } else { "" };
-    let cents = cents.unsigned_abs();
-    let whole = (cents / 100).to_string();
-    let grouped_whole = whole
-        .chars()
-        .rev()
-        .enumerate()
-        .fold(String::new(), |mut output, (index, digit)| {
-            if index != 0 && index % 3 == 0 {
-                output.push(',');
-            }
-            output.push(digit);
-            output
-        })
-        .chars()
-        .rev()
-        .collect::<String>();
-    format!("{sign}${grouped_whole}.{:02}", cents % 100)
+    crate::ui::format::signed_cents(cents)
+        .trim_start_matches('+')
+        .to_owned()
 }
 
 #[cfg(test)]

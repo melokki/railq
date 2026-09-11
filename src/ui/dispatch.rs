@@ -1374,27 +1374,15 @@ fn format_path(state: &GameState, quote: &JourneyQuote) -> String {
 }
 
 fn format_distance(metres: u64) -> String {
-    format!("{}.{:01} km", metres / 1_000, (metres % 1_000) / 100)
+    crate::ui::format::distance(metres)
 }
 
 fn format_duration(seconds: u64) -> String {
-    let hours = seconds / 3_600;
-    let minutes = (seconds % 3_600) / 60;
-    let seconds = seconds % 60;
-    if hours > 0 {
-        format!("{hours}h {minutes:02}m")
-    } else if minutes > 0 {
-        format!("{minutes}m {seconds:02}s")
-    } else {
-        format!("{seconds}s")
-    }
+    crate::ui::format::duration(seconds)
 }
 
 fn format_money(money: Money) -> String {
-    let cents = i128::from(money.cents());
-    let sign = if cents < 0 { "-" } else { "" };
-    let cents = cents.abs();
-    format!("{sign}${}.{:02}", cents / 100, cents % 100)
+    crate::ui::format::money(money)
 }
 
 #[cfg(test)]

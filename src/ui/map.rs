@@ -1415,31 +1415,15 @@ fn remaining_seconds(journey: &Journey, now: UtcSeconds) -> u64 {
 }
 
 fn format_money(money: Money) -> String {
-    let cents = i128::from(money.cents());
-    let sign = if cents < 0 { "-" } else { "" };
-    let cents = cents.abs();
-    format!("{sign}${}.{:02}", cents / 100, cents % 100)
+    crate::ui::format::money(money)
 }
 
 fn format_distance(metres: u64) -> String {
-    let kilometres = metres / 1_000;
-    let remainder = metres % 1_000;
-    if remainder == 0 {
-        format!("{kilometres} km")
-    } else {
-        format!("{kilometres}.{remainder:03} km")
-    }
+    crate::ui::format::distance(metres)
 }
 
 fn format_duration(seconds: u64) -> String {
-    let hours = seconds / 3_600;
-    let minutes = (seconds % 3_600) / 60;
-    let seconds = seconds % 60;
-    match (hours, minutes) {
-        (0, 0) => format!("{seconds}s"),
-        (0, _) => format!("{minutes}m {seconds}s"),
-        _ => format!("{hours}h {minutes}m {seconds}s"),
-    }
+    crate::ui::format::duration(seconds)
 }
 
 #[cfg(test)]

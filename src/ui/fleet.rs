@@ -717,8 +717,7 @@ fn station_label_or_missing(state: &GameState, station_id: RailStationId) -> Str
 }
 
 fn format_speed(train: &Train) -> String {
-    let kilometres_per_hour = train.speed.metres_per_second().saturating_mul(18) / 5;
-    format!("{kilometres_per_hour} km/h")
+    crate::ui::format::speed_kmh(train.speed.metres_per_second())
 }
 
 /// Renders the Player Company's Fleet at the supplied time.
@@ -849,36 +848,11 @@ fn remaining_seconds(journey: &Journey, now: UtcSeconds) -> u64 {
 }
 
 fn format_duration(seconds: u64) -> String {
-    let hours = seconds / 3_600;
-    let minutes = (seconds % 3_600) / 60;
-    let seconds = seconds % 60;
-    match (hours, minutes) {
-        (0, 0) => format!("{seconds}s"),
-        (0, _) => format!("{minutes}m {seconds}s"),
-        _ => format!("{hours}h {minutes}m {seconds}s"),
-    }
+    crate::ui::format::duration(seconds)
 }
 
 fn format_money(money: Money) -> String {
-    let cents = i128::from(money.cents());
-    let sign = if cents < 0 { "-" } else { "" };
-    let cents = cents.abs();
-    let grouped_whole = (cents / 100)
-        .to_string()
-        .chars()
-        .rev()
-        .enumerate()
-        .fold(String::new(), |mut output, (index, digit)| {
-            if index != 0 && index % 3 == 0 {
-                output.push(',');
-            }
-            output.push(digit);
-            output
-        })
-        .chars()
-        .rev()
-        .collect::<String>();
-    format!("{sign}${grouped_whole}.{:02}", cents % 100)
+    crate::ui::format::money(money)
 }
 
 #[cfg(test)]

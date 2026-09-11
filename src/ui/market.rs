@@ -1210,8 +1210,7 @@ fn station_label(state: &GameState, station_id: RailStationId) -> &str {
 }
 
 fn format_distance(line: &RailLine) -> String {
-    let metres = line.distance.metres();
-    format!("{}.{:03} km", metres / 1_000, metres % 1_000)
+    crate::ui::format::distance(line.distance.metres())
 }
 
 fn format_money_per_kilometre(cents: u64) -> String {
@@ -1219,31 +1218,11 @@ fn format_money_per_kilometre(cents: u64) -> String {
 }
 
 fn format_speed_kmh(train: &DieselTrainCatalogueRecord) -> String {
-    let tenths = u128::from(train.speed().metres_per_second()).saturating_mul(36);
-    format!("{}.{:01} km/h", tenths / 10, tenths % 10)
+    crate::ui::format::speed_kmh(train.speed().metres_per_second())
 }
 
 fn format_money(money: Money) -> String {
-    let cents = i128::from(money.cents());
-    let sign = if cents < 0 { "-" } else { "" };
-    let cents = cents.abs();
-    format!(
-        "{sign}${}.{:02}",
-        format_grouped_integer(cents / 100),
-        cents % 100
-    )
-}
-
-fn format_grouped_integer(value: i128) -> String {
-    let digits = value.to_string();
-    let mut grouped = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
-    for (index, digit) in digits.chars().enumerate() {
-        if index != 0 && (digits.len() - index) % 3 == 0 {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
+    crate::ui::format::money(money)
 }
 
 #[cfg(test)]

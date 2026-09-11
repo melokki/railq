@@ -36,6 +36,7 @@ use crate::{
 pub mod company;
 pub mod dispatch;
 pub mod fleet;
+pub mod format;
 pub mod map;
 pub mod market;
 pub mod start;
@@ -1290,14 +1291,7 @@ fn nearest_eta(state: &GameState, now: UtcSeconds) -> Option<String> {
 }
 
 fn format_remaining_time(seconds: u64) -> String {
-    let minutes = seconds.saturating_add(59) / 60;
-    let hours = minutes / 60;
-    let minutes = minutes % 60;
-    if hours == 0 {
-        format!("{minutes}m")
-    } else {
-        format!("{hours}h {minutes:02}m")
-    }
+    format::duration(seconds)
 }
 
 fn tab_label(view: View, compact: bool) -> String {
@@ -1359,25 +1353,7 @@ fn bankruptcy_text(restart_confirmation: bool) -> String {
 }
 
 fn format_money(money: crate::model::Money) -> String {
-    let cents = i128::from(money.cents());
-    let sign = if cents < 0 { "-" } else { "" };
-    let cents = cents.abs();
-    let whole = (cents / 100).to_string();
-    let grouped_whole = whole
-        .chars()
-        .rev()
-        .enumerate()
-        .fold(String::new(), |mut output, (index, digit)| {
-            if index != 0 && index % 3 == 0 {
-                output.push(',');
-            }
-            output.push(digit);
-            output
-        })
-        .chars()
-        .rev()
-        .collect::<String>();
-    format!("{sign}${grouped_whole}.{:02}", cents % 100)
+    format::money(money)
 }
 
 fn resale_proceeds_for(state: &GameState, train_id: TrainId) -> crate::model::Money {
