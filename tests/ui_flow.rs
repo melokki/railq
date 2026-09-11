@@ -10,7 +10,7 @@ use railq::{
     model::{GameState, Money, RailStationId, TrainStatus, UtcSeconds},
     sim::time::advance_time,
     ui::{
-        Shell, ShellAction, View,
+        Shell, ShellAction, View, capture_rendered_buffer,
         start::{CompanyName, Startup, onboarding_summary, start},
     },
 };
@@ -18,12 +18,14 @@ use std::{
     cell::{Cell, RefCell},
     convert::Infallible,
     error::Error,
-    fmt,
+    fmt, fs,
+    path::Path,
     rc::Rc,
 };
 
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 const OUTBOUND_DEPARTURE: UtcSeconds = UtcSeconds::from_unix_seconds(2_000);
+const OUTCOME_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/23";
 
 #[derive(Clone, Debug, Default)]
 struct TestStore {
@@ -299,6 +301,65 @@ fn failed_resale_save_keeps_the_review_open_without_a_success_notice() {
         rendered.contains("Resale rejected: could not save game changes: simulated save rejection")
     );
     assert!(!rendered.contains("Train resold and saved"));
+}
+
+#[test]
+fn saved_purchase_has_an_inspectable_outcome_until_acknowledged() -> Result<(), Box<dyn Error>> {
+    let (_, mut app) = dashboard_from_fresh_launch();
+    let mut shell = Shell::new();
+
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Char('b')), app.state()),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Enter), app.state()),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Enter), app.state()),
+        ShellAction::Continue
+    );
+    let ShellAction::PurchaseTrain {
+        catalogue_index,
+        delivery_station_id,
+    } = shell.handle_key(key(KeyCode::Enter), app.state())
+    else {
+        panic!("purchase review should request an application command");
+    };
+    app.purchase_train(catalogue_index, delivery_station_id, STARTED_AT)
+        .unwrap();
+    shell.confirm_purchase_train_saved(app.state());
+
+    let banner = capture_rendered_buffer(&shell, app.state(), 120, 40);
+    assert!(banner.contains("Train purchase ·"));
+    assert!(banner.contains("saved — Company Funds -$"));
+    assert!(banner.contains("[Enter] Read"));
+
+    let evidence_dir = Path::new(OUTCOME_EVIDENCE_DIR);
+    fs::create_dir_all(evidence_dir)?;
+    fs::write(evidence_dir.join("purchase-saved-120x40.txt"), &banner)?;
+
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Enter), app.state()),
+        ShellAction::Continue
+    );
+    let details = capture_rendered_buffer(&shell, app.state(), 120, 40);
+    assert!(details.contains("Saved action outcome"));
+    assert!(details.contains("Company Funds:"));
+    assert!(details.contains("Saved successfully."));
+    fs::write(
+        evidence_dir.join("purchase-outcome-details-120x40.txt"),
+        &details,
+    )?;
+
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Char('a')), app.state()),
+        ShellAction::Continue
+    );
+    let dismissed = capture_rendered_buffer(&shell, app.state(), 120, 40);
+    assert!(!dismissed.contains("Saved action outcome"));
+    Ok(())
 }
 
 #[test]

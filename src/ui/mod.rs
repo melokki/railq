@@ -29,7 +29,7 @@ use ratatui::{
 
 use crate::{
     APPLICATION_NAME,
-    model::{GameState, RailStationId, TrainId, TrainStatus, UtcSeconds},
+    model::{GameState, Money, RailStationId, TrainId, TrainStatus, UtcSeconds},
     sim::finance::{FinancialStatus, evaluate_financial_recovery},
 };
 
@@ -128,6 +128,21 @@ pub enum TerminalCommand {
     RestartAfterBankruptcy { world_seed: u64, now: UtcSeconds },
 }
 
+/// Presentation-only record of a command which crossed the save boundary.
+/// It is deliberately not saved: reopening a game must not invent old notices.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActionOutcome {
+    summary: String,
+    details: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingAction {
+    label: String,
+    details: Vec<String>,
+    funds_before: Money,
+}
+
 /// The active panel within the Fleet workspace. Compact terminals expose one
 /// panel at a time; a wide workspace keeps both panels visible.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -161,6 +176,9 @@ pub struct Shell {
     company_recovery_selection: company::RecoverySelection,
     company_recovery_review_open: bool,
     notice: Option<String>,
+    pending_action: Option<PendingAction>,
+    action_outcome: Option<ActionOutcome>,
+    outcome_details_open: bool,
     help_visible: bool,
     help_offset: usize,
     restart_confirmation: bool,
@@ -191,6 +209,9 @@ impl Shell {
             company_recovery_selection: company::RecoverySelection::default(),
             company_recovery_review_open: false,
             notice: None,
+            pending_action: None,
+            action_outcome: None,
+            outcome_details_open: false,
             help_visible: false,
             help_offset: 0,
             restart_confirmation: false,
@@ -249,6 +270,27 @@ impl Shell {
             return ShellAction::Continue;
         }
 
+        if self.outcome_details_open {
+            match key.code {
+                KeyCode::Esc => self.outcome_details_open = false,
+                KeyCode::Enter | KeyCode::Char('a' | 'A') => {
+                    self.outcome_details_open = false;
+                    self.action_outcome = None;
+                }
+                _ => {}
+            }
+            return ShellAction::Continue;
+        }
+
+        if self.action_outcome.is_some() {
+            match key.code {
+                KeyCode::Enter => self.outcome_details_open = true,
+                KeyCode::Esc | KeyCode::Char('a' | 'A') => self.action_outcome = None,
+                _ => {}
+            }
+            return ShellAction::Continue;
+        }
+
         if matches!(key.code, KeyCode::Char('?' | 'h' | 'H')) {
             self.help_visible = true;
             self.help_offset = 0;
@@ -297,10 +339,14 @@ impl Shell {
                 dispatch::DispatchFlowAction::Confirm {
                     train_id,
                     destination_station_id,
-                } => ShellAction::ManualDispatch {
-                    train_id,
-                    destination_station_id,
-                },
+                } => {
+                    self.pending_action =
+                        Some(pending_dispatch(state, train_id, destination_station_id));
+                    ShellAction::ManualDispatch {
+                        train_id,
+                        destination_station_id,
+                    }
+                }
             };
         }
 
@@ -312,7 +358,10 @@ impl Shell {
                     self.notice = Some("Train resale cancelled; no changes were made.".into());
                     ShellAction::Continue
                 }
-                fleet::FleetFlowAction::Confirm { train_id } => ShellAction::SellTrain { train_id },
+                fleet::FleetFlowAction::Confirm { train_id } => {
+                    self.pending_action = Some(pending_resale(state, train_id));
+                    ShellAction::SellTrain { train_id }
+                }
             };
         }
 
@@ -333,10 +382,17 @@ impl Shell {
                 market::MarketFlowAction::Confirm {
                     catalogue_index,
                     delivery_station_id,
-                } => ShellAction::PurchaseTrain {
-                    catalogue_index,
-                    delivery_station_id,
-                },
+                } => {
+                    self.pending_action = Some(pending_purchase(
+                        state,
+                        catalogue_index,
+                        delivery_station_id,
+                    ));
+                    ShellAction::PurchaseTrain {
+                        catalogue_index,
+                        delivery_station_id,
+                    }
+                }
             };
         }
 
@@ -608,6 +664,7 @@ impl Shell {
 
     /// Keeps a rejected confirmation visible to explain the actual current-state cause.
     pub fn reject_manual_dispatch(&mut self, error: impl Into<String>) {
+        self.pending_action = None;
         if let Some(flow) = &mut self.dispatch_flow {
             flow.reject(error);
         } else {
@@ -617,6 +674,7 @@ impl Shell {
 
     /// Closes a successful proposal after the application boundary persisted it.
     pub fn confirm_manual_dispatch(&mut self) {
+        self.pending_action = None;
         self.dispatch_flow = None;
         if self.dispatch_returns_to_fleet {
             self.fleet_details_open = false;
@@ -626,8 +684,17 @@ impl Shell {
         self.notice = Some("Manual Dispatch authorised and saved.".into());
     }
 
+    /// Publishes dispatch feedback only after the caller has saved and supplied
+    /// the resulting game state.
+    pub fn confirm_manual_dispatch_saved(&mut self, state: &GameState) {
+        self.dispatch_flow = None;
+        self.dispatch_returns_to_fleet = false;
+        self.publish_pending_outcome(state);
+    }
+
     /// Keeps a rejected purchase visible to explain the actual current-state cause.
     pub fn reject_purchase_train(&mut self, error: impl Into<String>) {
+        self.pending_action = None;
         if let Some(flow) = &mut self.market_flow {
             flow.reject(error);
         } else {
@@ -637,12 +704,20 @@ impl Shell {
 
     /// Closes a successful purchase proposal after the application boundary persisted it.
     pub fn confirm_purchase_train(&mut self) {
+        self.pending_action = None;
         self.market_flow = None;
         self.notice = Some("Train purchase authorised and saved to the Fleet.".into());
     }
 
+    /// Publishes purchase feedback only after the save boundary succeeded.
+    pub fn confirm_purchase_train_saved(&mut self, state: &GameState) {
+        self.market_flow = None;
+        self.publish_pending_outcome(state);
+    }
+
     /// Keeps a rejected resale visible to explain the actual current-state cause.
     pub fn reject_train_resale(&mut self, error: impl Into<String>) {
+        self.pending_action = None;
         if let Some(flow) = &mut self.fleet_flow {
             flow.reject(error);
         } else {
@@ -652,6 +727,7 @@ impl Shell {
 
     /// Closes a saved resale and shows the actual proceeds credited to Company Funds.
     pub fn confirm_train_resale(&mut self, proceeds: crate::model::Money) {
+        self.pending_action = None;
         self.fleet_flow = None;
         self.fleet_details_open = false;
         self.fleet_focus = FleetFocus::List;
@@ -659,6 +735,42 @@ impl Shell {
             "Train resold and saved. Sale proceeds of {} were added to Company Funds.",
             format_money(proceeds)
         ));
+    }
+
+    /// Publishes resale feedback only after the save boundary succeeded.
+    pub fn confirm_train_resale_saved(&mut self, state: &GameState) {
+        self.fleet_flow = None;
+        self.fleet_details_open = false;
+        self.fleet_focus = FleetFocus::List;
+        self.publish_pending_outcome(state);
+    }
+
+    fn publish_pending_outcome(&mut self, state: &GameState) {
+        let Some(pending) = self.pending_action.take() else {
+            return;
+        };
+        let funds_after = state.player_company.funds;
+        let change = funds_after
+            .checked_sub(pending.funds_before)
+            .unwrap_or(Money::ZERO);
+        let mut details = pending.details;
+        details.push(format!(
+            "Company Funds: {} → {} ({})",
+            format_money(pending.funds_before),
+            format_money(funds_after),
+            signed_money(change),
+        ));
+        details
+            .push("Saved successfully. This outcome is not stored as notification history.".into());
+        self.notice = None;
+        self.action_outcome = Some(ActionOutcome {
+            summary: format!(
+                "{} saved — Company Funds {}.",
+                pending.label,
+                signed_money(change)
+            ),
+            details,
+        });
     }
 
     /// Shows the persisted outcome of an explicitly confirmed Bankruptcy restart.
@@ -873,7 +985,7 @@ where
                     }) {
                         Ok(next_state) => {
                             state = next_state;
-                            shell.confirm_manual_dispatch();
+                            shell.confirm_manual_dispatch_saved(&state);
                         }
                         Err(error) => shell.reject_manual_dispatch(error.to_string()),
                     },
@@ -887,19 +999,18 @@ where
                     }) {
                         Ok(next_state) => {
                             state = next_state;
-                            shell.confirm_purchase_train();
+                            shell.confirm_purchase_train_saved(&state);
                         }
                         Err(error) => shell.reject_purchase_train(error.to_string()),
                     },
                     ShellAction::SellTrain { train_id } => {
-                        let expected_proceeds = resale_proceeds_for(&state, train_id);
                         match command(TerminalCommand::SellTrain {
                             train_id,
                             now: current_utc_seconds(),
                         }) {
                             Ok(next_state) => {
                                 state = next_state;
-                                shell.confirm_train_resale(expected_proceeds);
+                                shell.confirm_train_resale_saved(&state);
                             }
                             Err(error) => shell.reject_train_resale(error.to_string()),
                         }
@@ -1147,9 +1258,20 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
     }
 
     frame.render_widget(
-        Paragraph::new(shell.notice.as_deref().unwrap_or_default())
-            .style(theme::feedback())
-            .wrap(Wrap { trim: true }),
+        Paragraph::new(
+            shell
+                .action_outcome
+                .as_ref()
+                .map(|outcome| format!("{}  [Enter] Read  [Esc] Dismiss", outcome.summary))
+                .or_else(|| shell.notice.clone())
+                .unwrap_or_default(),
+        )
+        .style(if shell.action_outcome.is_some() {
+            theme::success()
+        } else {
+            theme::feedback()
+        })
+        .wrap(Wrap { trim: true }),
         feedback_area,
     );
 
@@ -1166,6 +1288,11 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 
     if shell.help_visible {
         render_help_overlay(frame, area, shell.help_offset);
+    }
+    if shell.outcome_details_open {
+        if let Some(outcome) = &shell.action_outcome {
+            render_outcome_overlay(frame, area, outcome);
+        }
     }
 }
 
@@ -1386,7 +1513,7 @@ fn shorten(value: &str, max_characters: usize) -> String {
 
 const HELP_PAGE_STEP: usize = 5;
 
-const HELP_LINES: [&str; 39] = [
+const HELP_LINES: [&str; 40] = [
     "Global controls",
     "[M] Map  [T] Fleet  [C] Company  [B] Buy Trains switch primary views.",
     "[?] or [H] opens help. [Q] or Ctrl-C exits RailQ outside text entry.",
@@ -1403,6 +1530,7 @@ const HELP_LINES: [&str; 39] = [
     "[Enter] advances or confirms only the action named in the footer.",
     "[Left]/[Backspace] returns to the prior flow step; [Esc] cancels the current flow.",
     "Unavailable actions state their reason. Confirmation remains at the application boundary.",
+    "Saved action outcomes remain in the feedback row: Enter reads details; Esc or A acknowledges.",
     "",
     "Current flow reminders",
     "Manual Dispatch: select a READY Train, select a destination Rail Station, then review.",
@@ -1477,6 +1605,45 @@ fn render_help_overlay(frame: &mut ratatui::Frame, area: Rect, offset: usize) {
     );
 }
 
+fn render_outcome_overlay(frame: &mut ratatui::Frame, area: Rect, outcome: &ActionOutcome) {
+    let compact = area.width < 96 || area.height < 26;
+    let overlay_area = if compact {
+        area
+    } else {
+        Rect::new(
+            area.x.saturating_add(area.width / 10),
+            area.y.saturating_add(area.height / 5),
+            area.width.saturating_mul(4) / 5,
+            area.height.saturating_mul(3) / 5,
+        )
+    };
+    let mut lines = vec![
+        Line::styled(&outcome.summary, theme::success()),
+        Line::from(""),
+    ];
+    lines.extend(outcome.details.iter().cloned().map(Line::from));
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "Esc · return to notice   Enter/A · acknowledge",
+        theme::hint(),
+    ));
+    frame.render_widget(Clear, overlay_area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(theme::THIN_BORDERS)
+                    .border_style(theme::focused_border())
+                    .title("Saved action outcome")
+                    .title_style(theme::focused_title())
+                    .style(theme::panel()),
+            )
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        overlay_area,
+    );
+}
+
 fn bankruptcy_text(restart_confirmation: bool) -> String {
     if restart_confirmation {
         [
@@ -1504,21 +1671,74 @@ fn format_money(money: crate::model::Money) -> String {
     format::money(money)
 }
 
-fn resale_proceeds_for(state: &GameState, train_id: TrainId) -> crate::model::Money {
-    state
+fn signed_money(money: Money) -> String {
+    let amount = format_money(money);
+    if money.cents() > 0 {
+        format!("+{amount}")
+    } else {
+        amount
+    }
+}
+
+fn pending_dispatch(
+    state: &GameState,
+    train_id: TrainId,
+    destination_station_id: RailStationId,
+) -> PendingAction {
+    let model: String = state
         .player_company
         .fleet
         .trains
         .iter()
         .find(|train| train.id == train_id)
-        .and_then(|train| {
-            train
-                .original_purchase_price
-                .cents()
-                .checked_mul(70)
-                .map(|cents| crate::model::Money::from_cents(cents / 100))
-        })
-        .unwrap_or(crate::model::Money::ZERO)
+        .map_or_else(|| "unknown model".into(), |train| train.model_name.clone());
+    PendingAction {
+        label: format!("Manual Dispatch · Train {:02} ({model})", train_id.get()),
+        details: vec![format!(
+            "Journey authorised toward Rail Station {}. Departure costs and arrival revenue follow the saved Journey quote.",
+            destination_station_id.get()
+        )],
+        funds_before: state.player_company.funds,
+    }
+}
+
+fn pending_purchase(
+    state: &GameState,
+    catalogue_index: usize,
+    delivery_station_id: RailStationId,
+) -> PendingAction {
+    let model: String = state
+        .rules
+        .balance
+        .diesel_catalogue()
+        .get(catalogue_index)
+        .map_or_else(
+            || "selected catalogue Train".into(),
+            |train| train.name().into(),
+        );
+    PendingAction {
+        label: format!("Train purchase · {model}"),
+        details: vec![format!(
+            "Delivered to Rail Station {} after the purchase was persisted.",
+            delivery_station_id.get()
+        )],
+        funds_before: state.player_company.funds,
+    }
+}
+
+fn pending_resale(state: &GameState, train_id: TrainId) -> PendingAction {
+    let model: String = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .map_or_else(|| "unknown model".into(), |train| train.model_name.clone());
+    PendingAction {
+        label: format!("Train resale · Train {:02} ({model})", train_id.get()),
+        details: vec!["Sale proceeds were credited only after the save succeeded.".into()],
+        funds_before: state.player_company.funds,
+    }
 }
 
 /// RAII guard for the terminal modes owned by the shell.
