@@ -25,6 +25,8 @@ use crossterm::{
 
 use crate::{APPLICATION_NAME, model::UtcSeconds};
 
+pub mod start;
+
 /// How frequently the shell checks for elapsed arrivals while no key is pressed.
 pub const ARRIVAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 

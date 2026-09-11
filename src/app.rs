@@ -99,12 +99,19 @@ impl<S: GameStore> App<S> {
     /// before exposing it to the caller. A missing save remains an onboarding
     /// condition rather than a silently generated fresh game.
     pub fn load(store: S, now: UtcSeconds) -> Result<Option<Self>, AppError<S::Error>> {
+        Ok(Self::load_or_empty(store, now)?.ok())
+    }
+
+    /// Loads a saved Player Company or returns the still-owned empty store for
+    /// onboarding. This keeps the exclusive save-slot lock open between a
+    /// missing-save check and the first persisted Player Company.
+    pub fn load_or_empty(store: S, now: UtcSeconds) -> Result<Result<Self, S>, AppError<S::Error>> {
         let Some(mut state) = store.load().map_err(AppError::Load)? else {
-            return Ok(None);
+            return Ok(Err(store));
         };
         advance_time(&mut state, now).map_err(AppError::Advance)?;
         store.save(&state).map_err(AppError::Save)?;
-        Ok(Some(Self { state, store }))
+        Ok(Ok(Self { state, store }))
     }
 
     /// Returns the last successfully persisted, published game state.
