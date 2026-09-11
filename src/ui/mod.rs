@@ -30,6 +30,7 @@ use crate::{
 
 pub mod dispatch;
 pub mod map;
+pub mod market;
 pub mod start;
 
 /// How frequently the shell checks for elapsed arrivals while no key is pressed.
@@ -75,6 +76,11 @@ pub enum ShellAction {
         train_id: TrainId,
         destination_station_id: RailStationId,
     },
+    /// Confirmed player input requiring an application-boundary Train purchase.
+    PurchaseTrain {
+        catalogue_index: usize,
+        delivery_station_id: RailStationId,
+    },
 }
 
 /// One command accepted by the terminal shell at the application boundary.
@@ -88,6 +94,12 @@ pub enum TerminalCommand {
         destination_station_id: RailStationId,
         now: UtcSeconds,
     },
+    /// Revalidate and purchase a selected catalogue Train.
+    PurchaseTrain {
+        catalogue_index: usize,
+        delivery_station_id: RailStationId,
+        now: UtcSeconds,
+    },
 }
 
 /// Presentation-only state shared by the four primary views.
@@ -95,6 +107,7 @@ pub enum TerminalCommand {
 pub struct Shell {
     active_view: View,
     dispatch_flow: Option<dispatch::DispatchFlow>,
+    market_flow: Option<market::MarketFlow>,
     notice: Option<String>,
 }
 
@@ -104,6 +117,7 @@ impl Shell {
         Self {
             active_view: View::Map,
             dispatch_flow: None,
+            market_flow: None,
             notice: None,
         }
     }
@@ -144,11 +158,38 @@ impl Shell {
             };
         }
 
+        if let Some(flow) = &mut self.market_flow {
+            return match flow.handle_key(key, state) {
+                market::MarketFlowAction::Continue => ShellAction::Continue,
+                market::MarketFlowAction::Cancel => {
+                    self.market_flow = None;
+                    self.notice = Some("Train purchase cancelled; no changes were made.".into());
+                    ShellAction::Continue
+                }
+                market::MarketFlowAction::Confirm {
+                    catalogue_index,
+                    delivery_station_id,
+                } => ShellAction::PurchaseTrain {
+                    catalogue_index,
+                    delivery_station_id,
+                },
+            };
+        }
+
         match key.code {
             KeyCode::Char('m' | 'M') => self.active_view = View::Map,
             KeyCode::Char('t' | 'T') => self.active_view = View::Trains,
             KeyCode::Char('c' | 'C') => self.active_view = View::Company,
             KeyCode::Char('b' | 'B') => self.active_view = View::BuyTrains,
+            KeyCode::Enter if self.active_view == View::BuyTrains => {
+                match market::MarketFlow::start(state) {
+                    Ok(flow) => {
+                        self.market_flow = Some(flow);
+                        self.notice = None;
+                    }
+                    Err(message) => self.notice = Some(message.into()),
+                }
+            }
             KeyCode::Char('d' | 'D') if self.active_view == View::Map => {
                 match dispatch::DispatchFlow::start(state) {
                     Ok(flow) => {
@@ -176,6 +217,21 @@ impl Shell {
     pub fn confirm_manual_dispatch(&mut self) {
         self.dispatch_flow = None;
         self.notice = Some("Manual Dispatch authorised and saved.".into());
+    }
+
+    /// Keeps a rejected purchase visible to explain the actual current-state cause.
+    pub fn reject_purchase_train(&mut self, error: impl Into<String>) {
+        if let Some(flow) = &mut self.market_flow {
+            flow.reject(error);
+        } else {
+            self.notice = Some(error.into());
+        }
+    }
+
+    /// Closes a successful purchase proposal after the application boundary persisted it.
+    pub fn confirm_purchase_train(&mut self) {
+        self.market_flow = None;
+        self.notice = Some("Train purchase authorised and saved to the Fleet.".into());
     }
 
     /// Returns a readable instruction when the terminal cannot safely fit a view.
@@ -292,6 +348,20 @@ where
                         }
                         Err(error) => shell.reject_manual_dispatch(error.to_string()),
                     },
+                    ShellAction::PurchaseTrain {
+                        catalogue_index,
+                        delivery_station_id,
+                    } => match command(TerminalCommand::PurchaseTrain {
+                        catalogue_index,
+                        delivery_station_id,
+                        now: current_utc_seconds(),
+                    }) {
+                        Ok(next_state) => {
+                            state = next_state;
+                            shell.confirm_purchase_train();
+                        }
+                        Err(error) => shell.reject_purchase_train(error.to_string()),
+                    },
                     ShellAction::Continue => {}
                 }
             }
@@ -356,6 +426,13 @@ impl TerminalSession {
                     queue!(self.stdout, Print(map::render(state)))?;
                     if let Some(flow) = &shell.dispatch_flow {
                         queue!(self.stdout, Print("\n"), Print(flow.render(state)))?;
+                    }
+                }
+                View::BuyTrains => {
+                    if let Some(flow) = &shell.market_flow {
+                        queue!(self.stdout, Print(flow.render(state)))?;
+                    } else {
+                        queue!(self.stdout, Print(market::render(state)))?;
                     }
                 }
                 _ => queue!(
@@ -467,6 +544,28 @@ mod tests {
             ShellAction::ManualDispatch {
                 train_id,
                 destination_station_id: RailStationId::new(3),
+            }
+        );
+    }
+
+    #[test]
+    fn buy_trains_routes_only_an_explicit_confirmation_to_the_application_boundary() {
+        let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        let mut shell = Shell::new();
+        let press = |shell: &mut Shell, key| {
+            shell.handle_key(KeyEvent::new(key, KeyModifiers::NONE), &state)
+        };
+
+        assert_eq!(press(&mut shell, KeyCode::Char('b')), ShellAction::Continue);
+        assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
+        assert_eq!(press(&mut shell, KeyCode::Down), ShellAction::Continue);
+        assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
+        assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
+        assert_eq!(
+            press(&mut shell, KeyCode::Enter),
+            ShellAction::PurchaseTrain {
+                catalogue_index: 1,
+                delivery_station_id: RailStationId::new(1),
             }
         );
     }
