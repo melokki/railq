@@ -14,6 +14,7 @@ use railq::{
 
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_700_000_000);
 const EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/13";
+const DESTINATION_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/14";
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -97,7 +98,7 @@ fn map_dispatch_prefers_the_focused_station_and_renders_a_stateful_ready_train_c
         ShellAction::Continue
     );
     let destination = capture_rendered_buffer(&shell, &state, 80, 24);
-    assert!(destination.contains("Select a destination for Train 2"));
+    assert!(destination.contains("reachable destinations"));
     assert_eq!(
         press(&mut shell, &state, KeyCode::Esc),
         ShellAction::Continue
@@ -123,6 +124,128 @@ fn map_dispatch_prefers_the_focused_station_and_renders_a_stateful_ready_train_c
     assert_eq!(
         state, before,
         "Train selection and cancellation are presentation-only"
+    );
+    Ok(())
+}
+
+#[test]
+fn destination_chooser_shows_quote_route_context_and_keeps_the_draft_recoverable()
+-> Result<(), Box<dyn Error>> {
+    let state = state_with_ready_trains();
+    let before = state.clone();
+    let mut shell = Shell::new();
+    fs::create_dir_all(DESTINATION_EVIDENCE_DIR)?;
+
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Char('d')),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Continue
+    );
+    let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(wide.contains("1 Train → 2 Destination → 3 Review"));
+    assert!(wide.contains("reachable destinations"));
+    assert!(wide.contains("Route inspector"));
+    assert!(wide.contains("Origin"));
+    assert!(wide.contains("Directional demand"));
+    assert!(wide.contains("Path"));
+    assert!(wide.contains("Distance"));
+    let (row, column) = wide
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("> Oakridge").map(|column| (row, column)))
+        .expect("the selected reachable destination is visibly marked");
+    assert_eq!(
+        capture_rendered_cell_colors(
+            &shell,
+            &state,
+            120,
+            40,
+            u16::try_from(column).expect("test terminal fits u16"),
+            u16::try_from(row).expect("test terminal fits u16"),
+        ),
+        Some((theme::BACKGROUND, theme::ACCENT)),
+    );
+    fs::write(
+        Path::new(DESTINATION_EVIDENCE_DIR).join("destination-chooser-120x40.txt"),
+        &wide,
+    )?;
+
+    let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
+    assert!(compact.contains("Route inspector"));
+    assert!(compact.contains("Path:"));
+    fs::write(
+        Path::new(DESTINATION_EVIDENCE_DIR).join("destination-chooser-80x24.txt"),
+        &compact,
+    )?;
+
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Left),
+        ShellAction::Continue
+    );
+    let train_step = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(train_step.contains("available Fleet"));
+    assert!(train_step.contains("> Train 01"));
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Continue
+    );
+    let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(review.contains("Passenger Service"));
+    assert!(state.player_company.passenger_services.is_empty());
+    assert!(state.active_journeys.is_empty());
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Esc),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        state, before,
+        "a route preview creates no Service or Journey"
+    );
+
+    let mut changed = state.clone();
+    let mut changed_shell = Shell::new();
+    assert_eq!(
+        press(&mut changed_shell, &changed, KeyCode::Char('d')),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut changed_shell, &changed, KeyCode::Enter),
+        ShellAction::Continue
+    );
+    changed.player_company.fleet.trains[0].status = TrainStatus::Travelling {
+        journey_id: railq::model::JourneyId::new(99),
+    };
+    assert_eq!(
+        press(&mut changed_shell, &changed, KeyCode::Enter),
+        ShellAction::Continue
+    );
+    let unavailable = capture_rendered_buffer_mut(&mut changed_shell, &changed, 120, 40);
+    assert!(unavailable.contains("no longer READY"));
+    assert_eq!(
+        press(&mut changed_shell, &changed, KeyCode::Backspace),
+        ShellAction::Continue
+    );
+    let recovered = capture_rendered_buffer_mut(&mut changed_shell, &changed, 120, 40);
+    assert!(recovered.contains("Train 02"));
+    assert_eq!(
+        press(&mut changed_shell, &changed, KeyCode::Down),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut changed_shell, &changed, KeyCode::Enter),
+        ShellAction::Continue
+    );
+    assert!(
+        capture_rendered_buffer_mut(&mut changed_shell, &changed, 120, 40)
+            .contains("reachable destinations"),
+        "the remaining READY Train can resume the flow"
     );
     Ok(())
 }
