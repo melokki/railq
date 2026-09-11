@@ -7,8 +7,99 @@
 use std::fmt::Write;
 
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    style::Modifier,
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
+};
 
-use crate::model::{GameState, Journey, Money, RailStationId, TrainId, TrainStatus, UtcSeconds};
+use crate::{
+    model::{GameState, Journey, Money, RailStationId, Train, TrainId, TrainStatus, UtcSeconds},
+    ui::theme,
+};
+
+/// Persistent Fleet browsing state. The selected identity is a Train ID so a
+/// live arrival or a resale cannot accidentally move the player's focus to a
+/// different Train when the collection changes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FleetSelection {
+    selected_train_id: Option<TrainId>,
+    table_state: TableState,
+    page_size: usize,
+}
+
+impl FleetSelection {
+    /// Returns the selected Train after reconciling a changed Fleet.
+    pub fn selected_train_id(&mut self, state: &GameState) -> Option<TrainId> {
+        self.synchronize(state);
+        self.selected_train_id
+    }
+
+    /// Moves the selected Train in response to the Fleet browse controls.
+    pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
+        self.synchronize(state);
+        let train_count = state.player_company.fleet.trains.len();
+        let Some(selected) = self.table_state.selected() else {
+            return;
+        };
+        let page_size = self.page_size.max(1);
+        let next = match key {
+            KeyCode::Up | KeyCode::Char('k') => selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => selected
+                .saturating_add(1)
+                .min(train_count.saturating_sub(1)),
+            KeyCode::PageUp => selected.saturating_sub(page_size),
+            KeyCode::PageDown => selected
+                .saturating_add(page_size)
+                .min(train_count.saturating_sub(1)),
+            _ => selected,
+        };
+        self.select_index(state, next);
+    }
+
+    fn synchronize(&mut self, state: &GameState) {
+        let trains = &state.player_company.fleet.trains;
+        let selected = self
+            .selected_train_id
+            .and_then(|train_id| trains.iter().position(|train| train.id == train_id))
+            .or_else(|| (!trains.is_empty()).then_some(0));
+        if let Some(index) = selected {
+            self.selected_train_id = Some(trains[index].id);
+        } else {
+            self.selected_train_id = None;
+            *self.table_state.offset_mut() = 0;
+        }
+        self.table_state.select(selected);
+    }
+
+    fn select_index(&mut self, state: &GameState, index: usize) {
+        let Some(train) = state.player_company.fleet.trains.get(index) else {
+            return;
+        };
+        self.selected_train_id = Some(train.id);
+        self.table_state.select(Some(index));
+    }
+
+    fn set_page_size(&mut self, page_size: usize) {
+        self.page_size = page_size.max(1);
+    }
+
+    fn keep_compact_selection_visible(&mut self, visible_items: usize) {
+        let Some(selected) = self.table_state.selected() else {
+            return;
+        };
+        let visible_items = visible_items.max(1);
+        let offset = self.table_state.offset();
+        if selected < offset {
+            *self.table_state.offset_mut() = selected;
+        } else if selected >= offset.saturating_add(visible_items) {
+            *self.table_state.offset_mut() =
+                selected.saturating_add(1).saturating_sub(visible_items);
+        }
+    }
+}
 
 /// The result of handling a key within the resale flow.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,6 +239,281 @@ impl FleetFlow {
         }
         output
     }
+}
+
+/// Renders the Fleet browser as a stateful table when there is room, falling
+/// back to labelled stacked Train rows in compact workspaces.
+pub fn render_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    now: UtcSeconds,
+    selection: &mut FleetSelection,
+) {
+    selection.synchronize(state);
+    if state.player_company.fleet.trains.is_empty() {
+        frame.render_widget(empty_fleet_panel(), area);
+        return;
+    }
+
+    if area.width >= 96 && area.height >= 14 {
+        render_wide_dashboard(frame, area, state, now, selection);
+    } else {
+        render_compact_dashboard(frame, area, state, now, selection);
+    }
+}
+
+fn render_wide_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    now: UtcSeconds,
+    selection: &mut FleetSelection,
+) {
+    let [table_area, inspector_area] =
+        Layout::horizontal([Constraint::Min(58), Constraint::Length(32)])
+            .spacing(1)
+            .areas(area);
+    let visible_items = usize::from(table_area.height.saturating_sub(4)).max(1);
+    selection.set_page_size(visible_items);
+
+    let rows = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .map(|train| {
+            let fields = train_fields(state, train, now);
+            Row::new([
+                Cell::from(format!("Train {:02}", train.id.get())),
+                Cell::from(fields.model),
+                Cell::from(fields.status),
+                Cell::from(fields.place),
+                Cell::from(fields.eta),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let header = Row::new(["Train", "Model", "Status", "Station / destination", "ETA"])
+        .style(theme::table_header())
+        .bottom_margin(1);
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),
+            Constraint::Percentage(26),
+            Constraint::Length(12),
+            Constraint::Percentage(40),
+            Constraint::Length(11),
+        ],
+    )
+    .header(header)
+    .block(panel_block("Fleet · owned Trains", true))
+    .row_highlight_style(theme::selected_row())
+    .highlight_symbol("> ")
+    .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
+    frame.render_stateful_widget(table, table_area, &mut selection.table_state);
+    render_inspector(frame, inspector_area, state, now, selection);
+}
+
+fn render_compact_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    now: UtcSeconds,
+    selection: &mut FleetSelection,
+) {
+    let visible_items = usize::from(area.height.saturating_sub(2) / 3).max(1);
+    selection.set_page_size(visible_items);
+    selection.keep_compact_selection_visible(visible_items);
+    let offset = selection.table_state.offset();
+    let selected = selection.table_state.selected();
+    let lines = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(visible_items)
+        .flat_map(|(index, train)| compact_train_lines(state, train, now, selected == Some(index)))
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel_block("Fleet · owned Trains", true))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn empty_fleet_panel() -> Paragraph<'static> {
+    Paragraph::new(vec![
+        Line::styled("No Trains in the Fleet", theme::title()),
+        Line::from("Buy a Train to begin operating. [B] Buy Trains"),
+    ])
+    .block(panel_block("Fleet · owned Trains", true))
+    .style(theme::panel())
+}
+
+fn render_inspector(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    now: UtcSeconds,
+    selection: &mut FleetSelection,
+) {
+    let selected = selection.selected_train_id(state).and_then(|train_id| {
+        state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == train_id)
+    });
+    let lines = selected.map_or_else(
+        || vec![Line::from("No Train selected")],
+        |train| {
+            let fields = train_fields(state, train, now);
+            vec![
+                Line::styled(format!("Train {:02}", train.id.get()), theme::title()),
+                labelled_line("Model", &fields.model),
+                labelled_line("Status", &fields.status),
+                labelled_line("Location", &fields.place),
+                labelled_line("ETA", &fields.eta),
+                labelled_line(
+                    "Capacity",
+                    &format!("{} passengers", train.passenger_capacity.passengers()),
+                ),
+                labelled_line("Speed", &format_speed(train)),
+                Line::from(""),
+                Line::styled("Enter · resale", theme::hint()),
+            ]
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel_block("Selected Train", true))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn compact_train_lines(
+    state: &GameState,
+    train: &Train,
+    now: UtcSeconds,
+    selected: bool,
+) -> [Line<'static>; 3] {
+    let fields = train_fields(state, train, now);
+    let marker = if selected { ">" } else { " " };
+    let row_style = selected
+        .then(theme::selected_row)
+        .unwrap_or_else(theme::panel);
+    [
+        Line::styled(
+            format!("{marker} Train {:02}  {}", train.id.get(), fields.status),
+            row_style.add_modifier(Modifier::BOLD),
+        ),
+        Line::styled(format!("  {}", fields.model), row_style),
+        Line::styled(format!("  {} · {}", fields.place, fields.eta), row_style),
+    ]
+}
+
+fn labelled_line(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<9}"), theme::secondary()),
+        Span::raw(value.to_owned()),
+    ])
+}
+
+fn panel_block(title: &str, focused: bool) -> Block<'_> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(if focused {
+            theme::focused_border()
+        } else {
+            theme::border()
+        })
+        .title(title)
+        .title_style(if focused {
+            theme::focused_title()
+        } else {
+            theme::title()
+        })
+        .style(theme::panel())
+}
+
+struct TrainFields {
+    model: String,
+    status: String,
+    place: String,
+    eta: String,
+}
+
+fn train_fields(state: &GameState, train: &Train, now: UtcSeconds) -> TrainFields {
+    let model = if train.model_name.trim().is_empty() {
+        "Model unavailable".into()
+    } else {
+        train.model_name.clone()
+    };
+    match train.status {
+        TrainStatus::Ready { at } => TrainFields {
+            model,
+            status: "READY".into(),
+            place: format!("At {}", station_label_or_missing(state, at)),
+            eta: "—".into(),
+        },
+        TrainStatus::Travelling { journey_id } => {
+            let Some(journey) = state
+                .active_journeys
+                .iter()
+                .find(|journey| journey.id == journey_id)
+            else {
+                return TrainFields {
+                    model,
+                    status: "TRAVELLING".into(),
+                    place: format!("Journey {} details missing", journey_id.get()),
+                    eta: "Unavailable".into(),
+                };
+            };
+            TrainFields {
+                model,
+                status: "TRAVELLING".into(),
+                place: format!(
+                    "{} → {}",
+                    station_label_or_missing(state, journey.origin_station_id),
+                    station_label_or_missing(state, journey.destination_station_id),
+                ),
+                eta: format!("in {}", format_duration(remaining_seconds(journey, now))),
+            }
+        }
+    }
+}
+
+fn station_label_or_missing(state: &GameState, station_id: RailStationId) -> String {
+    let Some(station) = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .find(|station| station.id == station_id)
+    else {
+        return format!("Missing Rail Station {}", station_id.get());
+    };
+    state
+        .region
+        .settlements
+        .iter()
+        .find(|settlement| settlement.id == station.settlement_id)
+        .map(|settlement| settlement.name.clone())
+        .unwrap_or_else(|| format!("Missing Settlement {}", station.settlement_id.get()))
+}
+
+fn format_speed(train: &Train) -> String {
+    let kilometres_per_hour = train.speed.metres_per_second().saturating_mul(18) / 5;
+    format!("{kilometres_per_hour} km/h")
 }
 
 /// Renders the Player Company's Fleet at the supplied time.

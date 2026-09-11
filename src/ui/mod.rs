@@ -132,6 +132,7 @@ pub struct Shell {
     active_view: View,
     dispatch_flow: Option<dispatch::DispatchFlow>,
     fleet_flow: Option<fleet::FleetFlow>,
+    fleet_selection: fleet::FleetSelection,
     market_flow: Option<market::MarketFlow>,
     notice: Option<String>,
     help_visible: bool,
@@ -140,11 +141,12 @@ pub struct Shell {
 
 impl Shell {
     /// Creates a shell with Map as the primary view.
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             active_view: View::Map,
             dispatch_flow: None,
             fleet_flow: None,
+            fleet_selection: fleet::FleetSelection::default(),
             market_flow: None,
             notice: None,
             help_visible: false,
@@ -284,6 +286,15 @@ impl Shell {
                     Err(message) => self.notice = Some(message.into()),
                 }
             }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K')
+                if self.active_view == View::Trains =>
+            {
+                self.fleet_selection.handle_key(key.code, state);
+            }
             KeyCode::Char('d' | 'D') if self.active_view == View::Map => {
                 match dispatch::DispatchFlow::start(state) {
                     Ok(flow) => {
@@ -389,6 +400,18 @@ pub fn capture_rendered_buffer(
     columns: u16,
     rows: u16,
 ) -> String {
+    let mut rendered_shell = shell.clone();
+    capture_rendered_buffer_mut(&mut rendered_shell, state, columns, rows)
+}
+
+/// Renders a deterministic buffer while retaining presentation state changes
+/// such as a stateful Table viewport. This is limited to UI regression tests.
+pub fn capture_rendered_buffer_mut(
+    shell: &mut Shell,
+    state: &GameState,
+    columns: u16,
+    rows: u16,
+) -> String {
     if columns == 0 || rows == 0 {
         return String::new();
     }
@@ -488,7 +511,9 @@ where
     let mut shell = Shell::new();
 
     loop {
-        terminal.draw(&shell, &state).map_err(RunError::Terminal)?;
+        terminal
+            .draw(&mut shell, &state)
+            .map_err(RunError::Terminal)?;
         state = command(TerminalCommand::Reconcile {
             now: current_utc_seconds(),
         })
@@ -592,7 +617,7 @@ fn is_bankrupt(state: &GameState) -> bool {
 
 /// Draws the complete dashboard with Ratatui widgets. Crossterm supplies the
 /// cross-platform terminal backend and events; Ratatui owns layout and paint.
-fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
+fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState) {
     let area = frame.area();
     frame.render_widget(Block::default().style(theme::terminal()), area);
     if let Some(hint) = shell.resize_hint(area.width, area.height) {
@@ -670,41 +695,49 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
         navigation_area,
     );
 
-    let content = if shell.help_visible {
-        help_text()
-    } else if is_bankrupt(state) {
-        bankruptcy_text(shell.restart_confirmation)
+    if !shell.help_visible
+        && !is_bankrupt(state)
+        && shell.active_view == View::Trains
+        && shell.fleet_flow.is_none()
+    {
+        fleet::render_dashboard(frame, content_area, state, now, &mut shell.fleet_selection);
     } else {
-        match shell.active_view {
-            View::Map => match &shell.dispatch_flow {
-                Some(flow) => flow.render(state),
-                None => map::render_at(state, now),
-            },
-            View::Trains => match &shell.fleet_flow {
-                Some(flow) => flow.render(state, now),
-                None => fleet::render_at(state, now),
-            },
-            View::BuyTrains => match &shell.market_flow {
-                Some(flow) => flow.render(state),
-                None => market::render(state),
-            },
-            View::Company => company::render(state),
-        }
-    };
-    frame.render_widget(
-        Paragraph::new(content)
-            .block(
-                Block::default()
-                    .borders(theme::THIN_BORDERS)
-                    .border_style(theme::border())
-                    .title(shell.active_view.label())
-                    .title_style(theme::title())
-                    .style(theme::panel()),
-            )
-            .style(theme::panel())
-            .wrap(Wrap { trim: false }),
-        content_area,
-    );
+        let content = if shell.help_visible {
+            help_text()
+        } else if is_bankrupt(state) {
+            bankruptcy_text(shell.restart_confirmation)
+        } else {
+            match shell.active_view {
+                View::Map => match &shell.dispatch_flow {
+                    Some(flow) => flow.render(state),
+                    None => map::render_at(state, now),
+                },
+                View::Trains => match &shell.fleet_flow {
+                    Some(flow) => flow.render(state, now),
+                    None => fleet::render_at(state, now),
+                },
+                View::BuyTrains => match &shell.market_flow {
+                    Some(flow) => flow.render(state),
+                    None => market::render(state),
+                },
+                View::Company => company::render(state),
+            }
+        };
+        frame.render_widget(
+            Paragraph::new(content)
+                .block(
+                    Block::default()
+                        .borders(theme::THIN_BORDERS)
+                        .border_style(theme::border())
+                        .title(shell.active_view.label())
+                        .title_style(theme::title())
+                        .style(theme::panel()),
+                )
+                .style(theme::panel())
+                .wrap(Wrap { trim: false }),
+            content_area,
+        );
+    }
 
     frame.render_widget(
         Paragraph::new(shell.notice.as_deref().unwrap_or_default())
@@ -720,6 +753,12 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &Shell, state: &GameState) {
             "[Enter] Confirm safe restart  [Esc] Cancel  [Q] Quit"
         } else {
             "[R] Safe restart  [Q] Quit  [?] Help"
+        }
+    } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
+        if hints_area.width <= 80 {
+            "[↑↓/J K] Select [PgUp/PgDn] Scroll [Enter] Resale [?] Help [Q] Quit"
+        } else {
+            "[↑↓ / J K] Select Train  [PageUp / PageDown] Scroll  [Enter] Resale  [?] Help  [Q] Quit"
         }
     } else if hints_area.width <= 80 {
         "[M] [T] [C] [B] [D] Dispatch [Enter] Select [?] Help [Q] Quit"
@@ -934,7 +973,7 @@ impl TerminalSession {
         })
     }
 
-    fn draw(&mut self, shell: &Shell, state: &GameState) -> io::Result<()> {
+    fn draw(&mut self, shell: &mut Shell, state: &GameState) -> io::Result<()> {
         self.terminal
             .draw(|frame| render_frame(frame, shell, state))
             .map(|_| ())
@@ -1028,11 +1067,11 @@ mod tests {
     fn narrow_terminal_frame_renders_resize_hint_without_panicking() {
         let backend = TestBackend::new(40, 8);
         let mut terminal = Terminal::new(backend).unwrap();
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         let state = create_new_game(42, "Narrow Passenger", UtcSeconds::from_unix_seconds(1_000));
 
         terminal
-            .draw(|frame| super::render_frame(frame, &shell, &state))
+            .draw(|frame| super::render_frame(frame, &mut shell, &state))
             .unwrap();
         let rendered = terminal
             .backend()
@@ -1055,7 +1094,7 @@ mod tests {
             find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))
                 .unwrap();
         dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         let funds = super::format_money(state.player_company.funds);
 
         let wide = capture_rendered_buffer(&shell, &state, 120, 40);
@@ -1080,7 +1119,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| super::render_frame(frame, &shell, &state))
+            .draw(|frame| super::render_frame(frame, &mut shell, &state))
             .unwrap();
         let cells = terminal.backend().buffer().content();
         assert!(cells.iter().any(|cell| cell.bg == theme::BACKGROUND));
@@ -1101,12 +1140,42 @@ mod tests {
         let feedback_backend = TestBackend::new(120, 40);
         let mut feedback_terminal = Terminal::new(feedback_backend).unwrap();
         feedback_terminal
-            .draw(|frame| super::render_frame(frame, &feedback_shell, &feedback_state))
+            .draw(|frame| super::render_frame(frame, &mut feedback_shell, &feedback_state))
             .unwrap();
         let feedback_cell = &feedback_terminal.backend().buffer().content()[120 * 38];
         assert_eq!(feedback_cell.symbol(), "N");
         assert_eq!(feedback_cell.fg, theme::WARNING);
         assert_eq!(feedback_cell.bg, theme::BACKGROUND);
+    }
+
+    #[test]
+    fn fleet_table_marks_the_selected_train_with_the_accent_surface() {
+        let started_at = UtcSeconds::from_unix_seconds(1_000);
+        let mut state = create_new_game(42, "Fleet Selection", started_at);
+        state.player_company.funds = Money::from_cents(1_000_000);
+        purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let mut shell = Shell::new();
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+            &state,
+        );
+        shell.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &state);
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_frame(frame, &mut shell, &state))
+            .unwrap();
+        let marker = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == ">")
+            .unwrap();
+        assert_eq!(marker.fg, theme::BACKGROUND);
+        assert_eq!(marker.bg, theme::ACCENT);
     }
 
     #[test]

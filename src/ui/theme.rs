@@ -35,6 +35,26 @@ pub fn title() -> Style {
     Style::default().fg(PRIMARY).bg(PANEL).bold()
 }
 
+pub fn secondary() -> Style {
+    Style::default().fg(SECONDARY).bg(PANEL)
+}
+
+pub fn focused_border() -> Style {
+    Style::default().fg(ACCENT).bg(PANEL)
+}
+
+pub fn focused_title() -> Style {
+    Style::default().fg(ACCENT).bg(PANEL).bold()
+}
+
+pub fn table_header() -> Style {
+    Style::default().fg(SECONDARY).bg(PANEL).bold()
+}
+
+pub fn selected_row() -> Style {
+    Style::default().fg(BACKGROUND).bg(ACCENT).bold()
+}
+
 pub fn active_tab() -> Style {
     Style::default().fg(ACCENT).bg(PANEL).bold()
 }
