@@ -640,7 +640,7 @@ mod tests {
                 recent_journey_receipts: vec![],
             },
             rules: GameRules {
-                balance: BalanceConfig::new(rate, rate, rate),
+                balance: BalanceConfig::new(rate, rate, Money::from_cents(10_000), vec![]),
             },
             last_processed_at: UtcSeconds::from_unix_seconds(0),
         };
