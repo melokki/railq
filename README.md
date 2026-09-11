@@ -50,7 +50,8 @@ From the dashboard:
 | Key | Action |
 |---|---|
 | `M` | Map: inspect the Region, Rail Lines, and Train locations |
-| `T` | Fleet: inspect Trains and start a resale for a READY Train |
+| `T` | Fleet: browse owned Trains and inspect the selected Train |
+| `S` | In Fleet, start a resale proposal for a READY Train |
 | `C` | Company: inspect Company Funds, totals, receipts, and financial status |
 | `B` | Buy Trains: inspect the diesel catalogue and start a purchase |
 | `D` | Start Manual Dispatch from the Map |
@@ -66,9 +67,9 @@ review the Passenger Service and Journey quote, and press `Enter` to confirm.
 revalidated at confirmation.
 
 To buy a Train, press `B`, then `Enter`: choose a catalogue Train, choose its
-delivery Rail Station, and press `Enter` on the confirmation. To resell, press
-`T`, then `Enter`: choose a READY Train and press `Enter` again. A travelling
-Train cannot be sold.
+delivery Rail Station, and press `Enter` on the confirmation. In Fleet, press
+`Enter` to inspect the selected Train or `S` to choose a READY Train for resale
+and press `Enter` again to confirm. A travelling Train cannot be sold.
 
 After Bankruptcy, normal operations are blocked. Press `R`, then `Enter` to
 confirm a safe restart, or `Esc` to cancel. The former Player Company save is

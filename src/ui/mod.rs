@@ -22,6 +22,7 @@ use ratatui::{
     Terminal,
     backend::{CrosstermBackend, TestBackend},
     layout::{Constraint, Layout},
+    style::Color,
     text::Line,
     widgets::{Block, Paragraph, Tabs, Wrap},
 };
@@ -126,6 +127,15 @@ pub enum TerminalCommand {
     RestartAfterBankruptcy { world_seed: u64, now: UtcSeconds },
 }
 
+/// The active panel within the Fleet workspace. Compact terminals expose one
+/// panel at a time; a wide workspace keeps both panels visible.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum FleetFocus {
+    #[default]
+    List,
+    Details,
+}
+
 /// Presentation-only state shared by the four primary views.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Shell {
@@ -133,6 +143,9 @@ pub struct Shell {
     dispatch_flow: Option<dispatch::DispatchFlow>,
     fleet_flow: Option<fleet::FleetFlow>,
     fleet_selection: fleet::FleetSelection,
+    fleet_details_open: bool,
+    fleet_focus: FleetFocus,
+    fleet_split_visible: bool,
     market_flow: Option<market::MarketFlow>,
     notice: Option<String>,
     help_visible: bool,
@@ -147,6 +160,9 @@ impl Shell {
             dispatch_flow: None,
             fleet_flow: None,
             fleet_selection: fleet::FleetSelection::default(),
+            fleet_details_open: false,
+            fleet_focus: FleetFocus::List,
+            fleet_split_visible: false,
             market_flow: None,
             notice: None,
             help_visible: false,
@@ -265,7 +281,12 @@ impl Shell {
 
         match key.code {
             KeyCode::Char('m' | 'M') => self.active_view = View::Map,
-            KeyCode::Char('t' | 'T') => self.active_view = View::Trains,
+            KeyCode::Char('t' | 'T') => {
+                self.active_view = View::Trains;
+                self.fleet_details_open = false;
+                self.fleet_focus = FleetFocus::List;
+                self.fleet_split_visible = false;
+            }
             KeyCode::Char('c' | 'C') => self.active_view = View::Company,
             KeyCode::Char('b' | 'B') => self.active_view = View::BuyTrains,
             KeyCode::Enter if self.active_view == View::BuyTrains => {
@@ -278,6 +299,17 @@ impl Shell {
                 }
             }
             KeyCode::Enter if self.active_view == View::Trains => {
+                if self.fleet_selection.selected_train_id(state).is_some() {
+                    self.fleet_details_open = true;
+                    self.fleet_focus = FleetFocus::Details;
+                    self.notice = None;
+                }
+            }
+            KeyCode::Esc if self.active_view == View::Trains && self.fleet_details_open => {
+                self.fleet_details_open = false;
+                self.fleet_focus = FleetFocus::List;
+            }
+            KeyCode::Char('s' | 'S') if self.active_view == View::Trains => {
                 match fleet::FleetFlow::start(state) {
                     Ok(flow) => {
                         self.fleet_flow = Some(flow);
@@ -285,6 +317,17 @@ impl Shell {
                     }
                     Err(message) => self.notice = Some(message.into()),
                 }
+            }
+            KeyCode::Tab | KeyCode::BackTab
+                if self.active_view == View::Trains && self.fleet_split_visible =>
+            {
+                self.fleet_focus = match self.fleet_focus {
+                    FleetFocus::List => {
+                        self.fleet_details_open = true;
+                        FleetFocus::Details
+                    }
+                    FleetFocus::Details => FleetFocus::List,
+                };
             }
             KeyCode::Up
             | KeyCode::Down
@@ -437,6 +480,32 @@ pub fn capture_rendered_buffer_mut(
         rendered.push('\n');
     }
     rendered
+}
+
+/// Returns the foreground and background colors painted at one cell by the
+/// same deterministic renderer used for UI regression captures.
+pub fn capture_rendered_cell_colors(
+    shell: &Shell,
+    state: &GameState,
+    columns: u16,
+    rows: u16,
+    column: u16,
+    row: u16,
+) -> Option<(Color, Color)> {
+    if columns == 0 || rows == 0 || column >= columns || row >= rows {
+        return None;
+    }
+    let mut rendered_shell = shell.clone();
+    let backend = TestBackend::new(columns, rows);
+    let mut terminal = Terminal::new(backend).ok()?;
+    terminal
+        .draw(|frame| render_frame(frame, &mut rendered_shell, state))
+        .ok()?;
+    let index = usize::from(row)
+        .checked_mul(usize::from(columns))?
+        .checked_add(usize::from(column))?;
+    let cell = terminal.backend().buffer().content().get(index)?;
+    Some((cell.fg, cell.bg))
 }
 
 /// An error from the terminal shell or its supplied reconciliation boundary.
@@ -700,7 +769,16 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         && shell.active_view == View::Trains
         && shell.fleet_flow.is_none()
     {
-        fleet::render_dashboard(frame, content_area, state, now, &mut shell.fleet_selection);
+        shell.fleet_split_visible = content_area.width >= 96 && content_area.height >= 14;
+        fleet::render_dashboard(
+            frame,
+            content_area,
+            state,
+            now,
+            &mut shell.fleet_selection,
+            shell.fleet_details_open,
+            shell.fleet_focus == FleetFocus::Details,
+        );
     } else {
         let content = if shell.help_visible {
             help_text()
@@ -756,9 +834,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         }
     } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
         if hints_area.width <= 80 {
-            "[↑↓/J K] Select [PgUp/PgDn] Scroll [Enter] Resale [?] Help [Q] Quit"
+            "[↑↓/J K] Select [Enter] Inspect [S] Resale [?] Help [Q] Quit"
         } else {
-            "[↑↓ / J K] Select Train  [PageUp / PageDown] Scroll  [Enter] Resale  [?] Help  [Q] Quit"
+            "[↑↓ / J K] Select Train  [PageUp / PageDown] Scroll  [Enter] Inspect  [S] Resale  [Tab] Panel  [?] Help  [Q] Quit"
         }
     } else if hints_area.width <= 80 {
         "[M] [T] [C] [B] [D] Dispatch [Enter] Select [?] Help [Q] Quit"
@@ -1232,7 +1310,7 @@ mod tests {
         };
 
         assert_eq!(press(&mut shell, KeyCode::Char('t')), ShellAction::Continue);
-        assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
+        assert_eq!(press(&mut shell, KeyCode::Char('s')), ShellAction::Continue);
         assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
         assert_eq!(
             press(&mut shell, KeyCode::Enter),

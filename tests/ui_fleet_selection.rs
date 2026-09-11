@@ -1,4 +1,4 @@
-//! Keyboard and rendered-buffer coverage for the task 03 Fleet browser.
+//! Keyboard and rendered-buffer coverage for Fleet browsing and inspection.
 
 use std::{error::Error, fs, path::Path};
 
@@ -9,11 +9,15 @@ use railq::{
         fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
         time::advance_time, world::create_new_game,
     },
-    ui::{Shell, ShellAction, capture_rendered_buffer, capture_rendered_buffer_mut},
+    ui::{
+        Shell, ShellAction, capture_rendered_buffer, capture_rendered_buffer_mut,
+        capture_rendered_cell_colors, theme,
+    },
 };
 
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_700_000_000);
 const EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/03";
+const DETAILS_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/04";
 
 fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) {
     assert_eq!(
@@ -123,4 +127,85 @@ fn fleet_browser_states_missing_details_explicitly_and_captures_task_evidence()
     let empty_render = capture_rendered_buffer(&empty_shell, &empty, 80, 24);
     assert!(empty_render.contains("No Trains in the Fleet"));
     Ok(())
+}
+
+#[test]
+fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
+-> Result<(), Box<dyn Error>> {
+    let mut state = operating_fleet();
+    let journey = state.active_journeys[0].clone();
+    state.last_processed_at = UtcSeconds::from_unix_seconds(
+        journey.departed_at.unix_seconds()
+            + (journey.arrives_at.unix_seconds() - journey.departed_at.unix_seconds()) / 2,
+    );
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('t'));
+    let _ = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+
+    press(&mut shell, &state, KeyCode::Enter);
+    let evidence_dir = Path::new(DETAILS_EVIDENCE_DIR);
+    fs::create_dir_all(evidence_dir)?;
+    for (columns, rows, file_name) in [
+        (120, 40, "fleet-details-120x40.txt"),
+        (80, 24, "fleet-details-80x24.txt"),
+    ] {
+        let rendered = capture_rendered_buffer_mut(&mut shell, &state, columns, rows);
+        assert_eq!(rendered.lines().count(), usize::from(rows));
+        assert!(rendered.contains("Train details"));
+        assert!(rendered.contains("Capacity"));
+        assert!(rendered.contains("Journey progress"));
+        assert!(rendered.contains("Remaining"));
+        fs::write(evidence_dir.join(file_name), rendered)?;
+    }
+
+    press(&mut shell, &state, KeyCode::Esc);
+    advance_time(&mut state, journey.arrives_at)?;
+    let list = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(list.contains("> Train 01"));
+    assert!(list.contains("READY"));
+    let (selected_row, selected_column) = list
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("> Train 01").map(|column| (row, column)))
+        .expect("selected Train must remain visible after closing details");
+    let colors = capture_rendered_cell_colors(
+        &shell,
+        &state,
+        120,
+        40,
+        u16::try_from(selected_column).expect("test terminal fits u16"),
+        u16::try_from(selected_row).expect("test terminal fits u16"),
+    )
+    .expect("selected row cell is in the rendered terminal");
+    assert_eq!(colors, (theme::BACKGROUND, theme::ACCENT));
+
+    press(&mut shell, &state, KeyCode::Down);
+    let removed_train = state.player_company.fleet.trains[1].id;
+    state.player_company.fleet.trains.remove(1);
+    let after_removal = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(!after_removal.contains(&format!("Train {:02}", removed_train.get())));
+    assert!(after_removal.contains("> Train 03"));
+    Ok(())
+}
+
+#[test]
+fn fleet_focus_respects_the_visible_workspace_and_s_starts_resale() {
+    let state = operating_fleet();
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('t'));
+
+    let _ = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
+    press(&mut shell, &state, KeyCode::Tab);
+    let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
+    assert!(!compact.contains("Train details"));
+
+    let _ = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    press(&mut shell, &state, KeyCode::Tab);
+    let wide_details = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(wide_details.contains("Train details"));
+    press(&mut shell, &state, KeyCode::BackTab);
+
+    press(&mut shell, &state, KeyCode::Char('s'));
+    let resale = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(resale.contains("Select a READY Train to sell"));
 }

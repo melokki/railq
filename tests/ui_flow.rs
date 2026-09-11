@@ -92,7 +92,7 @@ fn dispatch_first_ready_train(shell: &mut Shell, app: &mut App<TestStore>, now: 
 }
 
 fn sell_first_ready_train(shell: &mut Shell, app: &mut App<TestStore>, now: UtcSeconds) {
-    press(shell, app, KeyCode::Enter, now);
+    press(shell, app, KeyCode::Char('s'), now);
     press(shell, app, KeyCode::Enter, now);
     press(shell, app, KeyCode::Enter, now);
 }
