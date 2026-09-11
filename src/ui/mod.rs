@@ -154,6 +154,7 @@ pub struct Shell {
     fleet_focus: FleetFocus,
     fleet_split_visible: bool,
     market_flow: Option<market::MarketFlow>,
+    market_selection: market::CatalogueSelection,
     company_receipt_selection: company::ReceiptSelection,
     company_receipt_details_open: bool,
     company_recovery_selection: company::RecoverySelection,
@@ -182,6 +183,7 @@ impl Shell {
             fleet_focus: FleetFocus::List,
             fleet_split_visible: false,
             market_flow: None,
+            market_selection: market::CatalogueSelection::default(),
             company_receipt_selection: company::ReceiptSelection::default(),
             company_receipt_details_open: false,
             company_recovery_selection: company::RecoverySelection::default(),
@@ -420,12 +422,19 @@ impl Shell {
                 self.company_receipt_details_open = false;
             }
             KeyCode::Enter if self.active_view == View::BuyTrains => {
-                match market::MarketFlow::start(state) {
-                    Ok(flow) => {
-                        self.market_flow = Some(flow);
-                        self.notice = None;
+                match self.market_selection.selected_catalogue_index(state) {
+                    Some(catalogue_index) => {
+                        match market::MarketFlow::start(state, catalogue_index) {
+                            Ok(flow) => {
+                                self.market_flow = Some(flow);
+                                self.notice = None;
+                            }
+                            Err(message) => self.notice = Some(message.into()),
+                        }
                     }
-                    Err(message) => self.notice = Some(message.into()),
+                    None => {
+                        self.notice = Some("No diesel Train is available in the catalogue.".into())
+                    }
                 }
             }
             KeyCode::Enter if self.active_view == View::Trains => {
@@ -482,6 +491,15 @@ impl Shell {
                     }
                     FleetFocus::Details => FleetFocus::List,
                 };
+            }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K')
+                if self.active_view == View::BuyTrains =>
+            {
+                self.market_selection.handle_key(key.code, state);
             }
             KeyCode::Up
             | KeyCode::Down
@@ -1063,6 +1081,12 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         if let Some(flow) = &mut shell.dispatch_flow {
             flow.render_panel(frame, content_area, state);
         }
+    } else if shell.active_view == View::BuyTrains
+        && shell.market_flow.is_none()
+        && !shell.help_visible
+        && !is_bankrupt(state)
+    {
+        market::render_dashboard(frame, content_area, state, &mut shell.market_selection);
     } else {
         let content = if shell.help_visible {
             help_text()
@@ -1159,6 +1183,12 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             "[↑↓/J K] Receipts [Enter] Detail [R] Recovery [?] Help [Q] Quit"
         } else {
             "[↑↓ / J K] Select receipt  [PageUp / PageDown] Scroll  [Enter] Inspect  [R] Recovery review  [Esc] Close detail  [?] Help  [Q] Quit"
+        }
+    } else if shell.active_view == View::BuyTrains && shell.market_flow.is_none() {
+        if hints_area.width <= 80 {
+            "[↑↓/J K] Model [Enter] Delivery [?] Help [Q] Quit"
+        } else {
+            "[↑↓ / J K] Select model  [PgUp/Dn] Scroll  [Enter] Choose delivery Rail Station  [?] Help  [Q] Quit"
         }
     } else if hints_area.width <= 80 {
         "[M] [T] [C] [B] [D] Dispatch [Enter] Select [?] Help [Q] Quit"
@@ -1609,7 +1639,6 @@ mod tests {
         };
 
         assert_eq!(press(&mut shell, KeyCode::Char('b')), ShellAction::Continue);
-        assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
         assert_eq!(press(&mut shell, KeyCode::Down), ShellAction::Continue);
         assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
         assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);

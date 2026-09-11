@@ -120,7 +120,6 @@ fn buy_first_catalogue_train(shell: &mut Shell, app: &mut App<TestStore>, now: U
     press(shell, app, KeyCode::Enter, now);
     press(shell, app, KeyCode::Enter, now);
     press(shell, app, KeyCode::Enter, now);
-    press(shell, app, KeyCode::Enter, now);
 }
 
 fn dispatch_first_ready_train(shell: &mut Shell, app: &mut App<TestStore>, now: UtcSeconds) {

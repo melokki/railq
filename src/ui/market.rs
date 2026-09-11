@@ -7,11 +7,74 @@
 use std::fmt::Write;
 
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    text::Line,
+    widgets::{Block, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
+};
 
 use crate::{
     balance::DieselTrainCatalogueRecord,
     model::{GameState, Money, RailLine, RailStationId},
+    ui::theme,
 };
+
+/// Persistent catalogue focus. Catalogue records are saved with a game, so an
+/// index is stable for the duration of this presentation-only purchase path.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CatalogueSelection {
+    selected: usize,
+    table_state: TableState,
+    page_size: usize,
+}
+
+impl CatalogueSelection {
+    /// Returns the currently focused catalogue record, if one remains available.
+    pub fn selected_catalogue_index(&mut self, state: &GameState) -> Option<usize> {
+        self.synchronize(state);
+        (!state.rules.balance.diesel_catalogue().is_empty()).then_some(self.selected)
+    }
+
+    /// Moves the focused catalogue record without changing the game state.
+    pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
+        self.synchronize(state);
+        let catalogue_len = state.rules.balance.diesel_catalogue().len();
+        if catalogue_len == 0 {
+            return;
+        }
+        self.selected = match key {
+            KeyCode::Up | KeyCode::Char('k' | 'K') => self.selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j' | 'J') => self
+                .selected
+                .saturating_add(1)
+                .min(catalogue_len.saturating_sub(1)),
+            KeyCode::PageUp => self.selected.saturating_sub(self.page_size.max(1)),
+            KeyCode::PageDown => self
+                .selected
+                .saturating_add(self.page_size.max(1))
+                .min(catalogue_len.saturating_sub(1)),
+            _ => self.selected,
+        };
+        self.table_state.select(Some(self.selected));
+    }
+
+    fn synchronize(&mut self, state: &GameState) {
+        let catalogue_len = state.rules.balance.diesel_catalogue().len();
+        if catalogue_len == 0 {
+            self.selected = 0;
+            self.table_state.select(None);
+            *self.table_state.offset_mut() = 0;
+        } else {
+            self.selected = self.selected.min(catalogue_len.saturating_sub(1));
+            self.table_state.select(Some(self.selected));
+        }
+    }
+
+    fn set_page_size(&mut self, page_size: usize) {
+        self.page_size = page_size.max(1);
+    }
+}
 
 /// The result of handling a key within the Buy Trains flow.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,9 +92,6 @@ pub enum MarketFlowAction {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum MarketStep {
-    SelectTrain {
-        selected: usize,
-    },
     SelectDelivery {
         catalogue_index: usize,
         selected: usize,
@@ -50,16 +110,29 @@ pub struct MarketFlow {
 }
 
 impl MarketFlow {
-    /// Starts selecting a catalogue Train without changing the Fleet or funds.
-    pub fn start(state: &GameState) -> Result<Self, &'static str> {
+    /// Starts delivery selection for a focused catalogue Train without changing
+    /// the Fleet or Company Funds.
+    pub fn start(state: &GameState, catalogue_index: usize) -> Result<Self, &'static str> {
         if state.rules.balance.diesel_catalogue().is_empty() {
             return Err("No diesel Train is available in the catalogue.");
+        }
+        if state
+            .rules
+            .balance
+            .diesel_catalogue()
+            .get(catalogue_index)
+            .is_none()
+        {
+            return Err("The selected catalogue Train is no longer available.");
         }
         if delivery_station_ids(state).is_empty() {
             return Err("No connected Rail Station is available for delivery.");
         }
         Ok(Self {
-            step: MarketStep::SelectTrain { selected: 0 },
+            step: MarketStep::SelectDelivery {
+                catalogue_index,
+                selected: 0,
+            },
             rejection: None,
         })
     }
@@ -71,22 +144,6 @@ impl MarketFlow {
         }
 
         match &mut self.step {
-            MarketStep::SelectTrain { selected } => {
-                let catalogue = state.rules.balance.diesel_catalogue();
-                if catalogue.is_empty() {
-                    self.rejection = Some("No diesel Train is available in the catalogue.".into());
-                    return MarketFlowAction::Continue;
-                }
-                move_selection(selected, catalogue.len(), key.code);
-                if matches!(key.code, KeyCode::Enter) {
-                    self.step = MarketStep::SelectDelivery {
-                        catalogue_index: *selected,
-                        selected: 0,
-                    };
-                    self.rejection = None;
-                }
-                MarketFlowAction::Continue
-            }
             MarketStep::SelectDelivery {
                 catalogue_index,
                 selected,
@@ -126,7 +183,6 @@ impl MarketFlow {
     /// Renders the proposed purchase and its current-step instructions.
     pub fn render(&self, state: &GameState) -> String {
         let selected_catalogue_index = match &self.step {
-            MarketStep::SelectTrain { selected } => *selected,
             MarketStep::SelectDelivery {
                 catalogue_index, ..
             }
@@ -137,18 +193,6 @@ impl MarketFlow {
         let mut output = render_selected(state, selected_catalogue_index);
 
         match &self.step {
-            MarketStep::SelectTrain { selected } => {
-                writeln!(
-                    output,
-                    "Select a diesel Train (Up/Down, Enter; Esc cancels):"
-                )
-                .expect("writing to a String cannot fail");
-                for (index, train) in state.rules.balance.diesel_catalogue().iter().enumerate() {
-                    let marker = if index == *selected { '>' } else { ' ' };
-                    writeln!(output, " {marker} {}", train.name())
-                        .expect("writing to a String cannot fail");
-                }
-            }
             MarketStep::SelectDelivery {
                 catalogue_index: _,
                 selected,
@@ -222,6 +266,161 @@ pub fn render(state: &GameState) -> String {
     output
 }
 
+/// Renders the selectable catalogue and focused model inspector.
+///
+/// The compact table deliberately retains price, capacity, speed and fuel
+/// cost, so both catalogue models remain comparable at 80×24.
+pub fn render_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut CatalogueSelection,
+) {
+    selection.synchronize(state);
+    let catalogue = state.rules.balance.diesel_catalogue();
+    if catalogue.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No diesel Train is available in the catalogue.")
+                .block(panel_block("Buy Trains · catalogue", true))
+                .style(theme::panel()),
+            area,
+        );
+        return;
+    }
+
+    let wide = area.width >= 96 && area.height >= 14;
+    let [table_area, inspector_area] = if wide {
+        Layout::horizontal([Constraint::Min(54), Constraint::Length(34)])
+            .spacing(1)
+            .areas(area)
+    } else {
+        Layout::vertical([Constraint::Length(8), Constraint::Min(6)]).areas(area)
+    };
+    selection.set_page_size(usize::from(table_area.height.saturating_sub(4)).max(1));
+    selection.synchronize(state);
+
+    let rows = catalogue
+        .iter()
+        .map(|train| {
+            Row::new([
+                Cell::from(train.name().to_owned()),
+                Cell::from(format_money(train.purchase_price())),
+                Cell::from(format!("{} pax", train.passenger_capacity().passengers())),
+                Cell::from(format_speed_kmh(train)),
+                Cell::from(format!(
+                    "{}/km",
+                    format_money_per_kilometre(
+                        train.fuel_cost_per_kilometre().cents_per_kilometre()
+                    )
+                )),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let table = Table::new(
+        rows,
+        if wide {
+            vec![
+                Constraint::Percentage(25),
+                Constraint::Percentage(22),
+                Constraint::Percentage(16),
+                Constraint::Percentage(18),
+                Constraint::Percentage(19),
+            ]
+        } else {
+            vec![
+                Constraint::Percentage(23),
+                Constraint::Percentage(22),
+                Constraint::Percentage(14),
+                Constraint::Percentage(19),
+                Constraint::Percentage(22),
+            ]
+        },
+    )
+    .header(
+        Row::new(["Model", "Price", "Capacity", "km/h", "Fuel / km"])
+            .style(theme::table_header())
+            .bottom_margin(1),
+    )
+    .block(panel_block("Buy Trains · catalogue", true))
+    .row_highlight_style(theme::selected_row())
+    .highlight_symbol("> ")
+    .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, table_area, &mut selection.table_state);
+
+    let selected_train = selection
+        .selected_catalogue_index(state)
+        .and_then(|index| catalogue.get(index));
+    render_catalogue_inspector(frame, inspector_area, state, selected_train, wide);
+}
+
+fn render_catalogue_inspector(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    train: Option<&DieselTrainCatalogueRecord>,
+    wide: bool,
+) {
+    let Some(train) = train else {
+        return;
+    };
+    let mut lines = vec![
+        Line::styled(train.name(), theme::focused_title()),
+        Line::from(format!("Price: {}", format_money(train.purchase_price()))),
+        Line::from(format!(
+            "Capacity: {} passengers",
+            train.passenger_capacity().passengers()
+        )),
+        Line::from(format!("Speed: {}", format_speed_kmh(train))),
+        Line::from(format!(
+            "Fuel cost: {}/km",
+            format_money_per_kilometre(train.fuel_cost_per_kilometre().cents_per_kilometre())
+        )),
+    ];
+    if wide {
+        if let Some(sample) = sample_trip(state, train) {
+            lines.push(Line::from(""));
+            lines.push(Line::styled(
+                format!("Sample Rail Line · {}", sample.route),
+                theme::secondary(),
+            ));
+            lines.push(Line::from(format!(
+                "{} · departure cost {}",
+                sample.distance,
+                format_money(sample.departure_cost)
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::styled(
+        "Enter · choose delivery Rail Station",
+        theme::hint(),
+    ));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel_block("Selected model", true))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn panel_block(title: &str, focused: bool) -> Block<'_> {
+    Block::default()
+        .borders(theme::THIN_BORDERS)
+        .border_style(if focused {
+            theme::focused_border()
+        } else {
+            theme::border()
+        })
+        .title(title)
+        .title_style(if focused {
+            theme::focused_title()
+        } else {
+            theme::title()
+        })
+        .style(theme::panel())
+}
+
 fn render_selected(state: &GameState, selected_catalogue_index: usize) -> String {
     let mut output = String::from("Buy Trains\n");
     for (index, train) in state.rules.balance.diesel_catalogue().iter().enumerate() {
@@ -249,9 +448,9 @@ fn render_catalogue_train(
     writeln!(output, "{}: {}", index + 1, train.name()).expect("writing to a String cannot fail");
     writeln!(
         output,
-        "  Capacity: {} passengers | Speed: {} m/s | Fuel Cost: {}/km",
+        "  Capacity: {} passengers | Speed: {} | Fuel Cost: {}/km",
         train.passenger_capacity().passengers(),
-        train.speed().metres_per_second(),
+        format_speed_kmh(train),
         format_money_per_kilometre(train.fuel_cost_per_kilometre().cents_per_kilometre()),
     )
     .expect("writing to a String cannot fail");
@@ -401,11 +600,32 @@ fn format_money_per_kilometre(cents: u64) -> String {
     format_money(Money::from_cents(i64::try_from(cents).unwrap_or(i64::MAX)))
 }
 
+fn format_speed_kmh(train: &DieselTrainCatalogueRecord) -> String {
+    let tenths = u128::from(train.speed().metres_per_second()).saturating_mul(36);
+    format!("{}.{:01} km/h", tenths / 10, tenths % 10)
+}
+
 fn format_money(money: Money) -> String {
     let cents = i128::from(money.cents());
     let sign = if cents < 0 { "-" } else { "" };
     let cents = cents.abs();
-    format!("{sign}${}.{:02}", cents / 100, cents % 100)
+    format!(
+        "{sign}${}.{:02}",
+        format_grouped_integer(cents / 100),
+        cents % 100
+    )
+}
+
+fn format_grouped_integer(value: i128) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
+    for (index, digit) in digits.chars().enumerate() {
+        if index != 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
 }
 
 #[cfg(test)]
@@ -447,10 +667,8 @@ mod tests {
     #[test]
     fn flow_selects_a_connected_delivery_station_and_requires_confirmation() {
         let state = create_new_game(42, "Alden Passenger", STARTED_AT);
-        let mut flow = MarketFlow::start(&state).unwrap();
+        let mut flow = MarketFlow::start(&state, 1).unwrap();
 
-        flow.handle_key(key(KeyCode::Down), &state);
-        flow.handle_key(key(KeyCode::Enter), &state);
         let delivery_selection = flow.render(&state);
         for station in &state.region.rail_authority.rail_network.rail_stations {
             let settlement = state
@@ -477,9 +695,8 @@ mod tests {
     fn confirmation_warns_when_purchase_leaves_no_sample_trip_reserve() {
         let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
         state.player_company.funds = Money::from_cents(500_000);
-        let mut flow = MarketFlow::start(&state).unwrap();
+        let mut flow = MarketFlow::start(&state, 1).unwrap();
 
-        flow.handle_key(key(KeyCode::Down), &state);
         flow.handle_key(key(KeyCode::Enter), &state);
         flow.handle_key(key(KeyCode::Enter), &state);
 
