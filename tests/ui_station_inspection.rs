@@ -197,6 +197,9 @@ fn map_switches_to_unconnected_settlements_with_independent_selection_and_no_dis
 
     press(&mut shell, &state, KeyCode::Esc);
     press(&mut shell, &state, KeyCode::Tab);
+    let journeys = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(journeys.contains("Departure Board · active Journeys"));
+    press(&mut shell, &state, KeyCode::Tab);
     let restored_station = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(restored_station.contains("Rail Station 02"));
     assert_eq!(

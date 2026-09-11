@@ -143,6 +143,7 @@ pub struct Shell {
     dispatch_flow: Option<dispatch::DispatchFlow>,
     map_selection: map::StationSelection,
     map_settlement_selection: map::SettlementSelection,
+    map_journey_selection: map::JourneySelection,
     map_focus: map::MapFocus,
     map_details_open: bool,
     map_split_visible: bool,
@@ -169,6 +170,7 @@ impl Shell {
             dispatch_flow: None,
             map_selection: map::StationSelection::default(),
             map_settlement_selection: map::SettlementSelection::default(),
+            map_journey_selection: map::JourneySelection::default(),
             map_focus: map::MapFocus::default(),
             map_details_open: false,
             map_split_visible: false,
@@ -382,9 +384,13 @@ impl Shell {
             KeyCode::Enter if self.active_view == View::Map => {
                 let has_selection = if self.map_focus.is_stations() {
                     self.map_selection.selected_station_id(state).is_some()
-                } else {
+                } else if self.map_focus == map::MapFocus::Settlements {
                     self.map_settlement_selection
                         .selected_settlement_id(state)
+                        .is_some()
+                } else {
+                    self.map_journey_selection
+                        .selected_journey_id(state)
                         .is_some()
                 };
                 if has_selection {
@@ -471,8 +477,13 @@ impl Shell {
             {
                 if self.map_focus.is_stations() {
                     self.map_selection.handle_key(key.code, state);
-                } else {
+                } else if self.map_focus == map::MapFocus::Settlements {
                     self.map_settlement_selection.handle_key(key.code, state);
+                } else {
+                    self.map_journey_selection.handle_key(key.code, state);
+                    if let Some(train_id) = self.map_journey_selection.selected_train_id(state) {
+                        self.fleet_selection.select_train_id(state, train_id);
+                    }
                 }
             }
             KeyCode::Tab | KeyCode::BackTab
@@ -480,6 +491,8 @@ impl Shell {
             {
                 self.map_focus = if self.map_focus.is_stations() {
                     map::MapFocus::Settlements
+                } else if self.map_focus == map::MapFocus::Settlements {
+                    map::MapFocus::Journeys
                 } else {
                     map::MapFocus::Stations
                 };
@@ -937,12 +950,21 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         && shell.dispatch_flow.is_none()
     {
         shell.map_split_visible = content_area.width >= 96 && content_area.height >= 14;
+        if shell.map_focus.is_journeys() {
+            if let Some(train_id) = shell.map_journey_selection.selected_train_id(state) {
+                shell.fleet_selection.select_train_id(state, train_id);
+            }
+        }
         map::render_dashboard(
             frame,
             content_area,
             state,
-            &mut shell.map_selection,
-            &mut shell.map_settlement_selection,
+            now,
+            map::MapSelections {
+                stations: &mut shell.map_selection,
+                settlements: &mut shell.map_settlement_selection,
+                journeys: &mut shell.map_journey_selection,
+            },
             shell.map_focus,
             shell.map_details_open,
         );
@@ -1056,18 +1078,26 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             "[↑↓ / J K] Select Train  [PageUp / PageDown] Scroll  [Enter] Inspect  [S] Resale  [Tab] Panel  [?] Help  [Q] Quit"
         }
     } else if shell.active_view == View::Map && shell.dispatch_flow.is_none() {
-        if !shell.map_focus.is_stations() {
+        if shell.map_focus == map::MapFocus::Journeys {
             if shell.map_details_open {
-                "[Esc] Settlements  [Tab] Rail Stations  [?] Help  [Q] Quit"
+                "[Esc] Departure board  [Tab] Rail Stations  [?] Help  [Q] Quit"
             } else if hints_area.width <= 80 {
-                "[↑↓/J K] Settlements [Enter] Inspect [Tab] Stations [?] Help [Q] Quit"
+                "[↑↓/J K] Journeys [Enter] Inspect [Tab] Stations [?] Help [Q] Quit"
             } else {
-                "[↑↓ / J K] Select Settlement  [PageUp / PageDown] Scroll  [Enter] Inspect  [Tab] Rail Stations  [?] Help  [Q] Quit"
+                "[↑↓ / J K] Select Journey  [PageUp / PageDown] Scroll  [Enter] Inspect  [Tab] Rail Stations  [?] Help  [Q] Quit"
+            }
+        } else if !shell.map_focus.is_stations() {
+            if shell.map_details_open {
+                "[Esc] Settlements  [Tab] Departure board  [?] Help  [Q] Quit"
+            } else if hints_area.width <= 80 {
+                "[↑↓/J K] Settlements [Enter] Inspect [Tab] Journeys [?] Help [Q] Quit"
+            } else {
+                "[↑↓ / J K] Select Settlement  [PageUp / PageDown] Scroll  [Enter] Inspect  [Tab] Departure board  [?] Help  [Q] Quit"
             }
         } else if shell.map_details_open {
-            "[Esc] Rail Stations  [D] Dispatch  [?] Help  [Q] Quit"
+            "[Esc] Rail Stations  [D] Dispatch  [Tab] Settlements  [?] Help  [Q] Quit"
         } else if hints_area.width <= 80 {
-            "[↑↓/JK] Stations [Enter] View [D] Dispatch [Tab] Other list [?] Help [Q] Quit"
+            "[↑↓/JK] Stations [Enter] View [D] Dispatch [Tab] Settlements [?] Help [Q] Quit"
         } else {
             "[↑↓/JK] Select  [PgUp/Dn] Scroll  [Enter] Inspect  [D] Dispatch  [Tab] Settlements  [?] Help  [Q] Quit"
         }

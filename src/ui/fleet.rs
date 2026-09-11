@@ -31,6 +31,22 @@ pub struct FleetSelection {
 }
 
 impl FleetSelection {
+    /// Selects a known Fleet Train by stable ID without changing the game.
+    /// Map Journey inspection uses this to preserve the arrived Train as the
+    /// player's Fleet selection after reconciliation removes its Journey.
+    pub fn select_train_id(&mut self, state: &GameState, train_id: TrainId) {
+        self.synchronize(state);
+        if let Some(index) = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .position(|train| train.id == train_id)
+        {
+            self.select_index(state, index);
+        }
+    }
+
     /// Returns the selected Train after reconciling a changed Fleet.
     pub fn selected_train_id(&mut self, state: &GameState) -> Option<TrainId> {
         self.synchronize(state);
