@@ -714,6 +714,9 @@ impl Shell {
     }
 
     /// Shows arrivals supplied by a reconciliation that has already saved.
+    ///
+    /// Arrivals are routine simulation events, so they use the non-blocking
+    /// feedback row instead of requiring explicit acknowledgement.
     pub fn publish_settled_arrivals(&mut self, state: &GameState, arrivals: &[SettledJourney]) {
         if arrivals.is_empty() {
             return;
@@ -723,18 +726,6 @@ impl Shell {
             total.checked_add(arrival.credited_revenue).unwrap_or(total)
         });
         let funds = format_money(state.player_company.funds);
-        let details = arrivals
-            .iter()
-            .map(|arrival| {
-                format!(
-                    "Train {:02} arrived at {} — {} credited.",
-                    arrival.train_id.get(),
-                    arrival_station_label(state, arrival.destination_station_id),
-                    signed_money(arrival.credited_revenue),
-                )
-            })
-            .chain(std::iter::once(format!("Current Company Funds: {funds}.")))
-            .collect();
         let summary = match arrivals {
             [arrival] => format!(
                 "Train {:02} arrived at {} — {} credited; Company Funds {}.",
@@ -750,12 +741,9 @@ impl Shell {
                 funds,
             ),
         };
-        self.notice = None;
-        self.action_outcome = Some(ActionOutcome {
-            title: "Arrival summary",
-            summary,
-            details,
-        });
+
+        self.notice = Some(summary);
+        self.outcome_details_open = false;
     }
 
     fn publish_pending_outcome(&mut self, state: &GameState) {
