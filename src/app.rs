@@ -260,12 +260,12 @@ impl<S: GameStore> App<S> {
         })
     }
 
-    /// Creates or reuses the selected Passenger Service and authorises its
-    /// Manual Dispatch as one persisted transaction.
+    /// Compatibility helper for legacy destination-based callers.
     ///
-    /// The origin is deliberately read from the current READY Train inside
-    /// the candidate transaction. A destination selected while reviewing a
-    /// quote is therefore never trusted as a stale route or Train location.
+    /// The player-facing Manual Dispatch flow now selects an existing
+    /// Passenger Service and calls [`Self::dispatch_journey`] instead. This
+    /// helper remains useful for recovery logic and older tests while that
+    /// migration settles.
     pub fn dispatch_to_destination(
         &mut self,
         train_id: TrainId,

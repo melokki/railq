@@ -5,7 +5,7 @@ use std::{error::Error, fs, path::Path};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
     model::{Money, RailStationId, UtcSeconds},
-    sim::{fleet::purchase_train, world::create_new_game},
+    sim::{fleet::purchase_train, services::create_service, world::create_new_game},
     ui::{
         Shell, ShellAction, capture_rendered_buffer, capture_rendered_buffer_mut,
         capture_rendered_cell_colors, theme,
@@ -28,6 +28,16 @@ fn state_with_ready_trains() -> railq::model::GameState {
     state.player_company.funds = Money::from_cents(10_000_000);
     purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
     purchase_train(&mut state, 0, RailStationId::new(2)).unwrap();
+    create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(3)],
+    )
+    .unwrap();
+    create_service(
+        &mut state,
+        vec![RailStationId::new(2), RailStationId::new(1)],
+    )
+    .unwrap();
     state
 }
 

@@ -22,6 +22,12 @@ fn press(shell: &mut Shell, state: &GameState, code: KeyCode) {
 fn ready_state() -> GameState {
     let mut state = create_new_game(42, "Context Passenger", NOW);
     purchase_train(&mut state, 0, RailStationId::new(1)).expect("fixed purchase");
+    find_or_create_service(
+        &mut state,
+        RailStationId::new(1),
+        RailStationId::new(2),
+    )
+    .expect("fixed service");
     state
 }
 
@@ -44,7 +50,7 @@ fn captures_contextual_controls_and_focus_marker() {
     assert!(destination_step.contains("[←] Back"));
     assert!(destination_step.contains("[Q] Quit"));
     fs::write(
-        evidence.join("dispatch-destination-step-80x24.txt"),
+        evidence.join("dispatch-service-step-80x24.txt"),
         &destination_step,
     )
     .expect("capture");

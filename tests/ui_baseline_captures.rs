@@ -157,6 +157,8 @@ fn new_state() -> GameState {
 fn ready_state() -> GameState {
     let mut state = new_state();
     purchase_train(&mut state, 0, ORIGIN).expect("fixed baseline purchase should succeed");
+    find_or_create_service(&mut state, ORIGIN, DESTINATION)
+        .expect("fixed baseline Service should be valid");
     state
 }
 
@@ -249,16 +251,14 @@ fn rejected_dispatch_review_shell(state: &GameState) -> Result<Shell, Box<dyn Er
     let action = press(&mut shell, state, KeyCode::Enter);
     let ShellAction::ManualDispatch {
         train_id,
-        destination_station_id,
+        service_id,
     } = action
     else {
         return Err("dispatch review did not produce a confirmation action".into());
     };
 
     let mut rejected_state = state.clone();
-    let mut preview = rejected_state.clone();
-    let service_id = find_or_create_service(&mut preview, ORIGIN, destination_station_id)?;
-    let quote = quote_journey(&preview, train_id, service_id)?;
+    let quote = quote_journey(&rejected_state, train_id, service_id)?;
     rejected_state.player_company.funds = Money::from_cents(quote.operating_cost.cents() - 1);
 
     let path = temporary_save_path("dispatch-rejection");
@@ -268,7 +268,7 @@ fn rejected_dispatch_review_shell(state: &GameState) -> Result<Shell, Box<dyn Er
     let slot = SaveSlot::open(path.clone())?;
     let mut app = App::start_new(slot, rejected_state)?;
     let error = app
-        .dispatch_to_destination(train_id, destination_station_id, DEPARTED_AT)
+        .dispatch_journey(train_id, service_id, DEPARTED_AT)
         .expect_err("underfunded dispatch should be rejected");
     shell.reject_manual_dispatch(error.to_string());
     drop(app);

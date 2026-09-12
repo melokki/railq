@@ -47,10 +47,10 @@ fn run_dashboard(
             ui::TerminalCommand::Reconcile { now } => app.reconcile(now)?,
             ui::TerminalCommand::ManualDispatch {
                 train_id,
-                destination_station_id,
+                service_id,
                 now,
             } => {
-                app.dispatch_to_destination(train_id, destination_station_id, now)?;
+                app.dispatch_journey(train_id, service_id, now)?;
             }
             ui::TerminalCommand::PurchaseTrain {
                 catalogue_index,

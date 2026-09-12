@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
     app::{App, GameStore},
     model::{JourneyId, Money, RailStationId, TrainStatus, UtcSeconds},
-    sim::{fleet::purchase_train, world::create_new_game},
+    sim::{fleet::purchase_train, services::create_service, world::create_new_game},
     ui::{
         Shell, ShellAction, capture_rendered_buffer, capture_rendered_buffer_mut,
         capture_rendered_cell_colors, theme,
@@ -43,6 +43,11 @@ fn ready_fleet() -> railq::model::GameState {
     state.player_company.funds = Money::from_cents(10_000_000);
     purchase_train(&mut state, 0, RailStationId::new(1)).expect("first Train is purchased");
     purchase_train(&mut state, 0, RailStationId::new(1)).expect("second Train is purchased");
+    create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(3)],
+    )
+    .expect("dispatch Service is created");
     state
 }
 
@@ -71,21 +76,21 @@ fn fleet_d_preselects_the_selected_train_and_returns_to_its_list_focus()
     );
 
     for (columns, rows, file_name) in [
-        (120, 40, "fleet-dispatch-destination-120x40.txt"),
-        (80, 24, "fleet-dispatch-destination-80x24.txt"),
+        (120, 40, "fleet-dispatch-service-120x40.txt"),
+        (80, 24, "fleet-dispatch-service-80x24.txt"),
     ] {
         let rendered = capture_rendered_buffer_mut(&mut shell, &state, columns, rows);
         assert_eq!(rendered.lines().count(), usize::from(rows));
-        assert!(rendered.contains("2 Destination"));
-        assert!(rendered.contains("Train 02 · Origin"));
-        assert!(rendered.contains("reachable destinations"));
+        assert!(rendered.contains("2 SERVICE"));
+        assert!(rendered.contains("Train 02"));
+        assert!(rendered.contains("Choose Passenger Service"));
         assert!(!rendered.contains("available Fleet"));
         if columns == 120 {
             let (row, column) = rendered
                 .lines()
                 .enumerate()
-                .find_map(|(row, line)| line.find("> Oakridge").map(|column| (row, column)))
-                .expect("the preselected destination remains visibly highlighted");
+                .find_map(|(row, line)| line.find("R1").map(|column| (row, column)))
+                .expect("the available Service remains visible");
             assert_eq!(
                 capture_rendered_cell_colors(
                     &shell,
@@ -201,16 +206,13 @@ fn fleet_dispatch_commits_through_the_existing_saved_manual_dispatch_transaction
         ShellAction::Continue
     );
     let action = shell.handle_key(key(KeyCode::Enter), app.state());
-    let ShellAction::ManualDispatch {
-        train_id,
-        destination_station_id,
-    } = action
+    let ShellAction::ManualDispatch { train_id, service_id } = action
     else {
         panic!("Fleet review should request the existing Manual Dispatch transaction");
     };
     assert_eq!(train_id, selected_train_id);
 
-    app.dispatch_to_destination(train_id, destination_station_id, STARTED_AT)
+    app.dispatch_journey(train_id, service_id, STARTED_AT)
         .expect("the normal saved transaction authorises the Journey");
     shell.confirm_manual_dispatch();
 

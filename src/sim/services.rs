@@ -267,8 +267,8 @@ pub fn create_service(
 
 /// Finds or creates the direct two-stop Passenger Service in one direction.
 ///
-/// This function exists for the current Manual Dispatch workflow. Item #4 can
-/// replace destination-based dispatch with explicit Service selection.
+/// This compatibility helper remains for tests, recovery logic, and legacy
+/// callers. The player-facing Manual Dispatch flow selects an existing Service.
 pub fn find_or_create_service(
     state: &mut GameState,
     origin_station_id: RailStationId,

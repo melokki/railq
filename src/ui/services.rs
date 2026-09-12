@@ -1,7 +1,7 @@
 //! Secondary Passenger Service workspace opened from the Map.
 //!
-//! This batch manages persistent directional stop patterns only. Trains still
-//! use the existing Manual Dispatch flow until roadmap item #4.
+//! This batch manages persistent directional stop patterns only. Manual Dispatch now selects from these persistent Services; intermediate-stop
+//! boarding and alighting remain deferred to the next roadmap item.
 
 use crossterm::event::KeyCode;
 use ratatui::{

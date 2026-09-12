@@ -97,7 +97,7 @@ pub enum ShellAction {
     /// Confirmed player input requiring an application-boundary Manual Dispatch.
     ManualDispatch {
         train_id: TrainId,
-        destination_station_id: RailStationId,
+        service_id: ServiceId,
     },
     /// Confirmed player input requiring an application-boundary Train purchase.
     PurchaseTrain {
@@ -122,7 +122,7 @@ pub enum TerminalCommand {
     /// Revalidate and authorise a player-requested Manual Dispatch.
     ManualDispatch {
         train_id: TrainId,
-        destination_station_id: RailStationId,
+        service_id: ServiceId,
         now: UtcSeconds,
     },
     /// Revalidate and purchase a selected catalogue Train.
@@ -335,13 +335,12 @@ impl Shell {
                 }
                 dispatch::DispatchFlowAction::Confirm {
                     train_id,
-                    destination_station_id,
+                    service_id,
                 } => {
-                    self.pending_action =
-                        Some(pending_dispatch(state, train_id, destination_station_id));
+                    self.pending_action = Some(pending_dispatch(state, train_id, service_id));
                     ShellAction::ManualDispatch {
                         train_id,
-                        destination_station_id,
+                        service_id,
                     }
                 }
             };
@@ -1041,10 +1040,10 @@ where
                     ShellAction::Exit => return Ok(()),
                     ShellAction::ManualDispatch {
                         train_id,
-                        destination_station_id,
+                        service_id,
                     } => match command(TerminalCommand::ManualDispatch {
                         train_id,
-                        destination_station_id,
+                        service_id,
                         now: current_utc_seconds(),
                     }) {
                         Ok(next_state) => {
@@ -1385,11 +1384,11 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             } else {
                 "↑↓/jk Train  Enter Next  Esc Cancel".into()
             }
-        } else if flow.is_selecting_destination() {
+        } else if flow.is_selecting_service() {
             if compact {
-                "↑↓/jk Route  Enter Review  ← Back  Esc Cancel".into()
+                "↑↓/jk Service  Enter Review  ← Back  Esc Cancel".into()
             } else {
-                "↑↓/jk Route  PgUp/PgDn Scroll  Enter Review  ← Back  Esc Cancel".into()
+                "↑↓/jk Service  PgUp/PgDn Scroll  Enter Review  ← Back  Esc Cancel".into()
             }
         } else if compact {
             "Enter Confirm  ← Back  Esc Cancel".into()
@@ -1607,12 +1606,12 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         if flow.is_selecting_train() {
             lines.extend([
                 "↑↓ / jk Select a READY Train".into(),
-                "Enter Continue to destination selection".into(),
+                "Enter Continue to Service selection".into(),
                 "Esc Cancel dispatch".into(),
             ]);
-        } else if flow.is_selecting_destination() {
+        } else if flow.is_selecting_service() {
             lines.extend([
-                "↑↓ / jk Select a reachable destination".into(),
+                "↑↓ / jk Select a Passenger Service from this station".into(),
                 "PgUp / PgDn Scroll longer route lists".into(),
                 "Enter Review Journey".into(),
                 "← / Backspace Previous step   Esc Cancel".into(),
@@ -1969,7 +1968,7 @@ fn arrival_station_label(state: &GameState, station_id: RailStationId) -> String
 fn pending_dispatch(
     state: &GameState,
     train_id: TrainId,
-    destination_station_id: RailStationId,
+    service_id: ServiceId,
 ) -> PendingAction {
     let model: String = state
         .player_company
@@ -1985,11 +1984,29 @@ fn pending_dispatch(
                     .unwrap_or_else(|| format!("unknown model ({})", train.model_id.as_str()))
             },
         );
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id);
+    let service_name = service
+        .map(|service| service.name.clone())
+        .unwrap_or_else(|| format!("Service {}", service_id.get()));
+    let route = service
+        .map(|service| {
+            service
+                .stop_station_ids
+                .iter()
+                .map(|station_id| arrival_station_label(state, *station_id))
+                .collect::<Vec<_>>()
+                .join(" → ")
+        })
+        .unwrap_or_else(|| "unknown route".into());
+
     PendingAction {
         label: format!("Manual Dispatch · Train {:02} ({model})", train_id.get()),
         details: vec![format!(
-            "Journey authorised toward Rail Station {}. Departure costs and arrival revenue follow the saved Journey quote.",
-            destination_station_id.get()
+            "{service_name} · {route}. Departure costs and arrival revenue follow the saved Journey quote."
         )],
         funds_before: state.player_company.funds,
     }
@@ -2289,6 +2306,9 @@ mod tests {
     fn map_routes_a_keyboard_manual_dispatch_to_the_application_boundary() {
         let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
         let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let service_id =
+            find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(3))
+                .unwrap();
         let mut shell = Shell::new();
         let press = |shell: &mut Shell, key| {
             shell.handle_key(KeyEvent::new(key, KeyModifiers::NONE), &state)
@@ -2296,13 +2316,12 @@ mod tests {
 
         assert_eq!(press(&mut shell, KeyCode::Char('d')), ShellAction::Continue);
         assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
-        assert_eq!(press(&mut shell, KeyCode::Down), ShellAction::Continue);
         assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
         assert_eq!(
             press(&mut shell, KeyCode::Enter),
             ShellAction::ManualDispatch {
                 train_id,
-                destination_station_id: RailStationId::new(3),
+                service_id,
             }
         );
     }

@@ -91,10 +91,9 @@ fn handle_action(
     match action {
         ShellAction::ManualDispatch {
             train_id,
-            destination_station_id,
+            service_id,
         } => {
-            app.dispatch_to_destination(train_id, destination_station_id, now)
-                .unwrap();
+            app.dispatch_journey(train_id, service_id, now).unwrap();
             shell.confirm_manual_dispatch();
         }
         ShellAction::PurchaseTrain {
@@ -174,6 +173,16 @@ fn fresh_launch_buy_dispatch_arrive_return_and_resale_are_keyboard_reachable() {
     buy_first_catalogue_train(&mut shell, &mut app, STARTED_AT);
     assert_eq!(app.state().player_company.fleet.trains.len(), 1);
     let train_id = app.state().player_company.fleet.trains[0].id;
+    app.create_passenger_service(
+        vec![RailStationId::new(1), RailStationId::new(2)],
+        STARTED_AT,
+    )
+    .unwrap();
+    app.create_passenger_service(
+        vec![RailStationId::new(2), RailStationId::new(1)],
+        STARTED_AT,
+    )
+    .unwrap();
     assert_eq!(
         app.state().player_company.fleet.trains[0].status,
         TrainStatus::Ready {
@@ -235,6 +244,12 @@ fn cancellation_and_rejected_error_paths_preserve_player_company_state() {
     assert!(app.state().player_company.fleet.trains.is_empty());
 
     buy_first_catalogue_train(&mut shell, &mut app, STARTED_AT);
+    let service_id = app
+        .create_passenger_service(
+            vec![RailStationId::new(1), RailStationId::new(2)],
+            STARTED_AT,
+        )
+        .unwrap();
     let before_cancelled_dispatch = app.state().clone();
     press(&mut shell, &mut app, KeyCode::Char('m'), OUTBOUND_DEPARTURE);
     press(&mut shell, &mut app, KeyCode::Char('d'), OUTBOUND_DEPARTURE);
@@ -242,7 +257,7 @@ fn cancellation_and_rejected_error_paths_preserve_player_company_state() {
     press(&mut shell, &mut app, KeyCode::Esc, OUTBOUND_DEPARTURE);
     assert_eq!(app.state(), &before_cancelled_dispatch);
     assert!(app.state().active_journeys.is_empty());
-    assert!(app.state().player_company.passenger_services.is_empty());
+    assert_eq!(app.state().player_company.passenger_services.len(), 1);
 
     press(&mut shell, &mut app, KeyCode::Char('d'), OUTBOUND_DEPARTURE);
     press(&mut shell, &mut app, KeyCode::Enter, OUTBOUND_DEPARTURE);
@@ -251,7 +266,7 @@ fn cancellation_and_rejected_error_paths_preserve_player_company_state() {
     let action = shell.handle_key(key(KeyCode::Enter), app.state());
     let ShellAction::ManualDispatch {
         train_id,
-        destination_station_id,
+        service_id: selected_service_id,
     } = action
     else {
         panic!("dispatch confirmation should request an application command");
@@ -260,7 +275,7 @@ fn cancellation_and_rejected_error_paths_preserve_player_company_state() {
     stale_state.player_company.funds = Money::ZERO;
     let mut stale_app = App::start_new(TestStore::default(), stale_state).unwrap();
     let error = stale_app
-        .dispatch_to_destination(train_id, destination_station_id, OUTBOUND_DEPARTURE)
+        .dispatch_journey(train_id, selected_service_id, OUTBOUND_DEPARTURE)
         .unwrap_err();
     shell.reject_manual_dispatch(error.to_string());
     assert_eq!(app.state(), &before_rejected_dispatch);
@@ -394,7 +409,13 @@ fn renderer_strings_survive_operating_state_edges() {
     app.purchase_train(0, RailStationId::new(1), STARTED_AT)
         .unwrap();
     let train_id = app.state().player_company.fleet.trains[0].id;
-    app.dispatch_to_destination(train_id, RailStationId::new(2), OUTBOUND_DEPARTURE)
+    let service_id = app
+        .create_passenger_service(
+            vec![RailStationId::new(1), RailStationId::new(2)],
+            STARTED_AT,
+        )
+        .unwrap();
+    app.dispatch_journey(train_id, service_id, OUTBOUND_DEPARTURE)
         .unwrap();
     let mut travelling = app.state().clone();
     let arrives_at = travelling.active_journeys[0].arrives_at;
