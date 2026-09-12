@@ -1380,10 +1380,9 @@ fn preview_quote(
         .passenger_services
         .iter()
         .any(|service| {
-            (service.first_station_id == origin_station_id
-                && service.second_station_id == destination_station_id)
-                || (service.first_station_id == destination_station_id
-                    && service.second_station_id == origin_station_id)
+            service.stop_station_ids.len() == 2
+                && service.stop_station_ids[0] == origin_station_id
+                && service.stop_station_ids[1] == destination_station_id
         });
     let mut preview_state = state.clone();
     let service_id = find_or_create_service(

@@ -32,11 +32,11 @@ use crate::{
         RailStationId, Region, ServiceId, Settlement, SettlementId, SpeedMetresPerSecond, Train,
         TrainId, TrainModelId, TrainStatus, UtcSeconds,
     },
-    sim::economy::quote_journey,
+    sim::{economy::quote_journey, services::service_path_for_stops},
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 2;
+pub const SAVE_VERSION: u32 = 3;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -357,8 +357,13 @@ CREATE TABLE IF NOT EXISTS trains (
 );
 CREATE TABLE IF NOT EXISTS passenger_services (
     id INTEGER PRIMARY KEY,
-    first_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
-    second_station_id INTEGER NOT NULL REFERENCES rail_stations(id)
+    name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS service_stops (
+    service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    PRIMARY KEY (service_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS service_lines (
     service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
@@ -442,7 +447,11 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
                     source,
                 })?;
         }
-        1 => migrate_v1_to_v2(connection, path)?,
+        1 => {
+            migrate_v1_to_v2(connection, path)?;
+            migrate_v2_to_v3(connection, path)?;
+        }
+        2 => migrate_v2_to_v3(connection, path)?,
         SAVE_VERSION => {
             connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
                 action: "verify schema for",
@@ -545,7 +554,7 @@ fn migrate_v1_to_v2(connection: &Connection, path: &Path) -> Result<(), SaveSlot
             )
             .map_err(|source| db_error("finish v1 to v2 schema migration for", path, source))?;
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 2_u32)
             .map_err(|source| db_error("write v2 schema version to", path, source))?;
         let foreign_key_violation: Option<i64> = connection
             .query_row("SELECT 1 FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0))
@@ -584,6 +593,110 @@ fn migrate_v1_to_v2(connection: &Connection, path: &Path) -> Result<(), SaveSlot
     }
 }
 
+fn migrate_v2_to_v3(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             PRAGMA legacy_alter_table = ON;
+             BEGIN IMMEDIATE;
+             ALTER TABLE active_journeys RENAME TO active_journeys_v2;
+             ALTER TABLE service_lines RENAME TO service_lines_v2;
+             ALTER TABLE passenger_services RENAME TO passenger_services_v2;
+             CREATE TABLE passenger_services (
+                 id INTEGER PRIMARY KEY,
+                 name TEXT NOT NULL
+             );
+             CREATE TABLE service_stops (
+                 service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
+                 sequence INTEGER NOT NULL,
+                 station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+                 PRIMARY KEY (service_id, sequence)
+             );
+             CREATE TABLE service_lines (
+                 service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
+                 sequence INTEGER NOT NULL,
+                 rail_line_id INTEGER NOT NULL REFERENCES rail_lines(id),
+                 PRIMARY KEY (service_id, sequence)
+             );
+             CREATE TABLE active_journeys (
+                 id INTEGER PRIMARY KEY,
+                 service_id INTEGER NOT NULL REFERENCES passenger_services(id),
+                 train_id INTEGER NOT NULL REFERENCES trains(id),
+                 origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+                 destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+                 passengers_carried INTEGER NOT NULL,
+                 fare_cents INTEGER NOT NULL,
+                 operating_revenue_cents INTEGER NOT NULL,
+                 infrastructure_access_fee_cents INTEGER NOT NULL,
+                 fuel_cost_cents INTEGER NOT NULL,
+                 departed_at INTEGER NOT NULL,
+                 arrives_at INTEGER NOT NULL
+             );
+             INSERT INTO passenger_services(id, name)
+                 SELECT id, 'R' || id FROM passenger_services_v2;
+             INSERT INTO service_stops(service_id, sequence, station_id)
+                 SELECT id, 0, first_station_id FROM passenger_services_v2;
+             INSERT INTO service_stops(service_id, sequence, station_id)
+                 SELECT id, 1, second_station_id FROM passenger_services_v2;
+             INSERT INTO service_lines(service_id, sequence, rail_line_id)
+                 SELECT service_id, sequence, rail_line_id FROM service_lines_v2;
+             INSERT INTO active_journeys(
+                 id, service_id, train_id, origin_station_id, destination_station_id,
+                 passengers_carried, fare_cents, operating_revenue_cents,
+                 infrastructure_access_fee_cents, fuel_cost_cents, departed_at, arrives_at
+             )
+                 SELECT id, service_id, train_id, origin_station_id, destination_station_id,
+                        passengers_carried, fare_cents, operating_revenue_cents,
+                        infrastructure_access_fee_cents, fuel_cost_cents, departed_at, arrives_at
+                 FROM active_journeys_v2;
+             DROP TABLE active_journeys_v2;
+             DROP TABLE service_lines_v2;
+             DROP TABLE passenger_services_v2;
+             CREATE INDEX IF NOT EXISTS idx_active_journeys_arrival ON active_journeys(arrives_at);",
+        )
+        .map_err(|source| db_error("begin v2 to v3 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v3 schema version to", path, source))?;
+        let foreign_key_violation: Option<i64> = connection
+            .query_row("SELECT 1 FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0))
+            .optional()
+            .map_err(|source| db_error("verify v2 to v3 migration for", path, source))?;
+        if foreign_key_violation.is_some() {
+            return Err(SaveSlotError::InvalidSave {
+                path: path.to_path_buf(),
+                source: Box::new(SaveCodecError::InvalidValue {
+                    field: "foreign keys after v2 to v3 migration",
+                }),
+            });
+        }
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => {
+            connection
+                .execute_batch(
+                    "COMMIT;
+                     PRAGMA legacy_alter_table = OFF;
+                     PRAGMA foreign_keys = ON;",
+                )
+                .map_err(|source| db_error("commit v2 to v3 migration for", path, source))?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "ROLLBACK;
+                 PRAGMA legacy_alter_table = OFF;
+                 PRAGMA foreign_keys = ON;",
+            );
+            Err(error)
+        }
+    }
+}
+
 fn clear_state(
     transaction: &Transaction<'_>,
     path: &Path,
@@ -602,6 +715,7 @@ fn clear_state(
         "DELETE FROM active_journeys;
          DELETE FROM origin_destination_demand;
          DELETE FROM service_lines;
+         DELETE FROM service_stops;
          DELETE FROM passenger_services;
          DELETE FROM trains;
          DELETE FROM financials;
@@ -674,9 +788,15 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
 
     for service in &state.player_company.passenger_services {
         transaction.execute(
-            "INSERT INTO passenger_services(id, first_station_id, second_station_id) VALUES(?1, ?2, ?3)",
-            params![db(service.id.get(), "Passenger Service ID")?, db(service.first_station_id.get(), "Rail Station ID")?, db(service.second_station_id.get(), "Rail Station ID")?],
+            "INSERT INTO passenger_services(id, name) VALUES(?1, ?2)",
+            params![db(service.id.get(), "Passenger Service ID")?, &service.name],
         ).map_err(|source| db_error("write Passenger Services to", path, source))?;
+        for (sequence, station_id) in service.stop_station_ids.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO service_stops(service_id, sequence, station_id) VALUES(?1, ?2, ?3)",
+                params![db(service.id.get(), "Passenger Service ID")?, i64::try_from(sequence).unwrap_or(i64::MAX), db(station_id.get(), "Rail Station ID")?],
+            ).map_err(|source| db_error("write Passenger Service stops to", path, source))?;
+        }
         for (sequence, line_id) in service.rail_line_ids.iter().enumerate() {
             transaction.execute(
                 "INSERT INTO service_lines(service_id, sequence, rail_line_id) VALUES(?1, ?2, ?3)",
@@ -803,15 +923,24 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         })
     })?;
 
-    let mut services = query_all(connection, "SELECT id, first_station_id, second_station_id FROM passenger_services ORDER BY id", path, |row| {
+    let mut services = query_all(connection, "SELECT id, name FROM passenger_services ORDER BY id", path, |row| {
         Ok(PassengerService {
             id: ServiceId::new(row_u64(row, 0, "Passenger Service ID")?),
-            first_station_id: RailStationId::new(row_u64(row, 1, "Rail Station ID")?),
-            second_station_id: RailStationId::new(row_u64(row, 2, "Rail Station ID")?),
+            name: row.get(1)?,
+            stop_station_ids: Vec::new(),
             rail_line_ids: Vec::new(),
         })
     })?;
     for service in &mut services {
+        let mut stop_statement = connection.prepare("SELECT station_id FROM service_stops WHERE service_id = ?1 ORDER BY sequence")
+            .map_err(|source| db_error("prepare Passenger Service stop query for", path, source))?;
+        let stop_rows = stop_statement.query_map(params![to_db_u64(service.id.get(), "Passenger Service ID", path)?], |row| row.get::<_, i64>(0))
+            .map_err(|source| db_error("read Passenger Service stops from", path, source))?;
+        for row in stop_rows {
+            let station = row.map_err(|source| db_error("read Passenger Service stop from", path, source))?;
+            service.stop_station_ids.push(RailStationId::new(from_db_u64(station, "Rail Station ID").map_err(|field| invalid_value(path, field))?));
+        }
+
         let mut statement = connection.prepare("SELECT rail_line_id FROM service_lines WHERE service_id = ?1 ORDER BY sequence")
             .map_err(|source| db_error("prepare Passenger Service path query for", path, source))?;
         let rows = statement.query_map(params![to_db_u64(service.id.get(), "Passenger Service ID", path)?], |row| row.get::<_, i64>(0))
@@ -1010,7 +1139,7 @@ struct LegacyPlayerCompanyV1 {
     name: String,
     funds: Money,
     fleet: LegacyFleetV1,
-    passenger_services: Vec<PassengerService>,
+    passenger_services: Vec<LegacyPassengerServiceV1>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1027,6 +1156,14 @@ struct LegacyTrainV1 {
     passenger_capacity: PassengerCapacity,
     speed: SpeedMetresPerSecond,
     fuel_cost_per_kilometre: MoneyPerKilometre,
+}
+
+#[derive(Deserialize, Serialize)]
+struct LegacyPassengerServiceV1 {
+    id: ServiceId,
+    first_station_id: RailStationId,
+    second_station_id: RailStationId,
+    rail_line_ids: Vec<RailLineId>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1090,6 +1227,18 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
         })
         .collect::<Result<Vec<_>, SaveCodecError>>()?;
 
+    let passenger_services = legacy
+        .player_company
+        .passenger_services
+        .into_iter()
+        .map(|service| PassengerService {
+            id: service.id,
+            name: format!("R{}", service.id.get()),
+            stop_station_ids: vec![service.first_station_id, service.second_station_id],
+            rail_line_ids: service.rail_line_ids,
+        })
+        .collect();
+
     let state = GameState {
         world_seed: legacy.world_seed,
         region: legacy.region,
@@ -1097,7 +1246,7 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
             name: legacy.player_company.name,
             funds: legacy.player_company.funds,
             fleet: Fleet { trains },
-            passenger_services: legacy.player_company.passenger_services,
+            passenger_services,
         },
         origin_destination_demand: legacy.origin_destination_demand,
         active_journeys: legacy.active_journeys,
@@ -1271,11 +1420,18 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
         });
     }
     for service in &state.player_company.passenger_services {
-        if !station_ids.contains(&service.first_station_id)
-            || !station_ids.contains(&service.second_station_id)
+        if service.name.trim().is_empty() {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Passenger Service name",
+            });
+        }
+        if service
+            .stop_station_ids
+            .iter()
+            .any(|station_id| !station_ids.contains(station_id))
         {
             return Err(SaveValidationError::DanglingReference {
-                field: "Passenger Service endpoint",
+                field: "Passenger Service stop",
             });
         }
         let distance = service_distance(service, network, &line_ids)?;
@@ -1370,47 +1526,51 @@ fn service_distance(
     network: &RailNetwork,
     line_ids: &HashSet<RailLineId>,
 ) -> Result<DistanceMetres, SaveValidationError> {
-    if service.first_station_id == service.second_station_id || service.rail_line_ids.is_empty() {
+    if service.stop_station_ids.len() < 2 || service.rail_line_ids.is_empty() {
         return Err(SaveValidationError::ImpossibleState {
-            reason: "a Passenger Service must have distinct endpoints and a Rail Line path",
+            reason: "a Passenger Service must have at least two stops and a Rail Line path",
         });
     }
 
-    let mut current_station_id = service.first_station_id;
-    let mut total_metres = 0_u64;
-    let mut used_line_ids = HashSet::new();
-    for rail_line_id in &service.rail_line_ids {
-        if !line_ids.contains(rail_line_id) {
-            return Err(SaveValidationError::DanglingReference {
-                field: "Passenger Service Rail Line",
-            });
-        }
-        if !used_line_ids.insert(*rail_line_id) {
-            return Err(SaveValidationError::ImpossibleState {
-                reason: "a Passenger Service repeats a Rail Line",
-            });
-        }
-        let line = network
-            .rail_lines
-            .iter()
-            .find(|line| line.id == *rail_line_id)
-            .expect("a validated Rail Line ID resolves in the Rail Network");
-        current_station_id = next_station_on_line(line, current_station_id).ok_or(
-            SaveValidationError::ImpossibleState {
-                reason: "Passenger Service Rail Lines do not form a continuous path",
-            },
-        )?;
-        total_metres = total_metres.checked_add(line.distance.metres()).ok_or(
-            SaveValidationError::Calculation(CalculationError::Overflow {
-                operation: "Passenger Service path distance",
-            }),
-        )?;
-    }
-    if current_station_id != service.second_station_id {
-        return Err(SaveValidationError::ImpossibleState {
-            reason: "Passenger Service Rail Line path does not end at its endpoint",
+    if service
+        .rail_line_ids
+        .iter()
+        .any(|rail_line_id| !line_ids.contains(rail_line_id))
+    {
+        return Err(SaveValidationError::DanglingReference {
+            field: "Passenger Service Rail Line",
         });
     }
+
+    let expected_path =
+        service_path_for_stops(network, &service.stop_station_ids).map_err(|_| {
+            SaveValidationError::ImpossibleState {
+                reason: "Passenger Service stops do not form a simple continuous Rail Line path",
+            }
+        })?;
+    if expected_path != service.rail_line_ids {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Passenger Service Rail Lines do not match its ordered stops",
+        });
+    }
+
+    let total_metres = service
+        .rail_line_ids
+        .iter()
+        .try_fold(0_u64, |total, rail_line_id| {
+            let line = network
+                .rail_lines
+                .iter()
+                .find(|line| line.id == *rail_line_id)
+                .expect("a validated Rail Line ID resolves in the Rail Network");
+            total
+                .checked_add(line.distance.metres())
+                .ok_or(SaveValidationError::Calculation(
+                    CalculationError::Overflow {
+                        operation: "Passenger Service path distance",
+                    },
+                ))
+        })?;
     let metres = i64::try_from(total_metres).map_err(|_| {
         SaveValidationError::Calculation(CalculationError::Overflow {
             operation: "Passenger Service path distance",
@@ -1419,16 +1579,6 @@ fn service_distance(
     DistanceMetres::new(metres).map_err(|_| SaveValidationError::InvalidValue {
         field: "Passenger Service path distance",
     })
-}
-
-fn next_station_on_line(line: &RailLine, station_id: RailStationId) -> Option<RailStationId> {
-    if line.first_station_id == station_id {
-        Some(line.second_station_id)
-    } else if line.second_station_id == station_id {
-        Some(line.first_station_id)
-    } else {
-        None
-    }
 }
 
 fn validate_demand(
@@ -1652,10 +1802,20 @@ fn validate_journey(
         .iter()
         .find(|service| service.id == journey.service_id)
         .expect("a validated Journey Passenger Service ID resolves in the Service Network");
-    let valid_direction = (journey.origin_station_id == service.first_station_id
-        && journey.destination_station_id == service.second_station_id)
-        || (journey.origin_station_id == service.second_station_id
-            && journey.destination_station_id == service.first_station_id);
+    let service_origin = service.origin_station_id().ok_or(
+        SaveValidationError::ImpossibleState {
+            reason: "Journey references a Passenger Service without an origin",
+        },
+    )?;
+    let service_destination = service.destination_station_id().ok_or(
+        SaveValidationError::ImpossibleState {
+            reason: "Journey references a Passenger Service without a destination",
+        },
+    )?;
+    let valid_direction = (journey.origin_station_id == service_origin
+        && journey.destination_station_id == service_destination)
+        || (journey.origin_station_id == service_destination
+            && journey.destination_station_id == service_origin);
     if !valid_direction {
         return Err(SaveValidationError::ImpossibleState {
             reason: "Journey endpoints do not match its Passenger Service",
@@ -1795,6 +1955,9 @@ mod tests {
         let journey_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM active_journeys", [], |row| row.get(0))
             .unwrap();
+        let service_stop_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM service_stops", [], |row| row.get(0))
+            .unwrap();
         let state_blob_table: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='game_state'",
@@ -1815,6 +1978,7 @@ mod tests {
 
         assert_eq!(train_count, 1);
         assert_eq!(journey_count, 1);
+        assert_eq!(service_stop_count, 2);
         assert_eq!(state_blob_table, 0);
         assert_eq!(saved_catalogue_table, 0);
         assert_eq!(model_id, "local-70");
@@ -1902,13 +2066,41 @@ mod tests {
                      speed_metres_per_second INTEGER NOT NULL,
                      fuel_cost_cents_per_km INTEGER NOT NULL
                  );
+                 CREATE TABLE rail_stations (id INTEGER PRIMARY KEY);
+                 CREATE TABLE rail_lines (id INTEGER PRIMARY KEY);
+                 CREATE TABLE passenger_services (
+                     id INTEGER PRIMARY KEY,
+                     first_station_id INTEGER NOT NULL,
+                     second_station_id INTEGER NOT NULL
+                 );
+                 CREATE TABLE service_lines (
+                     service_id INTEGER NOT NULL,
+                     sequence INTEGER NOT NULL,
+                     rail_line_id INTEGER NOT NULL,
+                     PRIMARY KEY (service_id, sequence)
+                 );
                  CREATE TABLE active_journeys (
                      id INTEGER PRIMARY KEY,
-                     train_id INTEGER NOT NULL REFERENCES trains(id)
+                     service_id INTEGER NOT NULL,
+                     train_id INTEGER NOT NULL REFERENCES trains(id),
+                     origin_station_id INTEGER NOT NULL,
+                     destination_station_id INTEGER NOT NULL,
+                     passengers_carried INTEGER NOT NULL,
+                     fare_cents INTEGER NOT NULL,
+                     operating_revenue_cents INTEGER NOT NULL,
+                     infrastructure_access_fee_cents INTEGER NOT NULL,
+                     fuel_cost_cents INTEGER NOT NULL,
+                     departed_at INTEGER NOT NULL,
+                     arrives_at INTEGER NOT NULL
                  );
-                 INSERT INTO trains VALUES(1, 'ready', 1, 'Local 70', 300000, 70, 25, 45);
+                 INSERT INTO rail_stations VALUES(1);
+                 INSERT INTO rail_stations VALUES(2);
+                 INSERT INTO rail_lines VALUES(1);
+                 INSERT INTO passenger_services VALUES(1, 1, 2);
+                 INSERT INTO service_lines VALUES(1, 0, 1);
+                 INSERT INTO trains VALUES(1, 'travelling', 1, 'Local 70', 300000, 70, 25, 45);
                  INSERT INTO diesel_catalogue VALUES(0, 'Local 70', 300000, 70, 25, 45);
-                 INSERT INTO active_journeys VALUES(1, 1);
+                 INSERT INTO active_journeys VALUES(1, 1, 1, 1, 2, 1, 100, 100, 10, 10, 0, 60);
                  PRAGMA user_version = 1;",
             )
             .unwrap();
@@ -1932,6 +2124,12 @@ mod tests {
         let journey_train_id: i64 = connection
             .query_row("SELECT train_id FROM active_journeys WHERE id = 1", [], |row| row.get(0))
             .unwrap();
+        let service_name: String = connection
+            .query_row("SELECT name FROM passenger_services WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        let service_stop_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM service_stops WHERE service_id = 1", [], |row| row.get(0))
+            .unwrap();
         let foreign_key_violations: i64 = connection
             .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0))
             .unwrap();
@@ -1940,6 +2138,8 @@ mod tests {
         assert_eq!(model_id, "local-70");
         assert_eq!(old_catalogue_exists, 0);
         assert_eq!(journey_train_id, 1);
+        assert_eq!(service_name, "R1");
+        assert_eq!(service_stop_count, 2);
         assert_eq!(foreign_key_violations, 0);
     }
 
@@ -1984,7 +2184,17 @@ mod tests {
                 fleet: LegacyFleetV1 {
                     trains: legacy_trains,
                 },
-                passenger_services: state.player_company.passenger_services.clone(),
+                passenger_services: state
+                    .player_company
+                    .passenger_services
+                    .iter()
+                    .map(|service| LegacyPassengerServiceV1 {
+                        id: service.id,
+                        first_station_id: service.origin_station_id().unwrap(),
+                        second_station_id: service.destination_station_id().unwrap(),
+                        rail_line_ids: service.rail_line_ids.clone(),
+                    })
+                    .collect(),
             },
             origin_destination_demand: state.origin_destination_demand.clone(),
             active_journeys: state.active_journeys.clone(),

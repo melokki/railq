@@ -883,9 +883,11 @@ fn journey_route_segments(state: &GameState, journey: &Journey) -> Option<Vec<Jo
         .find(|service| service.id == journey.service_id)?;
     let network = &state.region.rail_authority.rail_network;
 
-    let line_ids = if journey.origin_station_id == service.first_station_id {
+    let service_origin = service.origin_station_id()?;
+    let service_destination = service.destination_station_id()?;
+    let line_ids = if journey.origin_station_id == service_origin {
         service.rail_line_ids.iter().copied().collect::<Vec<_>>()
-    } else if journey.origin_station_id == service.second_station_id {
+    } else if journey.origin_station_id == service_destination {
         service.rail_line_ids.iter().rev().copied().collect::<Vec<_>>()
     } else {
         return None;

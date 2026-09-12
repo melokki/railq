@@ -109,6 +109,14 @@ fn handle_action(
             let proceeds = app.sell_train(train_id, now).unwrap();
             shell.confirm_train_resale(proceeds);
         }
+        ShellAction::CreatePassengerService { stop_station_ids } => {
+            app.create_passenger_service(stop_station_ids, now).unwrap();
+            shell.confirm_passenger_service_created(app.state());
+        }
+        ShellAction::DeletePassengerService { service_id } => {
+            app.delete_passenger_service(service_id, now).unwrap();
+            shell.confirm_passenger_service_deleted(app.state());
+        }
         ShellAction::Continue | ShellAction::Exit | ShellAction::RestartAfterBankruptcy => {}
     }
 }

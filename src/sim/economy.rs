@@ -9,8 +9,8 @@ use std::{error::Error, fmt};
 use crate::{
     catalog::model_for_train,
     model::{
-    CalculationError, DistanceMetres, DurationSeconds, GameState, Money, RailLineId, RailStationId,
-    ServiceId, TrainId, TrainStatus,
+        CalculationError, DistanceMetres, DurationSeconds, GameState, Money, RailLineId,
+        RailStationId, ServiceId, TrainId, TrainStatus,
     },
 };
 
@@ -49,8 +49,8 @@ pub enum EconomyError {
     ServiceNotFound { service_id: ServiceId },
     /// A Train travelling on a Journey cannot make another Journey quote.
     TrainTravelling { train_id: TrainId },
-    /// A READY Train must be at one of the Passenger Service's endpoints.
-    TrainNotAtServiceEndpoint {
+    /// A READY Train must be at the Passenger Service origin.
+    TrainNotAtServiceOrigin {
         train_id: TrainId,
         station_id: RailStationId,
         service_id: ServiceId,
@@ -89,13 +89,13 @@ impl fmt::Display for EconomyError {
                 "Train {} is already travelling and cannot be quoted",
                 train_id.get()
             ),
-            Self::TrainNotAtServiceEndpoint {
+            Self::TrainNotAtServiceOrigin {
                 train_id,
                 station_id,
                 service_id,
             } => write!(
                 formatter,
-                "Train {} at Rail Station {} is not at an endpoint of Passenger Service {}",
+                "Train {} at Rail Station {} is not at the origin of directional Passenger Service {}",
                 train_id.get(),
                 station_id.get(),
                 service_id.get()
@@ -134,10 +134,10 @@ impl From<CalculationError> for EconomyError {
 
 /// Calculates a Journey quote without changing game state.
 ///
-/// A Passenger Service can run in either direction. The selected Train's READY
-/// location determines the origin, and only Waiting Passengers for that exact
-/// origin-destination direction may board. A zero-passenger quote is valid so
-/// a Player Company can pay to reposition a Train.
+/// A Passenger Service runs only in its defined direction. The selected Train
+/// must be READY at the Service origin, and only Waiting Passengers for that
+/// exact origin-destination direction may board. A zero-passenger quote is
+/// valid so a Player Company can pay to reposition a Train.
 pub fn quote_journey(
     state: &GameState,
     train_id: TrainId,
@@ -162,20 +162,21 @@ pub fn quote_journey(
         TrainStatus::Ready { at } => at,
         TrainStatus::Travelling { .. } => return Err(EconomyError::TrainTravelling { train_id }),
     };
-    let (destination_station_id, rail_line_path) = if origin_station_id == service.first_station_id
-    {
-        (service.second_station_id, service.rail_line_ids.clone())
-    } else if origin_station_id == service.second_station_id {
-        let mut reverse_path = service.rail_line_ids.clone();
-        reverse_path.reverse();
-        (service.first_station_id, reverse_path)
-    } else {
-        return Err(EconomyError::TrainNotAtServiceEndpoint {
+    let service_origin = service
+        .origin_station_id()
+        .ok_or(EconomyError::EmptyServicePath { service_id })?;
+    let service_destination = service
+        .destination_station_id()
+        .ok_or(EconomyError::EmptyServicePath { service_id })?;
+    if origin_station_id != service_origin {
+        return Err(EconomyError::TrainNotAtServiceOrigin {
             train_id,
             station_id: origin_station_id,
             service_id,
         });
-    };
+    }
+    let destination_station_id = service_destination;
+    let rail_line_path = service.rail_line_ids.clone();
     if rail_line_path.is_empty() {
         return Err(EconomyError::EmptyServicePath { service_id });
     }
@@ -351,8 +352,8 @@ mod tests {
                 },
                 passenger_services: vec![PassengerService {
                     id: SERVICE_ID,
-                    first_station_id: ORIGIN,
-                    second_station_id: DESTINATION,
+                    name: "R1".into(),
+                    stop_station_ids: vec![ORIGIN, DESTINATION],
                     rail_line_ids: vec![FIRST_LINE, SECOND_LINE],
                 }],
             },
@@ -422,14 +423,18 @@ mod tests {
     }
 
     #[test]
-    fn directional_demand_limits_boarding_and_reverses_the_path() {
+    fn directional_service_rejects_a_train_waiting_at_its_destination() {
         let mut state = fixture();
         state.player_company.fleet.trains[0].status = TrainStatus::Ready { at: DESTINATION };
 
-        let quote = quote_journey(&state, TRAIN_ID, SERVICE_ID).unwrap();
-        assert_eq!(quote.destination_station_id, ORIGIN);
-        assert_eq!(quote.rail_line_path, [SECOND_LINE, FIRST_LINE]);
-        assert_eq!(quote.boarded_passengers, 1);
+        assert_eq!(
+            quote_journey(&state, TRAIN_ID, SERVICE_ID),
+            Err(EconomyError::TrainNotAtServiceOrigin {
+                train_id: TRAIN_ID,
+                station_id: DESTINATION,
+                service_id: SERVICE_ID,
+            })
+        );
     }
 
     #[test]

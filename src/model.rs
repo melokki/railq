@@ -467,13 +467,29 @@ pub enum TrainStatus {
     Travelling { journey_id: JourneyId },
 }
 
-/// A persistent commercial offering over ordered Rail Lines.
+/// A directional passenger offering over an ordered set of stops and Rail Lines.
+///
+/// `stop_station_ids` contains only the stations at which the Service calls.
+/// `rail_line_ids` contains the full physical path between those stops, so a
+/// Service may pass through intermediate Rail Stations without stopping.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PassengerService {
     pub id: ServiceId,
-    pub first_station_id: RailStationId,
-    pub second_station_id: RailStationId,
+    pub name: String,
+    pub stop_station_ids: Vec<RailStationId>,
     pub rail_line_ids: Vec<RailLineId>,
+}
+
+impl PassengerService {
+    /// Returns the directional origin of this Service.
+    pub fn origin_station_id(&self) -> Option<RailStationId> {
+        self.stop_station_ids.first().copied()
+    }
+
+    /// Returns the directional destination of this Service.
+    pub fn destination_station_id(&self) -> Option<RailStationId> {
+        self.stop_station_ids.last().copied()
+    }
 }
 
 /// One physical movement of a Train under a Passenger Service.

@@ -30,7 +30,7 @@ use ratatui::{
 use crate::{
     APPLICATION_NAME,
     catalog::{model_for_train, train_catalogue},
-    model::{GameState, Money, RailStationId, TrainId, TrainStatus, UtcSeconds},
+    model::{GameState, Money, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds},
     sim::{
         finance::{FinancialStatus, evaluate_financial_recovery},
         time::SettledJourney,
@@ -44,6 +44,7 @@ pub mod format;
 pub mod map;
 pub mod market;
 pub mod start;
+pub mod services;
 pub mod theme;
 
 /// How frequently the shell checks for elapsed arrivals while no key is pressed.
@@ -105,12 +106,16 @@ pub enum ShellAction {
     },
     /// Confirmed player input requiring an application-boundary Train resale.
     SellTrain { train_id: TrainId },
+    /// Confirmed player input creating one persistent directional Passenger Service.
+    CreatePassengerService { stop_station_ids: Vec<RailStationId> },
+    /// Confirmed player input deleting one unused Passenger Service.
+    DeletePassengerService { service_id: ServiceId },
     /// Confirmed Bankruptcy restart requiring an archived-save application action.
     RestartAfterBankruptcy,
 }
 
 /// One command accepted by the terminal shell at the application boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminalCommand {
     /// Reconcile elapsed demand and due Journey arrivals before presentation or input.
     Reconcile { now: UtcSeconds },
@@ -128,6 +133,10 @@ pub enum TerminalCommand {
     },
     /// Revalidate and resell a selected READY Train.
     SellTrain { train_id: TrainId, now: UtcSeconds },
+    /// Create one directional Passenger Service.
+    CreatePassengerService { stop_station_ids: Vec<RailStationId>, now: UtcSeconds },
+    /// Delete one unused Passenger Service.
+    DeletePassengerService { service_id: ServiceId, now: UtcSeconds },
     /// Archive the Bankrupt Player Company save and start a fresh game.
     RestartAfterBankruptcy { world_seed: u64, now: UtcSeconds },
 }
@@ -155,6 +164,8 @@ pub struct Shell {
     dispatch_flow: Option<dispatch::DispatchFlow>,
     dispatch_returns_to_fleet: bool,
     map_location_selection: map::MapLocationSelection,
+    services_open: bool,
+    service_workspace: services::ServiceWorkspace,
     fleet_flow: Option<fleet::FleetFlow>,
     fleet_selection: fleet::FleetSelection,
     fleet_details_open: bool,
@@ -182,6 +193,8 @@ impl Shell {
             dispatch_flow: None,
             dispatch_returns_to_fleet: false,
             map_location_selection: map::MapLocationSelection::default(),
+            services_open: false,
+            service_workspace: services::ServiceWorkspace::default(),
             fleet_flow: None,
             fleet_selection: fleet::FleetSelection::default(),
             fleet_details_open: false,
@@ -380,6 +393,31 @@ impl Shell {
             };
         }
 
+        if self.services_open {
+            let navigation_key = matches!(
+                key.code,
+                KeyCode::Char('1' | '2' | '3' | '4' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C')
+            );
+            if navigation_key {
+                self.services_open = false;
+            } else {
+                return match self.service_workspace.handle_key(key.code, state) {
+                    services::ServiceWorkspaceAction::Continue => ShellAction::Continue,
+                    services::ServiceWorkspaceAction::Close => {
+                        self.services_open = false;
+                        self.notice = None;
+                        ShellAction::Continue
+                    }
+                    services::ServiceWorkspaceAction::Create { stop_station_ids } => {
+                        ShellAction::CreatePassengerService { stop_station_ids }
+                    }
+                    services::ServiceWorkspaceAction::Delete { service_id } => {
+                        ShellAction::DeletePassengerService { service_id }
+                    }
+                };
+            }
+        }
+
         if self.company_recovery_review_open {
             match key.code {
                 KeyCode::Esc => {
@@ -433,14 +471,16 @@ impl Shell {
         }
 
         match key.code {
-            KeyCode::Char('1' | 'm' | 'M') => self.active_view = View::Map,
+            KeyCode::Char('1' | 'm' | 'M') => { self.active_view = View::Map; self.services_open = false; },
             KeyCode::Char('2' | 't' | 'T') => {
                 self.active_view = View::Trains;
+                self.services_open = false;
                 self.fleet_details_open = false;
                 self.fleet_split_visible = false;
             }
             KeyCode::Char('4' | 'c' | 'C') => {
                 self.active_view = View::Company;
+                self.services_open = false;
                 self.company_receipt_details_open = false;
                 self.company_recovery_review_open = false;
             }
@@ -460,7 +500,7 @@ impl Shell {
                     );
                 }
             }
-            KeyCode::Char('3' | 'b' | 'B') => self.active_view = View::BuyTrains,
+            KeyCode::Char('3' | 'b' | 'B') => { self.active_view = View::BuyTrains; self.services_open = false; },
             KeyCode::Enter if self.active_view == View::Company => {
                 if self.company_receipt_selection.has_selection(state) {
                     self.company_receipt_details_open = true;
@@ -568,6 +608,10 @@ impl Shell {
                 if self.active_view == View::Company && !self.company_receipt_details_open =>
             {
                 self.company_receipt_selection.handle_key(key.code, state);
+            }
+            KeyCode::Char('s' | 'S') if self.active_view == View::Map => {
+                self.services_open = true;
+                self.notice = None;
             }
             KeyCode::Char('d' | 'D') if self.active_view == View::Map => {
                 match dispatch::DispatchFlow::start(state) {
@@ -750,6 +794,27 @@ impl Shell {
         });
     }
 
+    /// Closes a saved Passenger Service creation and keeps the Services workspace open.
+    pub fn confirm_passenger_service_created(&mut self, state: &GameState) {
+        self.service_workspace.confirm_created(state);
+        self.services_open = true;
+        self.notice = Some("Passenger Service created and saved.".into());
+    }
+
+    /// Keeps a rejected Passenger Service action visible in the creation workspace.
+    pub fn reject_passenger_service_action(&mut self, error: impl Into<String>) {
+        let message = error.into();
+        self.service_workspace.reject_action(message.clone());
+        self.notice = Some(message);
+    }
+
+    /// Closes a saved Passenger Service deletion and keeps the Services workspace open.
+    pub fn confirm_passenger_service_deleted(&mut self, state: &GameState) {
+        self.service_workspace.confirm_deleted(state);
+        self.services_open = true;
+        self.notice = Some("Passenger Service deleted and saved.".into());
+    }
+
     /// Shows the persisted outcome of an explicitly confirmed Bankruptcy restart.
     pub fn confirm_restart_after_bankruptcy(&mut self) {
         self.active_view = View::Map;
@@ -757,6 +822,8 @@ impl Shell {
         self.dispatch_returns_to_fleet = false;
         self.fleet_flow = None;
         self.market_flow = None;
+        self.services_open = false;
+        self.service_workspace = services::ServiceWorkspace::default();
         self.restart_confirmation = false;
         self.company_recovery_review_open = false;
         self.notice = Some(
@@ -1018,6 +1085,30 @@ where
                             Err(error) => shell.reject_train_resale(error.to_string()),
                         }
                     }
+                    ShellAction::CreatePassengerService { stop_station_ids } => {
+                        match command(TerminalCommand::CreatePassengerService {
+                            stop_station_ids,
+                            now: current_utc_seconds(),
+                        }) {
+                            Ok(next_state) => {
+                                state = next_state;
+                                shell.confirm_passenger_service_created(&state);
+                            }
+                            Err(error) => shell.reject_passenger_service_action(error.to_string()),
+                        }
+                    }
+                    ShellAction::DeletePassengerService { service_id } => {
+                        match command(TerminalCommand::DeletePassengerService {
+                            service_id,
+                            now: current_utc_seconds(),
+                        }) {
+                            Ok(next_state) => {
+                                state = next_state;
+                                shell.confirm_passenger_service_deleted(&state);
+                            }
+                            Err(error) => shell.reject_passenger_service_action(error.to_string()),
+                        }
+                    }
                     ShellAction::RestartAfterBankruptcy => {
                         match command(TerminalCommand::RestartAfterBankruptcy {
                             world_seed: restart_seed(),
@@ -1124,7 +1215,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         navigation_area,
     );
 
-    if !is_bankrupt(state) && shell.active_view == View::Map {
+    if !is_bankrupt(state) && shell.active_view == View::Map && shell.services_open {
+        shell.service_workspace.render(frame, content_area, state);
+    } else if !is_bankrupt(state) && shell.active_view == View::Map {
         map::render_operational_map(
             frame,
             content_area,
@@ -1355,6 +1448,8 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
                 format!("↑↓/jk Train  Enter Details  {actions}")
             }
         }
+    } else if shell.active_view == View::Map && shell.services_open {
+        shell.service_workspace.controls().into()
     } else if shell.active_view == View::Map {
         let train_count = state.player_company.fleet.trains.len();
         let ready = state
@@ -1374,9 +1469,9 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             format!("d Dispatch · {ready} READY")
         };
         if compact {
-            format!("↑↓←→ Select  {action}")
+            format!("↑↓←→ Select  s Services  {action}")
         } else {
-            format!("↑↓←→/hjkl Select  {action}")
+            format!("↑↓←→/hjkl Select  s Services  {action}")
         }
     } else if shell.active_view == View::Company {
         if shell.company_recovery_review_open {
@@ -1582,6 +1677,28 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         return lines;
     }
 
+    if shell.active_view == View::Map && shell.services_open {
+        lines.push("Current · Passenger Services".into());
+        if state.player_company.passenger_services.is_empty() {
+            lines.extend([
+                "n Create the first directional Passenger Service".into(),
+                "Esc Return to Map".into(),
+            ]);
+        } else {
+            lines.extend([
+                "↑↓ / jk Select Passenger Service".into(),
+                "n Create a new directional Passenger Service".into(),
+                "d Delete selected unused Passenger Service".into(),
+                "Esc Return to Map".into(),
+            ]);
+        }
+        lines.extend([
+            String::new(),
+            "During creation: Enter adds a stop, Backspace removes the last stop, f reviews.".into(),
+        ]);
+        return lines;
+    }
+
     match shell.active_view {
         View::Map => {
             let train_count = state.player_company.fleet.trains.len();
@@ -1595,6 +1712,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
             lines.extend([
                 "Current · Map".into(),
                 "↑↓←→ / hjkl Select a map location".into(),
+                "s Open Passenger Services".into(),
             ]);
             if train_count == 0 {
                 lines.extend([
@@ -2276,6 +2394,18 @@ mod tests {
         let market_help = super::help_lines(&shell, &state).join("\n");
         assert!(market_help.contains("Current · Market"));
         assert!(market_help.contains("Enter Choose delivery station"));
+
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+            &state,
+        );
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+            &state,
+        );
+        let services_help = super::help_lines(&shell, &state).join("\n");
+        assert!(services_help.contains("Current · Passenger Services"));
+        assert!(services_help.contains("n Create the first directional Passenger Service"));
     }
 
     #[test]

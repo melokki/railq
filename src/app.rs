@@ -13,7 +13,7 @@ use crate::{
         finance::{FinanceError, FinancialStatus, evaluate_financial_recovery},
         fleet::{FleetError, purchase_train, sell_train},
         journeys::{DispatchError, dispatch_journey},
-        services::{ServiceError, find_or_create_service},
+        services::{ServiceError, create_service, delete_service, find_or_create_service},
         time::{AdvanceTimeError, SettledJourney, advance_time, advance_time_with_arrivals},
         world::create_new_game,
     },
@@ -202,6 +202,40 @@ impl<S: GameStore> App<S> {
                 Err(AppError::Bankruptcy)
             } else {
                 Ok(proceeds)
+            }
+        })
+    }
+
+    /// Creates and persists one directional Passenger Service.
+    pub fn create_passenger_service(
+        &mut self,
+        stop_station_ids: Vec<RailStationId>,
+        now: UtcSeconds,
+    ) -> Result<ServiceId, AppError<S::Error>> {
+        self.transact(now, |state, _| {
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            let service_id = create_service(state, stop_station_ids).map_err(AppError::Service)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(service_id)
+            }
+        })
+    }
+
+    /// Deletes and persists an unused Passenger Service.
+    pub fn delete_passenger_service(
+        &mut self,
+        service_id: ServiceId,
+        now: UtcSeconds,
+    ) -> Result<(), AppError<S::Error>> {
+        self.transact(now, |state, _| {
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            delete_service(state, service_id).map_err(AppError::Service)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(())
             }
         })
     }
@@ -529,7 +563,7 @@ mod tests {
             RailStationId::new(3)
         );
         assert_eq!(
-            app.state().player_company.passenger_services[0].first_station_id,
+            app.state().player_company.passenger_services[0].origin_station_id().unwrap(),
             RailStationId::new(3)
         );
     }
@@ -637,6 +671,36 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn passenger_service_creation_and_deletion_are_persisted_transactions() {
+        let store = TestStore::default();
+        let state = new_game();
+        let mut app = App::start_new(store.clone(), state).unwrap();
+
+        let service_id = app
+            .create_passenger_service(
+                vec![ORIGIN, RailStationId::new(2), RailStationId::new(3)],
+                STARTED_AT,
+            )
+            .unwrap();
+
+        let service = app
+            .state()
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .unwrap();
+        assert_eq!(service.name, "R1");
+        assert_eq!(service.stop_station_ids.len(), 3);
+        assert_eq!(store.load().unwrap(), Some(app.state().clone()));
+
+        app.delete_passenger_service(service_id, STARTED_AT).unwrap();
+
+        assert!(app.state().player_company.passenger_services.is_empty());
+        assert_eq!(store.load().unwrap(), Some(app.state().clone()));
     }
 
     #[test]

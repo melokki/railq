@@ -62,6 +62,15 @@ fn run_dashboard(
             ui::TerminalCommand::SellTrain { train_id, now } => {
                 app.sell_train(train_id, now)?;
             }
+            ui::TerminalCommand::CreatePassengerService {
+                stop_station_ids,
+                now,
+            } => {
+                app.create_passenger_service(stop_station_ids, now)?;
+            }
+            ui::TerminalCommand::DeletePassengerService { service_id, now } => {
+                app.delete_passenger_service(service_id, now)?;
+            }
             ui::TerminalCommand::RestartAfterBankruptcy { world_seed, now } => {
                 app.restart_after_bankruptcy(world_seed, now)?;
             }
