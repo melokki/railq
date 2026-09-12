@@ -592,14 +592,7 @@ impl Shell {
                 self.company_receipt_selection.handle_key(key.code, state);
             }
             KeyCode::Char('d' | 'D') if self.active_view == View::Map => {
-                let Some(station_id) = self.map_location_selection.selected_station_id(state) else {
-                    self.notice = Some(
-                        "This Settlement is not connected to the Rail Network; dispatch is unavailable."
-                            .into(),
-                    );
-                    return ShellAction::Continue;
-                };
-                match dispatch::DispatchFlow::start_at_station(state, Some(station_id)) {
+                match dispatch::DispatchFlow::start(state) {
                     Ok(flow) => {
                         self.dispatch_flow = Some(flow);
                         self.dispatch_returns_to_fleet = false;
@@ -1392,16 +1385,20 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             format!("↑↓/jk Train  PgUp/PgDn Scroll  Enter Inspect  {actions}  Tab Panel")
         }
     } else if shell.active_view == View::Map {
-        let station_id = shell.map_location_selection.selected_station_id(state);
-        let action = station_id.map_or("d unavailable", |station_id| {
-            if state.player_company.fleet.trains.iter().any(|train| {
-                matches!(train.status, TrainStatus::Ready { at } if at == station_id)
-            }) {
-                "d Dispatch"
-            } else {
-                "d no READY Train"
-            }
-        });
+        let ready = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
+            .count();
+        let action = if ready == 0 {
+            "d no READY Train".to_owned()
+        } else if ready == 1 {
+            "d Dispatch · 1 READY".to_owned()
+        } else {
+            format!("d Dispatch · {ready} READY")
+        };
         if compact {
             format!("↑↓←→ Select  {action}")
         } else {
@@ -1526,7 +1523,7 @@ const HELP_LINES: &[&str] = &[
     "Lists use [Up]/[Down] or [J]/[K]; Map uses all four directions or H/J/K/L.",
     "[PageUp]/[PageDown] scrolls lists. [Enter] inspects the selected item.",
     "Fleet: [D] starts destination selection for a selected READY Train; [S] opens resale.",
-    "Map: [D] begins Manual Dispatch from the selected Rail Station.",
+    "Map: [D] opens all READY Trains for company-wide Manual Dispatch.",
     "Company: [R] opens calculated recovery routes during Insolvency.",
     "",
     "Flows",
@@ -1536,7 +1533,7 @@ const HELP_LINES: &[&str] = &[
     "Saved action outcomes remain in the feedback row: Enter reads details; Esc or A acknowledges.",
     "",
     "Current flow reminders",
-    "Manual Dispatch: select a READY Train, select a destination Rail Station, then review.",
+    "Manual Dispatch: choose any READY Train, then a reachable destination, then review.",
     "Train purchase: select a catalogue Train, choose its delivery Rail Station, then review.",
     "Train resale: review the selected READY Train before confirming its sale.",
     "No ordinary key reaches a covered panel while this help page is open.",

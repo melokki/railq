@@ -83,14 +83,19 @@ impl DispatchFlow {
         matches!(self.step, DispatchStep::Confirm { .. })
     }
 
-    /// Starts selecting a READY Train. No game state changes at this point.
+    /// Starts company-wide Manual Dispatch by listing every READY Train.
+    ///
+    /// The selected Train determines the Journey origin from its current
+    /// Rail Station. No game state changes at this point.
     pub fn start(state: &GameState) -> Result<Self, &'static str> {
         Self::start_at_station(state, None)
     }
 
-    /// Starts at a focused Rail Station and limits the chooser to READY Trains
-    /// physically based at that station. Map dispatch therefore keeps the
-    /// selected station as the Journey origin instead of silently switching it.
+    /// Starts a contextual dispatch flow at one focused Rail Station and
+    /// limits the chooser to READY Trains physically based there.
+    ///
+    /// The Map's primary `D` shortcut uses company-wide [`Self::start`];
+    /// this station-scoped entry point remains available for contextual actions.
     pub fn start_at_station(
         state: &GameState,
         preferred_station_id: Option<RailStationId>,
@@ -771,9 +776,14 @@ fn render_train_chooser(
 
     let mut context = vec![dispatch_step_line(1)];
     context.push(Line::from(vec![
-        Span::styled("FROM  ", theme::secondary()),
-        Span::styled(origin.unwrap_or("Any READY Train"), theme::primary_value()),
-        Span::styled("   Choose the Train to operate this Journey.", theme::secondary()),
+        Span::styled(
+            if origin.is_some() { "FROM  " } else { "READY TRAINS  " },
+            theme::secondary(),
+        ),
+        Span::styled(
+            origin.unwrap_or("Choose a Train; its current station becomes the origin."),
+            theme::primary_value(),
+        ),
     ]));
     frame.render_widget(
         Paragraph::new(context)
@@ -793,6 +803,7 @@ fn render_train_chooser(
             if wide {
                 Row::new([
                     Cell::from(format!("Train {:02}", train.id.get())),
+                    Cell::from(station_label(state, at).to_owned()),
                     Cell::from(train.model_name.clone()),
                     Cell::from(format!("{} pax", train.passenger_capacity.passengers())),
                     Cell::from(crate::ui::format::speed_kmh(train.speed.metres_per_second())),
@@ -812,13 +823,14 @@ fn render_train_chooser(
         .collect::<Vec<_>>();
     let (headers, widths) = if wide {
         (
-            Row::new(["Train", "Model", "Capacity", "Speed", "Fuel / km"]),
+            Row::new(["Train", "Location", "Model", "Capacity", "Speed", "Fuel / km"]),
             vec![
                 Constraint::Length(10),
-                Constraint::Percentage(34),
+                Constraint::Percentage(21),
+                Constraint::Percentage(24),
                 Constraint::Length(10),
-                Constraint::Length(12),
-                Constraint::Length(12),
+                Constraint::Length(11),
+                Constraint::Length(11),
             ],
         )
     } else {
@@ -1175,7 +1187,7 @@ fn no_ready_train_reason(state: &GameState) -> &'static str {
     if state.player_company.fleet.trains.is_empty() {
         "No READY Train in the Fleet. Press B to buy a Train."
     } else {
-        "No READY Train: all Fleet Trains are TRAVELLING. Wait for an arrival, then dispatch from Map."
+        "No READY Train: all Fleet Trains are TRAVELLING. Wait for an arrival, then press D to dispatch."
     }
 }
 
@@ -1519,6 +1531,15 @@ mod tests {
     }
 
     #[test]
+    fn global_dispatch_still_lists_the_only_ready_train() {
+        let (state, _) = game_with_ready_train(RailStationId::new(1));
+        let flow = DispatchFlow::start(&state).unwrap();
+
+        assert!(flow.is_selecting_train());
+        assert!(!flow.is_selecting_destination());
+    }
+
+    #[test]
     fn multi_line_trip_is_keyboard_reachable_without_creating_a_service() {
         let (state, train_id) = game_with_ready_train(RailStationId::new(1));
         let mut flow = DispatchFlow::start(&state).unwrap();
@@ -1608,7 +1629,7 @@ mod tests {
         assert_eq!(
             DispatchFlow::start(&state),
             Err(
-                "No READY Train: all Fleet Trains are TRAVELLING. Wait for an arrival, then dispatch from Map."
+                "No READY Train: all Fleet Trains are TRAVELLING. Wait for an arrival, then press D to dispatch."
             )
         );
         assert_eq!(train_id.get(), 1);

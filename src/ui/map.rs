@@ -383,11 +383,7 @@ fn render_location_inspector(
         }
         lines.push(Line::from(""));
         lines.push(Line::styled(
-            if ready.is_empty() {
-                "d Dispatch · no READY Train here"
-            } else {
-                "d Dispatch from this station"
-            },
+            "d Dispatch · choose from all READY Trains",
             theme::hint(),
         ));
     } else {
@@ -399,7 +395,10 @@ fn render_location_inspector(
             theme::secondary(),
         ));
         lines.push(Line::from(""));
-        lines.push(Line::styled("Inspect only", theme::hint()));
+        lines.push(Line::styled(
+            "d Dispatch · choose from all READY Trains",
+            theme::hint(),
+        ));
     }
 
     frame.render_widget(
@@ -1639,7 +1638,7 @@ fn render_empty_journey_board(frame: &mut Frame, area: Rect, focused: bool) {
         Paragraph::new(vec![
             Line::styled("No active Journeys", theme::title()),
             Line::styled(
-                "Dispatch a READY Train from Rail Stations with D.",
+                "Press D anywhere on the Map to choose from all READY Trains.",
                 theme::secondary(),
             ),
             Line::styled("Journeys continue in real time after exit.", theme::hint()),
