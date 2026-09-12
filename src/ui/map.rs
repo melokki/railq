@@ -255,7 +255,17 @@ fn render_operational_network(
     state: &GameState,
     selection: &mut MapLocationSelection,
 ) {
-    let block = panel_block("Network · ● connected  ○ unconnected  ▶ travelling", true);
+    let registration = format!(
+        "{} {}",
+        state.region.railway_registration.display_code(),
+        state.region.railway_registration.mark
+    );
+    let title = if area.width >= 72 {
+        format!("Network · {registration} · ● connected  ○ unconnected  ▶ travelling")
+    } else {
+        format!("Network · {registration}")
+    };
+    let block = panel_block(&title, true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(layout) = operational_layout(state) else {
