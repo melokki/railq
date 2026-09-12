@@ -225,6 +225,7 @@ impl Shell {
         }
 
         if self.help_visible {
+            let help_line_count = help_lines(self, state).len();
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') => {
                     self.help_visible = false;
@@ -237,7 +238,7 @@ impl Shell {
                     self.help_offset = self
                         .help_offset
                         .saturating_add(1)
-                        .min(HELP_LINES.len().saturating_sub(1));
+                        .min(help_line_count.saturating_sub(1));
                 }
                 KeyCode::PageUp => {
                     self.help_offset = self.help_offset.saturating_sub(HELP_PAGE_STEP);
@@ -246,7 +247,7 @@ impl Shell {
                     self.help_offset = self
                         .help_offset
                         .saturating_add(HELP_PAGE_STEP)
-                        .min(HELP_LINES.len().saturating_sub(1));
+                        .min(help_line_count.saturating_sub(1));
                 }
                 _ => {}
             }
@@ -1261,7 +1262,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
     );
 
     if shell.help_visible {
-        render_help_overlay(frame, area, shell.help_offset);
+        render_help_overlay(frame, area, shell, state);
     }
     if shell.outcome_details_open {
         if let Some(outcome) = &shell.action_outcome {
@@ -1324,32 +1325,37 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
         };
         format!("Esc Back  {actions}")
     } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
-        let action = shell
-            .fleet_selection
-            .selected_train_id(state)
-            .and_then(|id| {
-                state
-                    .player_company
-                    .fleet
-                    .trains
-                    .iter()
-                    .find(|train| train.id == id)
-            });
-        let actions = match action {
-            Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
-                "d Dispatch  s Resale"
-            }
-            Some(_) => "d/s available after arrival",
-            None => "d/s unavailable",
-        };
-        if shell.fleet_split_visible {
-            format!("↑↓/jk Select  PgUp/PgDn Scroll  {actions}")
-        } else if compact {
-            format!("↑↓/jk Train  Enter Details  {actions}")
+        if state.player_company.fleet.trains.is_empty() {
+            "No trains owned  ·  3 Market".into()
         } else {
-            format!("↑↓/jk Train  Enter Details  {actions}")
+            let action = shell
+                .fleet_selection
+                .selected_train_id(state)
+                .and_then(|id| {
+                    state
+                        .player_company
+                        .fleet
+                        .trains
+                        .iter()
+                        .find(|train| train.id == id)
+                });
+            let actions = match action {
+                Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
+                    "d Dispatch  s Resale"
+                }
+                Some(_) => "d/s available after arrival",
+                None => "d/s unavailable",
+            };
+            if shell.fleet_split_visible {
+                format!("↑↓/jk Select  PgUp/PgDn Scroll  {actions}")
+            } else if compact {
+                format!("↑↓/jk Train  Enter Details  {actions}")
+            } else {
+                format!("↑↓/jk Train  Enter Details  {actions}")
+            }
         }
     } else if shell.active_view == View::Map {
+        let train_count = state.player_company.fleet.trains.len();
         let ready = state
             .player_company
             .fleet
@@ -1357,8 +1363,10 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             .iter()
             .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
             .count();
-        let action = if ready == 0 {
-            "d unavailable · no READY Train".to_owned()
+        let action = if train_count == 0 {
+            "No trains owned  ·  3 Market".to_owned()
+        } else if ready == 0 {
+            "All trains travelling  ·  dispatch after arrival".to_owned()
         } else if ready == 1 {
             "d Dispatch · 1 READY".to_owned()
         } else {
@@ -1374,6 +1382,8 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             "↑↓/jk Route  Enter Open  Esc Back".into()
         } else if shell.company_receipt_details_open {
             "Esc Back  1–4 Navigate".into()
+        } else if state.financials.recent_journey_receipts.is_empty() {
+            "No journey history yet  ·  1 Map".into()
         } else {
             "↑↓/jk Receipt  Enter Details  r Recovery".into()
         }
@@ -1477,49 +1487,195 @@ fn shorten(value: &str, max_characters: usize) -> String {
 
 const HELP_PAGE_STEP: usize = 5;
 
-const HELP_LINES: &[&str] = &[
-    "Global controls",
-    "[1] Map  [2] Trains  [3] Market  [4] Company switch primary views.",
-    "[M]/[T]/[B]/[C] remain available as navigation aliases.",
-    "[?] opens help. [Q] or Ctrl-C exits RailQ outside text entry.",
-    "Map uses arrows or H/J/K/L for spatial Settlement selection.",
-    "",
-    "Panels and lists",
-    "Lists use [Up]/[Down] or [J]/[K]; Map uses all four directions or H/J/K/L.",
-    "[PageUp]/[PageDown] scrolls lists. [Enter] opens details for the current selection.",
-    "Trains: select with [J]/[K]; [D] dispatches a READY Train and [S] reviews resale.",
-    "Map: [D] opens all READY Trains for company-wide Manual Dispatch.",
-    "Company: [R] opens recovery routes when the company is not OPERATING.",
-    "",
-    "Flows",
-    "[Enter] advances or confirms only the action named in the footer.",
-    "[Left]/[Backspace] returns to the prior flow step; [Esc] cancels the current flow.",
-    "Unavailable actions state their reason. Confirmation remains at the application boundary.",
-    "Saved action outcomes remain in the feedback row: Enter reads details; Esc or A acknowledges.",
-    "",
-    "Current flow reminders",
-    "Manual Dispatch: choose any READY Train, then a reachable destination, then review.",
-    "Train purchase: select a catalogue Train, choose its delivery Rail Station, then review.",
-    "Train resale: review the selected READY Train before confirming its sale.",
-    "No ordinary key reaches a covered panel while this help page is open.",
-    "",
-    "RailQ terminology",
-    "The Player Company owns its Fleet and operates passenger Journeys.",
-    "The Rail Authority owns the public Rail Network and its Rail Stations.",
-    "A Journey is one physical movement of a Train; it is not a Passenger Service.",
-    "",
-    "Safety",
-    "Opening, closing, scrolling, or resizing help does not authorise an action.",
-    "It preserves the current focus, list position, and any pending proposal.",
-    "Save and transaction checks still occur only after an explicit confirmation.",
-    "",
-    "Layout",
-    "Wide terminals show help as a centred overlay above the control room.",
-    "Compact terminals show it as a focused page so every visible row remains readable.",
-    "Resize at any time; close help to resume the same workspace.",
-    "",
-    "[↑↓/J K] Scroll help  [PgUp/Dn] Page  [? / Esc] Return",
-];
+fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
+    let mut lines = vec![
+        "Navigation".into(),
+        "1 Map   2 Trains   3 Market   4 Company".into(),
+        "m / t / b / c also switch workspaces".into(),
+        "? / Esc Close help   q Quit".into(),
+        String::new(),
+    ];
+
+    if is_bankrupt(state) {
+        lines.extend([
+            "Current · Bankruptcy".into(),
+            "r Review a safe restart".into(),
+            "Enter Confirm restart when the review is open".into(),
+            "Esc Cancel restart review".into(),
+        ]);
+        return lines;
+    }
+
+    if let Some(flow) = &shell.dispatch_flow {
+        lines.push("Current · Manual Dispatch".into());
+        if flow.is_selecting_train() {
+            lines.extend([
+                "↑↓ / jk Select a READY Train".into(),
+                "Enter Continue to destination selection".into(),
+                "Esc Cancel dispatch".into(),
+            ]);
+        } else if flow.is_selecting_destination() {
+            lines.extend([
+                "↑↓ / jk Select a reachable destination".into(),
+                "PgUp / PgDn Scroll longer route lists".into(),
+                "Enter Review Journey".into(),
+                "← / Backspace Previous step   Esc Cancel".into(),
+            ]);
+        } else {
+            lines.extend([
+                "Enter Confirm dispatch".into(),
+                "← / Backspace Previous step   Esc Cancel".into(),
+            ]);
+        }
+        lines.extend([
+            String::new(),
+            "The footer always shows the actions available in the current step.".into(),
+        ]);
+        return lines;
+    }
+
+    if shell.active_view == View::BuyTrains {
+        if let Some(flow) = &shell.market_flow {
+            lines.push("Current · Train Purchase".into());
+            if flow.is_selecting_delivery() {
+                lines.extend([
+                    "↑↓ / jk Select the delivery Rail Station".into(),
+                    "Enter Review purchase".into(),
+                    "← / Backspace Previous step   Esc Cancel".into(),
+                ]);
+            } else {
+                lines.extend([
+                    "Enter Confirm purchase".into(),
+                    "← / Backspace Previous step   Esc Cancel".into(),
+                ]);
+            }
+            return lines;
+        }
+    }
+
+    if shell.active_view == View::Trains && shell.fleet_flow.is_some() {
+        lines.extend([
+            "Current · Train Resale".into(),
+            "Enter Confirm resale".into(),
+            "Esc Cancel".into(),
+        ]);
+        return lines;
+    }
+
+    if shell.active_view == View::Company && shell.company_recovery_review_open {
+        lines.extend([
+            "Current · Financial Recovery".into(),
+            "↑↓ / jk Select a recovery route".into(),
+            "Enter Open the selected recovery action".into(),
+            "Esc Back to Company".into(),
+        ]);
+        return lines;
+    }
+
+    if shell.active_view == View::Company && shell.company_receipt_details_open {
+        lines.extend([
+            "Current · Journey Receipt".into(),
+            "Esc Back to Journey history".into(),
+            "1–4 Switch workspace".into(),
+        ]);
+        return lines;
+    }
+
+    match shell.active_view {
+        View::Map => {
+            let train_count = state.player_company.fleet.trains.len();
+            let ready = state
+                .player_company
+                .fleet
+                .trains
+                .iter()
+                .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
+                .count();
+            lines.extend([
+                "Current · Map".into(),
+                "↑↓←→ / hjkl Select a map location".into(),
+            ]);
+            if train_count == 0 {
+                lines.extend([
+                    String::new(),
+                    "Next step".into(),
+                    "3 Open Market and acquire your first passenger Train".into(),
+                ]);
+            } else if ready == 0 {
+                lines.extend([
+                    "d Dispatch is unavailable while every Train is travelling".into(),
+                    "Journeys continue while RailQ is closed; dispatch again after arrival".into(),
+                ]);
+            } else {
+                lines.push(format!(
+                    "d Manual Dispatch · {ready} READY {}",
+                    if ready == 1 { "Train" } else { "Trains" }
+                ));
+            }
+        }
+        View::Trains => {
+            lines.push("Current · Trains".into());
+            if state.player_company.fleet.trains.is_empty() {
+                lines.extend([
+                    "No trains owned yet".into(),
+                    String::new(),
+                    "Next step".into(),
+                    "3 Open Market and acquire your first passenger Train".into(),
+                ]);
+            } else if shell.fleet_details_open {
+                lines.extend([
+                    "Esc Back to Fleet".into(),
+                    "d Dispatch selected READY Train".into(),
+                    "s Review resale of selected READY Train".into(),
+                ]);
+            } else {
+                lines.extend([
+                    "↑↓ / jk Select Train".into(),
+                    "PgUp / PgDn Scroll".into(),
+                    "Enter Details".into(),
+                    "d Dispatch selected READY Train".into(),
+                    "s Review resale of selected READY Train".into(),
+                ]);
+            }
+        }
+        View::BuyTrains => {
+            lines.extend([
+                "Current · Market".into(),
+                "↑↓ / jk Select Train model".into(),
+                "Enter Choose delivery station".into(),
+                String::new(),
+                "Purchase price is not the whole decision: keep enough cash for access and fuel.".into(),
+            ]);
+        }
+        View::Company => {
+            lines.push("Current · Company".into());
+            if state.financials.recent_journey_receipts.is_empty() {
+                lines.extend([
+                    "No settled Journey receipts yet".into(),
+                    "1 Return to Map to operate your railway".into(),
+                ]);
+            } else {
+                lines.extend([
+                    "↑↓ / jk Select Journey receipt".into(),
+                    "PgUp / PgDn Scroll history".into(),
+                    "Enter Details".into(),
+                ]);
+            }
+            if let Ok(evaluation) = evaluate_financial_recovery(state) {
+                if evaluation.status != FinancialStatus::Operating {
+                    lines.push("r Review available financial recovery routes".into());
+                }
+            }
+        }
+    }
+
+    lines.extend([
+        String::new(),
+        "Tip".into(),
+        "The footer is contextual: it only shows actions that matter right now.".into(),
+    ]);
+    lines
+}
 
 fn dispatch_modal_rect(area: Rect) -> Rect {
     let width = area.width.saturating_sub(4).min(96).max(36);
@@ -1532,13 +1688,18 @@ fn dispatch_modal_rect(area: Rect) -> Rect {
     }
 }
 
-fn render_help_overlay(frame: &mut ratatui::Frame, area: Rect, offset: usize) {
+fn render_help_overlay(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    shell: &Shell,
+    state: &GameState,
+) {
     let compact = area.width < 96 || area.height < 26;
     let overlay_area = if compact {
         area
     } else {
-        let width = area.width.saturating_mul(4) / 5;
-        let height = area.height.saturating_mul(4) / 5;
+        let width = area.width.saturating_mul(3) / 4;
+        let height = area.height.saturating_mul(3) / 4;
         Rect::new(
             area.x
                 .saturating_add((area.width.saturating_sub(width)) / 2),
@@ -1548,20 +1709,30 @@ fn render_help_overlay(frame: &mut ratatui::Frame, area: Rect, offset: usize) {
             height,
         )
     };
+    let lines = help_lines(shell, state);
     let visible_lines = usize::from(overlay_area.height.saturating_sub(2));
-    let max_offset = HELP_LINES.len().saturating_sub(visible_lines.max(1));
-    let offset = offset.min(max_offset);
-    let content = HELP_LINES
-        .iter()
+    let max_offset = lines.len().saturating_sub(visible_lines.max(1));
+    let offset = shell.help_offset.min(max_offset);
+    let content = lines
+        .into_iter()
         .skip(offset)
         .take(visible_lines)
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n");
+        .map(|line| {
+            if line == "Navigation"
+                || line == "Next step"
+                || line == "Tip"
+                || line.starts_with("Current ·")
+            {
+                Line::styled(line, theme::focused_title())
+            } else {
+                Line::from(line)
+            }
+        })
+        .collect::<Vec<_>>();
     let title = if compact {
-        "Help · focused page"
+        "Keyboard · focused page"
     } else {
-        "Keyboard help"
+        "Keyboard"
     };
 
     frame.render_widget(Clear, overlay_area);
@@ -2044,7 +2215,7 @@ mod tests {
     }
 
     #[test]
-    fn help_explains_all_keyboard_reachable_core_actions() {
+    fn help_is_contextual_and_points_a_new_company_to_the_market() {
         let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
         let mut shell = Shell::new();
 
@@ -2056,20 +2227,42 @@ mod tests {
             ShellAction::Continue
         );
         assert!(shell.help_visible());
-        let help = super::HELP_LINES.join("\n");
+        let help = super::help_lines(&shell, &state).join("\n");
         for instruction in [
-            "[1] Map",
-            "[2] Trains",
-            "[3] Market",
-            "[4] Company",
-            "[D]",
-            "[D] starts destination selection",
-            "[Q]",
+            "1 Map",
+            "2 Trains",
+            "3 Market",
+            "4 Company",
+            "Current · Map",
+            "3 Open Market and acquire your first passenger Train",
         ] {
             assert!(help.contains(instruction));
         }
         shell.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state);
         assert!(!shell.help_visible());
+    }
+
+    #[test]
+    fn help_changes_with_the_active_workspace() {
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let mut shell = Shell::new();
+
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+            &state,
+        );
+        let trains_help = super::help_lines(&shell, &state).join("\n");
+        assert!(trains_help.contains("Current · Trains"));
+        assert!(trains_help.contains("d Dispatch selected READY Train"));
+
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE),
+            &state,
+        );
+        let market_help = super::help_lines(&shell, &state).join("\n");
+        assert!(market_help.contains("Current · Market"));
+        assert!(market_help.contains("Enter Choose delivery station"));
     }
 
     #[test]
