@@ -739,8 +739,19 @@ fn render_map_rows(
         put_cell(&mut grid, x, y, marker, ink);
     }
 
+    // Place names are the primary map annotation and must never be damaged by
+    // optional distance text. Draw them first so distance annotations can only
+    // occupy genuinely free cells around the selected Rail Links.
+    for place in &layout.places {
+        let (x, y) = screen_position(place);
+        let label = map_place_label(state, place, selected);
+        place_map_label(&mut grid, x, y, &label, place_ink(place, selected));
+    }
+
     // Exact distances appear only for Rail Links incident to the current
-    // selection. The rest of the network stays quiet enough to scan quickly.
+    // selection. If every candidate would collide with a place label, Train,
+    // or rail geometry, omit the map annotation; the inspector still carries
+    // the exact distance.
     if let Some(selected_id) = selected {
         for line in layout.lines.iter().filter(|line| {
             line.first_settlement_id == selected_id || line.second_settlement_id == selected_id
@@ -758,12 +769,6 @@ fn render_map_rows(
                 line.distance_metres,
             );
         }
-    }
-
-    for place in &layout.places {
-        let (x, y) = screen_position(place);
-        let label = map_place_label(state, place, selected);
-        place_map_label(&mut grid, x, y, &label, place_ink(place, selected));
     }
 
     grid.into_iter()
