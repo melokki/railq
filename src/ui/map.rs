@@ -157,6 +157,11 @@ enum MapDirection {
     Down,
 }
 
+// Most terminal cells are roughly twice as tall as they are wide. Keep this
+// isolated so the visual calibration can be tuned later without touching the
+// distance curve itself.
+const TERMINAL_CELL_HEIGHT_TO_WIDTH: i32 = 2;
+
 #[derive(Clone, Debug)]
 struct OperationalLayout {
     places: Vec<OperationalPlace>,
@@ -457,7 +462,7 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
             .enumerate()
         {
             let direction = directions[index % directions.len()];
-            let length = visual_line_length(*metres);
+            let length = directional_line_length(*metres, direction);
             let position = offset_point((0, 0), direction, length);
             station_positions.entry(*neighbour).or_insert(position);
             queue.push_back((*neighbour, root.id, direction));
@@ -483,7 +488,11 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
                 } else {
                     turn_counter_clockwise(direction)
                 };
-                let position = offset_point(origin, child_direction, visual_line_length(metres));
+                let position = offset_point(
+                    origin,
+                    child_direction,
+                    directional_line_length(metres, child_direction),
+                );
                 station_positions.insert(child, position);
                 queue.push_back((child, station_id, child_direction));
             }
@@ -570,6 +579,19 @@ fn visual_line_length(distance_metres: u64) -> i32 {
     (4.0 + kilometres.sqrt() * 1.25).round().clamp(8.0, 26.0) as i32
 }
 
+fn directional_line_length(distance_metres: u64, direction: MapDirection) -> i32 {
+    let visual_units = visual_line_length(distance_metres);
+    match direction {
+        MapDirection::Left | MapDirection::Right => visual_units,
+        MapDirection::Up | MapDirection::Down => {
+            // Terminal cells are roughly twice as tall as they are wide.
+            // Use fewer rows for vertical links so physical on-screen length
+            // remains comparable with a horizontal link of the same distance.
+            (visual_units / TERMINAL_CELL_HEIGHT_TO_WIDTH).max(4)
+        }
+    }
+}
+
 fn offset_point((x, y): (i32, i32), direction: MapDirection, distance: i32) -> (i32, i32) {
     match direction {
         MapDirection::Left => (x - distance, y),
@@ -615,18 +637,22 @@ fn render_map_rows(
     let max_y = layout.places.iter().map(|place| place.y).max().unwrap_or(0) + 2;
     let logical_width = (max_x - min_x).max(1) as f64;
     let logical_height = (max_y - min_y).max(1) as f64;
-    let x_scale = if width <= 2 {
+    let width_scale = if width <= 2 {
         1.0
     } else {
-        // A large terminal should let the schematic breathe instead of
-        // keeping the network at its minimum logical size.
-        ((width - 1) as f64 / logical_width).min(1.35)
+        (width - 1) as f64 / logical_width
     };
-    let y_scale = if height <= 2 {
+    let height_scale = if height <= 2 {
         1.0
     } else {
-        ((height - 1) as f64 / logical_height).min(1.20)
+        (height - 1) as f64 / logical_height
     };
+    // Use one scale for both axes. The logical layout has already compensated
+    // for terminal-cell aspect ratio, so stretching X and Y independently
+    // would make the same route distance look different by orientation.
+    let map_scale = width_scale.min(height_scale).min(1.30);
+    let x_scale = map_scale;
+    let y_scale = map_scale;
     let scaled_width = (logical_width * x_scale).round() as i32;
     let scaled_height = (logical_height * y_scale).round() as i32;
     let x_padding = ((i32::try_from(width).unwrap_or(i32::MAX) - scaled_width) / 2).max(0);
@@ -2302,7 +2328,10 @@ mod tests {
         },
     };
 
-    use super::{journey_progress_percent, render_at, schematic_layout};
+    use super::{
+        MapDirection, TERMINAL_CELL_HEIGHT_TO_WIDTH, directional_line_length,
+        journey_progress_percent, render_at, schematic_layout,
+    };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 
@@ -2371,6 +2400,23 @@ mod tests {
         assert!(travelling_map.contains("progress: 50%"));
         assert!(travelling_map.contains("ETA:"));
         assert!(travelling_map.contains("Alden") || travelling_map.contains("Bellhaven"));
+    }
+
+    #[test]
+    fn map_distance_is_comparable_across_horizontal_and_vertical_links() {
+        let same_distance_horizontal = directional_line_length(42_000, MapDirection::Right);
+        let same_distance_vertical = directional_line_length(42_000, MapDirection::Down);
+        assert!(
+            (same_distance_horizontal
+                - same_distance_vertical * TERMINAL_CELL_HEIGHT_TO_WIDTH)
+                .abs()
+                <= 1
+        );
+
+        let shorter_vertical = directional_line_length(31_000, MapDirection::Down)
+            * TERMINAL_CELL_HEIGHT_TO_WIDTH;
+        let longer_horizontal = directional_line_length(42_000, MapDirection::Right);
+        assert!(longer_horizontal > shorter_vertical);
     }
 
     #[test]
