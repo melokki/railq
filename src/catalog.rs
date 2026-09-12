@@ -21,6 +21,7 @@ static TRAIN_CATALOGUE: OnceLock<TrainCatalogue> = OnceLock::new();
 pub struct TrainModel {
     id: TrainModelId,
     name: String,
+    evn_type_code: u8,
     purchase_price: Money,
     passenger_capacity: PassengerCapacity,
     speed: SpeedMetresPerSecond,
@@ -34,6 +35,27 @@ impl TrainModel {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// EVN digits 1–2 for this rolling-stock type.
+    pub const fn evn_type_code(&self) -> u8 {
+        self.evn_type_code
+    }
+
+    pub const fn evn_type_label(&self) -> &'static str {
+        match self.evn_type_code {
+            90 => "Miscellaneous tractive unit",
+            91 => "Electric locomotive",
+            92 => "Diesel locomotive",
+            93 => "High-speed electric multiple unit",
+            94 => "Electric multiple unit",
+            95 => "Diesel multiple unit",
+            96 => "Specialised trailer",
+            97 => "Electric shunter",
+            98 => "Diesel shunter",
+            99 => "Special vehicle",
+            _ => "Unknown EVN type",
+        }
     }
 
     pub const fn purchase_price(&self) -> Money {
@@ -86,6 +108,12 @@ impl TrainCatalogue {
                     field: "name",
                 });
             }
+            if !(90..=99).contains(&record.evn_type_code) {
+                return Err(CatalogueError::InvalidField {
+                    model_id: id.as_str().to_owned(),
+                    field: "evn_type_code",
+                });
+            }
             if record.purchase_price_cents <= 0 {
                 return Err(CatalogueError::InvalidField {
                     model_id: id.as_str().to_owned(),
@@ -113,6 +141,7 @@ impl TrainCatalogue {
             models.push(TrainModel {
                 id,
                 name: record.name,
+                evn_type_code: record.evn_type_code,
                 purchase_price: Money::from_cents(record.purchase_price_cents),
                 passenger_capacity,
                 speed,
@@ -183,6 +212,7 @@ impl Error for CatalogueError {}
 struct RawTrainModel {
     id: String,
     name: String,
+    evn_type_code: u8,
     purchase_price_cents: i64,
     passenger_capacity: i64,
     speed_metres_per_second: i64,
@@ -199,13 +229,15 @@ mod tests {
         assert_eq!(catalogue.models().len(), 2);
         assert_eq!(catalogue.models()[0].id().as_str(), "local-70");
         assert_eq!(catalogue.models()[1].id().as_str(), "express-120");
+        assert_eq!(catalogue.models()[0].evn_type_code(), 95);
+        assert_eq!(catalogue.models()[1].evn_type_code(), 95);
     }
 
     #[test]
     fn rejects_duplicate_model_ids() {
         let source = r#"[
-            (id: "same", name: "A", purchase_price_cents: 1, passenger_capacity: 1, speed_metres_per_second: 1, fuel_cost_cents_per_kilometre: 1),
-            (id: "same", name: "B", purchase_price_cents: 1, passenger_capacity: 1, speed_metres_per_second: 1, fuel_cost_cents_per_kilometre: 1),
+            (id: "same", name: "A", evn_type_code: 95, purchase_price_cents: 1, passenger_capacity: 1, speed_metres_per_second: 1, fuel_cost_cents_per_kilometre: 1),
+            (id: "same", name: "B", evn_type_code: 95, purchase_price_cents: 1, passenger_capacity: 1, speed_metres_per_second: 1, fuel_cost_cents_per_kilometre: 1),
         ]"#;
         assert_eq!(
             TrainCatalogue::from_ron(source),

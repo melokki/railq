@@ -1976,7 +1976,7 @@ fn render_world_details_overlay(frame: &mut ratatui::Frame, area: Rect, state: &
             &format!("fictional two-letter railway mark assigned to {territory}"),
         ),
         Line::styled(
-            "Used as part of RailQ vehicle numbering; it remains stable for this world.",
+            "Used in official RailQ EVNs; it remains stable for this world.",
             theme::secondary(),
         ),
         Line::from(""),

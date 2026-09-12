@@ -7,7 +7,10 @@ use std::{error::Error, fmt};
 
 use crate::{
     catalog::{TrainModel, train_catalogue},
-    model::{CalculationError, GameState, Money, RailStationId, Train, TrainId, TrainStatus},
+    model::{
+        CalculationError, EuropeanVehicleNumber, GameState, Money, RailStationId, Train, TrainId,
+        TrainStatus,
+    },
 };
 
 const RESALE_PERCENT: i64 = 70;
@@ -35,6 +38,8 @@ pub enum FleetError {
     InvalidOriginalPurchasePrice { train_id: TrainId },
     /// Another Train ID cannot be represented.
     TrainIdExhausted,
+    /// A permanent EVN cannot be allocated to the purchased Train.
+    VehicleNumberUnavailable { train_id: TrainId },
     /// A checked money calculation could not be represented.
     Calculation(CalculationError),
 }
@@ -84,6 +89,11 @@ impl fmt::Display for FleetError {
                 train_id.get()
             ),
             Self::TrainIdExhausted => write!(formatter, "Train IDs are exhausted"),
+            Self::VehicleNumberUnavailable { train_id } => write!(
+                formatter,
+                "Train {} cannot be assigned a valid European Vehicle Number",
+                train_id.get()
+            ),
             Self::Calculation(error) => error.fmt(formatter),
         }
     }
@@ -133,10 +143,21 @@ pub fn purchase_train(
     }
 
     let funds_after_purchase = state.player_company.funds.checked_sub(purchase_price)?;
-    let train_id = next_train_id(&state.player_company.fleet.trains)?;
-    let train = purchased_train(train_id, delivery_station_id, catalogue_train);
+    let train_id = next_train_id(&state.player_company.fleet)?;
+    let next_train_id = train_id
+        .get()
+        .checked_add(1)
+        .ok_or(FleetError::TrainIdExhausted)?;
+    let evn = EuropeanVehicleNumber::generate(
+        catalogue_train.evn_type_code(),
+        state.region.railway_registration.numeric_code,
+        train_id.get(),
+    )
+    .map_err(|_| FleetError::VehicleNumberUnavailable { train_id })?;
+    let train = purchased_train(train_id, evn, delivery_station_id, catalogue_train);
 
     state.player_company.funds = funds_after_purchase;
+    state.player_company.fleet.next_train_id = next_train_id;
     state.player_company.fleet.trains.push(train);
     Ok(train_id)
 }
@@ -171,11 +192,13 @@ pub fn sell_train(state: &mut GameState, train_id: TrainId) -> Result<Money, Fle
 
 fn purchased_train(
     train_id: TrainId,
+    evn: EuropeanVehicleNumber,
     delivery_station_id: RailStationId,
     catalogue_train: &TrainModel,
 ) -> Train {
     Train {
         id: train_id,
+        evn,
         status: TrainStatus::Ready {
             at: delivery_station_id,
         },
@@ -184,15 +207,12 @@ fn purchased_train(
     }
 }
 
-fn next_train_id(trains: &[Train]) -> Result<TrainId, FleetError> {
-    trains
-        .iter()
-        .map(|train| train.id.get())
-        .max()
-        .unwrap_or(0)
-        .checked_add(1)
-        .map(TrainId::new)
-        .ok_or(FleetError::TrainIdExhausted)
+fn next_train_id(fleet: &crate::model::Fleet) -> Result<TrainId, FleetError> {
+    let next = fleet.next_train_id;
+    if next == 0 || next > EuropeanVehicleNumber::MAX_SERIAL {
+        return Err(FleetError::TrainIdExhausted);
+    }
+    Ok(TrainId::new(next))
 }
 
 fn resale_proceeds(train: &Train) -> Result<Money, FleetError> {
@@ -234,10 +254,17 @@ mod tests {
 
         assert_eq!(state.player_company.funds, Money::ZERO);
         assert_eq!(state.player_company.fleet.trains.len(), 1);
+        assert_eq!(state.player_company.fleet.next_train_id, train_id.get() + 1);
         assert_eq!(
             state.player_company.fleet.trains[0],
             Train {
                 id: train_id,
+                evn: EuropeanVehicleNumber::generate(
+                    catalogue_train.evn_type_code(),
+                    state.region.railway_registration.numeric_code,
+                    train_id.get(),
+                )
+                .unwrap(),
                 status: TrainStatus::Ready {
                     at: RailStationId::new(1)
                 },
@@ -285,17 +312,40 @@ mod tests {
         let train_id = TrainId::new(1);
         state.player_company.fleet.trains.push(Train {
             id: train_id,
+            evn: EuropeanVehicleNumber::generate(
+                95,
+                state.region.railway_registration.numeric_code,
+                train_id.get(),
+            )
+            .unwrap(),
             status: TrainStatus::Ready {
                 at: RailStationId::new(1),
             },
             model_id: TrainModelId::new("local-70"),
             original_purchase_price: Money::from_cents(101),
         });
+        state.player_company.fleet.next_train_id = train_id.get() + 1;
         state.player_company.funds = Money::ZERO;
 
         assert_eq!(sell_train(&mut state, train_id), Ok(Money::from_cents(70)));
         assert_eq!(state.player_company.funds, Money::from_cents(70));
         assert!(state.player_company.fleet.trains.is_empty());
+    }
+
+    #[test]
+    fn train_ids_and_evns_are_not_reused_after_resale() {
+        let mut state = game();
+        state.player_company.funds = Money::from_cents(1_000_000);
+
+        let first = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let first_evn = state.player_company.fleet.trains[0].evn.clone();
+        sell_train(&mut state, first).unwrap();
+
+        let second = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let second_evn = state.player_company.fleet.trains[0].evn.clone();
+
+        assert!(second.get() > first.get());
+        assert_ne!(first_evn, second_evn);
     }
 
     #[test]

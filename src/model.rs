@@ -104,6 +104,165 @@ impl TrainModelId {
     }
 }
 
+
+/// A 12-digit European Vehicle Number (EVN)-style identity.
+///
+/// RailQ follows the real EVN structure for tractive stock:
+/// - digits 1–2: vehicle type code,
+/// - digits 3–4: Region railway registration code,
+/// - digits 5–11: RailQ's national serial block,
+/// - digit 12: modulo-10 check digit.
+///
+/// The Region codes and national serial allocation are fictional RailQ data.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct EuropeanVehicleNumber(String);
+
+impl EuropeanVehicleNumber {
+    pub const MAX_SERIAL: u64 = 9_999_999;
+
+    /// Generates one EVN-style number using RailQ's deterministic national
+    /// serial allocation. The Train ID is used as the seven-digit serial.
+    pub fn generate(
+        vehicle_type_code: u8,
+        registration_code: u8,
+        serial: u64,
+    ) -> Result<Self, EuropeanVehicleNumberError> {
+        if !(90..=99).contains(&vehicle_type_code) {
+            return Err(EuropeanVehicleNumberError::InvalidVehicleTypeCode);
+        }
+        if !(10..=99).contains(&registration_code) {
+            return Err(EuropeanVehicleNumberError::InvalidRegistrationCode);
+        }
+        if serial == 0 || serial > Self::MAX_SERIAL {
+            return Err(EuropeanVehicleNumberError::InvalidSerial);
+        }
+
+        let base = format!(
+            "{vehicle_type_code:02}{registration_code:02}{serial:07}"
+        );
+        let check_digit = evn_check_digit(&base)
+            .ok_or(EuropeanVehicleNumberError::InvalidFormat)?;
+        Ok(Self(format!("{base}{check_digit}")))
+    }
+
+    /// Parses and validates a complete 12-digit EVN.
+    pub fn parse(value: &str) -> Result<Self, EuropeanVehicleNumberError> {
+        if value.len() != 12 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(EuropeanVehicleNumberError::InvalidFormat);
+        }
+        let vehicle_type_code = value[0..2]
+            .parse::<u8>()
+            .map_err(|_| EuropeanVehicleNumberError::InvalidFormat)?;
+        let registration_code = value[2..4]
+            .parse::<u8>()
+            .map_err(|_| EuropeanVehicleNumberError::InvalidFormat)?;
+        if !(90..=99).contains(&vehicle_type_code) {
+            return Err(EuropeanVehicleNumberError::InvalidVehicleTypeCode);
+        }
+        if !(10..=99).contains(&registration_code) {
+            return Err(EuropeanVehicleNumberError::InvalidRegistrationCode);
+        }
+        let expected = evn_check_digit(&value[..11])
+            .ok_or(EuropeanVehicleNumberError::InvalidFormat)?;
+        let actual = value.as_bytes()[11] - b'0';
+        if expected != actual {
+            return Err(EuropeanVehicleNumberError::InvalidCheckDigit);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn vehicle_type_code(&self) -> u8 {
+        self.0[0..2]
+            .parse()
+            .expect("validated EVN vehicle type code is numeric")
+    }
+
+    pub fn registration_code(&self) -> u8 {
+        self.0[2..4]
+            .parse()
+            .expect("validated EVN registration code is numeric")
+    }
+
+    pub fn serial(&self) -> u64 {
+        self.0[4..11]
+            .parse()
+            .expect("validated EVN serial is numeric")
+    }
+
+    /// Formats the numeric EVN using the common 2-2-4-3-check grouping.
+    pub fn formatted(&self) -> String {
+        format!(
+            "{} {} {} {}-{}",
+            &self.0[0..2],
+            &self.0[2..4],
+            &self.0[4..8],
+            &self.0[8..11],
+            &self.0[11..12],
+        )
+    }
+
+    /// Formats the full RailQ vehicle marking with Region mark and Company VKM.
+    pub fn marking(&self, region_mark: &str, vkm: &VehicleKeeperMark) -> String {
+        format!("{} {}-{}", self.formatted(), region_mark, vkm.as_str())
+    }
+}
+
+fn evn_check_digit(first_eleven_digits: &str) -> Option<u8> {
+    if first_eleven_digits.len() != 11
+        || !first_eleven_digits.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let sum = first_eleven_digits
+        .bytes()
+        .enumerate()
+        .map(|(index, byte)| {
+            let digit = u16::from(byte - b'0');
+            let factor = if index % 2 == 0 { 2 } else { 1 };
+            let product = digit * factor;
+            (product / 10) + (product % 10)
+        })
+        .sum::<u16>();
+
+    Some(((10 - (sum % 10)) % 10) as u8)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EuropeanVehicleNumberError {
+    InvalidFormat,
+    InvalidVehicleTypeCode,
+    InvalidRegistrationCode,
+    InvalidSerial,
+    InvalidCheckDigit,
+}
+
+impl fmt::Display for EuropeanVehicleNumberError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidFormat => write!(formatter, "EVN must contain exactly 12 digits"),
+            Self::InvalidVehicleTypeCode => {
+                write!(formatter, "EVN vehicle type code must be between 90 and 99")
+            }
+            Self::InvalidRegistrationCode => {
+                write!(formatter, "EVN registration code must be between 10 and 99")
+            }
+            Self::InvalidSerial => write!(
+                formatter,
+                "EVN serial must be between 1 and {}",
+                EuropeanVehicleNumber::MAX_SERIAL
+            ),
+            Self::InvalidCheckDigit => write!(formatter, "EVN check digit is invalid"),
+        }
+    }
+}
+
+impl Error for EuropeanVehicleNumberError {}
+
 /// A signed amount of money stored exactly as integer cents.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Money(i64);
@@ -573,9 +732,26 @@ pub struct PlayerCompany {
 }
 
 /// All Trains owned by the Player Company.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Fleet {
     pub trains: Vec<Train>,
+    /// Next lifetime Train identity. IDs are never reused after a resale, which
+    /// also prevents RailQ from ever reissuing an EVN to a later Train.
+    #[serde(default = "default_next_train_id")]
+    pub next_train_id: u64,
+}
+
+const fn default_next_train_id() -> u64 {
+    1
+}
+
+impl Default for Fleet {
+    fn default() -> Self {
+        Self {
+            trains: Vec::new(),
+            next_train_id: default_next_train_id(),
+        }
+    }
 }
 
 /// Passenger rolling stock owned by the Player Company.
@@ -585,6 +761,8 @@ pub struct Fleet {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Train {
     pub id: TrainId,
+    /// Permanent official vehicle number assigned when the Train joins the Fleet.
+    pub evn: EuropeanVehicleNumber,
     pub status: TrainStatus,
     pub model_id: TrainModelId,
     /// The amount actually paid when this Train joined the Fleet.
@@ -819,6 +997,30 @@ mod tests {
     }
 
     #[test]
+    fn evn_check_digit_matches_the_standard_modulo_ten_example() {
+        assert_eq!(evn_check_digit("31513320198"), Some(0));
+    }
+
+    #[test]
+    fn generates_and_formats_a_dmu_vehicle_number() {
+        let evn = EuropeanVehicleNumber::generate(95, 72, 1).unwrap();
+        assert_eq!(evn.as_str(), "957200000017");
+        assert_eq!(evn.formatted(), "95 72 0000 001-7");
+        assert_eq!(evn.vehicle_type_code(), 95);
+        assert_eq!(evn.registration_code(), 72);
+        assert_eq!(evn.serial(), 1);
+        assert_eq!(EuropeanVehicleNumber::parse(evn.as_str()).unwrap(), evn);
+    }
+
+    #[test]
+    fn rejects_an_invalid_evn_check_digit() {
+        assert_eq!(
+            EuropeanVehicleNumber::parse("957200000018"),
+            Err(EuropeanVehicleNumberError::InvalidCheckDigit)
+        );
+    }
+
+    #[test]
     fn rejects_non_positive_domain_values() {
         for value in [-1, 0] {
             assert!(matches!(
@@ -965,10 +1167,12 @@ mod tests {
                 fleet: Fleet {
                     trains: vec![Train {
                         id: train_id,
+                        evn: EuropeanVehicleNumber::generate(95, 67, train_id.get()).unwrap(),
                         status: TrainStatus::Ready { at: station_id },
                         model_id: TrainModelId::new("local-70"),
                         original_purchase_price: Money::from_cents(5_000),
                     }],
+                    next_train_id: train_id.get() + 1,
                 },
                 passenger_services: vec![],
             },

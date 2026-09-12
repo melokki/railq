@@ -126,6 +126,10 @@ pub fn render_vkm_editor(
             "VKM is the 2–5 letter keeper mark used to identify your company on rolling stock.",
             theme::secondary(),
         )),
+        Line::from(Span::styled(
+            "Changing it updates the displayed marking; the numeric EVN stays unchanged.",
+            theme::secondary(),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("VKM  ", theme::secondary()),

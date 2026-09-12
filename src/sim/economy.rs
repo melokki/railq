@@ -485,10 +485,17 @@ mod tests {
                 fleet: Fleet {
                     trains: vec![Train {
                         id: TRAIN_ID,
+                        evn: crate::model::EuropeanVehicleNumber::generate(
+                            95,
+                            67,
+                            TRAIN_ID.get(),
+                        )
+                        .unwrap(),
                         status: TrainStatus::Ready { at: ORIGIN },
                         model_id: crate::model::TrainModelId::new("local-70"),
                         original_purchase_price: Money::from_cents(5_000),
                     }],
+                    next_train_id: TRAIN_ID.get() + 1,
                 },
                 passenger_services: vec![PassengerService {
                     id: SERVICE_ID,

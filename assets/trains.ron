@@ -1,8 +1,9 @@
-// Train model IDs are persisted by owned Trains. Keep released IDs stable or add a save migration.
+// Train model IDs and EVN type codes are persistence-stable once released. Change them only with a save migration.
 [
     (
         id: "local-70",
         name: "Local 70",
+        evn_type_code: 95,
         purchase_price_cents: 300000,
         passenger_capacity: 70,
         speed_metres_per_second: 25,
@@ -11,6 +12,7 @@
     (
         id: "express-120",
         name: "Express 120",
+        evn_type_code: 95,
         purchase_price_cents: 500000,
         passenger_capacity: 120,
         speed_metres_per_second: 33,

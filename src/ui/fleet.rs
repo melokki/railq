@@ -512,6 +512,17 @@ fn render_train_inspector(
             Span::styled(train_status_label(train), train_status_style(train)),
         ]),
         Line::from(""),
+        section_heading("IDENTITY"),
+        labelled_line("EVN", &train.evn.formatted()),
+        labelled_line(
+            "Keeper mark",
+            &format!(
+                "{}-{}",
+                state.region.railway_registration.mark,
+                state.player_company.vehicle_keeper_mark.as_str(),
+            ),
+        ),
+        Line::from(""),
         section_heading("OPERATIONS"),
         labelled_line("Position", &fields.place),
     ];
@@ -797,9 +808,10 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
             TrainStatus::Ready { at } => {
                 writeln!(
                     output,
-                    "\nTrain {} — {}\n  READY at {}\n  Eligible sale proceeds: {} (70% of original purchase price)",
+                    "\nTrain {} — {}\n  EVN {}\n  READY at {}\n  Eligible sale proceeds: {} (70% of original purchase price)",
                     train.id.get(),
                     train_model_name(train),
+                    train.evn.formatted(),
                     station_label(state, at),
                     resale_proceeds(train.original_purchase_price)
                         .map(format_money)
@@ -815,9 +827,10 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                 match journey {
                     Some(journey) => writeln!(
                         output,
-                        "\nTrain {} — {}\n  TRAVELLING {} -> {} | next: {} | leg: {}% | ETA: {} | onboard: {}\n  Sale unavailable while this Journey is in transit.",
+                        "\nTrain {} — {}\n  EVN {}\n  TRAVELLING {} -> {} | next: {} | leg: {}% | ETA: {} | onboard: {}\n  Sale unavailable while this Journey is in transit.",
                         train.id.get(),
                         train_model_name(train),
+                        train.evn.formatted(),
                         station_label(state, journey.origin_station_id),
                         station_label(state, journey.destination_station_id),
                         journey_next_stop_station_id(state, journey)
@@ -830,9 +843,10 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                     .expect("writing to a String cannot fail"),
                     None => writeln!(
                         output,
-                        "\nTrain {} — {}\n  TRAVELLING on Journey {} (details unavailable)\n  Sale unavailable while this Journey is in transit.",
+                        "\nTrain {} — {}\n  EVN {}\n  TRAVELLING on Journey {} (details unavailable)\n  Sale unavailable while this Journey is in transit.",
                         train.id.get(),
                         train_model_name(train),
+                        train.evn.formatted(),
                         journey_id.get(),
                     )
                     .expect("writing to a String cannot fail"),

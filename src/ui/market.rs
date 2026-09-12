@@ -793,6 +793,21 @@ fn render_catalogue_inspector(
             &funds_after_purchase_display(state, train),
         ),
         Line::from(""),
+        Line::styled("VEHICLE IDENTITY", theme::secondary()),
+        labelled_value(
+            "EVN type",
+            &format!("{:02} · {}", train.evn_type_code(), train.evn_type_label()),
+        ),
+        labelled_value(
+            "Registration",
+            &format!(
+                "{:02} · {}",
+                state.region.railway_registration.numeric_code,
+                state.region.railway_registration.mark
+            ),
+        ),
+        labelled_value("Official EVN", "assigned on purchase"),
+        Line::from(""),
         Line::styled("OPERATING PROFILE", theme::secondary()),
         labelled_value(
             "Capacity",
