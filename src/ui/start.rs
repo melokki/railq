@@ -411,6 +411,14 @@ fn render_concession_review(frame: &mut Frame, state: &GameState) {
         metric_line("Settlements", state.region.settlements.len().to_string()),
         metric_line("Rail stations", network.rail_stations.len().to_string()),
         metric_line("Rail network", format::distance(network_metres)),
+        metric_line(
+            "Rail registration",
+            format!(
+                "{} · {}",
+                state.region.railway_registration.display_code(),
+                state.region.railway_registration.mark
+            ),
+        ),
         Line::from(""),
         Line::from(Span::styled(
             state.region.rail_authority.name.clone(),
@@ -681,8 +689,10 @@ pub fn onboarding_summary(state: &GameState) -> String {
         .map(|line| line.distance.metres())
         .sum::<u64>();
     format!(
-        "Region: {}\nPopulation: {}\nSettlements: {}\nRail stations: {}\nRail network: {}\n\nConcession: {} has awarded {} the right to operate passenger railway services over the public Rail Network.\nStarting funds: {}",
+        "Region: {}\nRail registration: {} · {}\nPopulation: {}\nSettlements: {}\nRail stations: {}\nRail network: {}\n\nConcession: {} has awarded {} the right to operate passenger railway services over the public Rail Network.\nStarting funds: {}",
         state.region.name,
+        state.region.railway_registration.display_code(),
+        state.region.railway_registration.mark,
         grouped_number(state.region.population),
         state.region.settlements.len(),
         network.rail_stations.len(),
@@ -876,12 +886,19 @@ mod tests {
         let review = capture_concession_review(&game, 100, 28);
 
         assert!(summary.contains(&format!("Region: {}", game.region.name)));
+        assert!(summary.contains(&format!(
+            "Rail registration: {} · {}",
+            game.region.railway_registration.display_code(),
+            game.region.railway_registration.mark
+        )));
         assert!(summary.contains("Settlements: 10"));
         assert!(summary.contains("Rail stations: 4"));
         assert!(summary.contains("Rail network: 83 km"));
         assert!(summary.contains("Starting funds: $"));
         assert!(review.contains("NEW PASSENGER CONCESSION"));
         assert!(review.contains(&game.region.name));
+        assert!(review.contains(&game.region.railway_registration.display_code()));
+        assert!(review.contains(&game.region.railway_registration.mark));
         assert!(review.contains(&game.region.rail_authority.name));
         assert!(review.contains("First objective"));
         assert!(review.contains("Acquire your first passenger train from the Market."));

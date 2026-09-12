@@ -29,14 +29,18 @@ use crate::{
         GameRules, GameState, Journey, JourneyId, JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre,
         OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
         PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork, RailStation,
-        RailStationId, Region, ServiceId, Settlement, SettlementId, SpeedMetresPerSecond, Train,
+        RailStationId, Region, RailwayRegistration, ServiceId, Settlement, SettlementId,
+        SpeedMetresPerSecond, Train,
         TrainId, TrainModelId, TrainStatus, UtcSeconds,
     },
-    sim::services::{path_between_stations, service_path_for_stops},
+    sim::{
+        services::{path_between_stations, service_path_for_stops},
+        world::railway_registration_for_existing_region,
+    },
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 4;
+pub const SAVE_VERSION: u32 = 5;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -325,6 +329,8 @@ CREATE TABLE IF NOT EXISTS game_meta (
 CREATE TABLE IF NOT EXISTS region (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     name TEXT NOT NULL,
+    registration_code INTEGER NOT NULL CHECK (registration_code BETWEEN 10 AND 99),
+    registration_mark TEXT NOT NULL,
     population INTEGER NOT NULL,
     rail_authority_name TEXT NOT NULL
 );
@@ -462,12 +468,18 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v1_to_v2(connection, path)?;
             migrate_v2_to_v3(connection, path)?;
             migrate_v3_to_v4(connection, path)?;
+            migrate_v4_to_v5(connection, path)?;
         }
         2 => {
             migrate_v2_to_v3(connection, path)?;
             migrate_v3_to_v4(connection, path)?;
+            migrate_v4_to_v5(connection, path)?;
         }
-        3 => migrate_v3_to_v4(connection, path)?,
+        3 => {
+            migrate_v3_to_v4(connection, path)?;
+            migrate_v4_to_v5(connection, path)?;
+        }
+        4 => migrate_v4_to_v5(connection, path)?,
         SAVE_VERSION => {
             connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
                 action: "verify schema for",
@@ -761,7 +773,7 @@ fn migrate_v3_to_v4(connection: &Connection, path: &Path) -> Result<(), SaveSlot
 
     let migration = (|| -> Result<(), SaveSlotError> {
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 4_u32)
             .map_err(|source| db_error("write v4 schema version to", path, source))?;
         let foreign_key_violation: Option<i64> = connection
             .query_row("SELECT 1 FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0))
@@ -793,6 +805,73 @@ fn migrate_v3_to_v4(connection: &Connection, path: &Path) -> Result<(), SaveSlot
                 "ROLLBACK;
                  PRAGMA foreign_keys = ON;",
             );
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v4_to_v5(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE region ADD COLUMN registration_code INTEGER NOT NULL DEFAULT 99
+                 CHECK (registration_code BETWEEN 10 AND 99);
+             ALTER TABLE region ADD COLUMN registration_mark TEXT NOT NULL DEFAULT 'RQ';",
+        )
+        .map_err(|source| db_error("begin v4 to v5 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let existing: Option<(String, String)> = connection
+            .query_row(
+                "SELECT r.name, g.world_seed
+                 FROM region r
+                 CROSS JOIN game_meta g
+                 WHERE r.singleton = 1 AND g.singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|source| {
+                db_error(
+                    "read Region registration migration data from",
+                    path,
+                    source,
+                )
+            })?;
+
+        if let Some((region_name, world_seed_text)) = existing {
+            let world_seed = world_seed_text
+                .parse::<u64>()
+                .map_err(|_| invalid_value(path, "world seed"))?;
+            let registration =
+                railway_registration_for_existing_region(&region_name, world_seed);
+            connection
+                .execute(
+                    "UPDATE region
+                     SET registration_code = ?1, registration_mark = ?2
+                     WHERE singleton = 1",
+                    params![
+                        i64::from(registration.numeric_code),
+                        registration.mark
+                    ],
+                )
+                .map_err(|source| {
+                    db_error("write Region registration identity to", path, source)
+                })?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v5 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v4 to v5 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
         }
     }
@@ -844,8 +923,15 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
         params![state.world_seed.to_string(), state.last_processed_at.unix_seconds()],
     ).map_err(|source| db_error("write game metadata to", path, source))?;
     transaction.execute(
-        "INSERT INTO region(singleton, name, population, rail_authority_name) VALUES(1, ?1, ?2, ?3)",
-        params![&state.region.name, db(state.region.population, "Region Population")?, &state.region.rail_authority.name],
+        "INSERT INTO region(singleton, name, registration_code, registration_mark, population, rail_authority_name)
+         VALUES(1, ?1, ?2, ?3, ?4, ?5)",
+        params![
+            &state.region.name,
+            i64::from(state.region.railway_registration.numeric_code),
+            &state.region.railway_registration.mark,
+            db(state.region.population, "Region Population")?,
+            &state.region.rail_authority.name
+        ],
     ).map_err(|source| db_error("write Region to", path, source))?;
 
     for settlement in &state.region.settlements {
@@ -997,11 +1083,23 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
     };
     let world_seed = world_seed_text.parse::<u64>().map_err(|_| invalid_value(path, "world seed"))?;
 
-    let (region_name, region_population, authority_name): (String, i64, String) = connection
-        .query_row("SELECT name, population, rail_authority_name FROM region WHERE singleton = 1", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .map_err(|source| db_error("read Region from", path, source))?;
+    let (region_name, registration_code, registration_mark, region_population, authority_name):
+        (String, i64, String, i64, String) = connection
+            .query_row(
+                "SELECT name, registration_code, registration_mark, population, rail_authority_name
+                 FROM region WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .map_err(|source| db_error("read Region from", path, source))?;
 
     let settlements = query_all(connection, "SELECT id, name, population FROM settlements ORDER BY id", path, |row| {
         Ok(Settlement {
@@ -1164,6 +1262,11 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         world_seed,
         region: Region {
             name: region_name,
+            railway_registration: RailwayRegistration {
+                numeric_code: u8::try_from(registration_code)
+                    .map_err(|_| invalid_value(path, "Region railway registration code"))?,
+                mark: registration_mark,
+            },
             population: from_db_u64(region_population, "Region Population").map_err(|field| invalid_value(path, field))?,
             settlements,
             rail_authority: RailAuthority {
@@ -1352,6 +1455,9 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
     }
 
     let legacy = envelope.state;
+    let mut region = legacy.region;
+    region.railway_registration =
+        railway_registration_for_existing_region(&region.name, legacy.world_seed);
     let trains = legacy
         .player_company
         .fleet
@@ -1414,7 +1520,7 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
 
     let state = GameState {
         world_seed: legacy.world_seed,
-        region: legacy.region,
+        region,
         player_company: PlayerCompany {
             name: legacy.player_company.name,
             funds: legacy.player_company.funds,
@@ -1485,6 +1591,23 @@ impl From<CalculationError> for SaveValidationError {
 
 pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError> {
     validate_rules(state)?;
+
+    let registration = &state.region.railway_registration;
+    if !(10..=99).contains(&registration.numeric_code) {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Region railway registration code",
+        });
+    }
+    if registration.mark.len() != 2
+        || !registration
+            .mark
+            .chars()
+            .all(|character| character.is_ascii_uppercase())
+    {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Region railway registration mark",
+        });
+    }
 
     let settlement_ids = unique_ids(
         state
@@ -2408,7 +2531,20 @@ mod tests {
         let connection = Connection::open(&path).unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE trains (
+                "CREATE TABLE game_meta (
+                     singleton INTEGER PRIMARY KEY,
+                     world_seed TEXT NOT NULL,
+                     last_processed_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE region (
+                     singleton INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     population INTEGER NOT NULL,
+                     rail_authority_name TEXT NOT NULL
+                 );
+                 INSERT INTO game_meta VALUES(1, '42', 0);
+                 INSERT INTO region VALUES(1, 'Federation of Varelia', 1000, 'Federation of Varelia Rail Authority');
+                 CREATE TABLE trains (
                      id INTEGER PRIMARY KEY,
                      status_kind TEXT NOT NULL,
                      status_ref_id INTEGER NOT NULL,
@@ -2493,6 +2629,13 @@ mod tests {
         let foreign_key_violations: i64 = connection
             .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0))
             .unwrap();
+        let (registration_code, registration_mark): (i64, String) = connection
+            .query_row(
+                "SELECT registration_code, registration_mark FROM region WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
 
         assert_eq!(version, SAVE_VERSION);
         assert_eq!(model_id, "local-70");
@@ -2501,6 +2644,8 @@ mod tests {
         assert_eq!(service_name, "R1");
         assert_eq!(service_stop_count, 2);
         assert_eq!(foreign_key_violations, 0);
+        assert_eq!(registration_code, 67);
+        assert_eq!(registration_mark, "VA");
     }
 
     #[test]

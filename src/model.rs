@@ -388,10 +388,39 @@ pub struct GameState {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Region {
     pub name: String,
+    /// Stable fictional railway registration identity used for vehicle numbering.
+    #[serde(default)]
+    pub railway_registration: RailwayRegistration,
     /// The total Population of every Settlement in this Region.
     pub population: u64,
     pub settlements: Vec<Settlement>,
     pub rail_authority: RailAuthority,
+}
+
+/// Stable fictional registration identity assigned when a Region is generated.
+///
+/// `numeric_code` is deliberately two digits so it can later occupy the
+/// country-code position of RailQ's EVN-style vehicle numbers. `mark` is the
+/// short alphabetic Region marking shown alongside that identity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RailwayRegistration {
+    pub numeric_code: u8,
+    pub mark: String,
+}
+
+impl Default for RailwayRegistration {
+    fn default() -> Self {
+        Self {
+            numeric_code: 99,
+            mark: "RQ".into(),
+        }
+    }
+}
+
+impl RailwayRegistration {
+    pub fn display_code(&self) -> String {
+        format!("{:02}", self.numeric_code)
+    }
 }
 
 /// A populated place in a Region, with or without railway access.
@@ -785,6 +814,10 @@ mod tests {
             world_seed: 0,
             region: Region {
                 name: "Varelia".into(),
+                railway_registration: RailwayRegistration {
+                    numeric_code: 67,
+                    mark: "VA".into(),
+                },
                 population: 1_000,
                 settlements: vec![Settlement {
                     id: settlement_id,

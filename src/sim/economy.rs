@@ -420,6 +420,10 @@ mod tests {
             world_seed: 0,
             region: crate::model::Region {
                 name: "Fixture Region".into(),
+                railway_registration: crate::model::RailwayRegistration {
+                    numeric_code: 99,
+                    mark: "RQ".into(),
+                },
                 population: 3,
                 settlements: vec![
                     Settlement {

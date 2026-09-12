@@ -29,7 +29,12 @@ fn schematic_follows_station_selection_and_retains_rail_line_details() -> Result
     fs::create_dir_all(evidence_dir)?;
 
     let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(wide.contains("Rail Network · schematic"));
+    let network_title = format!(
+        "Rail Network · {} {}",
+        state.region.railway_registration.display_code(),
+        state.region.railway_registration.mark
+    );
+    assert!(wide.contains(&network_title));
     for station in &state.region.rail_authority.rail_network.rail_stations {
         let settlement = state
             .region
@@ -69,7 +74,7 @@ fn schematic_follows_station_selection_and_retains_rail_line_details() -> Result
         selected_branch,
     )?;
     let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(!compact.contains("Rail Network · schematic"));
+    assert!(!compact.contains(&network_title));
     assert!(compact.contains("Rail Stations · connected"));
     fs::write(
         evidence_dir.join("network-schematic-fallback-80x24.txt"),
@@ -89,7 +94,12 @@ fn diagram_is_stable_across_seeds_and_long_labels_fall_back_to_station_list()
         let state = create_new_game(seed, "Seeded Passenger", STARTED_AT);
         let mut shell = Shell::new();
         let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-        assert!(rendered.contains("Rail Network · schematic"));
+        let network_title = format!(
+            "Rail Network · {} {}",
+            state.region.railway_registration.display_code(),
+            state.region.railway_registration.mark
+        );
+        assert!(rendered.contains(&network_title));
         for station in &state.region.rail_authority.rail_network.rail_stations {
             assert!(rendered.contains(&format!("[{:02}]", station.id.get())));
         }
@@ -100,7 +110,12 @@ fn diagram_is_stable_across_seeds_and_long_labels_fall_back_to_station_list()
         "Westborough-and-the-Upper-Valley-Terminal-Interchange-and-Depot".into();
     let mut shell = Shell::new();
     let compact_workspace = capture_rendered_buffer_mut(&mut shell, &long_name_state, 120, 40);
-    assert!(!compact_workspace.contains("Rail Network · schematic"));
+    let network_title = format!(
+        "Rail Network · {} {}",
+        long_name_state.region.railway_registration.display_code(),
+        long_name_state.region.railway_registration.mark
+    );
+    assert!(!compact_workspace.contains(&network_title));
     assert!(compact_workspace.contains("Rail Stations · connected"));
     fs::create_dir_all(EVIDENCE_DIR)?;
     fs::write(

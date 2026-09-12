@@ -1887,8 +1887,13 @@ fn render_schematic(
         .collect::<BTreeMap<_, _>>();
     let width = area.width.saturating_sub(3);
     let height = area.height.saturating_sub(3);
+    let registration_title = format!(
+        "Rail Network · {} {}",
+        state.region.railway_registration.display_code(),
+        state.region.railway_registration.mark
+    );
     let canvas = Canvas::default()
-        .block(panel_block("Rail Network · schematic", true))
+        .block(panel_block(&registration_title, true))
         .background_color(theme::PANEL)
         .marker(Marker::Braille)
         .x_bounds([0.0, f64::from(width)])
@@ -2449,6 +2454,13 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
     let mut output = String::new();
 
     writeln!(output, "Region: {}", state.region.name).expect("writing to a String cannot fail");
+    writeln!(
+        output,
+        "Rail registration: {} · {}",
+        state.region.railway_registration.display_code(),
+        state.region.railway_registration.mark
+    )
+    .expect("writing to a String cannot fail");
     writeln!(
         output,
         "Company Funds: {}",

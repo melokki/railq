@@ -9,8 +9,8 @@ use crate::{
     balance::BalanceConfig,
     model::{
         DemandRules, Financials, Fleet, GameRules, GameState, Money, PlayerCompany, RailAuthority,
-        RailLine, RailLineId, RailNetwork, RailStation, RailStationId, Region, Settlement,
-        SettlementId, UtcSeconds,
+        RailLine, RailLineId, RailNetwork, RailStation, RailStationId, Region,
+        RailwayRegistration, Settlement, SettlementId, UtcSeconds,
     },
     sim::demand::seed_directional_demand,
 };
@@ -34,8 +34,23 @@ const SETTLEMENT_NAMES: [&str; 16] = [
     "Pinewatch",
 ];
 const REGION_FORMS: [&str; 4] = ["Federation", "Union", "Commonwealth", "Confederation"];
-const REGION_NAMES: [&str; 8] = [
-    "Varelia", "Ardinia", "Estara", "Norvia", "Caldria", "Meridia", "Solenne", "Tavora",
+
+#[derive(Clone, Copy)]
+struct RegionIdentity {
+    name: &'static str,
+    registration_code: u8,
+    registration_mark: &'static str,
+}
+
+const REGION_IDENTITIES: [RegionIdentity; 8] = [
+    RegionIdentity { name: "Varelia", registration_code: 67, registration_mark: "VA" },
+    RegionIdentity { name: "Ardinia", registration_code: 68, registration_mark: "AR" },
+    RegionIdentity { name: "Estara", registration_code: 69, registration_mark: "ES" },
+    RegionIdentity { name: "Norvia", registration_code: 70, registration_mark: "NV" },
+    RegionIdentity { name: "Caldria", registration_code: 71, registration_mark: "CA" },
+    RegionIdentity { name: "Meridia", registration_code: 72, registration_mark: "ME" },
+    RegionIdentity { name: "Solenne", registration_code: 73, registration_mark: "SO" },
+    RegionIdentity { name: "Tavora", registration_code: 74, registration_mark: "TA" },
 ];
 const CONNECTED_SETTLEMENT_COUNT: usize = 4;
 const SETTLEMENT_COUNT: usize = 10;
@@ -47,11 +62,10 @@ const SETTLEMENT_COUNT: usize = 10;
 /// deliberately unconnected.
 pub fn generate_region(seed: u64) -> Region {
     let mut random = ChaCha8Rng::seed_from_u64(seed);
-    let name = format!(
-        "{} of {}",
-        choose(&mut random, &REGION_FORMS),
-        choose(&mut random, &REGION_NAMES),
-    );
+    let region_form = choose(&mut random, &REGION_FORMS);
+    let identity =
+        REGION_IDENTITIES[(random.next_u64() as usize) % REGION_IDENTITIES.len()];
+    let name = format!("{region_form} of {}", identity.name);
     let settlement_names = select_settlement_names(&mut random);
     let settlements = settlement_names
         .into_iter()
@@ -84,6 +98,10 @@ pub fn generate_region(seed: u64) -> Region {
 
     Region {
         name: name.clone(),
+        railway_registration: RailwayRegistration {
+            numeric_code: identity.registration_code,
+            mark: identity.registration_mark.into(),
+        },
         population,
         settlements,
         rail_authority: RailAuthority {
@@ -93,6 +111,31 @@ pub fn generate_region(seed: u64) -> Region {
                 rail_lines,
             },
         },
+    }
+}
+
+/// Returns the stable fictional railway registration identity for an existing Region.
+///
+/// Old saves did not persist this value, so migrations recover it from the
+/// generated Region name. Unknown/custom Region names receive a deterministic
+/// RailQ fallback based on the saved world seed.
+pub fn railway_registration_for_existing_region(
+    region_name: &str,
+    world_seed: u64,
+) -> RailwayRegistration {
+    if let Some(identity) = REGION_IDENTITIES
+        .iter()
+        .find(|identity| region_name == identity.name || region_name.ends_with(identity.name))
+    {
+        return RailwayRegistration {
+            numeric_code: identity.registration_code,
+            mark: identity.registration_mark.into(),
+        };
+    }
+
+    RailwayRegistration {
+        numeric_code: 80 + (world_seed % 20) as u8,
+        mark: "RQ".into(),
     }
 }
 
@@ -169,6 +212,21 @@ mod tests {
     fn same_seed_produces_the_same_region() {
         assert_eq!(generate_region(42), generate_region(42));
         assert_ne!(generate_region(42), generate_region(43));
+    }
+
+    #[test]
+    fn generated_region_has_stable_railway_registration_identity() {
+        let region = generate_region(42);
+        let registration = &region.railway_registration;
+
+        assert!((10..=99).contains(&registration.numeric_code));
+        assert_eq!(registration.display_code().len(), 2);
+        assert_eq!(registration.mark.len(), 2);
+        assert!(registration.mark.chars().all(|character| character.is_ascii_uppercase()));
+        assert_eq!(
+            railway_registration_for_existing_region(&region.name, 42),
+            registration.clone()
+        );
     }
 
     #[test]
