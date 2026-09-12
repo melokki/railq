@@ -190,7 +190,7 @@ fn persisted_state(name: &str, state: GameState) -> Result<GameState, Box<dyn Er
 
 fn temporary_save_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "railq-ui-baseline-{}-{name}.ron",
+        "railq-ui-baseline-{}-{name}.db",
         std::process::id()
     ))
 }

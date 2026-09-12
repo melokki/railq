@@ -1,8 +1,10 @@
-//! Versioned, validated RON representation of a RailQ game.
+//! SQLite persistence for RailQ.
 //!
-//! This module owns the versioned serialization boundary and one local save
-//! slot. The slot keeps an exclusive sidecar lock for its lifetime, so a
-//! malformed save can be reported without being overwritten by another game.
+//! Mutable game state is stored in normalized tables rather than one growing
+//! RON document. The application still works with a validated [`GameState`]
+//! at its boundary; this module is responsible for reconstructing that state
+//! transactionally and checking every simulation invariant before publishing
+//! it to the rest of the program.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -10,55 +12,64 @@ use std::{
     fmt,
     fs::{self, File, OpenOptions},
     hash::Hash,
-    io::{self, Write},
+    io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use fs4::{FileExt, TryLockError};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    balance::{BalanceConfig, DieselTrainCatalogueRecord},
     model::{
-        CalculationError, DistanceMetres, GameState, Journey, PassengerService, RailLine,
-        RailLineId, RailNetwork, RailStationId, ServiceId, Train, TrainId, TrainStatus,
+        CalculationError, DemandRules, DistanceMetres, DurationSeconds, Financials, Fleet,
+        GameRules, GameState, Journey, JourneyId, JourneyReceipt, Money, MoneyPerKilometre,
+        OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
+        PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork, RailStation,
+        RailStationId, Region, ServiceId, Settlement, SettlementId, SpeedMetresPerSecond, Train,
+        TrainId, TrainStatus, UtcSeconds,
     },
     sim::economy::quote_journey,
 };
 
-/// The only save format understood by this build.
+/// SQLite schema understood by this build.
 pub const SAVE_VERSION: u32 = 1;
 
-/// The local save filename used when no explicit save path is supplied.
-pub const DEFAULT_SAVE_PATH: &str = "railq.ron";
+/// The local SQLite save used when no explicit path is supplied.
+pub const DEFAULT_SAVE_PATH: &str = "railq.db";
 
-static NEXT_TEMPORARY_FILE_ID: AtomicU64 = AtomicU64::new(0);
+/// Previous default RON save. `open_default` imports it once when no database
+/// exists yet, leaving the source file untouched as a player-visible backup.
+pub const LEGACY_SAVE_PATH: &str = "railq.ron";
 
-/// A path-bound, exclusively owned local save slot.
-///
-/// The sidecar lock remains open for the lifetime of this value. Its lock is
-/// released automatically when the slot is dropped. `open` accepts an
-/// explicit path for command-line overrides and temporary test scenarios.
+static NEXT_ARCHIVE_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Number of settled Journey receipts kept in the live in-memory state.
+/// SQLite retains the complete history for future statistics and reports.
+const RECENT_RECEIPT_LIMIT: usize = 100;
+
 #[derive(Debug)]
 pub struct SaveSlot {
     path: PathBuf,
     _lock_file: File,
 }
 
-/// Why a local save slot cannot be opened, read, or replaced safely.
 #[derive(Debug)]
 pub enum SaveSlotError {
-    /// The requested path cannot name a save file and its sidecar lock.
     InvalidPath { path: PathBuf },
-    /// Another process already owns this save slot.
     AlreadyOwned { path: PathBuf },
-    /// Disk I/O failed before the replacement could safely complete.
     Io {
         action: &'static str,
         path: PathBuf,
         source: io::Error,
     },
-    /// The existing save is corrupt, unsupported, or invalid and was left in place.
+    Database {
+        action: &'static str,
+        path: PathBuf,
+        source: rusqlite::Error,
+    },
     InvalidSave {
         path: PathBuf,
         source: Box<SaveCodecError>,
@@ -74,17 +85,14 @@ impl fmt::Display for SaveSlotError {
             Self::AlreadyOwned { path } => {
                 write!(formatter, "save slot {} is already owned", path.display())
             }
-            Self::Io {
-                action,
-                path,
-                source,
-            } => write!(formatter, "could not {action} {}: {source}", path.display()),
+            Self::Io { action, path, source } => {
+                write!(formatter, "could not {action} {}: {source}", path.display())
+            }
+            Self::Database { action, path, source } => {
+                write!(formatter, "could not {action} SQLite save {}: {source}", path.display())
+            }
             Self::InvalidSave { path, source } => {
-                write!(
-                    formatter,
-                    "save {} is invalid and was preserved: {source}",
-                    path.display()
-                )
+                write!(formatter, "save {} is invalid and was preserved: {source}", path.display())
             }
         }
     }
@@ -94,19 +102,55 @@ impl Error for SaveSlotError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
+            Self::Database { source, .. } => Some(source),
             Self::InvalidSave { source, .. } => Some(source),
             Self::InvalidPath { .. } | Self::AlreadyOwned { .. } => None,
         }
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SaveCodecError {
+    UnsupportedVersion { found: u32 },
+    InvalidState(SaveValidationError),
+    InvalidValue { field: &'static str },
+    LegacyDecode(String),
+}
+
+impl fmt::Display for SaveCodecError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedVersion { found } => {
+                write!(formatter, "save version {found} is not supported")
+            }
+            Self::InvalidState(error) => error.fmt(formatter),
+            Self::InvalidValue { field } => write!(formatter, "invalid SQLite value for {field}"),
+            Self::LegacyDecode(error) => write!(formatter, "could not decode legacy RON save: {error}"),
+        }
+    }
+}
+
+impl Error for SaveCodecError {}
+
 impl SaveSlot {
-    /// Opens the default local save slot in the current directory.
     pub fn open_default() -> Result<Self, SaveSlotError> {
-        Self::open(DEFAULT_SAVE_PATH)
+        let database_existed = Path::new(DEFAULT_SAVE_PATH).exists();
+        let slot = Self::open(DEFAULT_SAVE_PATH)?;
+        if !database_existed && Path::new(LEGACY_SAVE_PATH).exists() {
+            let source = fs::read_to_string(LEGACY_SAVE_PATH).map_err(|source| SaveSlotError::Io {
+                action: "read legacy RON save",
+                path: PathBuf::from(LEGACY_SAVE_PATH),
+                source,
+            })?;
+            let state = decode_legacy_game_state(&source).map_err(|source| SaveSlotError::InvalidSave {
+                path: PathBuf::from(LEGACY_SAVE_PATH),
+                source: Box::new(source),
+            })?;
+            slot.save(&state)?;
+        }
+        Ok(slot)
     }
 
-    /// Opens and exclusively owns the save slot at `path`.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, SaveSlotError> {
         let path = path.into();
         let lock_path = sidecar_lock_path(&path)?;
@@ -122,10 +166,7 @@ impl SaveSlot {
                 source,
             })?;
         match FileExt::try_lock(&lock_file) {
-            Ok(()) => Ok(Self {
-                path,
-                _lock_file: lock_file,
-            }),
+            Ok(()) => Ok(Self { path, _lock_file: lock_file }),
             Err(TryLockError::WouldBlock) => Err(SaveSlotError::AlreadyOwned { path }),
             Err(TryLockError::Error(source)) => Err(SaveSlotError::Io {
                 action: "lock save slot",
@@ -135,227 +176,727 @@ impl SaveSlot {
         }
     }
 
-    /// Returns the explicit path this slot owns.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Loads a validated game, or reports that no save exists yet.
-    ///
-    /// An invalid existing save is never interpreted as a fresh Player
-    /// Company; callers receive `InvalidSave` and the source remains intact.
     pub fn load(&self) -> Result<Option<GameState>, SaveSlotError> {
-        let source = match fs::read(&self.path) {
-            Ok(source) => source,
-            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(source) => {
-                return Err(SaveSlotError::Io {
-                    action: "read save",
-                    path: self.path.clone(),
-                    source,
-                });
-            }
-        };
-        let source = String::from_utf8(source).map_err(|_| SaveSlotError::InvalidSave {
-            path: self.path.clone(),
-            source: Box::new(SaveCodecError::InvalidTextEncoding),
-        })?;
-        decode_game_state(&source)
-            .map(Some)
-            .map_err(|source| SaveSlotError::InvalidSave {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        let connection = self.open_connection("open")?;
+        ensure_schema(&connection, &self.path)?;
+        let state = load_state(&connection, &self.path)?;
+        if let Some(state) = &state {
+            validate_game_state(state).map_err(|source| SaveSlotError::InvalidSave {
                 path: self.path.clone(),
-                source: Box::new(source),
-            })
+                source: Box::new(SaveCodecError::InvalidState(source)),
+            })?;
+        }
+        Ok(state)
     }
 
-    /// Validates and atomically replaces this slot's save.
-    ///
-    /// Before replacing anything, an existing save is decoded and validated.
-    /// This refuses to overwrite corrupt or unsupported data, even if the
-    /// caller is trying to create a new Player Company.
     pub fn save(&self, state: &GameState) -> Result<(), SaveSlotError> {
-        self.save_with_before_replace(state, |_| Ok(()))
+        validate_game_state(state).map_err(|source| SaveSlotError::InvalidSave {
+            path: self.path.clone(),
+            source: Box::new(SaveCodecError::InvalidState(source)),
+        })?;
+        if self.path.exists() {
+            self.load()?;
+        }
+        self.replace_state(state)
     }
 
-    /// Preserves the current valid save under a unique sibling name before
-    /// atomically replacing the slot with a fresh Player Company.
-    ///
-    /// The archive is created before the live save is replaced. If writing the
-    /// replacement fails, both the live save and its preserved archive remain
-    /// available to the player.
     pub fn save_after_backup(&self, state: &GameState) -> Result<PathBuf, SaveSlotError> {
         self.load()?;
-        let encoded = encode_game_state(state).map_err(|source| SaveSlotError::InvalidSave {
+        validate_game_state(state).map_err(|source| SaveSlotError::InvalidSave {
             path: self.path.clone(),
-            source: Box::new(source),
+            source: Box::new(SaveCodecError::InvalidState(source)),
         })?;
         let backup_path = archive_save(&self.path).map_err(|source| SaveSlotError::Io {
             action: "archive existing save before restart",
             path: self.path.clone(),
             source,
         })?;
-        write_save_atomically(&self.path, encoded.as_bytes(), |_| Ok(())).map_err(|source| {
-            SaveSlotError::Io {
-                action: "replace save atomically after restart backup",
-                path: self.path.clone(),
-                source,
-            }
-        })?;
+        self.replace_state(state)?;
         Ok(backup_path)
     }
 
-    fn save_with_before_replace<F>(
-        &self,
-        state: &GameState,
-        before_replace: F,
-    ) -> Result<(), SaveSlotError>
-    where
-        F: FnOnce(&Path) -> io::Result<()>,
-    {
-        self.load()?;
-        let encoded = encode_game_state(state).map_err(|source| SaveSlotError::InvalidSave {
-            path: self.path.clone(),
-            source: Box::new(source),
-        })?;
-        write_save_atomically(&self.path, encoded.as_bytes(), before_replace).map_err(|source| {
-            SaveSlotError::Io {
-                action: "replace save atomically",
+    fn replace_state(&self, state: &GameState) -> Result<(), SaveSlotError> {
+        let mut connection = self.open_connection("open for write")?;
+        ensure_schema(&connection, &self.path)?;
+        let existing_world_seed = connection
+            .query_row(
+                "SELECT world_seed FROM game_meta WHERE singleton = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|source| SaveSlotError::Database {
+                action: "read existing game identity from",
                 path: self.path.clone(),
                 source,
-            }
-        })
+            })?;
+        let current_world_seed = state.world_seed.to_string();
+        let preserve_history = existing_world_seed.as_deref() == Some(current_world_seed.as_str());
+        let transaction = connection.transaction().map_err(|source| SaveSlotError::Database {
+            action: "begin transaction for",
+            path: self.path.clone(),
+            source,
+        })?;
+        clear_state(&transaction, &self.path, preserve_history)?;
+        insert_state(&transaction, state, &self.path)?;
+        transaction.commit().map_err(|source| SaveSlotError::Database {
+            action: "commit transaction for",
+            path: self.path.clone(),
+            source,
+        })?;
+        connection.execute_batch("PRAGMA optimize;").map_err(|source| SaveSlotError::Database {
+            action: "optimize",
+            path: self.path.clone(),
+            source,
+        })?;
+        Ok(())
+    }
+
+    fn open_connection(&self, action: &'static str) -> Result<Connection, SaveSlotError> {
+        let connection = Connection::open(&self.path).map_err(|source| SaveSlotError::Database {
+            action,
+            path: self.path.clone(),
+            source,
+        })?;
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+            .map_err(|source| SaveSlotError::Database {
+                action: "configure",
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(connection)
     }
 }
 
 fn sidecar_lock_path(path: &Path) -> Result<PathBuf, SaveSlotError> {
     let Some(file_name) = path.file_name() else {
-        return Err(SaveSlotError::InvalidPath {
-            path: path.to_path_buf(),
-        });
+        return Err(SaveSlotError::InvalidPath { path: path.to_path_buf() });
     };
     let mut lock_name = file_name.to_os_string();
     lock_name.push(".lock");
     Ok(path.with_file_name(lock_name))
 }
 
-/// Copies an existing save to a unique, visible sibling archive without ever
-/// selecting an already-existing archive name.
 fn archive_save(path: &Path) -> io::Result<PathBuf> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "save path has no file name"))?;
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "save path has no file name")
+    })?;
     for _ in 0..128 {
-        let sequence = NEXT_TEMPORARY_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let sequence = NEXT_ARCHIVE_ID.fetch_add(1, Ordering::Relaxed);
         let archive_path = parent.join(format!(
-            "{}.bankrupt-backup-{}.{}.ron",
+            "{}.bankrupt-backup-{}.{}.db",
             file_name.to_string_lossy(),
             std::process::id(),
             sequence
         ));
-        let mut archive = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&archive_path)
-        {
-            Ok(archive) => archive,
+        match OpenOptions::new().write(true).create_new(true).open(&archive_path) {
+            Ok(_) => {
+                fs::copy(path, &archive_path)?;
+                return Ok(archive_path);
+            }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
-        };
-        let copy_result = (|| {
-            let mut source = File::open(path)?;
-            io::copy(&mut source, &mut archive)?;
-            archive.sync_all()
-        })();
-        match copy_result {
-            Ok(()) => return Ok(archive_path),
-            Err(error) => {
-                drop(archive);
-                let _ = fs::remove_file(&archive_path);
-                return Err(error);
-            }
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not allocate a unique restart backup save",
-    ))
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "could not allocate a unique restart backup save"))
 }
 
-fn write_save_atomically<F>(path: &Path, encoded: &[u8], before_replace: F) -> io::Result<()>
-where
-    F: FnOnce(&Path) -> io::Result<()>,
-{
-    let mut temporary_save = TemporarySave::create_beside(path)?;
-    temporary_save.file_mut().write_all(encoded)?;
-    temporary_save.file_mut().sync_all()?;
-    before_replace(temporary_save.path())?;
-    temporary_save.replace(path)
-}
+const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS game_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    world_seed TEXT NOT NULL,
+    last_processed_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS region (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    name TEXT NOT NULL,
+    population INTEGER NOT NULL,
+    rail_authority_name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settlements (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    population INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rail_stations (
+    id INTEGER PRIMARY KEY,
+    settlement_id INTEGER NOT NULL REFERENCES settlements(id)
+);
+CREATE TABLE IF NOT EXISTS rail_lines (
+    id INTEGER PRIMARY KEY,
+    first_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    second_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    distance_metres INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS company (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    name TEXT NOT NULL,
+    funds_cents INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trains (
+    id INTEGER PRIMARY KEY,
+    status_kind TEXT NOT NULL CHECK (status_kind IN ('ready', 'travelling')),
+    status_ref_id INTEGER NOT NULL,
+    model_name TEXT NOT NULL,
+    original_purchase_price_cents INTEGER NOT NULL,
+    passenger_capacity INTEGER NOT NULL,
+    speed_metres_per_second INTEGER NOT NULL,
+    fuel_cost_cents_per_km INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS passenger_services (
+    id INTEGER PRIMARY KEY,
+    first_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    second_station_id INTEGER NOT NULL REFERENCES rail_stations(id)
+);
+CREATE TABLE IF NOT EXISTS service_lines (
+    service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    rail_line_id INTEGER NOT NULL REFERENCES rail_lines(id),
+    PRIMARY KEY (service_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS origin_destination_demand (
+    origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    waiting_passengers INTEGER NOT NULL,
+    passenger_arrival_rate_per_hour INTEGER NOT NULL,
+    fractional_passenger_seconds INTEGER NOT NULL,
+    PRIMARY KEY (origin_station_id, destination_station_id)
+);
+CREATE TABLE IF NOT EXISTS active_journeys (
+    id INTEGER PRIMARY KEY,
+    service_id INTEGER NOT NULL REFERENCES passenger_services(id),
+    train_id INTEGER NOT NULL REFERENCES trains(id),
+    origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    passengers_carried INTEGER NOT NULL,
+    fare_cents INTEGER NOT NULL,
+    operating_revenue_cents INTEGER NOT NULL,
+    infrastructure_access_fee_cents INTEGER NOT NULL,
+    fuel_cost_cents INTEGER NOT NULL,
+    departed_at INTEGER NOT NULL,
+    arrives_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS financials (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    operating_revenue_cents INTEGER NOT NULL,
+    infrastructure_access_fees_cents INTEGER NOT NULL,
+    fuel_costs_cents INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS journey_receipts (
+    journey_id INTEGER PRIMARY KEY,
+    revenue_cents INTEGER NOT NULL,
+    infrastructure_access_fee_cents INTEGER NOT NULL,
+    fuel_cost_cents INTEGER NOT NULL,
+    train_id INTEGER,
+    train_model_name TEXT,
+    origin_station_id INTEGER,
+    destination_station_id INTEGER,
+    passengers_carried INTEGER,
+    passenger_capacity INTEGER,
+    completed_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS game_rules (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    fare_cents_per_passenger_km INTEGER NOT NULL,
+    access_fee_cents_per_train_km INTEGER NOT NULL,
+    starting_company_funds_cents INTEGER NOT NULL,
+    demand_cap_seconds INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS diesel_catalogue (
+    sequence INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    purchase_price_cents INTEGER NOT NULL,
+    passenger_capacity INTEGER NOT NULL,
+    speed_metres_per_second INTEGER NOT NULL,
+    fuel_cost_cents_per_km INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_active_journeys_arrival ON active_journeys(arrives_at);
+CREATE INDEX IF NOT EXISTS idx_receipts_completed_at ON journey_receipts(completed_at);
+"#;
 
-/// A same-directory temporary save that removes itself if replacement fails.
-struct TemporarySave {
-    path: PathBuf,
-    file: Option<File>,
-}
-
-impl TemporarySave {
-    fn create_beside(save_path: &Path) -> io::Result<Self> {
-        let parent = save_path.parent().unwrap_or_else(|| Path::new("."));
-        let file_name = save_path.file_name().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "save path has no file name")
+fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|source| SaveSlotError::Database {
+            action: "read schema version from",
+            path: path.to_path_buf(),
+            source,
         })?;
-        for _ in 0..128 {
-            let sequence = NEXT_TEMPORARY_FILE_ID.fetch_add(1, Ordering::Relaxed);
-            let temporary_path = parent.join(format!(
-                ".{}.{}.{}.tmp",
-                file_name.to_string_lossy(),
-                std::process::id(),
-                sequence
-            ));
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary_path)
-            {
-                Ok(file) => {
-                    return Ok(Self {
-                        path: temporary_path,
-                        file: Some(file),
-                    });
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
+    if version != 0 && version != SAVE_VERSION {
+        return Err(SaveSlotError::InvalidSave {
+            path: path.to_path_buf(),
+            source: Box::new(SaveCodecError::UnsupportedVersion { found: version }),
+        });
+    }
+    connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
+        action: "initialize schema for",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if version == 0 {
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| SaveSlotError::Database {
+                action: "write schema version to",
+                path: path.to_path_buf(),
+                source,
+            })?;
+    }
+    Ok(())
+}
+
+fn clear_state(
+    transaction: &Transaction<'_>,
+    path: &Path,
+    preserve_receipt_history: bool,
+) -> Result<(), SaveSlotError> {
+    if !preserve_receipt_history {
+        transaction
+            .execute("DELETE FROM journey_receipts", [])
+            .map_err(|source| SaveSlotError::Database {
+                action: "clear Journey history from",
+                path: path.to_path_buf(),
+                source,
+            })?;
+    }
+    transaction.execute_batch(
+        "DELETE FROM active_journeys;
+         DELETE FROM origin_destination_demand;
+         DELETE FROM service_lines;
+         DELETE FROM passenger_services;
+         DELETE FROM trains;
+         DELETE FROM diesel_catalogue;
+         DELETE FROM financials;
+         DELETE FROM game_rules;
+         DELETE FROM company;
+         DELETE FROM rail_lines;
+         DELETE FROM rail_stations;
+         DELETE FROM settlements;
+         DELETE FROM region;
+         DELETE FROM game_meta;",
+    ).map_err(|source| SaveSlotError::Database {
+        action: "clear previous state from",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
+}
+
+fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -> Result<(), SaveSlotError> {
+    let db = |value: u64, field| to_db_u64(value, field, path);
+
+    transaction.execute(
+        "INSERT INTO game_meta(singleton, world_seed, last_processed_at) VALUES(1, ?1, ?2)",
+        params![state.world_seed.to_string(), state.last_processed_at.unix_seconds()],
+    ).map_err(|source| db_error("write game metadata to", path, source))?;
+    transaction.execute(
+        "INSERT INTO region(singleton, name, population, rail_authority_name) VALUES(1, ?1, ?2, ?3)",
+        params![&state.region.name, db(state.region.population, "Region Population")?, &state.region.rail_authority.name],
+    ).map_err(|source| db_error("write Region to", path, source))?;
+
+    for settlement in &state.region.settlements {
+        transaction.execute(
+            "INSERT INTO settlements(id, name, population) VALUES(?1, ?2, ?3)",
+            params![db(settlement.id.get(), "Settlement ID")?, &settlement.name, db(settlement.population, "Settlement Population")?],
+        ).map_err(|source| db_error("write Settlements to", path, source))?;
+    }
+    let network = &state.region.rail_authority.rail_network;
+    for station in &network.rail_stations {
+        transaction.execute(
+            "INSERT INTO rail_stations(id, settlement_id) VALUES(?1, ?2)",
+            params![db(station.id.get(), "Rail Station ID")?, db(station.settlement_id.get(), "Settlement ID")?],
+        ).map_err(|source| db_error("write Rail Stations to", path, source))?;
+    }
+    for line in &network.rail_lines {
+        transaction.execute(
+            "INSERT INTO rail_lines(id, first_station_id, second_station_id, distance_metres) VALUES(?1, ?2, ?3, ?4)",
+            params![db(line.id.get(), "Rail Line ID")?, db(line.first_station_id.get(), "Rail Station ID")?, db(line.second_station_id.get(), "Rail Station ID")?, db(line.distance.metres(), "Rail Line distance")?],
+        ).map_err(|source| db_error("write Rail Lines to", path, source))?;
+    }
+
+    transaction.execute(
+        "INSERT INTO company(singleton, name, funds_cents) VALUES(1, ?1, ?2)",
+        params![&state.player_company.name, state.player_company.funds.cents()],
+    ).map_err(|source| db_error("write Player Company to", path, source))?;
+
+    for train in &state.player_company.fleet.trains {
+        let (status_kind, status_ref_id) = match train.status {
+            TrainStatus::Ready { at } => ("ready", at.get()),
+            TrainStatus::Travelling { journey_id } => ("travelling", journey_id.get()),
+        };
+        transaction.execute(
+            "INSERT INTO trains(id, status_kind, status_ref_id, model_name, original_purchase_price_cents, passenger_capacity, speed_metres_per_second, fuel_cost_cents_per_km)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                db(train.id.get(), "Train ID")?, status_kind, db(status_ref_id, "Train status reference")?, &train.model_name,
+                train.original_purchase_price.cents(), db(u64::from(train.passenger_capacity.passengers()), "Train passenger capacity")?,
+                db(train.speed.metres_per_second(), "Train speed")?, db(train.fuel_cost_per_kilometre.cents_per_kilometre(), "Train fuel rate")?
+            ],
+        ).map_err(|source| db_error("write Trains to", path, source))?;
+    }
+
+    for service in &state.player_company.passenger_services {
+        transaction.execute(
+            "INSERT INTO passenger_services(id, first_station_id, second_station_id) VALUES(?1, ?2, ?3)",
+            params![db(service.id.get(), "Passenger Service ID")?, db(service.first_station_id.get(), "Rail Station ID")?, db(service.second_station_id.get(), "Rail Station ID")?],
+        ).map_err(|source| db_error("write Passenger Services to", path, source))?;
+        for (sequence, line_id) in service.rail_line_ids.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO service_lines(service_id, sequence, rail_line_id) VALUES(?1, ?2, ?3)",
+                params![db(service.id.get(), "Passenger Service ID")?, i64::try_from(sequence).unwrap_or(i64::MAX), db(line_id.get(), "Rail Line ID")?],
+            ).map_err(|source| db_error("write Passenger Service paths to", path, source))?;
         }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not allocate a unique same-directory temporary save",
+    }
+
+    for demand in &state.origin_destination_demand {
+        transaction.execute(
+            "INSERT INTO origin_destination_demand(origin_station_id, destination_station_id, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![
+                db(demand.origin_station_id.get(), "Demand origin")?, db(demand.destination_station_id.get(), "Demand destination")?,
+                i64::from(demand.waiting_passengers), i64::from(demand.passenger_arrival_rate_per_hour.passengers_per_hour()),
+                db(demand.fractional_passenger_seconds, "Demand fractional passenger seconds")?
+            ],
+        ).map_err(|source| db_error("write Passenger Demand to", path, source))?;
+    }
+
+    for journey in &state.active_journeys {
+        transaction.execute(
+            "INSERT INTO active_journeys(id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, departed_at, arrives_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                db(journey.id.get(), "Journey ID")?, db(journey.service_id.get(), "Passenger Service ID")?, db(journey.train_id.get(), "Train ID")?,
+                db(journey.origin_station_id.get(), "Journey origin")?, db(journey.destination_station_id.get(), "Journey destination")?, i64::from(journey.passengers_carried),
+                journey.fare.cents(), journey.operating_revenue.cents(), journey.infrastructure_access_fee.cents(), journey.fuel_cost.cents(),
+                journey.departed_at.unix_seconds(), journey.arrives_at.unix_seconds()
+            ],
+        ).map_err(|source| db_error("write active Journeys to", path, source))?;
+    }
+
+    transaction.execute(
+        "INSERT INTO financials(singleton, operating_revenue_cents, infrastructure_access_fees_cents, fuel_costs_cents) VALUES(1, ?1, ?2, ?3)",
+        params![state.financials.operating_revenue.cents(), state.financials.infrastructure_access_fees.cents(), state.financials.fuel_costs.cents()],
+    ).map_err(|source| db_error("write financial totals to", path, source))?;
+    for receipt in &state.financials.recent_journey_receipts {
+        transaction.execute(
+            "INSERT OR REPLACE INTO journey_receipts(journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                db(receipt.journey_id.get(), "Journey receipt ID")?, receipt.revenue.cents(), receipt.infrastructure_access_fee.cents(), receipt.fuel_cost.cents(),
+                optional_id(receipt.train_id.map(TrainId::get), "Journey receipt Train ID", path)?, receipt.train_model_name.as_deref(),
+                optional_id(receipt.origin_station_id.map(RailStationId::get), "Journey receipt origin", path)?,
+                optional_id(receipt.destination_station_id.map(RailStationId::get), "Journey receipt destination", path)?,
+                receipt.passengers_carried.map(i64::from), receipt.passenger_capacity.map(i64::from), receipt.completed_at.map(UtcSeconds::unix_seconds)
+            ],
+        ).map_err(|source| db_error("write Journey receipts to", path, source))?;
+    }
+
+    let balance = &state.rules.balance;
+    transaction.execute(
+        "INSERT INTO game_rules(singleton, fare_cents_per_passenger_km, access_fee_cents_per_train_km, starting_company_funds_cents, demand_cap_seconds)
+         VALUES(1, ?1, ?2, ?3, ?4)",
+        params![
+            db(balance.fare_per_passenger_kilometre().cents_per_kilometre(), "fare rate")?,
+            db(balance.access_fee_per_train_kilometre().cents_per_kilometre(), "access fee rate")?,
+            balance.starting_company_funds().cents(), db(state.rules.demand.cap_duration.seconds(), "demand cap duration")?
+        ],
+    ).map_err(|source| db_error("write game rules to", path, source))?;
+    for (sequence, record) in balance.diesel_catalogue().iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO diesel_catalogue(sequence, name, purchase_price_cents, passenger_capacity, speed_metres_per_second, fuel_cost_cents_per_km)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                i64::try_from(sequence).unwrap_or(i64::MAX), record.name(), record.purchase_price().cents(),
+                i64::from(record.passenger_capacity().passengers()), db(record.speed().metres_per_second(), "catalogue Train speed")?,
+                db(record.fuel_cost_per_kilometre().cents_per_kilometre(), "catalogue fuel rate")?
+            ],
+        ).map_err(|source| db_error("write diesel catalogue to", path, source))?;
+    }
+    Ok(())
+}
+
+fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>, SaveSlotError> {
+    let meta = connection
+        .query_row(
+            "SELECT world_seed, last_processed_at FROM game_meta WHERE singleton = 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(|source| db_error("read game metadata from", path, source))?;
+    let Some((world_seed_text, last_processed_at)) = meta else {
+        return Ok(None);
+    };
+    let world_seed = world_seed_text.parse::<u64>().map_err(|_| invalid_value(path, "world seed"))?;
+
+    let (region_name, region_population, authority_name): (String, i64, String) = connection
+        .query_row("SELECT name, population, rail_authority_name FROM region WHERE singleton = 1", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|source| db_error("read Region from", path, source))?;
+
+    let settlements = query_all(connection, "SELECT id, name, population FROM settlements ORDER BY id", path, |row| {
+        Ok(Settlement {
+            id: SettlementId::new(row_u64(row, 0, "Settlement ID")?),
+            name: row.get(1)?,
+            population: row_u64(row, 2, "Settlement Population")?,
+        })
+    })?;
+    let rail_stations = query_all(connection, "SELECT id, settlement_id FROM rail_stations ORDER BY id", path, |row| {
+        Ok(RailStation {
+            id: RailStationId::new(row_u64(row, 0, "Rail Station ID")?),
+            settlement_id: SettlementId::new(row_u64(row, 1, "Settlement ID")?),
+        })
+    })?;
+    let rail_lines = query_all(connection, "SELECT id, first_station_id, second_station_id, distance_metres FROM rail_lines ORDER BY id", path, |row| {
+        Ok(RailLine {
+            id: RailLineId::new(row_u64(row, 0, "Rail Line ID")?),
+            first_station_id: RailStationId::new(row_u64(row, 1, "Rail Station ID")?),
+            second_station_id: RailStationId::new(row_u64(row, 2, "Rail Station ID")?),
+            distance: DistanceMetres::new(row.get(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        })
+    })?;
+
+    let (company_name, company_funds): (String, i64) = connection
+        .query_row("SELECT name, funds_cents FROM company WHERE singleton = 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|source| db_error("read Player Company from", path, source))?;
+
+    let trains = query_all(connection, "SELECT id, status_kind, status_ref_id, model_name, original_purchase_price_cents, passenger_capacity, speed_metres_per_second, fuel_cost_cents_per_km FROM trains ORDER BY id", path, |row| {
+        let status_kind: String = row.get(1)?;
+        let status_ref = row_u64(row, 2, "Train status reference")?;
+        let status = match status_kind.as_str() {
+            "ready" => TrainStatus::Ready { at: RailStationId::new(status_ref) },
+            "travelling" => TrainStatus::Travelling { journey_id: JourneyId::new(status_ref) },
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        };
+        Ok(Train {
+            id: TrainId::new(row_u64(row, 0, "Train ID")?),
+            status,
+            model_name: row.get(3)?,
+            original_purchase_price: Money::from_cents(row.get(4)?),
+            passenger_capacity: PassengerCapacity::new(row.get(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            speed: SpeedMetresPerSecond::new(row.get(6)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            fuel_cost_per_kilometre: MoneyPerKilometre::new(row.get(7)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        })
+    })?;
+
+    let mut services = query_all(connection, "SELECT id, first_station_id, second_station_id FROM passenger_services ORDER BY id", path, |row| {
+        Ok(PassengerService {
+            id: ServiceId::new(row_u64(row, 0, "Passenger Service ID")?),
+            first_station_id: RailStationId::new(row_u64(row, 1, "Rail Station ID")?),
+            second_station_id: RailStationId::new(row_u64(row, 2, "Rail Station ID")?),
+            rail_line_ids: Vec::new(),
+        })
+    })?;
+    for service in &mut services {
+        let mut statement = connection.prepare("SELECT rail_line_id FROM service_lines WHERE service_id = ?1 ORDER BY sequence")
+            .map_err(|source| db_error("prepare Passenger Service path query for", path, source))?;
+        let rows = statement.query_map(params![to_db_u64(service.id.get(), "Passenger Service ID", path)?], |row| row.get::<_, i64>(0))
+            .map_err(|source| db_error("read Passenger Service path from", path, source))?;
+        for row in rows {
+            let line = row.map_err(|source| db_error("read Passenger Service path from", path, source))?;
+            service.rail_line_ids.push(RailLineId::new(from_db_u64(line, "Rail Line ID").map_err(|field| invalid_value(path, field))?));
+        }
+    }
+
+    let demand = query_all(connection, "SELECT origin_station_id, destination_station_id, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds FROM origin_destination_demand ORDER BY origin_station_id, destination_station_id", path, |row| {
+        Ok(OriginDestinationDemand {
+            origin_station_id: RailStationId::new(row_u64(row, 0, "Demand origin")?),
+            destination_station_id: RailStationId::new(row_u64(row, 1, "Demand destination")?),
+            waiting_passengers: u32::try_from(row.get::<_, i64>(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            passenger_arrival_rate_per_hour: PassengerArrivalRate::new(row.get(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            fractional_passenger_seconds: row_u64(row, 4, "Demand fractional passenger seconds")?,
+        })
+    })?;
+
+    let active_journeys = query_all(connection, "SELECT id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, departed_at, arrives_at FROM active_journeys ORDER BY id", path, |row| {
+        Ok(Journey {
+            id: JourneyId::new(row_u64(row, 0, "Journey ID")?),
+            service_id: ServiceId::new(row_u64(row, 1, "Passenger Service ID")?),
+            train_id: TrainId::new(row_u64(row, 2, "Train ID")?),
+            origin_station_id: RailStationId::new(row_u64(row, 3, "Journey origin")?),
+            destination_station_id: RailStationId::new(row_u64(row, 4, "Journey destination")?),
+            passengers_carried: u32::try_from(row.get::<_, i64>(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            fare: Money::from_cents(row.get(6)?), operating_revenue: Money::from_cents(row.get(7)?),
+            infrastructure_access_fee: Money::from_cents(row.get(8)?), fuel_cost: Money::from_cents(row.get(9)?),
+            departed_at: UtcSeconds::from_unix_seconds(row.get(10)?), arrives_at: UtcSeconds::from_unix_seconds(row.get(11)?),
+        })
+    })?;
+
+    let (operating_revenue, access_fees, fuel_costs): (i64, i64, i64) = connection
+        .query_row("SELECT operating_revenue_cents, infrastructure_access_fees_cents, fuel_costs_cents FROM financials WHERE singleton = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|source| db_error("read financial totals from", path, source))?;
+    let receipt_sql = format!(
+        "SELECT journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at
+         FROM (
+             SELECT journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at
+             FROM journey_receipts
+             ORDER BY journey_id DESC
+             LIMIT {RECENT_RECEIPT_LIMIT}
+         )
+         ORDER BY journey_id"
+    );
+    let receipts = query_all(connection, &receipt_sql, path, |row| {
+        Ok(JourneyReceipt {
+            journey_id: JourneyId::new(row_u64(row, 0, "Journey receipt ID")?),
+            revenue: Money::from_cents(row.get(1)?),
+            infrastructure_access_fee: Money::from_cents(row.get(2)?),
+            fuel_cost: Money::from_cents(row.get(3)?),
+            train_id: optional_row_u64(row, 4, "Journey receipt Train ID")?.map(TrainId::new),
+            train_model_name: row.get(5)?,
+            origin_station_id: optional_row_u64(row, 6, "Journey receipt origin")?.map(RailStationId::new),
+            destination_station_id: optional_row_u64(row, 7, "Journey receipt destination")?.map(RailStationId::new),
+            passengers_carried: optional_row_u32(row, 8, "Journey receipt passengers")?,
+            passenger_capacity: optional_row_u32(row, 9, "Journey receipt passenger capacity")?,
+            completed_at: row.get::<_, Option<i64>>(10)?.map(UtcSeconds::from_unix_seconds),
+        })
+    })?;
+
+    let (fare_rate, access_rate, starting_funds, demand_cap): (i64, i64, i64, i64) = connection
+        .query_row("SELECT fare_cents_per_passenger_km, access_fee_cents_per_train_km, starting_company_funds_cents, demand_cap_seconds FROM game_rules WHERE singleton = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+        .map_err(|source| db_error("read game rules from", path, source))?;
+    let catalogue = query_all(connection, "SELECT name, purchase_price_cents, passenger_capacity, speed_metres_per_second, fuel_cost_cents_per_km FROM diesel_catalogue ORDER BY sequence", path, |row| {
+        Ok(DieselTrainCatalogueRecord::new(
+            row.get::<_, String>(0)?, Money::from_cents(row.get(1)?),
+            PassengerCapacity::new(row.get(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            SpeedMetresPerSecond::new(row.get(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            MoneyPerKilometre::new(row.get(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
         ))
-    }
+    })?;
 
-    fn file_mut(&mut self) -> &mut File {
-        self.file
-            .as_mut()
-            .expect("temporary save file exists before replacement")
-    }
+    let state = GameState {
+        world_seed,
+        region: Region {
+            name: region_name,
+            population: from_db_u64(region_population, "Region Population").map_err(|field| invalid_value(path, field))?,
+            settlements,
+            rail_authority: RailAuthority {
+                name: authority_name,
+                rail_network: RailNetwork { rail_stations, rail_lines },
+            },
+        },
+        player_company: PlayerCompany {
+            name: company_name,
+            funds: Money::from_cents(company_funds),
+            fleet: Fleet { trains },
+            passenger_services: services,
+        },
+        origin_destination_demand: demand,
+        active_journeys,
+        financials: Financials {
+            operating_revenue: Money::from_cents(operating_revenue),
+            infrastructure_access_fees: Money::from_cents(access_fees),
+            fuel_costs: Money::from_cents(fuel_costs),
+            recent_journey_receipts: receipts,
+        },
+        rules: GameRules {
+            balance: BalanceConfig::new(
+                MoneyPerKilometre::new(fare_rate).map_err(|_| invalid_value(path, "fare rate"))?,
+                MoneyPerKilometre::new(access_rate).map_err(|_| invalid_value(path, "access fee rate"))?,
+                Money::from_cents(starting_funds),
+                catalogue,
+            ),
+            demand: DemandRules {
+                cap_duration: DurationSeconds::from_seconds(from_db_u64(demand_cap, "demand cap duration").map_err(|field| invalid_value(path, field))?),
+            },
+        },
+        last_processed_at: UtcSeconds::from_unix_seconds(last_processed_at),
+    };
+    Ok(Some(state))
+}
 
-    fn path(&self) -> &Path {
-        &self.path
-    }
+fn query_all<T>(
+    connection: &Connection,
+    sql: &str,
+    path: &Path,
+    mut map: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>, SaveSlotError> {
+    let mut statement = connection.prepare(sql).map_err(|source| db_error("prepare query for", path, source))?;
+    let rows = statement.query_map([], |row| map(row)).map_err(|source| db_error("query", path, source))?;
+    rows.map(|row| row.map_err(|source| db_error("decode row from", path, source))).collect()
+}
 
-    fn replace(mut self, save_path: &Path) -> io::Result<()> {
-        drop(self.file.take());
-        fs::rename(&self.path, save_path)
+fn to_db_u64(value: u64, field: &'static str, path: &Path) -> Result<i64, SaveSlotError> {
+    i64::try_from(value).map_err(|_| invalid_value(path, field))
+}
+
+fn row_u64(row: &rusqlite::Row<'_>, index: usize, field: &'static str) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(index)?;
+    u64::try_from(value).map_err(|_| conversion_error(index, field))
+}
+
+fn optional_row_u64(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+    field: &'static str,
+) -> rusqlite::Result<Option<u64>> {
+    row.get::<_, Option<i64>>(index)?
+        .map(|value| u64::try_from(value).map_err(|_| conversion_error(index, field)))
+        .transpose()
+}
+
+fn optional_row_u32(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+    field: &'static str,
+) -> rusqlite::Result<Option<u32>> {
+    row.get::<_, Option<i64>>(index)?
+        .map(|value| u32::try_from(value).map_err(|_| conversion_error(index, field)))
+        .transpose()
+}
+
+fn conversion_error(index: usize, field: &'static str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        index,
+        rusqlite::types::Type::Integer,
+        Box::new(io::Error::new(io::ErrorKind::InvalidData, field)),
+    )
+}
+
+fn from_db_u64(value: i64, field: &'static str) -> Result<u64, &'static str> {
+    u64::try_from(value).map_err(|_| field)
+}
+
+fn optional_id(value: Option<u64>, field: &'static str, path: &Path) -> Result<Option<i64>, SaveSlotError> {
+    value.map(|value| to_db_u64(value, field, path)).transpose()
+}
+
+fn db_error(action: &'static str, path: &Path, source: rusqlite::Error) -> SaveSlotError {
+    SaveSlotError::Database { action, path: path.to_path_buf(), source }
+}
+
+fn invalid_value(path: &Path, field: &'static str) -> SaveSlotError {
+    SaveSlotError::InvalidSave {
+        path: path.to_path_buf(),
+        source: Box::new(SaveCodecError::InvalidValue { field }),
     }
 }
 
-impl Drop for TemporarySave {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySaveEnvelope<T = GameState> {
+    version: u32,
+    state: T,
 }
 
+fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
+    let envelope: LegacySaveEnvelope = ron::from_str(source)
+        .map_err(|error| SaveCodecError::LegacyDecode(error.to_string()))?;
+    if envelope.version != SAVE_VERSION {
+        return Err(SaveCodecError::UnsupportedVersion { found: envelope.version });
+    }
+    validate_game_state(&envelope.state).map_err(SaveCodecError::InvalidState)?;
+    Ok(envelope.state)
+}
 /// Why a decoded game cannot safely enter the simulation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SaveValidationError {
@@ -401,63 +942,6 @@ impl From<CalculationError> for SaveValidationError {
     }
 }
 
-/// Why a save cannot be encoded or decoded.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SaveCodecError {
-    /// RON could not represent a valid save.
-    Encode(ron::Error),
-    /// The source is not valid UTF-8 text and therefore cannot be RON.
-    InvalidTextEncoding,
-    /// The source was not valid RON for the save envelope.
-    Decode(ron::error::SpannedError),
-    /// The save was written by a format this build does not understand.
-    UnsupportedVersion { found: u32 },
-    /// The RON decoded but cannot safely enter the simulation.
-    InvalidState(SaveValidationError),
-}
-
-impl fmt::Display for SaveCodecError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Encode(error) => write!(formatter, "could not encode save as RON: {error}"),
-            Self::InvalidTextEncoding => write!(formatter, "save is not valid UTF-8 RON text"),
-            Self::Decode(error) => write!(formatter, "could not decode save RON: {error}"),
-            Self::UnsupportedVersion { found } => {
-                write!(formatter, "save version {found} is not supported")
-            }
-            Self::InvalidState(error) => error.fmt(formatter),
-        }
-    }
-}
-
-impl Error for SaveCodecError {}
-
-/// Encodes a valid game state in the current versioned RON envelope.
-pub fn encode_game_state(state: &GameState) -> Result<String, SaveCodecError> {
-    validate_game_state(state).map_err(SaveCodecError::InvalidState)?;
-    ron::ser::to_string_pretty(
-        &SaveEnvelope {
-            version: SAVE_VERSION,
-            state,
-        },
-        ron::ser::PrettyConfig::new(),
-    )
-    .map_err(SaveCodecError::Encode)
-}
-
-/// Decodes RON only after checking its version and every simulation invariant.
-pub fn decode_game_state(source: &str) -> Result<GameState, SaveCodecError> {
-    let envelope: SaveEnvelope = ron::from_str(source).map_err(SaveCodecError::Decode)?;
-    if envelope.version != SAVE_VERSION {
-        return Err(SaveCodecError::UnsupportedVersion {
-            found: envelope.version,
-        });
-    }
-    validate_game_state(&envelope.state).map_err(SaveCodecError::InvalidState)?;
-    Ok(envelope.state)
-}
-
-/// Validates a state before it is saved or admitted from a decoded save.
 pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError> {
     validate_rules(state)?;
 
@@ -629,13 +1113,6 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
     }
 
     Ok(())
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SaveEnvelope<T = GameState> {
-    version: u32,
-    state: T,
 }
 
 fn unique_ids<T>(
@@ -1029,19 +1506,22 @@ fn validate_journey(
     Ok(())
 }
 
+
 #[cfg(test)]
 mod tests {
     use std::{
-        fs, io,
+        fs,
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
 
     use crate::{
-        model::{DistanceMetres, DurationSeconds, RailLineId, TrainId, TrainStatus, UtcSeconds},
+        model::{RailStationId, UtcSeconds},
         sim::{
-            fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
-            time::advance_time, world::create_new_game,
+            fleet::purchase_train,
+            journeys::dispatch_journey,
+            services::find_or_create_service,
+            world::create_new_game,
         },
     };
 
@@ -1056,7 +1536,7 @@ mod tests {
     impl TestDirectory {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "railq-storage-test-{}-{}",
+                "railq-sqlite-storage-test-{}-{}",
                 std::process::id(),
                 NEXT_TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed)
             ));
@@ -1065,7 +1545,7 @@ mod tests {
         }
 
         fn save_path(&self) -> PathBuf {
-            self.path.join("company.ron")
+            self.path.join("company.db")
         }
     }
 
@@ -1087,133 +1567,52 @@ mod tests {
         state
     }
 
-    fn raw_save(state: &GameState, version: u32) -> String {
-        ron::ser::to_string(&SaveEnvelope { version, state }).unwrap()
-    }
-
     #[test]
-    fn round_trips_all_current_operating_state() {
+    fn sqlite_round_trips_all_current_operating_state() {
+        let directory = TestDirectory::new();
+        let slot = SaveSlot::open(directory.save_path()).unwrap();
         let state = active_game();
-        let encoded = encode_game_state(&state).unwrap();
 
-        assert_eq!(decode_game_state(&encoded).unwrap(), state);
+        slot.save(&state).unwrap();
+
+        assert_eq!(slot.load().unwrap(), Some(state));
     }
 
     #[test]
-    fn round_trips_enriched_journey_receipts() {
-        let mut state = active_game();
-        let arrives_at = state.active_journeys[0].arrives_at;
-        advance_time(&mut state, arrives_at).unwrap();
+    fn save_uses_normalized_tables_instead_of_one_state_blob() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let slot = SaveSlot::open(&path).unwrap();
+        slot.save(&active_game()).unwrap();
 
-        let encoded = encode_game_state(&state).unwrap();
-        let decoded = decode_game_state(&encoded).unwrap();
+        let connection = Connection::open(path).unwrap();
+        let train_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM trains", [], |row| row.get(0))
+            .unwrap();
+        let journey_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM active_journeys", [], |row| row.get(0))
+            .unwrap();
+        let state_blob_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='game_state'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
 
-        assert_eq!(decoded, state);
-        let receipt = &decoded.financials.recent_journey_receipts[0];
-        assert!(receipt.train_id.is_some());
-        assert!(receipt.train_model_name.is_some());
-        assert!(receipt.origin_station_id.is_some());
-        assert!(receipt.destination_station_id.is_some());
-        assert!(receipt.passengers_carried.is_some());
-        assert!(receipt.passenger_capacity.is_some());
-        assert_eq!(receipt.completed_at, Some(arrives_at));
+        assert_eq!(train_count, 1);
+        assert_eq!(journey_count, 1);
+        assert_eq!(state_blob_table, 0);
     }
 
     #[test]
-    fn rejects_an_unsupported_save_version() {
-        let source = raw_save(&active_game(), SAVE_VERSION + 1);
-
-        assert_eq!(
-            decode_game_state(&source),
-            Err(SaveCodecError::UnsupportedVersion {
-                found: SAVE_VERSION + 1
-            })
-        );
-    }
-
-    #[test]
-    fn rejects_dangling_references_and_contradictory_train_status() {
-        let mut state = active_game();
-        state.player_company.passenger_services[0].rail_line_ids = vec![RailLineId::new(99)];
-        assert!(matches!(
-            decode_game_state(&raw_save(&state, SAVE_VERSION)),
-            Err(SaveCodecError::InvalidState(
-                SaveValidationError::DanglingReference { .. }
-            ))
-        ));
-
-        let mut state = active_game();
-        state.player_company.fleet.trains[0].status = TrainStatus::Ready {
-            at: RailStationId::new(1),
-        };
-        assert!(matches!(
-            decode_game_state(&raw_save(&state, SAVE_VERSION)),
-            Err(SaveCodecError::InvalidState(
-                SaveValidationError::ImpossibleState { .. }
-            ))
-        ));
-
-        let mut state = active_game();
-        let mut duplicate_owner = state.player_company.fleet.trains[0].clone();
-        duplicate_owner.id = TrainId::new(2);
-        state.player_company.fleet.trains.push(duplicate_owner);
-        assert!(matches!(
-            decode_game_state(&raw_save(&state, SAVE_VERSION)),
-            Err(SaveCodecError::InvalidState(
-                SaveValidationError::ImpossibleState { .. }
-            ))
-        ));
-    }
-
-    #[test]
-    fn rejects_invalid_numbers_and_arithmetic_domain_violations() {
-        let mut state = active_game();
-        state.rules.demand.cap_duration = DurationSeconds::from_seconds(0);
-        assert!(matches!(
-            decode_game_state(&raw_save(&state, SAVE_VERSION)),
-            Err(SaveCodecError::InvalidState(
-                SaveValidationError::InvalidValue { .. }
-            ))
-        ));
-
-        let mut state = active_game();
-        state.region.rail_authority.rail_network.rail_lines[0].distance =
-            DistanceMetres::new(i64::MAX).unwrap();
-        assert!(matches!(
-            decode_game_state(&raw_save(&state, SAVE_VERSION)),
-            Err(SaveCodecError::InvalidState(
-                SaveValidationError::Calculation(_)
-            ))
-        ));
-    }
-
-    #[test]
-    fn missing_save_file_is_reported_without_creating_a_fresh_game() {
+    fn missing_database_is_reported_without_creating_a_fresh_game() {
         let directory = TestDirectory::new();
         let path = directory.save_path();
         let slot = SaveSlot::open(&path).unwrap();
 
         assert_eq!(slot.load().unwrap(), None);
         assert!(!path.exists());
-    }
-
-    #[test]
-    fn corrupt_save_is_preserved_and_cannot_be_replaced() {
-        let directory = TestDirectory::new();
-        let path = directory.save_path();
-        let corrupt_contents = "this is not valid RON";
-        fs::write(&path, corrupt_contents).unwrap();
-        let slot = SaveSlot::open(&path).unwrap();
-
-        assert!(matches!(
-            slot.load(),
-            Err(SaveSlotError::InvalidSave { .. })
-        ));
-        assert!(matches!(
-            slot.save(&active_game()),
-            Err(SaveSlotError::InvalidSave { .. })
-        ));
-        assert_eq!(fs::read_to_string(path).unwrap(), corrupt_contents);
     }
 
     #[test]
@@ -1229,66 +1628,49 @@ mod tests {
     }
 
     #[test]
-    fn failed_write_leaves_the_old_valid_save_intact() {
+    fn unsupported_schema_version_is_preserved_and_rejected() {
         let directory = TestDirectory::new();
         let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION + 1)
+            .unwrap();
+        drop(connection);
         let slot = SaveSlot::open(&path).unwrap();
-        let state = active_game();
-        slot.save(&state).unwrap();
-        let old_contents = fs::read_to_string(&path).unwrap();
 
         assert!(matches!(
-            slot.save_with_before_replace(&state, |_| {
-                Err(io::Error::other("simulated write failure"))
-            }),
-            Err(SaveSlotError::Io { .. })
+            slot.load(),
+            Err(SaveSlotError::InvalidSave { .. })
         ));
-        assert_eq!(fs::read_to_string(&path).unwrap(), old_contents);
-        assert_eq!(slot.load().unwrap(), Some(state));
+        assert!(path.exists());
     }
 
     #[test]
-    fn restart_backup_preserves_the_old_save_before_replacing_it() {
+    fn restart_backup_preserves_the_old_database_before_replacing_it() {
         let directory = TestDirectory::new();
         let path = directory.save_path();
         let slot = SaveSlot::open(&path).unwrap();
         let old_state = active_game();
         slot.save(&old_state).unwrap();
-        let old_contents = fs::read_to_string(&path).unwrap();
         let replacement = create_new_game(99, "New Passenger", UtcSeconds::from_unix_seconds(2));
 
         let backup_path = slot.save_after_backup(&replacement).unwrap();
 
         assert!(backup_path.exists());
-        assert_eq!(fs::read_to_string(&backup_path).unwrap(), old_contents);
+        let backup_slot = SaveSlot::open(&backup_path).unwrap();
+        assert_eq!(backup_slot.load().unwrap(), Some(old_state));
         assert_eq!(slot.load().unwrap(), Some(replacement));
-        assert_ne!(fs::read_to_string(&path).unwrap(), old_contents);
     }
 
     #[test]
-    fn successful_write_uses_a_same_directory_temporary_before_replacement() {
-        let directory = TestDirectory::new();
-        let path = directory.save_path();
-        let slot = SaveSlot::open(&path).unwrap();
+    fn legacy_ron_decoder_accepts_the_previous_versioned_envelope() {
         let state = active_game();
-        slot.save(&state).unwrap();
-        let old_contents = fs::read_to_string(&path).unwrap();
-        let mut replacement = state.clone();
-        replacement.player_company.name.push_str(" Renewed");
-
-        slot.save_with_before_replace(&replacement, |temporary_path| {
-            assert_eq!(temporary_path.parent(), Some(directory.path.as_path()));
-            assert_eq!(fs::read_to_string(&path).unwrap(), old_contents);
-            Ok(())
+        let source = ron::ser::to_string(&LegacySaveEnvelope {
+            version: SAVE_VERSION,
+            state: &state,
         })
         .unwrap();
 
-        assert_eq!(slot.load().unwrap(), Some(replacement));
-        assert!(fs::read_dir(&directory.path).unwrap().all(|entry| {
-            let entry = entry.unwrap();
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            !(name.starts_with(".company.ron.") && name.ends_with(".tmp"))
-        }));
+        assert_eq!(decode_legacy_game_state(&source).unwrap(), state);
     }
 }

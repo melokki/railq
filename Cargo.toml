@@ -10,5 +10,6 @@ fs4 = { version = "1", features = ["sync"] }
 rand_chacha = "0.10"
 ratatui = "0.30"
 ron = "0.12"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 unicode-width = "0.2"

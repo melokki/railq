@@ -45,7 +45,7 @@ impl TestDirectory {
     }
 
     fn save_path(&self) -> PathBuf {
-        self.path.join("company.ron")
+        self.path.join("company.db")
     }
 }
 
