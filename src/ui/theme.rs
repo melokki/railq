@@ -18,6 +18,7 @@ pub const SUCCESS: Color = Color::Rgb(139, 212, 156);
 pub const ERROR: Color = Color::Rgb(240, 128, 128);
 
 pub const THIN_BORDERS: Borders = Borders::ALL;
+pub const SELECTION_MARKER: &str = "> ";
 
 pub fn terminal() -> Style {
     Style::default().bg(BACKGROUND).fg(PRIMARY)

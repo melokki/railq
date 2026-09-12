@@ -384,7 +384,7 @@ fn render_wide_dashboard(
     .header(header)
     .block(panel_block(&title, true))
     .row_highlight_style(theme::selected_row())
-    .highlight_symbol("> ")
+    .highlight_symbol(theme::SELECTION_MARKER)
     .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
     frame.render_stateful_widget(table, table_area, &mut selection.table_state);
 
@@ -581,7 +581,7 @@ fn fleet_title(state: &GameState) -> String {
         .count();
     let en_route = state.player_company.fleet.trains.len().saturating_sub(ready);
     format!(
-        "Trains · {} total · {} READY · {} EN ROUTE",
+        "Trains · {} total · {} READY · {} TRAVELLING",
         state.player_company.fleet.trains.len(),
         ready,
         en_route
@@ -591,7 +591,7 @@ fn fleet_title(state: &GameState) -> String {
 fn train_status_label(train: &Train) -> &'static str {
     match &train.status {
         TrainStatus::Ready { .. } => "READY",
-        TrainStatus::Travelling { .. } => "EN ROUTE",
+        TrainStatus::Travelling { .. } => "TRAVELLING",
     }
 }
 
@@ -604,10 +604,10 @@ fn train_status_style(train: &Train) -> Style {
 
 fn train_action_line(train: &Train, compact_detail: bool) -> &'static str {
     match (&train.status, compact_detail) {
-        (TrainStatus::Ready { .. }, true) => "D Dispatch   S Resale   Esc Back to Trains",
-        (TrainStatus::Ready { .. }, false) => "D Dispatch   S Resale",
+        (TrainStatus::Ready { .. }, true) => "d Dispatch   s Resale   Esc Back",
+        (TrainStatus::Ready { .. }, false) => "d Dispatch   s Resale",
         (TrainStatus::Travelling { .. }, true) => {
-            "No actions until arrival   Esc Back to Trains"
+            "No actions until arrival   Esc Back"
         }
         (TrainStatus::Travelling { .. }, false) => "No actions available until arrival",
     }
@@ -704,14 +704,14 @@ fn train_fields(state: &GameState, train: &Train, now: UtcSeconds) -> TrainField
             else {
                 return TrainFields {
                     model,
-                    status: "EN ROUTE".into(),
+                    status: "TRAVELLING".into(),
                     place: format!("Journey {} details missing", journey_id.get()),
                     eta: "Unavailable".into(),
                 };
             };
             TrainFields {
                 model,
-                status: "EN ROUTE".into(),
+                status: "TRAVELLING".into(),
                 place: format!(
                     "{} → {}",
                     station_label_or_missing(state, journey.origin_station_id),

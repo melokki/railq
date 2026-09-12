@@ -302,7 +302,7 @@ fn render_recovery_routes(
     let list = List::new(routes)
         .block(panel_block("Finite recovery routes", true))
         .highlight_style(theme::selected_row())
-        .highlight_symbol("> ")
+        .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(list, area, &mut selection.list_state);
 }
@@ -450,7 +450,7 @@ fn recovery_steps(state: &GameState, option: &RecoveryOption) -> Vec<Line<'stati
                 recovery_step(
                     2,
                     format!(
-                        "Review purchase of {catalogue_name} delivered to {} in Buy Trains.",
+                        "Review purchase of {catalogue_name} delivered to {} in Market.",
                         station_label(state, *delivery_station_id),
                     ),
                 ),
@@ -478,7 +478,7 @@ fn recovery_step(number: usize, text: String) -> Line<'static> {
 fn recovery_destination_label(destination: RecoveryDestination) -> &'static str {
     match destination {
         RecoveryDestination::Fleet => "Fleet",
-        RecoveryDestination::BuyTrains => "Buy Trains",
+        RecoveryDestination::BuyTrains => "Market",
         RecoveryDestination::Map => "Map",
     }
 }
@@ -758,7 +758,7 @@ fn render_receipts_table(
         .header(header.style(theme::table_header()).bottom_margin(1))
         .block(panel_block(&title, true))
         .row_highlight_style(theme::selected_row())
-        .highlight_symbol("> ")
+        .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(table, area, &mut selection.table_state);
 }

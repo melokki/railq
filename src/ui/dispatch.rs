@@ -1185,7 +1185,7 @@ fn ready_train_ids_for_station(
 
 fn no_ready_train_reason(state: &GameState) -> &'static str {
     if state.player_company.fleet.trains.is_empty() {
-        "No READY Train in the Fleet. Press B to buy a Train."
+        "No READY Train in the Fleet. Open 3 Market to buy a Train."
     } else {
         "No READY Train: all Fleet Trains are TRAVELLING. Wait for an arrival, then press D to dispatch."
     }

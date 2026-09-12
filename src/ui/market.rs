@@ -652,7 +652,7 @@ fn render_purchase_review_text(
 
 /// Renders the diesel Train catalogue before a purchase is started.
 pub fn render(state: &GameState) -> String {
-    let mut output = String::from("Buy Trains\n");
+    let mut output = String::from("Market\n");
     for (index, train) in state.rules.balance.diesel_catalogue().iter().enumerate() {
         render_catalogue_train(&mut output, state, index, train);
     }
@@ -764,7 +764,7 @@ pub fn render_dashboard(
         )
         .block(panel_block(&market_title, true))
         .row_highlight_style(theme::selected_row())
-        .highlight_symbol("> ")
+        .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(table, table_area, &mut selection.table_state);
 
@@ -971,7 +971,7 @@ fn render_delivery_chooser(
         .block(panel_block("Delivery Rail Stations", true))
         .style(theme::panel())
         .highlight_style(theme::selected_row())
-        .highlight_symbol("> ")
+        .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(list, list_area, list_state);
 
@@ -1077,7 +1077,7 @@ fn panel_block(title: &str, focused: bool) -> Block<'_> {
 }
 
 fn render_selected(state: &GameState, selected_catalogue_index: usize) -> String {
-    let mut output = String::from("Buy Trains\n");
+    let mut output = String::from("Market\n");
     for (index, train) in state.rules.balance.diesel_catalogue().iter().enumerate() {
         render_catalogue_train(&mut output, state, index, train);
     }

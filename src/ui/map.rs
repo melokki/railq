@@ -1596,7 +1596,7 @@ fn render_journey_table(
     )
     .block(panel_block("Departure Board · active Journeys", focused))
     .row_highlight_style(theme::selected_row())
-    .highlight_symbol("> ")
+    .highlight_symbol(theme::SELECTION_MARKER)
     .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
     frame.render_stateful_widget(table, area, &mut selection.table_state);
 }
@@ -2047,7 +2047,7 @@ fn render_station_list(
     let list = List::new(items)
         .block(panel_block("Rail Stations · connected", focused))
         .highlight_style(theme::selected_row())
-        .highlight_symbol("> ")
+        .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
     frame.render_stateful_widget(list, area, &mut selection.list_state);
 }
@@ -2084,7 +2084,7 @@ fn render_settlement_list(
             focused,
         ))
         .highlight_style(theme::selected_row())
-        .highlight_symbol("> ")
+        .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
     frame.render_stateful_widget(list, area, &mut selection.list_state);
 }
@@ -2458,7 +2458,7 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
     if state.player_company.fleet.trains.is_empty() {
         writeln!(
             output,
-            "  No Trains in the Fleet. Press B to open Buy Trains and purchase one."
+            "  No Trains in the Fleet. Open 3 Market to purchase one."
         )
         .expect("writing to a String cannot fail");
     }
@@ -2635,7 +2635,7 @@ mod tests {
             assert!(map.contains(&format!("Rail Line {}", line.id.get())));
         }
         assert!(map.contains("Company Funds: $"));
-        assert!(map.contains("Press B to open Buy Trains"));
+        assert!(map.contains("Open 3 Market"));
     }
 
     #[test]

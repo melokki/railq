@@ -71,7 +71,7 @@ impl View {
             Self::Map => "Map",
             Self::Trains => "Trains",
             Self::Company => "Company",
-            Self::BuyTrains => "Buy Trains",
+            Self::BuyTrains => "Market",
         }
     }
 
@@ -1286,13 +1286,13 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
     let context = if let Some(flow) = &shell.dispatch_flow {
         if flow.is_selecting_train() {
             if compact {
-                "↑↓ Train  Enter Next  Esc Cancel".into()
+                "↑↓/jk Train  Enter Next  Esc Cancel".into()
             } else {
                 "↑↓/jk Train  Enter Next  Esc Cancel".into()
             }
         } else if flow.is_selecting_destination() {
             if compact {
-                "↑↓ Route  Enter Review  ← Back  Esc Cancel".into()
+                "↑↓/jk Route  Enter Review  ← Back  Esc Cancel".into()
             } else {
                 "↑↓/jk Route  PgUp/PgDn Scroll  Enter Review  ← Back  Esc Cancel".into()
             }
@@ -1322,7 +1322,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             Some(_) => "d/s available after arrival",
             None => "d/s unavailable",
         };
-        format!("Esc Trains  {actions}")
+        format!("Esc Back  {actions}")
     } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
         let action = shell
             .fleet_selection
@@ -1345,7 +1345,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
         if shell.fleet_split_visible {
             format!("↑↓/jk Select  PgUp/PgDn Scroll  {actions}")
         } else if compact {
-            format!("↑↓ Trains  Enter Details  {actions}")
+            format!("↑↓/jk Train  Enter Details  {actions}")
         } else {
             format!("↑↓/jk Train  Enter Details  {actions}")
         }
@@ -1358,7 +1358,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
             .count();
         let action = if ready == 0 {
-            "d no READY Train".to_owned()
+            "d unavailable · no READY Train".to_owned()
         } else if ready == 1 {
             "d Dispatch · 1 READY".to_owned()
         } else {
@@ -1371,26 +1371,26 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
         }
     } else if shell.active_view == View::Company {
         if shell.company_recovery_review_open {
-            "↑↓/jk Route  Enter Open  Esc Company".into()
+            "↑↓/jk Route  Enter Open  Esc Back".into()
         } else if shell.company_receipt_details_open {
-            "Esc Receipts  1–4 Navigate".into()
+            "Esc Back  1–4 Navigate".into()
         } else {
-            "↑↓ Receipt  Enter Inspect  r Recovery".into()
+            "↑↓/jk Receipt  Enter Details  r Recovery".into()
         }
     } else if shell.active_view == View::BuyTrains {
         if let Some(flow) = &shell.market_flow {
             if flow.is_selecting_delivery() {
-                "↑↓ Station  Enter Review  ← Back  Esc Cancel".into()
+                "↑↓/jk Station  Enter Review  ← Back  Esc Cancel".into()
             } else {
                 "Enter Confirm purchase  ← Back  Esc Cancel".into()
             }
         } else if compact {
-            "↑↓ Model  Enter Buy".into()
+            "↑↓/jk Model  Enter Buy".into()
         } else {
-            "↑↓/jk Model  Enter Choose delivery".into()
+            "↑↓/jk Model  Enter Choose Delivery".into()
         }
     } else {
-        "Enter Inspect".into()
+        "Enter Details".into()
     };
 
     format!("{context}  ·  ? Help  q Quit")
@@ -1486,10 +1486,10 @@ const HELP_LINES: &[&str] = &[
     "",
     "Panels and lists",
     "Lists use [Up]/[Down] or [J]/[K]; Map uses all four directions or H/J/K/L.",
-    "[PageUp]/[PageDown] scrolls lists. [Enter] opens details when a compact view needs them.",
+    "[PageUp]/[PageDown] scrolls lists. [Enter] opens details for the current selection.",
     "Trains: select with [J]/[K]; [D] dispatches a READY Train and [S] reviews resale.",
     "Map: [D] opens all READY Trains for company-wide Manual Dispatch.",
-    "Company: [R] opens calculated recovery routes during Insolvency.",
+    "Company: [R] opens recovery routes when the company is not OPERATING.",
     "",
     "Flows",
     "[Enter] advances or confirms only the action named in the footer.",
@@ -1976,7 +1976,7 @@ mod tests {
         assert_eq!(marker.bg, theme::ACCENT);
 
         let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
-        assert!(rendered.contains("Trains · 2 total · 2 READY · 0 EN ROUTE"));
+        assert!(rendered.contains("Trains · 2 total · 2 READY · 0 TRAVELLING"));
         assert!(rendered.contains("OPERATIONS"));
         assert!(rendered.contains("SPECIFICATIONS"));
         assert!(rendered.contains("D Dispatch"));
