@@ -802,6 +802,14 @@ fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
             field: "Company Funds or financial total",
         });
     }
+    let station_ids = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .map(|station| station.id)
+        .collect::<HashSet<_>>();
     let mut receipt_ids = HashSet::new();
     for receipt in &state.financials.recent_journey_receipts {
         if receipt.journey_id.get() == 0 || !receipt_ids.insert(receipt.journey_id) {
@@ -820,6 +828,55 @@ fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
         receipt
             .infrastructure_access_fee
             .checked_add(receipt.fuel_cost)?;
+
+        let metadata_fields_present = [
+            receipt.train_id.is_some(),
+            receipt.train_model_name.is_some(),
+            receipt.origin_station_id.is_some(),
+            receipt.destination_station_id.is_some(),
+            receipt.passengers_carried.is_some(),
+            receipt.passenger_capacity.is_some(),
+            receipt.completed_at.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        if metadata_fields_present != 0 && metadata_fields_present != 7 {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Journey receipt operating context",
+            });
+        }
+        if metadata_fields_present == 7 {
+            let train_id = receipt.train_id.expect("complete receipt context has Train ID");
+            let train_model_name = receipt
+                .train_model_name
+                .as_deref()
+                .expect("complete receipt context has Train model");
+            let origin = receipt
+                .origin_station_id
+                .expect("complete receipt context has origin");
+            let destination = receipt
+                .destination_station_id
+                .expect("complete receipt context has destination");
+            let passengers = receipt
+                .passengers_carried
+                .expect("complete receipt context has passengers");
+            let capacity = receipt
+                .passenger_capacity
+                .expect("complete receipt context has capacity");
+            if train_id.get() == 0
+                || train_model_name.trim().is_empty()
+                || origin == destination
+                || !station_ids.contains(&origin)
+                || !station_ids.contains(&destination)
+                || capacity == 0
+                || passengers > capacity
+            {
+                return Err(SaveValidationError::InvalidValue {
+                    field: "Journey receipt operating context",
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -984,7 +1041,7 @@ mod tests {
         model::{DistanceMetres, DurationSeconds, RailLineId, TrainId, TrainStatus, UtcSeconds},
         sim::{
             fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
-            world::create_new_game,
+            time::advance_time, world::create_new_game,
         },
     };
 
@@ -1040,6 +1097,26 @@ mod tests {
         let encoded = encode_game_state(&state).unwrap();
 
         assert_eq!(decode_game_state(&encoded).unwrap(), state);
+    }
+
+    #[test]
+    fn round_trips_enriched_journey_receipts() {
+        let mut state = active_game();
+        let arrives_at = state.active_journeys[0].arrives_at;
+        advance_time(&mut state, arrives_at).unwrap();
+
+        let encoded = encode_game_state(&state).unwrap();
+        let decoded = decode_game_state(&encoded).unwrap();
+
+        assert_eq!(decoded, state);
+        let receipt = &decoded.financials.recent_journey_receipts[0];
+        assert!(receipt.train_id.is_some());
+        assert!(receipt.train_model_name.is_some());
+        assert!(receipt.origin_station_id.is_some());
+        assert!(receipt.destination_station_id.is_some());
+        assert!(receipt.passengers_carried.is_some());
+        assert!(receipt.passenger_capacity.is_some());
+        assert_eq!(receipt.completed_at, Some(arrives_at));
     }
 
     #[test]

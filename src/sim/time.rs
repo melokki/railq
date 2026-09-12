@@ -132,6 +132,32 @@ pub fn advance_time_with_arrivals(
     // the operating state.
     replenish_directional_demand(state, effective_now);
 
+    let settled_receipts = due_journeys
+        .iter()
+        .map(|journey| {
+            let train = state
+                .player_company
+                .fleet
+                .trains
+                .iter()
+                .find(|train| train.id == journey.train_id)
+                .expect("due Journey Train was validated before state mutation");
+            JourneyReceipt {
+                journey_id: journey.id,
+                revenue: journey.operating_revenue,
+                infrastructure_access_fee: journey.infrastructure_access_fee,
+                fuel_cost: journey.fuel_cost,
+                train_id: Some(train.id),
+                train_model_name: Some(train.model_name.clone()),
+                origin_station_id: Some(journey.origin_station_id),
+                destination_station_id: Some(journey.destination_station_id),
+                passengers_carried: Some(journey.passengers_carried),
+                passenger_capacity: Some(train.passenger_capacity.passengers()),
+                completed_at: Some(journey.arrives_at),
+            }
+        })
+        .collect::<Vec<_>>();
+
     for journey in &due_journeys {
         let train = state
             .player_company
@@ -152,12 +178,7 @@ pub fn advance_time_with_arrivals(
     state
         .financials
         .recent_journey_receipts
-        .extend(due_journeys.iter().map(|journey| JourneyReceipt {
-            journey_id: journey.id,
-            revenue: journey.operating_revenue,
-            infrastructure_access_fee: journey.infrastructure_access_fee,
-            fuel_cost: journey.fuel_cost,
-        }));
+        .extend(settled_receipts);
 
     Ok(due_journeys
         .into_iter()
@@ -238,10 +259,21 @@ mod tests {
         );
         assert_eq!(state.financials.operating_revenue, quote.operating_revenue);
         assert_eq!(state.financials.recent_journey_receipts.len(), 1);
+        let receipt = &state.financials.recent_journey_receipts[0];
+        assert_eq!(receipt.journey_id, journey_id);
+        assert_eq!(receipt.train_id, Some(state.player_company.fleet.trains[0].id));
         assert_eq!(
-            state.financials.recent_journey_receipts[0].journey_id,
-            journey_id
+            receipt.train_model_name.as_deref(),
+            Some(state.player_company.fleet.trains[0].model_name.as_str())
         );
+        assert_eq!(receipt.origin_station_id, Some(ORIGIN));
+        assert_eq!(receipt.destination_station_id, Some(DESTINATION));
+        assert_eq!(receipt.passengers_carried, Some(quote.boarded_passengers));
+        assert_eq!(
+            receipt.passenger_capacity,
+            Some(state.player_company.fleet.trains[0].passenger_capacity.passengers())
+        );
+        assert_eq!(receipt.completed_at, Some(arrives_at));
 
         let after_first_arrival = state.clone();
         advance_time(&mut state, arrives_at).unwrap();

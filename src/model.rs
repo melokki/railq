@@ -532,13 +532,31 @@ pub struct Financials {
     pub recent_journey_receipts: Vec<JourneyReceipt>,
 }
 
-/// The settled financial result of one Journey.
+/// The settled financial result and operating context of one Journey.
+///
+/// The optional context fields were added after the initial save format. They
+/// default to `None` so version-1 RON saves containing older receipts remain
+/// readable; newly settled Journeys always populate the complete snapshot.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct JourneyReceipt {
     pub journey_id: JourneyId,
     pub revenue: Money,
     pub infrastructure_access_fee: Money,
     pub fuel_cost: Money,
+    #[serde(default)]
+    pub train_id: Option<TrainId>,
+    #[serde(default)]
+    pub train_model_name: Option<String>,
+    #[serde(default)]
+    pub origin_station_id: Option<RailStationId>,
+    #[serde(default)]
+    pub destination_station_id: Option<RailStationId>,
+    #[serde(default)]
+    pub passengers_carried: Option<u32>,
+    #[serde(default)]
+    pub passenger_capacity: Option<u32>,
+    #[serde(default)]
+    pub completed_at: Option<UtcSeconds>,
 }
 
 /// Rules saved with a game so its economics do not change after a balance update.

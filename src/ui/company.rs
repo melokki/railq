@@ -511,6 +511,7 @@ fn render_wide_dashboard(
         render_receipt_details(
             frame,
             details_area,
+            state,
             selection.selected_receipt(state),
             false,
         );
@@ -707,45 +708,48 @@ fn render_receipts_table(
 
     let visible_items = usize::from(area.height.saturating_sub(5)).max(1);
     selection.set_page_size(visible_items);
+    let detailed = wide && area.width >= 86;
     let rows = receipts.iter().rev().map(|receipt| {
         let result = receipt_result_cents(
             receipt.revenue,
             receipt.infrastructure_access_fee,
             receipt.fuel_cost,
         );
-        if wide {
+        if detailed {
             Row::new([
                 Cell::from(format!("J{:02}", receipt.journey_id.get())),
-                Cell::from(format_money(receipt.revenue)),
-                Cell::from(format_money(receipt.infrastructure_access_fee)),
-                Cell::from(format_money(receipt.fuel_cost)),
+                Cell::from(receipt_route_label(state, receipt)),
+                Cell::from(receipt_train_label(receipt)),
+                Cell::from(receipt_passenger_label(receipt)),
+                Cell::from(receipt_age_label(state, receipt)),
                 Cell::from(format_signed_cents(result)).style(result_style(result)),
             ])
         } else {
             Row::new([
-                Cell::from(format!("J{}", receipt.journey_id.get())),
-                Cell::from(format_money(receipt.revenue)),
+                Cell::from(receipt_route_or_id_label(state, receipt)),
+                Cell::from(receipt_passenger_label(receipt)),
                 Cell::from(format_signed_cents(result)).style(result_style(result)),
             ])
         }
     });
-    let (header, widths) = if wide {
+    let (header, widths) = if detailed {
         (
-            Row::new(["Journey", "Revenue", "Access fees", "Fuel", "Result"]),
+            Row::new(["ID", "Route", "Train", "Pax", "Completed", "Result"]),
             vec![
-                Constraint::Length(7),
-                Constraint::Length(15),
-                Constraint::Length(15),
-                Constraint::Length(13),
-                Constraint::Length(15),
+                Constraint::Length(6),
+                Constraint::Fill(3),
+                Constraint::Fill(2),
+                Constraint::Length(9),
+                Constraint::Length(11),
+                Constraint::Length(14),
             ],
         )
     } else {
         (
-            Row::new(["ID", "Revenue", "Result"]),
+            Row::new(["Journey", "Pax", "Result"]),
             vec![
-                Constraint::Length(5),
                 Constraint::Fill(1),
+                Constraint::Length(9),
                 Constraint::Length(12),
             ],
         )
@@ -894,6 +898,7 @@ fn render_compact_summary(
 fn render_receipt_details(
     frame: &mut Frame,
     area: Rect,
+    state: &GameState,
     receipt: Option<&JourneyReceipt>,
     compact: bool,
 ) {
@@ -912,12 +917,44 @@ fn render_receipt_details(
                 receipt.infrastructure_access_fee,
                 receipt.fuel_cost,
             );
-            vec![
+            let mut lines = vec![
                 Line::styled(
-                    format!("Journey {} · retained receipt", receipt.journey_id.get()),
+                    format!(
+                        "Journey {} · {}",
+                        receipt.journey_id.get(),
+                        receipt_age_label(state, receipt)
+                    ),
                     theme::title(),
                 ),
                 Line::from(""),
+            ];
+            if receipt_has_operating_context(receipt) {
+                lines.extend([
+                    financial_line(
+                        "Route",
+                        receipt_route_label(state, receipt),
+                        theme::primary_value(),
+                    ),
+                    financial_line(
+                        "Train",
+                        receipt_train_label(receipt),
+                        theme::primary_value(),
+                    ),
+                    financial_line(
+                        "Passengers",
+                        receipt_passenger_detail(receipt),
+                        theme::primary_value(),
+                    ),
+                    Line::from(""),
+                ]);
+            } else {
+                lines.push(Line::styled(
+                    "Operating context is unavailable for this legacy receipt.",
+                    theme::secondary(),
+                ));
+                lines.push(Line::from(""));
+            }
+            lines.extend([
                 financial_line(
                     "Revenue",
                     format_money(receipt.revenue),
@@ -929,7 +966,7 @@ fn render_receipt_details(
                     theme::primary_value(),
                 ),
                 financial_line(
-                    "Fuel cost",
+                    "Fuel",
                     format_money(receipt.fuel_cost),
                     theme::primary_value(),
                 ),
@@ -939,8 +976,9 @@ fn render_receipt_details(
                     result_style(result),
                 ),
                 Line::from(""),
-                Line::styled("Esc returns to retained receipts.", theme::secondary()),
-            ]
+                Line::styled("Esc returns to Journey history.", theme::secondary()),
+            ]);
+            lines
         }
         None => vec![Line::styled(
             "The selected receipt is no longer retained.",
@@ -962,7 +1000,7 @@ fn render_compact_receipt_details(
     selection: &mut ReceiptSelection,
 ) {
     let receipt = selection.selected_receipt(state);
-    render_receipt_details(frame, area, receipt, true);
+    render_receipt_details(frame, area, state, receipt, true);
 }
 
 fn panel_block(title: &str, focused: bool) -> Block<'_> {
@@ -1159,8 +1197,11 @@ fn render_receipts(output: &mut String, state: &GameState) {
             - i128::from(receipt.fuel_cost.cents());
         writeln!(
             output,
-            "  Journey {} — Revenue: {}; Infrastructure Access Fee: {}; Fuel Cost: {}; Journey Profitability: {}",
+            "  Journey {} — {}; {}; Passengers: {}; Revenue: {}; Access: {}; Fuel: {}; Result: {}",
             receipt.journey_id.get(),
+            receipt_route_label(state, receipt),
+            receipt_train_label(receipt),
+            receipt_passenger_label(receipt),
             format_money(receipt.revenue),
             format_money(receipt.infrastructure_access_fee),
             format_money(receipt.fuel_cost),
@@ -1331,6 +1372,82 @@ fn station_label(state: &GameState, station_id: RailStationId) -> &str {
         .map_or("unknown Settlement", |settlement| settlement.name.as_str())
 }
 
+fn receipt_has_operating_context(receipt: &JourneyReceipt) -> bool {
+    receipt.train_id.is_some()
+        && receipt.train_model_name.is_some()
+        && receipt.origin_station_id.is_some()
+        && receipt.destination_station_id.is_some()
+        && receipt.passengers_carried.is_some()
+        && receipt.passenger_capacity.is_some()
+        && receipt.completed_at.is_some()
+}
+
+fn receipt_route_label(state: &GameState, receipt: &JourneyReceipt) -> String {
+    match (receipt.origin_station_id, receipt.destination_station_id) {
+        (Some(origin), Some(destination)) => format!(
+            "{} → {}",
+            station_label(state, origin),
+            station_label(state, destination)
+        ),
+        _ => "Legacy receipt".into(),
+    }
+}
+
+fn receipt_route_or_id_label(state: &GameState, receipt: &JourneyReceipt) -> String {
+    if receipt.origin_station_id.is_some() && receipt.destination_station_id.is_some() {
+        receipt_route_label(state, receipt)
+    } else {
+        format!("Journey {}", receipt.journey_id.get())
+    }
+}
+
+fn receipt_train_label(receipt: &JourneyReceipt) -> String {
+    match (receipt.train_id, receipt.train_model_name.as_deref()) {
+        (Some(train_id), Some(model_name)) => format!("T{} · {model_name}", train_id.get()),
+        (Some(train_id), None) => format!("Train {}", train_id.get()),
+        (None, Some(model_name)) => model_name.to_owned(),
+        (None, None) => "—".into(),
+    }
+}
+
+fn receipt_passenger_label(receipt: &JourneyReceipt) -> String {
+    match (receipt.passengers_carried, receipt.passenger_capacity) {
+        (Some(passengers), Some(capacity)) => format!("{passengers}/{capacity}"),
+        (Some(passengers), None) => passengers.to_string(),
+        _ => "—".into(),
+    }
+}
+
+fn receipt_passenger_detail(receipt: &JourneyReceipt) -> String {
+    match (receipt.passengers_carried, receipt.passenger_capacity) {
+        (Some(passengers), Some(capacity)) if capacity > 0 => {
+            let load_factor = u64::from(passengers)
+                .saturating_mul(100)
+                .checked_div(u64::from(capacity))
+                .unwrap_or(0);
+            format!("{passengers} / {capacity} · {load_factor}% load")
+        }
+        _ => receipt_passenger_label(receipt),
+    }
+}
+
+fn receipt_age_label(state: &GameState, receipt: &JourneyReceipt) -> String {
+    let Some(completed_at) = receipt.completed_at else {
+        return "legacy".into();
+    };
+    let elapsed = state
+        .last_processed_at
+        .unix_seconds()
+        .saturating_sub(completed_at.unix_seconds())
+        .max(0) as u64;
+    match elapsed {
+        0..=59 => "just now".into(),
+        60..=3_599 => format!("{}m ago", elapsed / 60),
+        3_600..=86_399 => format!("{}h {}m ago", elapsed / 3_600, (elapsed % 3_600) / 60),
+        _ => format!("{}d ago", elapsed / 86_400),
+    }
+}
+
 fn format_money(money: Money) -> String {
     format_cents(i128::from(money.cents()))
 }
@@ -1379,7 +1496,9 @@ mod tests {
         assert!(rendered.contains("Fuel Cost: $"));
         assert!(rendered.contains("Journey Profitability total: $"));
         assert!(rendered.contains("Latest receipts:"));
-        assert!(rendered.contains("Journey 1 — Revenue:"));
+        assert!(rendered.contains("Journey 1 —"));
+        assert!(rendered.contains("Passengers:"));
+        assert!(rendered.contains("Result:"));
     }
 
     #[test]
