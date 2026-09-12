@@ -493,35 +493,92 @@ fn render_wide_dashboard(
     let evaluation = evaluate_financial_recovery(state);
     let [summary_area, totals_area, history_area] = Layout::vertical([
         Constraint::Length(5),
-        Constraint::Length(8),
+        Constraint::Length(7),
         Constraint::Fill(1),
     ])
     .spacing(1)
     .areas(area);
-    let [cash_area, status_area] =
-        Layout::horizontal([Constraint::Length(40), Constraint::Fill(1)])
-            .spacing(1)
-            .areas(summary_area);
 
-    render_cash_panel(frame, cash_area, state);
-    render_status_panel(frame, status_area, &evaluation);
+    render_company_summary(frame, summary_area, state, &evaluation);
     render_totals_table(frame, totals_area, state);
 
-    let [receipts_area, recovery_area] =
-        Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
-            .spacing(1)
-            .areas(history_area);
-    render_receipts_table(frame, receipts_area, state, selection, true);
     if receipt_details_open {
+        let [receipts_area, details_area] =
+            Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
+                .spacing(1)
+                .areas(history_area);
+        render_receipts_table(frame, receipts_area, state, selection, true);
         render_receipt_details(
             frame,
-            recovery_area,
+            details_area,
             selection.selected_receipt(state),
-            true,
+            false,
         );
-    } else {
-        render_recovery_panel(frame, recovery_area, state, &evaluation);
+        return;
     }
+
+    let recovery_relevant = evaluation
+        .as_ref()
+        .map_or(true, |evaluation| evaluation.status != FinancialStatus::Operating);
+    if recovery_relevant {
+        let [receipts_area, recovery_area] =
+            Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
+                .spacing(1)
+                .areas(history_area);
+        render_receipts_table(frame, receipts_area, state, selection, true);
+        render_recovery_panel(frame, recovery_area, state, &evaluation);
+    } else {
+        render_receipts_table(frame, history_area, state, selection, true);
+    }
+}
+
+fn render_company_summary(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
+) {
+    let block = panel_block("Company overview", false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let result = operating_result_cents(state);
+    let status_line = match evaluation {
+        Ok(evaluation) => Line::from(vec![
+            Span::styled(
+                status_label(evaluation.status),
+                status_style(Some(evaluation.status)),
+            ),
+            Span::styled("  ", theme::secondary()),
+            Span::styled(
+                status_explanation(evaluation.status),
+                theme::secondary(),
+            ),
+        ]),
+        Err(error) => Line::from(vec![
+            Span::styled("[?] STATUS UNAVAILABLE", theme::error().bold()),
+            Span::styled(
+                format!("  Financial evaluation unavailable: {error}"),
+                theme::error(),
+            ),
+        ]),
+    };
+
+    let metrics = Line::from(vec![
+        Span::styled("Cash ", theme::secondary()),
+        Span::styled(format_money(state.player_company.funds), theme::title()),
+        Span::styled("   Operating result ", theme::secondary()),
+        Span::styled(format_signed_cents(result), result_style(result)),
+        Span::styled("   Fleet value ", theme::secondary()),
+        Span::styled(format_cents(fleet_value_cents(state)), theme::primary_value()),
+    ]);
+
+    frame.render_widget(
+        Paragraph::new(vec![status_line, metrics])
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
 }
 
 fn render_compact_dashboard(
@@ -580,7 +637,7 @@ fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
             theme::primary_value(),
         ),
         financial_line(
-            "Fuel costs",
+            "Fuel",
             format_money(state.financials.fuel_costs),
             theme::primary_value(),
         ),
@@ -598,91 +655,32 @@ fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
     );
 }
 
-fn render_cash_panel(frame: &mut Frame, area: Rect, state: &GameState) {
-    let block = panel_block("Cash position", false);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(vec![
-            financial_line(
-                "Company Funds",
-                format_money(state.player_company.funds),
-                theme::title(),
-            ),
-            financial_line(
-                "Fleet value",
-                format_cents(fleet_value_cents(state)),
-                theme::primary_value(),
-            ),
-            Line::styled("Cash now; Fleet at original price.", theme::secondary()),
-        ])
-        .style(theme::panel())
-        .wrap(Wrap { trim: true }),
-        inner,
-    );
-}
-
-fn render_status_panel(
-    frame: &mut Frame,
-    area: Rect,
-    evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
-) {
-    let block = panel_block("Financial status", false);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let lines = match evaluation {
-        Ok(evaluation) => vec![
-            Line::styled(
-                status_label(evaluation.status),
-                status_style(Some(evaluation.status)),
-            ),
-            Line::styled(
-                status_explanation(evaluation.status),
-                theme::primary_value(),
-            ),
-        ],
-        Err(error) => vec![
-            Line::styled("[?] STATUS UNAVAILABLE", theme::error()),
-            Line::styled(
-                format!("Financial recovery evaluation unavailable: {error}"),
-                theme::error(),
-            ),
-        ],
-    };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(theme::panel())
-            .wrap(Wrap { trim: true }),
-        inner,
-    );
-}
-
 fn render_totals_table(frame: &mut Frame, area: Rect, state: &GameState) {
     let result = operating_result_cents(state);
     let rows = vec![
         money_row(
-            "Operating Revenue",
+            "Revenue",
             format_money(state.financials.operating_revenue),
             theme::primary_value(),
         ),
         money_row(
-            "Infrastructure Access Fees",
+            "Access fees",
             format_money(state.financials.infrastructure_access_fees),
             theme::primary_value(),
         ),
         money_row(
-            "Fuel Costs",
+            "Fuel",
             format_money(state.financials.fuel_costs),
             theme::primary_value(),
         ),
         money_row(
-            "Signed Operating Result",
+            "Operating result",
             format_signed_cents(result),
             result_style(result),
         ),
     ];
     let table = Table::new(rows, [Constraint::Fill(1), Constraint::Length(18)])
-        .block(panel_block("Operating totals · lifetime", false))
+        .block(panel_block("Financial performance · lifetime", false))
         .column_spacing(1);
     frame.render_widget(table, area);
 }
@@ -695,7 +693,7 @@ fn render_receipts_table(
     wide: bool,
 ) {
     let receipts = &state.financials.recent_journey_receipts;
-    let title = format!("Journey receipts · {} retained history", receipts.len());
+    let title = format!("Journey history · {} receipts", receipts.len());
     if receipts.is_empty() {
         frame.render_widget(
             Paragraph::new("No retained Journey receipts yet. Operating Revenue is credited when a Journey arrives.")
@@ -733,7 +731,7 @@ fn render_receipts_table(
     });
     let (header, widths) = if wide {
         (
-            Row::new(["Journey", "Revenue", "Access fees", "Fuel", "Signed result"]),
+            Row::new(["Journey", "Revenue", "Access fees", "Fuel", "Result"]),
             vec![
                 Constraint::Length(7),
                 Constraint::Length(15),
@@ -767,7 +765,7 @@ fn render_recovery_panel(
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
 ) {
-    let block = panel_block("Recovery access", false);
+    let block = panel_block("Financial warning", false);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let lines = match evaluation {
@@ -778,7 +776,7 @@ fn render_recovery_panel(
             )];
             match evaluation.status {
                 FinancialStatus::Operating => lines.push(Line::styled(
-                    "No recovery action needed.",
+                    "No recovery action is required.",
                     theme::secondary(),
                 )),
                 FinancialStatus::BankruptcyDeferred => lines.push(Line::styled(
@@ -845,7 +843,7 @@ fn render_compact_summary(
             Err(error) => Line::styled(format!("[?] STATUS UNAVAILABLE: {error}"), theme::error()),
         },
         financial_line(
-            "Company Funds",
+            "Cash",
             format_money(state.player_company.funds),
             theme::title(),
         ),
@@ -866,7 +864,7 @@ fn render_compact_summary(
             theme::primary_value(),
         ),
         financial_line(
-            "Fuel costs",
+            "Fuel",
             format_money(state.financials.fuel_costs),
             theme::primary_value(),
         ),
@@ -879,7 +877,7 @@ fn render_compact_summary(
     if let Ok(evaluation) = evaluation
         && let Some(option) = evaluation.recovery_options.first()
     {
-        lines.push(Line::styled("Recovery option", theme::secondary()));
+        lines.push(Line::styled("Recovery", theme::secondary()));
         lines.push(Line::styled(
             compact_recovery_description(state, option),
             theme::primary_value(),
@@ -921,7 +919,7 @@ fn render_receipt_details(
                 ),
                 Line::from(""),
                 financial_line(
-                    "Operating Revenue",
+                    "Revenue",
                     format_money(receipt.revenue),
                     theme::primary_value(),
                 ),
@@ -936,7 +934,7 @@ fn render_receipt_details(
                     theme::primary_value(),
                 ),
                 financial_line(
-                    "Signed profit",
+                    "Result",
                     format_signed_cents(result),
                     result_style(result),
                 ),
@@ -1001,23 +999,23 @@ fn money_row(label: &str, value: String, style: Style) -> Row<'static> {
 fn status_label(status: FinancialStatus) -> &'static str {
     match status {
         FinancialStatus::Operating => "[OK] OPERATING",
-        FinancialStatus::Insolvent => "[!] INSOLVENCY",
-        FinancialStatus::BankruptcyDeferred => "[~] BANKRUPTCY DEFERRED",
-        FinancialStatus::Bankruptcy => "[X] BANKRUPTCY",
+        FinancialStatus::Insolvent => "[!] INSOLVENT",
+        FinancialStatus::BankruptcyDeferred => "[~] SETTLEMENT PENDING",
+        FinancialStatus::Bankruptcy => "[X] BANKRUPT",
     }
 }
 
 fn status_explanation(status: FinancialStatus) -> &'static str {
     match status {
-        FinancialStatus::Operating => "Company Funds can cover at least one available Journey.",
+        FinancialStatus::Operating => "At least one Journey can be funded now.",
         FinancialStatus::Insolvent => {
-            "Company Funds cannot cover a Journey; finite recovery remains."
+            "No Journey can be funded without a recovery action."
         }
         FinancialStatus::BankruptcyDeferred => {
-            "An active Journey may still settle Operating Revenue before Bankruptcy is considered."
+            "No Journey can be funded now; active Journey revenue is still unsettled."
         }
         FinancialStatus::Bankruptcy => {
-            "No finite sell, retain, rebuy, and dispatch option can return the Player Company to operation."
+            "No finite recovery path can return the Player Company to operation."
         }
     }
 }

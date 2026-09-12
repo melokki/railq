@@ -118,26 +118,27 @@ impl From<CalculationError> for FinanceError {
 
 /// Evaluates whether the Player Company can operate, recover, or is Bankrupt.
 ///
-/// An active Journey always defers Bankruptcy because its stored Operating
-/// Revenue may still arrive. Otherwise, the evaluator first finds cash-only
-/// Journeys, then tries the two finite recovery rules: sell all other Trains
-/// while retaining one, or sell every Train and buy and dispatch catalogue
-/// stock. Passenger Services do not constrain this check because creating one
-/// is free.
+/// The evaluator first looks for a Journey that can be funded immediately.
+/// An unrelated active Journey must not mask an otherwise healthy company.
+/// Only when no current Journey can be funded does unsettled Operating Revenue
+/// defer Bankruptcy. Once every active Journey has settled, the evaluator can
+/// apply the finite recovery rules: sell all other Trains while retaining one,
+/// or sell every Train and buy and dispatch catalogue stock. Passenger
+/// Services do not constrain this check because creating one is free.
 pub fn evaluate_financial_recovery(state: &GameState) -> Result<FinancialEvaluation, FinanceError> {
-    if !state.active_journeys.is_empty() {
-        return Ok(FinancialEvaluation {
-            status: FinancialStatus::BankruptcyDeferred,
-            cash_only_options: Vec::new(),
-            recovery_options: Vec::new(),
-        });
-    }
-
     let cash_only_options = cash_only_options(state)?;
     if !cash_only_options.is_empty() {
         return Ok(FinancialEvaluation {
             status: FinancialStatus::Operating,
             cash_only_options,
+            recovery_options: Vec::new(),
+        });
+    }
+
+    if !state.active_journeys.is_empty() {
+        return Ok(FinancialEvaluation {
+            status: FinancialStatus::BankruptcyDeferred,
+            cash_only_options: Vec::new(),
             recovery_options: Vec::new(),
         });
     }
@@ -373,6 +374,34 @@ mod tests {
         assert_eq!(evaluation.status, FinancialStatus::BankruptcyDeferred);
         assert!(evaluation.cash_only_options.is_empty());
         assert!(evaluation.recovery_options.is_empty());
+    }
+
+    #[test]
+    fn active_journey_does_not_mask_an_affordable_ready_train() {
+        let mut state = configured_game(
+            Money::from_cents(2_300),
+            vec![diesel("Local", Money::from_cents(1_000))],
+        );
+        let travelling_train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let ready_train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        dispatch_journey(
+            &mut state,
+            travelling_train_id,
+            service_id,
+            UtcSeconds::from_unix_seconds(0),
+        )
+        .unwrap();
+
+        let evaluation = evaluate_financial_recovery(&state).unwrap();
+
+        assert_eq!(evaluation.status, FinancialStatus::Operating);
+        assert!(evaluation.cash_only_options.iter().any(|option| {
+            matches!(option, RecoveryOption::CashOnly { journey }
+                if journey.train_id == ready_train_id
+                    && journey.origin_station_id == ORIGIN
+                    && journey.destination_station_id == DESTINATION)
+        }));
     }
 
     #[test]
