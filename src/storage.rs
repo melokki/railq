@@ -32,7 +32,7 @@ use crate::{
         RailStationId, Region, ServiceId, Settlement, SettlementId, SpeedMetresPerSecond, Train,
         TrainId, TrainModelId, TrainStatus, UtcSeconds,
     },
-    sim::{economy::quote_journey, services::service_path_for_stops},
+    sim::services::service_path_for_stops,
 };
 
 /// SQLite schema understood by this build.
@@ -1848,24 +1848,19 @@ fn validate_journey(
         });
     }
 
-    // Quoting against a temporarily READY copy also verifies that the Journey's
-    // direction has a live directional demand pool without admitting it first.
-    let mut quote_candidate = state.clone();
-    quote_candidate
-        .player_company
-        .fleet
-        .trains
-        .iter_mut()
-        .find(|candidate| candidate.id == journey.train_id)
-        .expect("validated Journey Train remains present in quote candidate")
-        .status = TrainStatus::Ready {
-        at: journey.origin_station_id,
-    };
-    quote_journey(&quote_candidate, journey.train_id, journey.service_id).map_err(|_| {
-        SaveValidationError::ImpossibleState {
-            reason: "Journey cannot be quoted from its saved Passenger Service",
-        }
-    })?;
+    // An active Journey is a departure snapshot, not a fresh dispatch proposal.
+    // Pre-v3 Passenger Services were bidirectional, so a migrated Journey may
+    // legitimately be travelling opposite the newly directional Service order.
+    // Re-quoting it would incorrectly apply today's dispatch-direction rule to
+    // an operation that was already authorised before the migration.
+    if !state.origin_destination_demand.iter().any(|demand| {
+        demand.origin_station_id == journey.origin_station_id
+            && demand.destination_station_id == journey.destination_station_id
+    }) {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Journey direction has no saved Passenger Demand",
+        });
+    }
     Ok(())
 }
 
@@ -1928,6 +1923,27 @@ mod tests {
         dispatch_journey(&mut state, train_id, service_id, departed_at).unwrap();
         state.origin_destination_demand[0].fractional_passenger_seconds = 1_234;
         state
+    }
+
+    #[test]
+    fn migrated_bidirectional_journey_snapshot_remains_loadable() {
+        let directory = TestDirectory::new();
+        let slot = SaveSlot::open(directory.save_path()).unwrap();
+        let mut state = active_game();
+
+        // Before schema v3, the same Passenger Service could be dispatched in
+        // either direction. Simulate a migrated active Journey whose saved
+        // direction is the reverse of the new directional Service order.
+        state.player_company.passenger_services[0]
+            .stop_station_ids
+            .reverse();
+        state.player_company.passenger_services[0]
+            .rail_line_ids
+            .reverse();
+
+        slot.save(&state).unwrap();
+
+        assert_eq!(slot.load().unwrap(), Some(state));
     }
 
     #[test]
