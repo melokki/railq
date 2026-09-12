@@ -4,7 +4,7 @@
 //! is parsed once per process and owned Trains persist only a stable model ID
 //! plus instance-specific state.
 
-use std::{error::Error, fmt, sync::OnceLock};
+use std::{collections::HashSet, error::Error, fmt, sync::OnceLock};
 
 use serde::Deserialize;
 
@@ -22,6 +22,7 @@ pub struct TrainModel {
     id: TrainModelId,
     name: String,
     evn_type_code: u8,
+    evn_series_code: u16,
     purchase_price: Money,
     passenger_capacity: PassengerCapacity,
     speed: SpeedMetresPerSecond,
@@ -40,6 +41,11 @@ impl TrainModel {
     /// EVN digits 1–2 for this rolling-stock type.
     pub const fn evn_type_code(&self) -> u8 {
         self.evn_type_code
+    }
+
+    /// EVN digits 5–8, identifying this RailQ vehicle model/class.
+    pub const fn evn_series_code(&self) -> u16 {
+        self.evn_series_code
     }
 
     pub const fn evn_type_label(&self) -> &'static str {
@@ -91,6 +97,7 @@ impl TrainCatalogue {
         }
 
         let mut models = Vec::with_capacity(raw.len());
+        let mut evn_series = HashSet::new();
         for record in raw {
             let id = TrainModelId::new(record.id);
             if id.as_str().trim().is_empty() {
@@ -112,6 +119,18 @@ impl TrainCatalogue {
                 return Err(CatalogueError::InvalidField {
                     model_id: id.as_str().to_owned(),
                     field: "evn_type_code",
+                });
+            }
+            if record.evn_series_code > 9_999 {
+                return Err(CatalogueError::InvalidField {
+                    model_id: id.as_str().to_owned(),
+                    field: "evn_series_code",
+                });
+            }
+            if !evn_series.insert((record.evn_type_code, record.evn_series_code)) {
+                return Err(CatalogueError::DuplicateEvnSeries {
+                    vehicle_type_code: record.evn_type_code,
+                    series_code: record.evn_series_code,
                 });
             }
             if record.purchase_price_cents <= 0 {
@@ -142,6 +161,7 @@ impl TrainCatalogue {
                 id,
                 name: record.name,
                 evn_type_code: record.evn_type_code,
+                evn_series_code: record.evn_series_code,
                 purchase_price: Money::from_cents(record.purchase_price_cents),
                 passenger_capacity,
                 speed,
@@ -186,6 +206,7 @@ pub enum CatalogueError {
     Decode(String),
     Empty,
     DuplicateId(String),
+    DuplicateEvnSeries { vehicle_type_code: u8, series_code: u16 },
     InvalidField {
         model_id: String,
         field: &'static str,
@@ -198,6 +219,12 @@ impl fmt::Display for CatalogueError {
             Self::Decode(error) => write!(formatter, "could not decode Train catalogue: {error}"),
             Self::Empty => write!(formatter, "Train catalogue must contain at least one model"),
             Self::DuplicateId(id) => write!(formatter, "duplicate Train model ID {id}"),
+            Self::DuplicateEvnSeries { vehicle_type_code, series_code } => write!(
+                formatter,
+                "duplicate EVN series {:02} {:04}",
+                vehicle_type_code,
+                series_code
+            ),
             Self::InvalidField { model_id, field } => {
                 write!(formatter, "Train model {model_id} has invalid {field}")
             }
@@ -213,6 +240,7 @@ struct RawTrainModel {
     id: String,
     name: String,
     evn_type_code: u8,
+    evn_series_code: u16,
     purchase_price_cents: i64,
     passenger_capacity: i64,
     speed_metres_per_second: i64,
@@ -231,17 +259,35 @@ mod tests {
         assert_eq!(catalogue.models()[1].id().as_str(), "express-120");
         assert_eq!(catalogue.models()[0].evn_type_code(), 95);
         assert_eq!(catalogue.models()[1].evn_type_code(), 95);
+        assert_eq!(catalogue.models()[0].evn_series_code(), 70);
+        assert_eq!(catalogue.models()[1].evn_series_code(), 120);
     }
 
     #[test]
     fn rejects_duplicate_model_ids() {
         let source = r#"[
-            (id: "same", name: "A", evn_type_code: 95, purchase_price_cents: 1, passenger_capacity: 1, speed_metres_per_second: 1, fuel_cost_cents_per_kilometre: 1),
-            (id: "same", name: "B", evn_type_code: 95, purchase_price_cents: 1, passenger_capacity: 1, speed_metres_per_second: 1, fuel_cost_cents_per_kilometre: 1),
+            (id: "same", name: "A", evn_type_code: 95, evn_series_code: 70, purchase_price_cents: 1, passenger_capacity: 1, speed_metres_per_second: 1, fuel_cost_cents_per_kilometre: 1),
+            (id: "same", name: "B", evn_type_code: 95, evn_series_code: 71, purchase_price_cents: 1, passenger_capacity: 1, speed_metres_per_second: 1, fuel_cost_cents_per_kilometre: 1),
         ]"#;
         assert_eq!(
             TrainCatalogue::from_ron(source),
             Err(CatalogueError::DuplicateId("same".into()))
         );
     }
+
+    #[test]
+    fn rejects_duplicate_evn_series_within_the_same_vehicle_type() {
+        let source = r#"[
+            (id: "a", name: "A", evn_type_code: 95, evn_series_code: 70, purchase_price_cents: 1, passenger_capacity: 1, speed_metres_per_second: 1, fuel_cost_cents_per_kilometre: 1),
+            (id: "b", name: "B", evn_type_code: 95, evn_series_code: 70, purchase_price_cents: 1, passenger_capacity: 1, speed_metres_per_second: 1, fuel_cost_cents_per_kilometre: 1),
+        ]"#;
+        assert_eq!(
+            TrainCatalogue::from_ron(source),
+            Err(CatalogueError::DuplicateEvnSeries {
+                vehicle_type_code: 95,
+                series_code: 70,
+            })
+        );
+    }
+
 }

@@ -148,16 +148,32 @@ pub fn purchase_train(
         .get()
         .checked_add(1)
         .ok_or(FleetError::TrainIdExhausted)?;
+    let evn_unit_number = state
+        .player_company
+        .fleet
+        .next_evn_unit_by_model
+        .get(catalogue_train.id())
+        .copied()
+        .unwrap_or(1);
     let evn = EuropeanVehicleNumber::generate(
         catalogue_train.evn_type_code(),
         state.region.railway_registration.numeric_code,
-        train_id.get(),
+        catalogue_train.evn_series_code(),
+        evn_unit_number,
     )
     .map_err(|_| FleetError::VehicleNumberUnavailable { train_id })?;
+    let next_evn_unit_number = evn_unit_number
+        .checked_add(1)
+        .ok_or(FleetError::VehicleNumberUnavailable { train_id })?;
     let train = purchased_train(train_id, evn, delivery_station_id, catalogue_train);
 
     state.player_company.funds = funds_after_purchase;
     state.player_company.fleet.next_train_id = next_train_id;
+    state
+        .player_company
+        .fleet
+        .next_evn_unit_by_model
+        .insert(catalogue_train.id().clone(), next_evn_unit_number);
     state.player_company.fleet.trains.push(train);
     Ok(train_id)
 }
@@ -209,7 +225,7 @@ fn purchased_train(
 
 fn next_train_id(fleet: &crate::model::Fleet) -> Result<TrainId, FleetError> {
     let next = fleet.next_train_id;
-    if next == 0 || next > EuropeanVehicleNumber::MAX_SERIAL {
+    if next == 0 {
         return Err(FleetError::TrainIdExhausted);
     }
     Ok(TrainId::new(next))
@@ -256,13 +272,22 @@ mod tests {
         assert_eq!(state.player_company.fleet.trains.len(), 1);
         assert_eq!(state.player_company.fleet.next_train_id, train_id.get() + 1);
         assert_eq!(
+            state
+                .player_company
+                .fleet
+                .next_evn_unit_by_model
+                .get(catalogue_train.id()),
+            Some(&2)
+        );
+        assert_eq!(
             state.player_company.fleet.trains[0],
             Train {
                 id: train_id,
                 evn: EuropeanVehicleNumber::generate(
                     catalogue_train.evn_type_code(),
                     state.region.railway_registration.numeric_code,
-                    train_id.get(),
+                    catalogue_train.evn_series_code(),
+                    1,
                 )
                 .unwrap(),
                 status: TrainStatus::Ready {
@@ -315,7 +340,8 @@ mod tests {
             evn: EuropeanVehicleNumber::generate(
                 95,
                 state.region.railway_registration.numeric_code,
-                train_id.get(),
+                70,
+                1,
             )
             .unwrap(),
             status: TrainStatus::Ready {
@@ -325,6 +351,11 @@ mod tests {
             original_purchase_price: Money::from_cents(101),
         });
         state.player_company.fleet.next_train_id = train_id.get() + 1;
+        state
+            .player_company
+            .fleet
+            .next_evn_unit_by_model
+            .insert(TrainModelId::new("local-70"), 2);
         state.player_company.funds = Money::ZERO;
 
         assert_eq!(sell_train(&mut state, train_id), Ok(Money::from_cents(70)));
@@ -366,4 +397,79 @@ mod tests {
         );
         assert_eq!(state, unchanged);
     }
+
+    #[test]
+    fn resale_does_not_recycle_evn_unit_numbers() {
+        let mut state = game();
+        let catalogue_train = train_catalogue().models()[0].clone();
+        state.player_company.funds = Money::from_cents(1_000_000);
+
+        let first_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let first_evn = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == first_id)
+            .unwrap()
+            .evn
+            .clone();
+        sell_train(&mut state, first_id).unwrap();
+
+        let second_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let second_evn = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == second_id)
+            .unwrap()
+            .evn
+            .clone();
+
+        assert_eq!(first_evn.series_code(), catalogue_train.evn_series_code());
+        assert_eq!(first_evn.unit_number(), 1);
+        assert_eq!(second_evn.series_code(), catalogue_train.evn_series_code());
+        assert_eq!(second_evn.unit_number(), 2);
+        assert_ne!(first_evn, second_evn);
+        assert_eq!(
+            state
+                .player_company
+                .fleet
+                .next_evn_unit_by_model
+                .get(catalogue_train.id()),
+            Some(&3)
+        );
+    }
+
+
+    #[test]
+    fn each_model_allocates_its_own_evn_unit_sequence() {
+        let mut state = game();
+        state.player_company.funds = Money::from_cents(2_000_000);
+
+        let first_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let second_id = purchase_train(&mut state, 1, RailStationId::new(1)).unwrap();
+
+        let first = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == first_id)
+            .unwrap();
+        let second = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == second_id)
+            .unwrap();
+
+        assert_eq!(first.evn.series_code(), 70);
+        assert_eq!(first.evn.unit_number(), 1);
+        assert_eq!(second.evn.series_code(), 120);
+        assert_eq!(second.evn.unit_number(), 1);
+    }
+
 }

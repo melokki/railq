@@ -41,7 +41,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 7;
+pub const SAVE_VERSION: u32 = 8;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -365,6 +365,10 @@ CREATE TABLE IF NOT EXISTS trains (
     model_id TEXT NOT NULL,
     original_purchase_price_cents INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS train_model_sequences (
+    model_id TEXT PRIMARY KEY,
+    next_unit_number INTEGER NOT NULL CHECK (next_unit_number BETWEEN 1 AND 1000)
+);
 CREATE TABLE IF NOT EXISTS passenger_services (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL
@@ -475,6 +479,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v4_to_v5(connection, path)?;
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
+            migrate_v7_to_v8(connection, path)?;
         }
         2 => {
             migrate_v2_to_v3(connection, path)?;
@@ -482,23 +487,31 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v4_to_v5(connection, path)?;
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
+            migrate_v7_to_v8(connection, path)?;
         }
         3 => {
             migrate_v3_to_v4(connection, path)?;
             migrate_v4_to_v5(connection, path)?;
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
+            migrate_v7_to_v8(connection, path)?;
         }
         4 => {
             migrate_v4_to_v5(connection, path)?;
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
+            migrate_v7_to_v8(connection, path)?;
         }
         5 => {
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
+            migrate_v7_to_v8(connection, path)?;
         }
-        6 => migrate_v6_to_v7(connection, path)?,
+        6 => {
+            migrate_v6_to_v7(connection, path)?;
+            migrate_v7_to_v8(connection, path)?;
+        }
+        7 => migrate_v7_to_v8(connection, path)?,
         SAVE_VERSION => {
             connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
                 action: "verify schema for",
@@ -983,13 +996,14 @@ fn migrate_v6_to_v7(connection: &Connection, path: &Path) -> Result<(), SaveSlot
             let registration_code = u8::try_from(registration_code)
                 .map_err(|_| invalid_value(path, "Region registration code"))?;
             let mut statement = connection
-                .prepare("SELECT id, model_id FROM trains ORDER BY id")
+                .prepare("SELECT id, model_id FROM trains ORDER BY model_id, id")
                 .map_err(|source| db_error("read v6 Trains for EVN migration from", path, source))?;
             let mut rows = statement
                 .query([])
                 .map_err(|source| db_error("read v6 Trains for EVN migration from", path, source))?;
 
             let mut migrated = Vec::new();
+            let mut next_units: HashMap<String, u16> = HashMap::new();
             while let Some(row) = rows
                 .next()
                 .map_err(|source| db_error("read v6 Train row for EVN migration from", path, source))?
@@ -1008,16 +1022,22 @@ fn migrate_v6_to_v7(connection: &Connection, path: &Path) -> Result<(), SaveSlot
                     .ok_or_else(|| SaveSlotError::InvalidSave {
                         path: path.to_path_buf(),
                         source: Box::new(SaveCodecError::TrainModelNotFound {
-                            model_name: model_id,
+                            model_name: model_id.clone(),
                         }),
                     })?;
+                let unit_number = next_units.entry(model_id.clone()).or_insert(1);
+                if *unit_number > EuropeanVehicleNumber::MAX_UNIT_NUMBER {
+                    return Err(invalid_value(path, "EVN unit number"));
+                }
                 let evn = EuropeanVehicleNumber::generate(
                     model.evn_type_code(),
                     registration_code,
-                    train_id,
+                    model.evn_series_code(),
+                    *unit_number,
                 )
                 .map_err(|_| invalid_value(path, "European Vehicle Number"))?;
                 migrated.push((train_id, evn));
+                *unit_number += 1;
             }
             drop(rows);
             drop(statement);
@@ -1049,7 +1069,7 @@ fn migrate_v6_to_v7(connection: &Connection, path: &Path) -> Result<(), SaveSlot
             )
             .map_err(|source| db_error("index migrated Train EVNs in", path, source))?;
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 7_u32)
             .map_err(|source| db_error("write v7 schema version to", path, source))?;
         Ok(())
     })();
@@ -1058,6 +1078,112 @@ fn migrate_v6_to_v7(connection: &Connection, path: &Path) -> Result<(), SaveSlot
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v6 to v7 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+
+fn migrate_v7_to_v8(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE train_model_sequences (
+                 model_id TEXT PRIMARY KEY,
+                 next_unit_number INTEGER NOT NULL CHECK (next_unit_number BETWEEN 1 AND 1000)
+             );",
+        )
+        .map_err(|source| db_error("begin v7 to v8 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let registration_code: i64 = connection
+            .query_row(
+                "SELECT registration_code FROM region WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("read Region registration for v8 EVNs from", path, source))?;
+        let registration_code = u8::try_from(registration_code)
+            .map_err(|_| invalid_value(path, "Region registration code"))?;
+
+        let mut statement = connection
+            .prepare("SELECT id, model_id FROM trains ORDER BY model_id, id")
+            .map_err(|source| db_error("read v7 Trains for EVN refinement from", path, source))?;
+        let mut rows = statement
+            .query([])
+            .map_err(|source| db_error("read v7 Trains for EVN refinement from", path, source))?;
+
+        let mut next_units: HashMap<String, u16> = HashMap::new();
+        let mut migrated = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|source| db_error("read v7 Train row for EVN refinement from", path, source))?
+        {
+            let train_id = from_db_u64(
+                row.get::<_, i64>(0)
+                    .map_err(|source| db_error("decode v7 Train ID from", path, source))?,
+                "Train ID",
+            )
+            .map_err(|field| invalid_value(path, field))?;
+            let model_id: String = row
+                .get(1)
+                .map_err(|source| db_error("decode v7 Train model from", path, source))?;
+            let model = train_catalogue()
+                .by_id(&TrainModelId::new(model_id.clone()))
+                .ok_or_else(|| SaveSlotError::InvalidSave {
+                    path: path.to_path_buf(),
+                    source: Box::new(SaveCodecError::TrainModelNotFound {
+                        model_name: model_id.clone(),
+                    }),
+                })?;
+
+            let unit_number = next_units.entry(model_id.clone()).or_insert(1);
+            if *unit_number > EuropeanVehicleNumber::MAX_UNIT_NUMBER {
+                return Err(invalid_value(path, "EVN unit number"));
+            }
+            let evn = EuropeanVehicleNumber::generate(
+                model.evn_type_code(),
+                registration_code,
+                model.evn_series_code(),
+                *unit_number,
+            )
+            .map_err(|_| invalid_value(path, "European Vehicle Number"))?;
+            migrated.push((train_id, evn));
+            *unit_number += 1;
+        }
+        drop(rows);
+        drop(statement);
+
+        for (train_id, evn) in migrated {
+            connection
+                .execute(
+                    "UPDATE trains SET evn = ?1 WHERE id = ?2",
+                    params![evn.as_str(), to_db_u64(train_id, "Train ID", path)?],
+                )
+                .map_err(|source| db_error("write refined Train EVN to", path, source))?;
+        }
+
+        for (model_id, next_unit_number) in next_units {
+            connection
+                .execute(
+                    "INSERT INTO train_model_sequences(model_id, next_unit_number) VALUES(?1, ?2)",
+                    params![model_id, i64::from(next_unit_number)],
+                )
+                .map_err(|source| db_error("write EVN model sequence to", path, source))?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v8 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v7 to v8 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -1087,6 +1213,7 @@ fn clear_state(
          DELETE FROM service_stops;
          DELETE FROM passenger_services;
          DELETE FROM trains;
+         DELETE FROM train_model_sequences;
          DELETE FROM financials;
          DELETE FROM game_rules;
          DELETE FROM company;
@@ -1152,6 +1279,13 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
             db(state.player_company.fleet.next_train_id, "next Train ID")?
         ],
     ).map_err(|source| db_error("write Player Company to", path, source))?;
+
+    for (model_id, next_unit_number) in &state.player_company.fleet.next_evn_unit_by_model {
+        transaction.execute(
+            "INSERT INTO train_model_sequences(model_id, next_unit_number) VALUES(?1, ?2)",
+            params![model_id.as_str(), i64::from(*next_unit_number)],
+        ).map_err(|source| db_error("write EVN model sequences to", path, source))?;
+    }
 
     for train in &state.player_company.fleet.trains {
         let (status_kind, status_ref_id) = match train.status {
@@ -1329,6 +1463,20 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
     let company_vkm = VehicleKeeperMark::parse(&company_vkm)
         .map_err(|_| invalid_value(path, "Player Company VKM"))?;
 
+    let next_evn_unit_by_model = query_all(
+        connection,
+        "SELECT model_id, next_unit_number FROM train_model_sequences ORDER BY model_id",
+        path,
+        |row| {
+            let model_id = TrainModelId::new(row.get::<_, String>(0)?);
+            let raw: i64 = row.get(1)?;
+            let next_unit_number = u16::try_from(raw).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            Ok((model_id, next_unit_number))
+        },
+    )?
+    .into_iter()
+    .collect();
+
     let trains = query_all(connection, "SELECT id, evn, status_kind, status_ref_id, model_id, original_purchase_price_cents FROM trains ORDER BY id", path, |row| {
         let evn_text: String = row.get(1)?;
         let evn = EuropeanVehicleNumber::parse(&evn_text)
@@ -1488,6 +1636,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                 trains,
                 next_train_id: from_db_u64(next_train_id, "next Train ID")
                     .map_err(|field| invalid_value(path, field))?,
+                next_evn_unit_by_model,
             },
             passenger_services: services,
         },
@@ -1669,6 +1818,8 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
     let mut region = legacy.region;
     region.railway_registration =
         railway_registration_for_existing_region(&region.name, legacy.world_seed);
+    let mut next_evn_unit_by_model: std::collections::BTreeMap<TrainModelId, u16> =
+        std::collections::BTreeMap::new();
     let trains = legacy
         .player_company
         .fleet
@@ -1687,14 +1838,24 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
                 .ok_or_else(|| SaveCodecError::TrainModelNotFound {
                     model_name: train.model_name.clone(),
                 })?;
+            let unit_number = next_evn_unit_by_model
+                .entry(model.id().clone())
+                .or_insert(1);
             let evn = EuropeanVehicleNumber::generate(
                 model.evn_type_code(),
                 region.railway_registration.numeric_code,
-                train.id.get(),
+                model.evn_series_code(),
+                *unit_number,
             )
             .map_err(|_| SaveCodecError::InvalidValue {
                 field: "European Vehicle Number",
             })?;
+            let next_unit_number = (*unit_number)
+                .checked_add(1)
+                .ok_or(SaveCodecError::InvalidValue {
+                    field: "EVN unit number",
+                })?;
+            *unit_number = next_unit_number;
             Ok(Train {
                 id: train.id,
                 evn,
@@ -1756,6 +1917,7 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
                     .saturating_add(1)
                     .max(1),
                 trains,
+                next_evn_unit_by_model,
             },
             passenger_services,
         },
@@ -2003,12 +2165,40 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
         .unwrap_or(0);
     if state.player_company.fleet.next_train_id == 0
         || state.player_company.fleet.next_train_id <= highest_owned_train_id
-        || state.player_company.fleet.next_train_id > EuropeanVehicleNumber::MAX_SERIAL + 1
     {
         return Err(SaveValidationError::InvalidValue {
             field: "next Train ID",
         });
     }
+
+    for (model_id, next_unit_number) in &state.player_company.fleet.next_evn_unit_by_model {
+        if train_catalogue().by_id(model_id).is_none()
+            || *next_unit_number == 0
+            || *next_unit_number > EuropeanVehicleNumber::MAX_UNIT_NUMBER + 1
+        {
+            return Err(SaveValidationError::InvalidValue {
+                field: "next EVN unit number",
+            });
+        }
+    }
+    for train in &state.player_company.fleet.trains {
+        let Some(next_unit_number) = state
+            .player_company
+            .fleet
+            .next_evn_unit_by_model
+            .get(&train.model_id)
+        else {
+            return Err(SaveValidationError::InvalidValue {
+                field: "next EVN unit number",
+            });
+        };
+        if train.evn.unit_number() >= *next_unit_number {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Train EVN unit number has not been consumed by its model sequence",
+            });
+        }
+    }
+
     let journey_ids = unique_ids(
         state.active_journeys.iter().map(|journey| journey.id),
         "Journey",
@@ -2296,10 +2486,10 @@ fn validate_train_statuses(
         }
         if evn.vehicle_type_code() != model.evn_type_code()
             || evn.registration_code() != registration_code
-            || evn.serial() != train.id.get()
+            || evn.series_code() != model.evn_series_code()
         {
             return Err(SaveValidationError::ImpossibleState {
-                reason: "Train European Vehicle Number does not match its model, Region, and Train ID",
+                reason: "Train European Vehicle Number does not match its model and Region",
             });
         }
         match train.status {
@@ -2742,6 +2932,13 @@ mod tests {
         let next_train_id: i64 = connection
             .query_row("SELECT next_train_id FROM company WHERE singleton = 1", [], |row| row.get(0))
             .unwrap();
+        let next_unit_number: i64 = connection
+            .query_row(
+                "SELECT next_unit_number FROM train_model_sequences WHERE model_id = 'local-70'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         assert_eq!(train_count, 1);
         assert_eq!(journey_count, 1);
@@ -2750,8 +2947,12 @@ mod tests {
         assert_eq!(state_blob_table, 0);
         assert_eq!(saved_catalogue_table, 0);
         assert_eq!(model_id, "local-70");
-        assert_eq!(EuropeanVehicleNumber::parse(&evn).unwrap().registration_code(), 67);
+        let evn = EuropeanVehicleNumber::parse(&evn).unwrap();
+        assert_eq!(evn.registration_code(), 67);
+        assert_eq!(evn.series_code(), 70);
+        assert_eq!(evn.unit_number(), 1);
         assert_eq!(next_train_id, 2);
+        assert_eq!(next_unit_number, 2);
     }
 
     #[test]
@@ -2908,6 +3109,13 @@ mod tests {
         let next_train_id: i64 = connection
             .query_row("SELECT next_train_id FROM company WHERE singleton = 1", [], |row| row.get(0))
             .unwrap();
+        let next_unit_number: i64 = connection
+            .query_row(
+                "SELECT next_unit_number FROM train_model_sequences WHERE model_id = 'local-70'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         let old_catalogue_exists: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='diesel_catalogue'",
@@ -2941,8 +3149,9 @@ mod tests {
 
         assert_eq!(version, SAVE_VERSION);
         assert_eq!(model_id, "local-70");
-        assert_eq!(evn, "956700000014");
+        assert_eq!(evn, "956700700019");
         assert_eq!(next_train_id, 2);
+        assert_eq!(next_unit_number, 2);
         assert_eq!(old_catalogue_exists, 0);
         assert_eq!(journey_train_id, 1);
         assert_eq!(service_name, "R1");

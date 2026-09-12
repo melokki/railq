@@ -488,7 +488,8 @@ mod tests {
                         evn: crate::model::EuropeanVehicleNumber::generate(
                             95,
                             67,
-                            TRAIN_ID.get(),
+                            70,
+                            1,
                         )
                         .unwrap(),
                         status: TrainStatus::Ready { at: ORIGIN },
@@ -496,6 +497,12 @@ mod tests {
                         original_purchase_price: Money::from_cents(5_000),
                     }],
                     next_train_id: TRAIN_ID.get() + 1,
+                    next_evn_unit_by_model: [(
+                        crate::model::TrainModelId::new("local-70"),
+                        2,
+                    )]
+                    .into_iter()
+                    .collect(),
                 },
                 passenger_services: vec![PassengerService {
                     id: SERVICE_ID,

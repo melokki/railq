@@ -799,6 +799,10 @@ fn render_catalogue_inspector(
             &format!("{:02} · {}", train.evn_type_code(), train.evn_type_label()),
         ),
         labelled_value(
+            "EVN series",
+            &format!("{:04}", train.evn_series_code()),
+        ),
+        labelled_value(
             "Registration",
             &format!(
                 "{:02} · {}",
