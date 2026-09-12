@@ -45,6 +45,7 @@ pub mod dispatch;
 pub mod fleet;
 pub mod format;
 pub mod map;
+pub mod modal;
 pub mod market;
 pub mod start;
 pub mod services;
@@ -2197,8 +2198,8 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
 }
 
 fn dispatch_modal_rect(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(4).min(96).max(36);
-    let height = area.height.saturating_sub(2).min(26).max(12);
+    let width = area.width.saturating_sub(6).min(90).max(44);
+    let height = area.height.saturating_sub(2).min(24).max(14);
     Rect {
         x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
         y: area.y.saturating_add(area.height.saturating_sub(height) / 2),

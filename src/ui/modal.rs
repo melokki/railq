@@ -1,0 +1,102 @@
+//! Shared modal chrome for focused keyboard workflows.
+//!
+//! The shell intentionally mirrors the interaction grammar used by Bastion:
+//! one active border, padded content, a divider, and a dedicated shortcut bar.
+
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+};
+
+use crate::ui::theme;
+
+const HORIZONTAL_PADDING: u16 = 1;
+
+/// Content rectangles inside one modal window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModalAreas {
+    pub body: Rect,
+    pub footer: Rect,
+}
+
+/// Draws the shared RailQ modal shell and returns the padded body/footer areas.
+pub fn render_shell(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    footer: Line<'static>,
+) -> ModalAreas {
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::focused_border())
+        .title(title)
+        .title_style(theme::focused_title())
+        .style(theme::panel());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [body_area, separator_area, footer_area] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    render_horizontal_separator(frame, separator_area);
+    frame.render_widget(
+        Paragraph::new(footer).style(theme::panel()),
+        padded(footer_area, HORIZONTAL_PADDING, 0),
+    );
+
+    ModalAreas {
+        body: padded(body_area, HORIZONTAL_PADDING, 0),
+        footer: padded(footer_area, HORIZONTAL_PADDING, 0),
+    }
+}
+
+/// Bastion-inspired keyboard shortcut line used inside focused modal windows.
+pub fn shortcut_line(shortcuts: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, (key, action)) in shortcuts.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled("   ", theme::shortcut_action()));
+        }
+        spans.push(Span::styled(format!("[{key}]"), theme::shortcut_key()));
+        spans.push(Span::styled(format!(" {action}"), theme::shortcut_action()));
+    }
+    Line::from(spans)
+}
+
+/// Draws a subtle vertical divider for picker/detail layouts.
+pub fn render_vertical_separator(frame: &mut Frame, area: Rect) {
+    let lines = (0..area.height)
+        .map(|_| Line::styled("│", theme::secondary()))
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines).style(theme::panel()), area);
+}
+
+/// Draws a subtle horizontal divider for stacked modal sections.
+pub fn render_horizontal_separator(frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new("─".repeat(usize::from(area.width))).style(theme::secondary()),
+        area,
+    );
+}
+
+fn padded(area: Rect, horizontal: u16, vertical: u16) -> Rect {
+    let x_padding = horizontal.min(area.width / 2);
+    let y_padding = vertical.min(area.height / 2);
+    Rect {
+        x: area.x.saturating_add(x_padding),
+        y: area.y.saturating_add(y_padding),
+        width: area.width.saturating_sub(x_padding.saturating_mul(2)),
+        height: area.height.saturating_sub(y_padding.saturating_mul(2)),
+    }
+}
