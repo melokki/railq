@@ -1083,7 +1083,7 @@ fn receipt_result_cents(revenue: Money, access_fees: Money, fuel_costs: Money) -
     i128::from(revenue.cents()) - i128::from(access_fees.cents()) - i128::from(fuel_costs.cents())
 }
 
-fn compact_recovery_description(state: &GameState, option: &RecoveryOption) -> String {
+fn compact_recovery_description(_state: &GameState, option: &RecoveryOption) -> String {
     match option {
         RecoveryOption::CashOnly { journey } => format!(
             "Dispatch Train {} · {}",

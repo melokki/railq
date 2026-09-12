@@ -1608,7 +1608,7 @@ fn render_journey_table(
                 Cell::from(
                     journey_next_stop_station_id(state, journey)
                         .map(|station_id| station_name(state, station_id))
-                        .unwrap_or("unknown"),
+                        .unwrap_or_else(|| "unknown".to_string()),
                 ),
                 Cell::from(format!(
                     "in {}",
