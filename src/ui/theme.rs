@@ -67,8 +67,12 @@ pub fn selected_row() -> Style {
     Style::default().fg(BACKGROUND).bg(ACCENT).bold()
 }
 
+pub fn navigation() -> Style {
+    Style::default().fg(SECONDARY).bg(BACKGROUND)
+}
+
 pub fn active_tab() -> Style {
-    Style::default().fg(ACCENT).bg(PANEL).bold()
+    Style::default().fg(BACKGROUND).bg(ACCENT).bold()
 }
 
 pub fn hint() -> Style {

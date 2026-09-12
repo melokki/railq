@@ -75,12 +75,12 @@ impl View {
         }
     }
 
-    const fn shortcut(self) -> char {
+    const fn number(self) -> char {
         match self {
-            Self::Map => 'M',
-            Self::Trains => 'T',
-            Self::Company => 'C',
-            Self::BuyTrains => 'B',
+            Self::Map => '1',
+            Self::Trains => '2',
+            Self::BuyTrains => '3',
+            Self::Company => '4',
         }
     }
 }
@@ -247,7 +247,7 @@ impl Shell {
 
         if self.help_visible {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('?' | 'h' | 'H') => {
+                KeyCode::Esc | KeyCode::Char('?') => {
                     self.help_visible = false;
                     self.help_offset = 0;
                 }
@@ -295,7 +295,7 @@ impl Shell {
             return ShellAction::Continue;
         }
 
-        if matches!(key.code, KeyCode::Char('?' | 'h' | 'H')) {
+        if matches!(key.code, KeyCode::Char('?')) {
             self.help_visible = true;
             self.help_offset = 0;
             return ShellAction::Continue;
@@ -428,15 +428,15 @@ impl Shell {
                             .into(),
                     );
                 }
-                KeyCode::Char('m' | 'M') => {
+                KeyCode::Char('1' | 'm' | 'M') => {
                     self.company_recovery_review_open = false;
                     self.active_view = View::Map;
                 }
-                KeyCode::Char('t' | 'T') => {
+                KeyCode::Char('2' | 't' | 'T') => {
                     self.company_recovery_review_open = false;
                     self.active_view = View::Trains;
                 }
-                KeyCode::Char('b' | 'B') => {
+                KeyCode::Char('3' | 'b' | 'B') => {
                     self.company_recovery_review_open = false;
                     self.active_view = View::BuyTrains;
                 }
@@ -453,14 +453,14 @@ impl Shell {
         }
 
         match key.code {
-            KeyCode::Char('m' | 'M') => self.active_view = View::Map,
-            KeyCode::Char('t' | 'T') => {
+            KeyCode::Char('1' | 'm' | 'M') => self.active_view = View::Map,
+            KeyCode::Char('2' | 't' | 'T') => {
                 self.active_view = View::Trains;
                 self.fleet_details_open = false;
                 self.fleet_focus = FleetFocus::List;
                 self.fleet_split_visible = false;
             }
-            KeyCode::Char('c' | 'C') => {
+            KeyCode::Char('4' | 'c' | 'C') => {
                 self.active_view = View::Company;
                 self.company_receipt_details_open = false;
                 self.company_recovery_review_open = false;
@@ -481,7 +481,7 @@ impl Shell {
                     );
                 }
             }
-            KeyCode::Char('b' | 'B') => self.active_view = View::BuyTrains,
+            KeyCode::Char('3' | 'b' | 'B') => self.active_view = View::BuyTrains,
             KeyCode::Enter if self.active_view == View::Map => {
                 let has_selection = if self.map_focus.is_stations() {
                     self.map_selection.selected_station_id(state).is_some()
@@ -1188,8 +1188,8 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         feedback_area,
         hints_area,
     ] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Min(7),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -1198,20 +1198,11 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 
     let now = state.last_processed_at;
     frame.render_widget(
-        Paragraph::new(company_status_text(state, now, header_area.width))
-            .block(
-                Block::default()
-                    .borders(theme::THIN_BORDERS)
-                    .border_style(theme::border())
-                    .title(company_title(state, header_area.width))
-                    .title_style(theme::title())
-                    .style(theme::panel()),
-            )
-            .style(theme::panel()),
+        Paragraph::new(shell_status_line(state, now, header_area.width)).style(theme::terminal()),
         header_area,
     );
 
-    let views = [View::Map, View::Trains, View::Company, View::BuyTrains];
+    let views = [View::Map, View::Trains, View::BuyTrains, View::Company];
     let selected = views
         .iter()
         .position(|view| *view == shell.active_view)
@@ -1223,18 +1214,10 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         .collect::<Vec<_>>();
     frame.render_widget(
         Tabs::new(titles)
-            .block(
-                Block::default()
-                    .borders(theme::THIN_BORDERS)
-                    .border_style(theme::border())
-                    .title("Navigation")
-                    .title_style(theme::title())
-                    .style(theme::panel()),
-            )
-            .style(theme::panel())
+            .style(theme::navigation())
             .select(selected)
             .highlight_style(theme::active_tab())
-            .divider(" | "),
+            .divider("   "),
         navigation_area,
     );
 
@@ -1377,12 +1360,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 
     let controls = contextual_controls(shell, state, hints_area.width);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("FOCUS ", theme::focused_title()),
-            Span::styled(controls, theme::hint()),
-        ]))
-        .style(theme::hint())
-        .wrap(Wrap { trim: true }),
+        Paragraph::new(Span::styled(controls, theme::hint()))
+            .style(theme::hint())
+            .wrap(Wrap { trim: true }),
         hints_area,
     );
 
@@ -1399,34 +1379,37 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> String {
     let compact = width <= 80;
     if shell.help_visible {
-        return "[↑↓/J K] Scroll  [PgUp/Dn] Page  [? / H / Esc] Close  [Q] Quit".into();
+        return "↑↓/jk Scroll  PgUp/PgDn Page  ?/Esc Close  q Quit".into();
     }
     if is_bankrupt(state) {
         return if shell.restart_confirmation {
-            "[Enter] Confirm safe restart  [Esc] Cancel  [Q] Quit".into()
+            "Enter Confirm restart  Esc Cancel  q Quit".into()
         } else {
-            "[R] Safe restart  [?] Help  [Q] Quit".into()
+            "r Safe restart  ? Help  q Quit".into()
         };
     }
-    if let Some(flow) = &shell.dispatch_flow {
-        return if flow.is_selecting_train() {
-            "[↑↓] Train [Enter] Next [Esc] Cancel [?] Help [Q] Quit".into()
+
+    let context = if let Some(flow) = &shell.dispatch_flow {
+        if flow.is_selecting_train() {
+            if compact {
+                "↑↓ Train  Enter Next  Esc Cancel".into()
+            } else {
+                "↑↓/jk Train  Enter Next  Esc Cancel".into()
+            }
         } else if flow.is_selecting_destination() {
             if compact {
-                "[↑↓] Route [Enter] Review [←] Back [Esc] Cancel [?] Help [Q] Quit".into()
+                "↑↓ Route  Enter Review  ← Back  Esc Cancel".into()
             } else {
-                "[↑↓/J K] Route  [PgUp/Dn] Scroll  [Enter] Review  [←/Back] Train  [Esc] Cancel  [?] Help  [Q] Quit".into()
+                "↑↓/jk Route  PgUp/PgDn Scroll  Enter Review  ← Back  Esc Cancel".into()
             }
         } else if compact {
-            "[Enter] Confirm [←] Back [Esc] Cancel [?] Help [Q] Quit".into()
+            "Enter Confirm  ← Back  Esc Cancel".into()
         } else {
-            "[Enter] Confirm dispatch  [←/Back] Route  [Esc] Cancel  [?] Help  [Q] Quit".into()
-        };
-    }
-    if shell.active_view == View::Trains && shell.fleet_flow.is_some() {
-        return "[Enter] Confirm resale  [Esc] Cancel  [?] Help  [Q] Quit".into();
-    }
-    if shell.active_view == View::Trains && shell.fleet_details_open {
+            "Enter Confirm dispatch  ← Back  Esc Cancel".into()
+        }
+    } else if shell.active_view == View::Trains && shell.fleet_flow.is_some() {
+        "Enter Confirm resale  Esc Cancel".into()
+    } else if shell.active_view == View::Trains && shell.fleet_details_open {
         let action = shell
             .fleet_selection
             .selected_train_id(state)
@@ -1440,14 +1423,13 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             });
         let (dispatch, resale) = match action {
             Some(train) if matches!(train.status, TrainStatus::Ready { .. }) => {
-                ("[D] Dispatch", "[S] Resale")
+                ("d Dispatch", "s Resale")
             }
-            Some(_train) => ("[D] no: travel", "[S] no: travel"),
-            None => ("[D] no: no Train", "[S] no: no Train"),
+            Some(_) => ("d unavailable", "s unavailable"),
+            None => ("d unavailable", "s unavailable"),
         };
-        return format!("[Esc] Fleet  {dispatch}  {resale}  [?] Help  [Q] Quit");
-    }
-    if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
+        format!("Esc Fleet  {dispatch}  {resale}")
+    } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
         let action = shell
             .fleet_selection
             .selected_train_id(state)
@@ -1461,23 +1443,19 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             });
         let actions = match action {
             Some(train) if matches!(train.status, TrainStatus::Ready { .. }) => {
-                "[D] Dispatch  [S] Resale"
+                "d Dispatch  s Resale"
             }
-            Some(_) => "[D] no: travel  [S] no: travel",
-            None => "[D] no: no Train  [S] no: no Train",
+            Some(_) => "d/s unavailable while travelling",
+            None => "d/s unavailable",
         };
-        return if compact {
-            format!("[↑↓] Fleet [Enter] View {actions} [?] Help [Q] Quit")
+        if compact {
+            format!("↑↓ Trains  Enter Inspect  {actions}")
         } else {
-            format!(
-                "[↑↓/J K] Train  [PgUp/Dn] Scroll  [Enter] Inspect  {actions}  [Tab] Panel  [?] Help  [Q] Quit"
-            )
-        };
-    }
-    if shell.active_view == View::Map && shell.map_details_open {
-        return "[Esc] Close detail  [Tab] Next panel  [?] Help  [Q] Quit".into();
-    }
-    if shell.active_view == View::Map {
+            format!("↑↓/jk Train  PgUp/PgDn Scroll  Enter Inspect  {actions}  Tab Panel")
+        }
+    } else if shell.active_view == View::Map && shell.map_details_open {
+        "Esc Close detail  Tab Next panel".into()
+    } else if shell.active_view == View::Map {
         let focus = if shell.map_focus.is_stations() {
             "Stations"
         } else if shell.map_focus.is_journeys() {
@@ -1493,50 +1471,45 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
                 .iter()
                 .any(|train| matches!(train.status, TrainStatus::Ready { .. }))
         {
-            "[D] Dispatch"
+            "d Dispatch"
         } else if shell.map_focus.is_stations() {
-            "[D] no: READY Train"
+            "d unavailable"
         } else {
-            "[D] no: inspect-only"
+            "inspect only"
         };
-        return if compact {
-            format!("[↑↓] {focus} [Enter] Inspect {action} [?] Help [Q] Quit")
+        if compact {
+            format!("↑↓ {focus}  Enter Inspect  {action}")
         } else {
-            format!("[↑↓/J K] {focus} [Enter] Inspect {action} [Tab] Panel [?] Help [Q] Quit")
-        };
-    }
-    if shell.active_view == View::Company {
+            format!("↑↓/jk {focus}  Enter Inspect  {action}  Tab Panel")
+        }
+    } else if shell.active_view == View::Company {
         if shell.company_recovery_review_open {
-            return "[↑↓/J K] Route  [Enter] Open  [Esc] Company  [?] Help  [Q] Quit".into();
+            "↑↓/jk Route  Enter Open  Esc Company".into()
+        } else if shell.company_receipt_details_open {
+            "Esc Receipts  1–4 Navigate".into()
+        } else {
+            "↑↓ Receipt  Enter Inspect  r Recovery".into()
         }
-        if shell.company_receipt_details_open {
-            return "[Esc] Receipts  [M/T/C/B] Navigate  [?] Help  [Q] Quit".into();
-        }
-        return "[↑↓] Receipt [Enter] Inspect [R] Recovery [?] Help [Q] Quit".into();
-    }
-    if shell.active_view == View::BuyTrains {
+    } else if shell.active_view == View::BuyTrains {
         if let Some(flow) = &shell.market_flow {
             if flow.is_selecting_delivery() {
-                return "[↑↓] Station [Enter] Review [←] Back [Esc] Cancel [?] Help [Q] Quit"
-                    .into();
+                "↑↓ Station  Enter Review  ← Back  Esc Cancel".into()
+            } else {
+                "Enter Confirm purchase  ← Back  Esc Cancel".into()
             }
-            return "[Enter] Confirm purchase  [←/Back] Delivery  [Esc] Cancel  [?] Help  [Q] Quit"
-                .into();
+        } else if compact {
+            "↑↓ Model  Enter Buy".into()
+        } else {
+            "↑↓/jk Model  Enter Choose delivery".into()
         }
-        return "[↑↓/J K] Model  [Enter] Delivery  [?] Help  [Q] Quit".into();
-    }
-    "[M/T/C/B] Views  [Enter] Inspect  [?] Help  [Q] Quit".into()
+    } else {
+        "Enter Inspect".into()
+    };
+
+    format!("{context}  ·  ? Help  q Quit")
 }
 
-fn company_title(state: &GameState, width: u16) -> String {
-    let max_name_cells = if width >= 100 { 40 } else { 18 };
-    format!(
-        "{APPLICATION_NAME} · {}",
-        shorten(&state.player_company.name, max_name_cells)
-    )
-}
-
-fn company_status_text(state: &GameState, now: UtcSeconds, width: u16) -> String {
+fn shell_status_line(state: &GameState, now: UtcSeconds, width: u16) -> String {
     let ready = state
         .player_company
         .fleet
@@ -1552,23 +1525,24 @@ fn company_status_text(state: &GameState, now: UtcSeconds, width: u16) -> String
         .filter(|train| matches!(train.status, TrainStatus::Travelling { .. }))
         .count();
     let eta = nearest_eta(state, now)
-        .map(|remaining| format!("NEXT ETA {remaining}"))
-        .unwrap_or_else(|| "NEXT ETA —".into());
+        .map(|remaining| format!("ETA {remaining}"))
+        .unwrap_or_else(|| "ETA —".into());
 
     if width >= 100 {
         format!(
-            "Company Funds {}  |  READY {}  |  TRAVELLING {}  |  {eta}",
+            "{APPLICATION_NAME} · {}   Company Funds {}   READY {}   TRAVELLING {}   {eta}",
+            shorten(&state.player_company.name, 34),
             format_money(state.player_company.funds),
             ready,
             travelling,
         )
     } else {
         format!(
-            "Funds {}  |  R {}  |  T {}  |  {}",
+            "{APPLICATION_NAME} · {}   Funds {}   R {}   T {}   {eta}",
+            shorten(&state.player_company.name, 16),
             format_money(state.player_company.funds),
             ready,
             travelling,
-            eta.replace("NEXT ETA ", "ETA "),
         )
     }
 }
@@ -1594,11 +1568,14 @@ fn format_remaining_time(seconds: u64) -> String {
 
 fn tab_label(view: View, compact: bool) -> String {
     let label = match (view, compact) {
-        (View::Company, true) => "Co.",
-        (View::BuyTrains, true) => "Buy",
+        (View::Trains, true) => "Trn",
+        (View::BuyTrains, true) => "Mkt",
+        (View::Company, true) => "Co",
+        (View::Trains, false) => "Trains",
+        (View::BuyTrains, false) => "Market",
         _ => view.label(),
     };
-    format!("[{}] {label}", view.shortcut())
+    format!("{} {label}", view.number())
 }
 
 fn shorten(value: &str, max_characters: usize) -> String {
@@ -1613,11 +1590,12 @@ fn shorten(value: &str, max_characters: usize) -> String {
 
 const HELP_PAGE_STEP: usize = 5;
 
-const HELP_LINES: [&str; 40] = [
+const HELP_LINES: &[&str] = &[
     "Global controls",
-    "[M] Map  [T] Fleet  [C] Company  [B] Buy Trains switch primary views.",
-    "[?] or [H] opens help. [Q] or Ctrl-C exits RailQ outside text entry.",
-    "[Tab]/[Shift-Tab] changes visible panel focus; the footer names active controls.",
+    "[1] Map  [2] Trains  [3] Market  [4] Company switch primary views.",
+    "[M]/[T]/[B]/[C] remain available as navigation aliases.",
+    "[?] opens help. [Q] or Ctrl-C exits RailQ outside text entry.",
+    "[Tab]/[Shift-Tab] changes visible panel focus when a workspace supports it.",
     "",
     "Panels and lists",
     "[Up]/[Down] or [J]/[K] changes the focused selection.",
@@ -1653,7 +1631,7 @@ const HELP_LINES: [&str; 40] = [
     "Compact terminals show it as a focused page so every visible row remains readable.",
     "Resize at any time; close help to resume the same workspace.",
     "",
-    "[↑↓/J K] Scroll help  [PgUp/Dn] Page  [? / H / Esc] Return",
+    "[↑↓/J K] Scroll help  [PgUp/Dn] Page  [? / Esc] Return",
 ];
 
 fn render_help_overlay(frame: &mut ratatui::Frame, area: Rect, offset: usize) {
@@ -1932,11 +1910,15 @@ mod tests {
     use super::{Shell, ShellAction, View, capture_rendered_buffer, theme};
 
     #[test]
-    fn routes_the_four_primary_views() {
+    fn routes_the_four_primary_views_by_number_and_keeps_letter_aliases() {
         let mut shell = Shell::new();
         let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
         for (key, expected_view) in [
+            ('2', View::Trains),
+            ('4', View::Company),
+            ('3', View::BuyTrains),
+            ('1', View::Map),
             ('t', View::Trains),
             ('c', View::Company),
             ('b', View::BuyTrains),
@@ -2020,19 +2002,19 @@ mod tests {
         assert!(wide.contains(&format!("Company Funds {funds}")));
         assert!(wide.contains("READY 0"));
         assert!(wide.contains("TRAVELLING 1"));
-        assert!(wide.contains("NEXT ETA"));
-        assert!(wide.contains("[M] Map"));
-        assert!(wide.contains("[T] Fleet"));
-        assert!(wide.contains("[Q] Quit"));
+        assert!(wide.contains("ETA"));
+        assert!(wide.contains("1 Map"));
+        assert!(wide.contains("2 Trains"));
+        assert!(wide.contains("q Quit"));
 
         let compact = capture_rendered_buffer(&shell, &state, 80, 24);
         assert!(compact.contains(&format!("Funds {funds}")));
         assert!(compact.contains("R 0"));
         assert!(compact.contains("T 1"));
         assert!(compact.contains("ETA"));
-        assert!(compact.contains("[C] Co."));
-        assert!(compact.contains("[B] Buy"));
-        assert!(compact.contains("[Q] Quit"));
+        assert!(compact.contains("4 Co"));
+        assert!(compact.contains("3 Mkt"));
+        assert!(compact.contains("q Quit"));
 
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2053,7 +2035,7 @@ mod tests {
         let feedback = capture_rendered_buffer(&feedback_shell, &feedback_state, 120, 40);
         let feedback_lines = feedback.lines().collect::<Vec<_>>();
         assert!(feedback_lines[38].contains("No READY Train"));
-        assert!(feedback_lines[39].contains("[Q] Quit"));
+        assert!(feedback_lines[39].contains("q Quit"));
 
         let feedback_backend = TestBackend::new(120, 40);
         let mut feedback_terminal = Terminal::new(feedback_backend).unwrap();
@@ -2171,10 +2153,10 @@ mod tests {
         assert!(shell.help_visible());
         let help = super::HELP_LINES.join("\n");
         for instruction in [
-            "[M] Map",
-            "[T] Fleet",
-            "[C] Company",
-            "[B] Buy Trains",
+            "[1] Map",
+            "[2] Trains",
+            "[3] Market",
+            "[4] Company",
             "[D]",
             "[D] starts destination selection",
             "[Q]",
