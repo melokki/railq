@@ -195,6 +195,9 @@ impl ServiceWorkspace {
         }
     }
 
+    /// Legacy textual description of the current Service controls.
+    /// Kept for callers outside the shell; the in-game footer now renders
+    /// structured shortcuts with per-key styling.
     pub fn controls(&self) -> &'static str {
         if self.delete_confirmation.is_some() {
             "Enter Delete  Esc Cancel"
@@ -206,6 +209,49 @@ impl ServiceWorkspace {
             }
         } else {
             "↑↓/jk Service  n New  d Delete  Esc Map"
+        }
+    }
+
+    /// Contextual actions for the shared RailQ footer.  The footer owns the
+    /// visual treatment so Passenger Services can describe behaviour without
+    /// embedding presentation markup in a string.
+    pub fn footer_shortcuts(&self, compact: bool) -> &'static [(&'static str, &'static str)] {
+        if self.delete_confirmation.is_some() {
+            &[("Enter", "Delete"), ("Esc", "Cancel")]
+        } else if let Some(flow) = &self.create_flow {
+            if flow.review {
+                &[("Enter", "Create"), ("←", "Edit"), ("Esc", "Cancel")]
+            } else if compact {
+                &[
+                    ("↑↓", "Station"),
+                    ("Enter", "Add stop"),
+                    ("Backspace", "Remove"),
+                    ("F", "Review"),
+                    ("Esc", "Cancel"),
+                ]
+            } else {
+                &[
+                    ("↑↓/JK", "Station"),
+                    ("Enter", "Add stop"),
+                    ("Backspace", "Remove"),
+                    ("F", "Review"),
+                    ("Esc", "Cancel"),
+                ]
+            }
+        } else if compact {
+            &[
+                ("↑↓", "Service"),
+                ("N", "New"),
+                ("D", "Delete"),
+                ("Esc", "Map"),
+            ]
+        } else {
+            &[
+                ("↑↓/JK", "Service"),
+                ("N", "New"),
+                ("D", "Delete"),
+                ("Esc", "Map"),
+            ]
         }
     }
 

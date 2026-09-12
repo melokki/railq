@@ -327,7 +327,7 @@ fn failed_resale_save_keeps_the_review_open_without_a_success_notice() {
 }
 
 #[test]
-fn saved_purchase_has_an_inspectable_outcome_until_acknowledged() -> Result<(), Box<dyn Error>> {
+fn saved_purchase_feedback_is_non_blocking_and_details_are_optional() -> Result<(), Box<dyn Error>> {
     let (_, mut app) = dashboard_from_fresh_launch();
     let mut shell = Shell::new();
 
@@ -357,14 +357,16 @@ fn saved_purchase_has_an_inspectable_outcome_until_acknowledged() -> Result<(), 
     let banner = capture_rendered_buffer(&shell, app.state(), 120, 40);
     assert!(banner.contains("Train purchase ·"));
     assert!(banner.contains("saved — Company Funds -$"));
-    assert!(banner.contains("[Enter] Read"));
+    assert!(banner.contains("[i] Details"));
+    assert!(!banner.contains("[Enter] Read"));
 
     let evidence_dir = Path::new(OUTCOME_EVIDENCE_DIR);
     fs::create_dir_all(evidence_dir)?;
     fs::write(evidence_dir.join("purchase-saved-120x40.txt"), &banner)?;
 
+    // Details remain available deliberately, but opening them is optional.
     assert_eq!(
-        shell.handle_key(key(KeyCode::Enter), app.state()),
+        shell.handle_key(key(KeyCode::Char('i')), app.state()),
         ShellAction::Continue
     );
     let details = capture_rendered_buffer(&shell, app.state(), 120, 40);
@@ -377,11 +379,20 @@ fn saved_purchase_has_an_inspectable_outcome_until_acknowledged() -> Result<(), 
     )?;
 
     assert_eq!(
-        shell.handle_key(key(KeyCode::Char('a')), app.state()),
+        shell.handle_key(key(KeyCode::Esc), app.state()),
         ShellAction::Continue
     );
-    let dismissed = capture_rendered_buffer(&shell, app.state(), 120, 40);
-    assert!(!dismissed.contains("Saved action outcome"));
+
+    // A normal command both dismisses the passive feedback and executes in the
+    // same key press; there is no acknowledgement gate after a saved action.
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Char('1')), app.state()),
+        ShellAction::Continue
+    );
+    assert_eq!(shell.active_view(), View::Map);
+    let continued = capture_rendered_buffer(&shell, app.state(), 120, 40);
+    assert!(!continued.contains("Saved action outcome"));
+    assert!(!continued.contains("[i] Details"));
     Ok(())
 }
 

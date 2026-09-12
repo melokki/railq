@@ -87,3 +87,23 @@ pub fn feedback() -> Style {
 pub fn error() -> Style {
     Style::default().fg(ERROR).bg(PANEL)
 }
+
+/// Accent treatment for shortcut keycaps in the global action bar.
+pub fn shortcut_key() -> Style {
+    Style::default().fg(ACCENT).bg(PANEL).bold()
+}
+
+/// Primary treatment for the action name which follows a shortcut keycap.
+pub fn shortcut_action() -> Style {
+    Style::default().fg(PRIMARY).bg(PANEL)
+}
+
+/// Muted treatment for a shortcut which is currently unavailable.
+pub fn shortcut_disabled() -> Style {
+    Style::default().fg(SECONDARY).bg(PANEL)
+}
+
+/// The footer is a first-class control surface, so its frame uses the accent.
+pub fn footer_border() -> Style {
+    Style::default().fg(ACCENT).bg(PANEL)
+}

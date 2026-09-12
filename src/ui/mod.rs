@@ -325,23 +325,28 @@ impl Shell {
 
         if self.outcome_details_open {
             match key.code {
-                KeyCode::Esc => self.outcome_details_open = false,
-                KeyCode::Enter | KeyCode::Char('a' | 'A') => {
+                KeyCode::Esc | KeyCode::Char('i' | 'I') => {
                     self.outcome_details_open = false;
-                    self.action_outcome = None;
                 }
                 _ => {}
             }
             return ShellAction::Continue;
         }
 
+        // Saved-action feedback is deliberately non-blocking. The previous
+        // interaction model trapped every key behind an acknowledgement step,
+        // which made routine actions such as dispatching consecutive Trains feel
+        // modal even after the action had already succeeded.
+        //
+        // `i` keeps the detailed receipt available on demand; any other key
+        // dismisses the passive outcome and is then handled normally in the same
+        // input event.
         if self.action_outcome.is_some() {
-            match key.code {
-                KeyCode::Enter => self.outcome_details_open = true,
-                KeyCode::Esc | KeyCode::Char('a' | 'A') => self.action_outcome = None,
-                _ => {}
+            if matches!(key.code, KeyCode::Char('i' | 'I')) {
+                self.outcome_details_open = true;
+                return ShellAction::Continue;
             }
-            return ShellAction::Continue;
+            self.action_outcome = None;
         }
 
         if matches!(key.code, KeyCode::Char('?')) {
@@ -1347,18 +1352,11 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         return;
     }
 
-    let [
-        header_area,
-        navigation_area,
-        content_area,
-        feedback_area,
-        hints_area,
-    ] = Layout::vertical([
+    let [header_area, navigation_area, content_area, footer_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(7),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(4),
     ])
     .areas(area);
 
@@ -1501,31 +1499,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         }
     }
 
-    frame.render_widget(
-        Paragraph::new(
-            shell
-                .action_outcome
-                .as_ref()
-                .map(|outcome| format!("{}  [Enter] Read  [Esc] Dismiss", outcome.summary))
-                .or_else(|| shell.notice.clone())
-                .unwrap_or_default(),
-        )
-        .style(if shell.action_outcome.is_some() {
-            theme::success()
-        } else {
-            theme::feedback()
-        })
-        .wrap(Wrap { trim: true }),
-        feedback_area,
-    );
-
-    let controls = contextual_controls(shell, state, hints_area.width);
-    frame.render_widget(
-        Paragraph::new(Span::styled(controls, theme::hint()))
-            .style(theme::hint())
-            .wrap(Wrap { trim: true }),
-        hints_area,
-    );
+    render_footer(frame, footer_area, shell, state);
 
     if shell.world_details_visible {
         render_world_details_overlay(frame, area, state);
@@ -1546,50 +1520,204 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
     }
 }
 
-fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> String {
-    let compact = width <= 80;
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FooterShortcut {
+    key: String,
+    action: String,
+    enabled: bool,
+}
+
+impl FooterShortcut {
+    fn enabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: true,
+        }
+    }
+
+    fn disabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: false,
+        }
+    }
+}
+
+fn render_footer(frame: &mut ratatui::Frame, area: Rect, shell: &mut Shell, state: &GameState) {
+    let mut lines = Vec::new();
+    if let Some(outcome) = &shell.action_outcome {
+        lines.push(Line::styled(format!("✓ {}", outcome.summary), theme::success()));
+    } else if let Some(notice) = &shell.notice {
+        lines.push(Line::styled(notice.clone(), theme::warning()));
+    }
+
+    let inner_width = area.width.saturating_sub(2);
+    let outcome_shortcut = (shell.action_outcome.is_some() && !shell.outcome_details_open)
+        .then(|| FooterShortcut::enabled("i", "Details"));
+    let reserved = outcome_shortcut
+        .as_ref()
+        .map(|shortcut| shortcut_width(shortcut).saturating_add(1) as u16)
+        .unwrap_or(0);
+    let mut shortcuts = contextual_controls(shell, state, inner_width.saturating_sub(reserved));
+    if let Some(shortcut) = outcome_shortcut {
+        shortcuts.insert(0, shortcut);
+    }
+    lines.push(shortcut_line(&shortcuts));
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(theme::THIN_BORDERS)
+                    .border_style(theme::footer_border())
+                    .style(theme::panel()),
+            )
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn shortcut_width(shortcut: &FooterShortcut) -> usize {
+    shortcut.key.chars().count() + shortcut.action.chars().count() + 3
+}
+
+fn shortcut_line_width(shortcuts: &[FooterShortcut]) -> usize {
+    shortcuts
+        .iter()
+        .map(shortcut_width)
+        .sum::<usize>()
+        .saturating_add(shortcuts.len().saturating_sub(1))
+}
+
+fn push_shortcut_if_fits(
+    shortcuts: &mut Vec<FooterShortcut>,
+    shortcut: FooterShortcut,
+    width: u16,
+) {
+    let added_separator = if shortcuts.is_empty() { 0 } else { 1 };
+    let next_width = shortcut_line_width(shortcuts)
+        .saturating_add(added_separator)
+        .saturating_add(shortcut_width(&shortcut));
+    if next_width <= usize::from(width) {
+        shortcuts.push(shortcut);
+    }
+}
+
+fn shortcut_line(shortcuts: &[FooterShortcut]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, shortcut) in shortcuts.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" ", theme::shortcut_action()));
+        }
+        let key_style = if shortcut.enabled {
+            theme::shortcut_key()
+        } else {
+            theme::shortcut_disabled()
+        };
+        let action_style = if shortcut.enabled {
+            theme::shortcut_action()
+        } else {
+            theme::shortcut_disabled()
+        };
+        spans.push(Span::styled(format!("[{}]", shortcut.key), key_style));
+        spans.push(Span::styled(format!(" {}", shortcut.action), action_style));
+    }
+    Line::from(spans)
+}
+
+fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<FooterShortcut> {
+    let compact = width <= 78;
+    let wide = width >= 104;
+
     if shell.help_visible {
-        return "↑↓/jk Scroll  PgUp/PgDn Page  ?/Esc Close  q Quit".into();
+        let mut actions = vec![
+            FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Scroll"),
+            FooterShortcut::enabled("PgUp/PgDn", "Page"),
+            FooterShortcut::enabled("?/Esc", "Close"),
+        ];
+        actions.push(FooterShortcut::enabled("Q", "Quit"));
+        return actions;
     }
     if shell.world_details_visible {
-        return "w/Esc Close World Details  ·  ? Help  q Quit".into();
+        return vec![
+            FooterShortcut::enabled("W/Esc", "Close"),
+            FooterShortcut::enabled("?", "Help"),
+            FooterShortcut::enabled("Q", "Quit"),
+        ];
     }
     if shell.train_nickname_editor.is_some() {
-        return "Type nickname  Enter Save  Backspace Delete  Esc Cancel".into();
+        return vec![
+            FooterShortcut::enabled("Enter", "Save"),
+            FooterShortcut::enabled("Backspace", "Delete"),
+            FooterShortcut::enabled("Esc", "Cancel"),
+        ];
     }
     if shell.company_vkm_editor.is_some() {
-        return "Type 2–5 letters  Enter Save  Backspace Delete  Esc Cancel".into();
+        return vec![
+            FooterShortcut::enabled("Enter", "Save"),
+            FooterShortcut::enabled("Backspace", "Delete"),
+            FooterShortcut::enabled("Esc", "Cancel"),
+        ];
+    }
+    if shell.outcome_details_open {
+        return vec![
+            FooterShortcut::enabled("i", "Close"),
+            FooterShortcut::enabled("Esc", "Close"),
+        ];
     }
     if is_bankrupt(state) {
         return if shell.restart_confirmation {
-            "Enter Confirm restart  Esc Cancel  q Quit".into()
+            vec![
+                FooterShortcut::enabled("Enter", "Confirm restart"),
+                FooterShortcut::enabled("Esc", "Cancel"),
+                FooterShortcut::enabled("Q", "Quit"),
+            ]
         } else {
-            "r Safe restart  ? Help  q Quit".into()
+            vec![
+                FooterShortcut::enabled("R", "Safe restart"),
+                FooterShortcut::enabled("?", "Help"),
+                FooterShortcut::enabled("Q", "Quit"),
+            ]
         };
     }
 
-    let context = if let Some(flow) = &shell.dispatch_flow {
+    let mut actions = if let Some(flow) = &shell.dispatch_flow {
         if flow.is_selecting_train() {
-            if compact {
-                "↑↓/jk Train  Enter Next  Esc Cancel".into()
-            } else {
-                "↑↓/jk Train  Enter Next  Esc Cancel".into()
-            }
+            vec![
+                FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Train"),
+                FooterShortcut::enabled("Enter", "Next"),
+                FooterShortcut::enabled("Esc", "Cancel"),
+            ]
         } else if flow.is_selecting_service() {
-            if compact {
-                "↑↓/jk Service  Enter Review  ← Back  Esc Cancel".into()
-            } else {
-                "↑↓/jk Service  PgUp/PgDn Scroll  Enter Review  ← Back  Esc Cancel".into()
+            let mut items = vec![
+                FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Service"),
+            ];
+            if wide {
+                items.push(FooterShortcut::enabled("PgUp/PgDn", "Scroll"));
             }
-        } else if compact {
-            "Enter Confirm  ← Back  Esc Cancel".into()
+            items.extend([
+                FooterShortcut::enabled("Enter", "Review"),
+                FooterShortcut::enabled("←", "Back"),
+                FooterShortcut::enabled("Esc", "Cancel"),
+            ]);
+            items
         } else {
-            "Enter Confirm dispatch  ← Back  Esc Cancel".into()
+            vec![
+                FooterShortcut::enabled("Enter", "Confirm"),
+                FooterShortcut::enabled("←", "Back"),
+                FooterShortcut::enabled("Esc", "Cancel"),
+            ]
         }
     } else if shell.active_view == View::Trains && shell.fleet_flow.is_some() {
-        "Enter Confirm resale  Esc Cancel".into()
+        vec![
+            FooterShortcut::enabled("Enter", "Confirm resale"),
+            FooterShortcut::enabled("Esc", "Cancel"),
+        ]
     } else if shell.active_view == View::Trains && shell.fleet_details_open {
-        let action = shell
+        let selected = shell
             .fleet_selection
             .selected_train_id(state)
             .and_then(|id| {
@@ -1600,19 +1728,30 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
                     .iter()
                     .find(|train| train.id == id)
             });
-        let actions = match action {
+        let mut items = vec![
+            FooterShortcut::enabled("Esc", "Back"),
+            FooterShortcut::enabled("N", "Rename"),
+        ];
+        match selected {
             Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
-                "n Rename  d Dispatch  s Resale"
+                items.push(FooterShortcut::enabled("D", "Dispatch"));
+                items.push(FooterShortcut::enabled("S", "Resale"));
             }
-            Some(_) => "n Rename  d/s after arrival",
-            None => "n Rename  d/s unavailable",
-        };
-        format!("Esc Back  {actions}")
+            Some(_) => {
+                items.push(FooterShortcut::disabled("D", "no: travel"));
+                items.push(FooterShortcut::disabled("S", "no: travel"));
+            }
+            None => {
+                items.push(FooterShortcut::disabled("D", "unavailable"));
+                items.push(FooterShortcut::disabled("S", "unavailable"));
+            }
+        }
+        items
     } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
         if state.player_company.fleet.trains.is_empty() {
-            "No trains owned  ·  3 Market".into()
+            vec![FooterShortcut::enabled("3", "Market")]
         } else {
-            let action = shell
+            let selected = shell
                 .fleet_selection
                 .selected_train_id(state)
                 .and_then(|id| {
@@ -1623,23 +1762,37 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
                         .iter()
                         .find(|train| train.id == id)
                 });
-            let actions = match action {
-                Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
-                    "n Rename  d Dispatch  s Resale"
-                }
-                Some(_) => "n Rename  d/s after arrival",
-                None => "n Rename  d/s unavailable",
-            };
-            if shell.fleet_split_visible {
-                format!("↑↓/jk Select  PgUp/PgDn Scroll  {actions}")
-            } else if compact {
-                format!("↑↓/jk Train  Enter Details  {actions}")
-            } else {
-                format!("↑↓/jk Train  Enter Details  {actions}")
+            let mut items = vec![FooterShortcut::enabled(
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Train",
+            )];
+            if !shell.fleet_split_visible {
+                items.push(FooterShortcut::enabled("Enter", "Details"));
             }
+            items.push(FooterShortcut::enabled("N", "Rename"));
+            match selected {
+                Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
+                    items.push(FooterShortcut::enabled("D", "Dispatch"));
+                    items.push(FooterShortcut::enabled("S", "Resale"));
+                }
+                Some(_) => {
+                    items.push(FooterShortcut::disabled("D", "no: travel"));
+                    items.push(FooterShortcut::disabled("S", "no: travel"));
+                }
+                None => {
+                    items.push(FooterShortcut::disabled("D", "unavailable"));
+                    items.push(FooterShortcut::disabled("S", "unavailable"));
+                }
+            }
+            items
         }
     } else if shell.active_view == View::Map && shell.services_open {
-        shell.service_workspace.controls().into()
+        shell
+            .service_workspace
+            .footer_shortcuts(compact)
+            .iter()
+            .map(|(key, action)| FooterShortcut::enabled(*key, *action))
+            .collect()
     } else if shell.active_view == View::Map {
         let train_count = state.player_company.fleet.trains.len();
         let ready = state
@@ -1649,47 +1802,91 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             .iter()
             .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
             .count();
-        let action = if train_count == 0 {
-            "No trains owned  ·  3 Market".to_owned()
+        let mut items = vec![FooterShortcut::enabled(
+            if compact { "↑↓←→" } else { "↑↓←→/HJKL" },
+            "Station",
+        )];
+        if train_count == 0 {
+            items.push(FooterShortcut::enabled("3", "Market"));
         } else if ready == 0 {
-            "All trains travelling  ·  dispatch after arrival".to_owned()
-        } else if ready == 1 {
-            "d Dispatch · 1 READY".to_owned()
+            items.push(FooterShortcut::disabled("D", "no: travelling"));
+        } else if wide {
+            items.push(FooterShortcut::enabled(
+                "D",
+                format!("Dispatch · {ready} ready"),
+            ));
         } else {
-            format!("d Dispatch · {ready} READY")
-        };
-        if compact {
-            format!("↑↓←→ Select  s Services  w World  {action}")
-        } else {
-            format!("↑↓←→/hjkl Select  s Services  w World  {action}")
+            items.push(FooterShortcut::enabled("D", "Dispatch"));
         }
+        items.push(FooterShortcut::enabled("S", "Services"));
+        items.push(FooterShortcut::enabled("W", "World"));
+        items
     } else if shell.active_view == View::Company {
         if shell.company_recovery_review_open {
-            "↑↓/jk Route  Enter Open  Esc Back".into()
+            vec![
+                FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Route"),
+                FooterShortcut::enabled("Enter", "Open"),
+                FooterShortcut::enabled("Esc", "Back"),
+            ]
         } else if shell.company_receipt_details_open {
-            "Esc Back  v VKM  1–4 Navigate".into()
+            vec![
+                FooterShortcut::enabled("Esc", "Back"),
+                FooterShortcut::enabled("V", "VKM"),
+                FooterShortcut::enabled("1–4", "Navigate"),
+            ]
         } else if state.financials.recent_journey_receipts.is_empty() {
-            "v Edit VKM  ·  No journey history yet  ·  1 Map".into()
+            vec![
+                FooterShortcut::enabled("V", "Edit VKM"),
+                FooterShortcut::enabled("1", "Map"),
+            ]
         } else {
-            "↑↓/jk Receipt  Enter Details  r Recovery  v Edit VKM".into()
+            vec![
+                FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Receipt"),
+                FooterShortcut::enabled("Enter", "Inspect"),
+                FooterShortcut::enabled("R", "Recovery"),
+                FooterShortcut::enabled("V", "VKM"),
+            ]
         }
     } else if shell.active_view == View::BuyTrains {
         if let Some(flow) = &shell.market_flow {
             if flow.is_selecting_delivery() {
-                "↑↓/jk Station  Enter Review  ← Back  Esc Cancel".into()
+                vec![
+                    FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Station"),
+                    FooterShortcut::enabled("Enter", "Review"),
+                    FooterShortcut::enabled("←", "Back"),
+                    FooterShortcut::enabled("Esc", "Cancel"),
+                ]
             } else {
-                "Enter Confirm purchase  ← Back  Esc Cancel".into()
+                vec![
+                    FooterShortcut::enabled("Enter", "Confirm"),
+                    FooterShortcut::enabled("←", "Back"),
+                    FooterShortcut::enabled("Esc", "Cancel"),
+                ]
             }
-        } else if compact {
-            "↑↓/jk Model  Enter Buy".into()
         } else {
-            "↑↓/jk Model  Enter Choose Delivery".into()
+            vec![
+                FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Model"),
+                FooterShortcut::enabled("Enter", if compact { "Buy" } else { "Choose delivery" }),
+            ]
         }
     } else {
-        "Enter Details".into()
+        vec![FooterShortcut::enabled("Enter", "Details")]
     };
 
-    format!("{context}  ·  ? Help  q Quit")
+    // Keep utility actions predictable without forcing the task-specific
+    // controls to wrap. At narrow widths they disappear only when they do not
+    // fit; every shortcut continues to work even when omitted from the hint.
+    push_shortcut_if_fits(
+        &mut actions,
+        FooterShortcut::enabled("?", "Help"),
+        width,
+    );
+    push_shortcut_if_fits(
+        &mut actions,
+        FooterShortcut::enabled("Q", "Quit"),
+        width,
+    );
+    actions
 }
 
 fn shell_status_line(state: &GameState, now: UtcSeconds, width: u16) -> String {
@@ -2212,7 +2409,7 @@ fn render_outcome_overlay(frame: &mut ratatui::Frame, area: Rect, outcome: &Acti
     lines.extend(outcome.details.iter().cloned().map(Line::from));
     lines.push(Line::from(""));
     lines.push(Line::styled(
-        "Esc · return to notice   Enter/A · acknowledge",
+        "i / Esc · close details",
         theme::hint(),
     ));
     frame.render_widget(Clear, overlay_area);

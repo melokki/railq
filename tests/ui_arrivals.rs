@@ -43,7 +43,7 @@ fn travelling_state() -> GameState {
 }
 
 #[test]
-fn committed_multiple_arrivals_are_inspectable_once_with_current_funds()
+fn committed_multiple_arrivals_are_non_blocking_with_current_funds()
 -> Result<(), Box<dyn Error>> {
     let before = travelling_state();
     let arrives_at = before.active_journeys[0].arrives_at;
@@ -55,33 +55,21 @@ fn committed_multiple_arrivals_are_inspectable_once_with_current_funds()
     let summary = capture_rendered_buffer(&shell, &after, 120, 40);
     assert!(summary.contains("2 Journeys arrived"));
     assert!(summary.contains("Company Funds"));
-    assert!(summary.contains("[Enter] Read"));
+    assert!(!summary.contains("[Enter] Read"));
     fs::create_dir_all(EVIDENCE_DIR)?;
     fs::write(
         Path::new(EVIDENCE_DIR).join("arrival-summary-120x40.txt"),
         &summary,
     )?;
 
-    shell.handle_key(key(KeyCode::Enter), &after);
-    let details = capture_rendered_buffer(&shell, &after, 120, 40);
-    assert!(details.contains("Arrival summary"));
-    assert!(details.contains("Train 01 arrived at"));
-    assert!(details.contains("Train 02 arrived at"));
-    assert!(details.contains("Rail Station"));
-    assert!(details.contains("Current Company Funds:"));
-    fs::write(
-        Path::new(EVIDENCE_DIR).join("arrival-details-120x40.txt"),
-        &details,
-    )?;
-    let compact = capture_rendered_buffer(&shell, &after, 80, 24);
-    assert!(compact.contains("Arrival summary"));
-    assert!(compact.contains("Train 01 arrived at"));
-    fs::write(
-        Path::new(EVIDENCE_DIR).join("arrival-details-80x24.txt"),
-        &compact,
-    )?;
+    // Routine arrival feedback never captures the keyboard. A normal Map
+    // command works immediately and replaces the passive message.
+    shell.handle_key(key(KeyCode::Char('w')), &after);
+    let continued = capture_rendered_buffer(&shell, &after, 120, 40);
+    assert!(continued.contains("World Details"));
+    assert!(!continued.contains("2 Journeys arrived"));
 
-    shell.handle_key(key(KeyCode::Char('a')), &after);
+    shell.handle_key(key(KeyCode::Esc), &after);
     shell.publish_committed_arrivals(&after, &after);
     let repeated = capture_rendered_buffer(&shell, &after, 120, 40);
     assert!(!repeated.contains("arrived"));
@@ -141,7 +129,7 @@ fn rejected_reconciliation_publishes_no_arrival_or_revenue_notice() {
 }
 
 #[test]
-fn startup_arrivals_use_the_live_summary_once_after_the_save_succeeds() -> Result<(), Box<dyn Error>>
+fn startup_arrivals_use_a_non_blocking_live_summary_once_after_the_save_succeeds() -> Result<(), Box<dyn Error>>
 {
     let store = RejectingStore::default();
     let state = travelling_state();
@@ -159,21 +147,17 @@ fn startup_arrivals_use_the_live_summary_once_after_the_save_succeeds() -> Resul
     let summary = capture_rendered_buffer(&shell, app.state(), 120, 40);
     assert!(summary.contains("2 Journeys arrived"));
     assert!(summary.contains("Company Funds"));
+    assert!(!summary.contains("[Enter] Read"));
     fs::create_dir_all(STARTUP_EVIDENCE_DIR)?;
     fs::write(
         Path::new(STARTUP_EVIDENCE_DIR).join("offline-arrival-summary-120x40.txt"),
         &summary,
     )?;
 
-    shell.handle_key(key(KeyCode::Enter), app.state());
-    let details = capture_rendered_buffer(&shell, app.state(), 80, 24);
-    assert!(details.contains("Arrival summary"));
-    assert!(details.contains("Train 01 arrived at"));
-    assert!(details.contains("Train 02 arrived at"));
-    fs::write(
-        Path::new(STARTUP_EVIDENCE_DIR).join("offline-arrival-details-80x24.txt"),
-        &details,
-    )?;
+    shell.handle_key(key(KeyCode::Char('w')), app.state());
+    let continued = capture_rendered_buffer(&shell, app.state(), 80, 24);
+    assert!(continued.contains("World Details"));
+    assert!(!continued.contains("2 Journeys arrived"));
     drop(app);
 
     let Startup::Dashboard(dashboard) = start(store, arrives_at).expect("reopen") else {
