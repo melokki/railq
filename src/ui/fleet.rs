@@ -898,6 +898,15 @@ fn remaining_seconds(journey: &Journey, now: UtcSeconds) -> u64 {
     .unwrap_or(u64::MAX)
 }
 
+fn nearest_arrival(state: &GameState, now: UtcSeconds) -> Option<String> {
+    state
+        .active_journeys
+        .iter()
+        .map(|journey| remaining_seconds(journey, now))
+        .min()
+        .map(format_duration)
+}
+
 fn format_duration(seconds: u64) -> String {
     crate::ui::format::duration(seconds)
 }
