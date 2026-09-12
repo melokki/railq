@@ -1560,8 +1560,8 @@ const HELP_LINES: &[&str] = &[
 ];
 
 fn dispatch_modal_rect(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(4).min(86).max(32);
-    let height = area.height.saturating_sub(2).min(24).max(10);
+    let width = area.width.saturating_sub(4).min(96).max(36);
+    let height = area.height.saturating_sub(2).min(26).max(12);
     Rect {
         x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
         y: area.y.saturating_add(area.height.saturating_sub(height) / 2),

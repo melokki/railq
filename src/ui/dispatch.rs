@@ -102,6 +102,16 @@ impl DispatchFlow {
                 None => no_ready_train_reason(state),
             });
         }
+        if preferred_station_id.is_some() && train_ids.len() == 1 {
+            let step = destination_step(state, train_ids[0], None)
+                .map_err(|_| "No reachable Rail Station can be quoted from this origin.")?;
+            return Ok(Self {
+                step,
+                preferred_station_id,
+                rejection: None,
+            });
+        }
+
         let selected = 0;
         let mut table_state = TableState::default();
         table_state.select(Some(selected));
@@ -535,14 +545,15 @@ fn render_quote_review(
     reuses_service: bool,
     rejection: Option<&str>,
 ) {
-    let block = dispatch_panel_block("Manual Dispatch · Journey quote", true);
+    let block = dispatch_panel_block("Review Dispatch", true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let insufficient_funds = quote.cash_after_cost < Money::ZERO;
     let footer_rows = u16::from(insufficient_funds) + u16::from(rejection.is_some()) + 1;
-    let [route_area, occupancy_area, terms_area, footer_area] = Layout::vertical([
-        Constraint::Length(2),
+    let [context_area, route_area, occupancy_area, terms_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Min(5),
         Constraint::Length(footer_rows),
@@ -550,16 +561,19 @@ fn render_quote_review(
     .areas(inner);
 
     frame.render_widget(
+        Paragraph::new(dispatch_step_line(3)).style(theme::panel()),
+        context_area,
+    );
+
+    frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
+                Span::styled("TRAIN  ", theme::secondary()),
                 Span::styled(
-                    if reuses_service {
-                        "Existing Passenger Service  "
-                    } else {
-                        "New Passenger Service preview  "
-                    },
-                    theme::focused_title(),
+                    format!("{:02} · {}", quote.train_id.get(), train_model_name(state, quote.train_id)),
+                    theme::primary_value(),
                 ),
+                Span::styled("   ROUTE  ", theme::secondary()),
                 Span::styled(
                     format!(
                         "{} → {}",
@@ -571,10 +585,15 @@ fn render_quote_review(
             ]),
             Line::styled(
                 format!(
-                    "Route: {} · {} · {} Rail Lines",
-                    format_path(state, quote),
+                    "{} · {} · {} · {}",
+                    format_distance(quote.distance.metres()),
                     format_duration(quote.duration.seconds()),
-                    quote.rail_line_path.len(),
+                    format_path(state, quote),
+                    if reuses_service {
+                        "existing service"
+                    } else {
+                        "new service"
+                    },
                 ),
                 theme::secondary(),
             ),
@@ -585,6 +604,7 @@ fn render_quote_review(
     );
 
     let capacity = train_capacity(state, quote.train_id);
+    let waiting = waiting_passengers(state, quote.origin_station_id, quote.destination_station_id);
     let occupancy_ratio = if capacity == 0 {
         0.0
     } else {
@@ -592,46 +612,41 @@ fn render_quote_review(
     };
     frame.render_widget(
         Gauge::default()
-            .block(dispatch_panel_block("Occupancy", false))
+            .block(dispatch_panel_block("Passengers", false))
             .gauge_style(theme::focused_title())
             .ratio(occupancy_ratio)
             .label(format!(
-                "{} boarded / {} capacity · {} Waiting Passengers",
-                quote.boarded_passengers,
-                capacity,
-                waiting_passengers(state, quote.origin_station_id, quote.destination_station_id)
+                "{} boarded / {} seats · {} waiting before departure",
+                quote.boarded_passengers, capacity, waiting
             )),
         occupancy_area,
     );
 
     let mut terms = vec![
-        Line::styled("DEPARTURE · paid now", theme::warning()),
+        Line::styled("PAID AT DEPARTURE", theme::warning()),
         money_pair_line(
-            "Infrastructure Access Fee",
+            "Access",
             quote.infrastructure_access_fee,
-            "Fuel Cost",
+            "Fuel",
             quote.fuel_cost,
         ),
         money_pair_line(
-            "Paid-now total",
+            "Total cost",
             quote.operating_cost,
             "Funds after departure",
             quote.cash_after_cost,
         ),
-        Line::styled(
-            "ARRIVAL · credited when the Journey arrives",
-            theme::success(),
-        ),
+        Line::styled("EXPECTED AT ARRIVAL", theme::success()),
         money_pair_line(
-            "Arrival revenue",
+            "Revenue",
             quote.operating_revenue,
-            "Estimated profit",
+            "Journey result",
             quote.journey_profitability,
         ),
     ];
     if quote.boarded_passengers == 0 {
         terms.push(Line::styled(
-            "EMPTY REPOSITIONING · zero passengers is valid; no arrival revenue is expected.",
+            "EMPTY REPOSITIONING · no passengers will board and no arrival revenue is expected.",
             theme::warning(),
         ));
     }
@@ -645,18 +660,15 @@ fn render_quote_review(
     let mut footer = Vec::new();
     if insufficient_funds {
         footer.push(Line::styled(
-            "INSUFFICIENT FUNDS · paid-now total exceeds current Company Funds.",
+            "INSUFFICIENT FUNDS · departure costs exceed current Company Funds.",
             theme::error(),
         ));
     }
     if let Some(rejection) = rejection {
-        footer.push(Line::styled(
-            format!("Departure review: {rejection}"),
-            theme::error(),
-        ));
+        footer.push(Line::styled(rejection, theme::error()));
     }
     footer.push(Line::styled(
-        "Enter · revalidate and confirm   Left / Backspace · destination   Esc · cancel",
+        "Enter Dispatch   ←/Backspace Destination   Esc Cancel",
         theme::hint(),
     ));
     frame.render_widget(
@@ -679,6 +691,47 @@ fn money_pair_line(
         Span::styled(format!("  {second_label}: "), theme::secondary()),
         Span::styled(format_money(second_value), theme::primary_value()),
     ])
+}
+
+fn dispatch_step_line(active: u8) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (step, label) in [(1, "TRAIN"), (2, "DESTINATION"), (3, "REVIEW")] {
+        if step > 1 {
+            spans.push(Span::styled("  →  ", theme::secondary()));
+        }
+        let style = if step == active {
+            theme::focused_title()
+        } else if step < active {
+            theme::success()
+        } else {
+            theme::secondary()
+        };
+        spans.push(Span::styled(format!("{step} {label}"), style));
+    }
+    Line::from(spans)
+}
+
+fn train_model_name(state: &GameState, train_id: TrainId) -> &str {
+    state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .map_or("Unknown Train", |train| train.model_name.as_str())
+}
+
+fn format_signed_money(money: Money) -> String {
+    let formatted = format_money(money);
+    if money.cents() > 0 {
+        format!("+{formatted}")
+    } else {
+        formatted
+    }
+}
+
+fn format_money_per_kilometre(cents: u64) -> String {
+    format!("${}.{:02}/km", cents / 100, cents % 100)
 }
 
 struct TrainChooserContext<'a> {
@@ -704,94 +757,100 @@ fn render_train_chooser(
         .iter()
         .filter(|train| allowed_train_ids.contains(&train.id))
         .collect::<Vec<_>>();
-    let station_context = chooser.preferred_station_id.map_or_else(
-        || "Choose a READY Train from the available Fleet.".to_owned(),
-        |station_id| {
-            let station = station_label(state, station_id);
-            if trains
-                .iter()
-                .any(|train| matches!(train.status, TrainStatus::Ready { at } if at == station_id))
-            {
-                format!("{station}: choose a READY Train based here.")
-            } else {
-                format!("No READY Train is available at {station}.")
-            }
-        },
-    );
+    let origin = chooser
+        .preferred_station_id
+        .map(|station_id| station_label(state, station_id));
     let footer_rows = u16::from(chooser.rejection.is_some() || chooser.selected_train_id.is_none())
         .saturating_add(1);
     let [context_area, table_area, footer_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(3),
+        Constraint::Length(2),
+        Constraint::Min(4),
         Constraint::Length(footer_rows),
     ])
     .areas(area);
+
+    let mut context = vec![dispatch_step_line(1)];
+    context.push(Line::from(vec![
+        Span::styled("FROM  ", theme::secondary()),
+        Span::styled(origin.unwrap_or("Any READY Train"), theme::primary_value()),
+        Span::styled("   Choose the Train to operate this Journey.", theme::secondary()),
+    ]));
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("1 Train", theme::focused_title()),
-            Span::styled(" → 2 Destination → 3 Review", theme::secondary()),
-            Span::styled(format!("  {station_context}"), theme::secondary()),
-        ]))
-        .style(theme::panel())
-        .wrap(Wrap { trim: true }),
+        Paragraph::new(context)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
         context_area,
     );
 
     *page_size = usize::from(table_area.height.saturating_sub(4)).max(1);
+    let wide = table_area.width >= 76;
     let rows = trains
         .iter()
         .map(|train| {
             let TrainStatus::Ready { at } = train.status else {
                 unreachable!("READY Train chooser only includes READY Trains");
             };
-            Row::new([
-                Cell::from(format!("Train {:02}", train.id.get())),
-                Cell::from(train.model_name.clone()),
-                Cell::from("READY"),
-                Cell::from(format!("At {}", station_label(state, at))),
-            ])
+            if wide {
+                Row::new([
+                    Cell::from(format!("Train {:02}", train.id.get())),
+                    Cell::from(train.model_name.clone()),
+                    Cell::from(format!("{} pax", train.passenger_capacity.passengers())),
+                    Cell::from(crate::ui::format::speed_kmh(train.speed.metres_per_second())),
+                    Cell::from(format_money_per_kilometre(
+                        train.fuel_cost_per_kilometre.cents_per_kilometre(),
+                    )),
+                ])
+            } else {
+                Row::new([
+                    Cell::from(format!("Train {:02}", train.id.get())),
+                    Cell::from(train.model_name.clone()),
+                    Cell::from(format!("{} pax", train.passenger_capacity.passengers())),
+                    Cell::from(station_label(state, at).to_owned()),
+                ])
+            }
         })
         .collect::<Vec<_>>();
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(10),
-            Constraint::Percentage(36),
-            Constraint::Length(9),
-            Constraint::Percentage(44),
-        ],
-    )
-    .header(
-        Row::new(["Train", "Model", "Status", "Location"])
-            .style(theme::table_header())
-            .bottom_margin(1),
-    )
-    .block(dispatch_panel_block(
-        "Manual Dispatch · available Fleet",
-        true,
-    ))
-    .row_highlight_style(theme::selected_row())
-    .highlight_symbol("> ")
-    .highlight_spacing(HighlightSpacing::Always);
+    let (headers, widths) = if wide {
+        (
+            Row::new(["Train", "Model", "Capacity", "Speed", "Fuel / km"]),
+            vec![
+                Constraint::Length(10),
+                Constraint::Percentage(34),
+                Constraint::Length(10),
+                Constraint::Length(12),
+                Constraint::Length(12),
+            ],
+        )
+    } else {
+        (
+            Row::new(["Train", "Model", "Capacity", "Location"]),
+            vec![
+                Constraint::Length(10),
+                Constraint::Percentage(38),
+                Constraint::Length(10),
+                Constraint::Percentage(32),
+            ],
+        )
+    };
+    let table = Table::new(rows, widths)
+        .header(headers.style(theme::table_header()).bottom_margin(1))
+        .block(dispatch_panel_block("Choose Train", true))
+        .row_highlight_style(theme::selected_row())
+        .highlight_symbol("▶ ")
+        .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(table, table_area, table_state);
 
     let controls = if area.width <= 80 {
-        "↑↓ / J K · select   PgUp/Dn · scroll   Enter · next   Esc · cancel"
+        "↑↓/jk Select  Enter Destination  Esc Cancel"
     } else {
-        "↑↓ / J K · select   PageUp / PageDown · scroll   Enter · destination   Esc · cancel"
+        "↑↓/jk Select   PgUp/PgDn Scroll   Enter Destination   Esc Cancel"
     };
     let mut footer = vec![Line::styled(controls, theme::hint())];
     if let Some(rejection) = chooser.rejection {
-        footer.insert(
-            0,
-            Line::styled(format!("Dispatch unavailable: {rejection}"), theme::error()),
-        );
+        footer.insert(0, Line::styled(rejection, theme::error()));
     }
     if chooser.selected_train_id.is_none() && chooser.rejection.is_none() {
-        footer.insert(
-            0,
-            Line::styled("Choose a READY Train to continue.", theme::warning()),
-        );
+        footer.insert(0, Line::styled("Choose a READY Train to continue.", theme::warning()));
     }
     frame.render_widget(
         Paragraph::new(footer)
@@ -845,35 +904,32 @@ fn render_destination_chooser(
     synchronize_destination_selection(selected_destination_id, table_state, &destinations);
     let footer_rows = u16::from(chooser.rejection.is_some()).saturating_add(1);
     let [context_area, body_area, footer_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(3),
+        Constraint::Length(2),
+        Constraint::Min(4),
         Constraint::Length(footer_rows),
     ])
     .areas(area);
+    let model = train_model_name(state, train_id);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("1 Train → ", theme::secondary()),
-            Span::styled("2 Destination", theme::focused_title()),
-            Span::styled(" → 3 Review", theme::secondary()),
-            Span::styled(
-                format!(
-                    "  Train {:02} · Origin: {}",
-                    train_id.get(),
-                    station_label(state, origin_station_id)
-                ),
-                theme::secondary(),
-            ),
-        ]))
+        Paragraph::new(vec![
+            dispatch_step_line(2),
+            Line::from(vec![
+                Span::styled("FROM  ", theme::secondary()),
+                Span::styled(station_label(state, origin_station_id), theme::primary_value()),
+                Span::styled("   TRAIN  ", theme::secondary()),
+                Span::styled(format!("{:02} · {model}", train_id.get()), theme::primary_value()),
+            ]),
+        ])
         .style(theme::panel())
         .wrap(Wrap { trim: true }),
         context_area,
     );
 
     let has_inspector = body_area.height >= 9;
-    let wide = body_area.width >= 96 && has_inspector;
+    let wide = body_area.width >= 90 && has_inspector;
     let (table_area, inspector_area) = if wide {
         let [table_area, inspector_area] =
-            Layout::horizontal([Constraint::Min(38), Constraint::Length(36)]).areas(body_area);
+            Layout::horizontal([Constraint::Min(44), Constraint::Length(34)]).areas(body_area);
         (table_area, Some(inspector_area))
     } else if has_inspector {
         let [table_area, inspector_area] =
@@ -888,55 +944,52 @@ fn render_destination_chooser(
         .iter()
         .map(|destination| {
             let quote = &destination.quote;
+            let demand = waiting_passengers(state, quote.origin_station_id, destination.station_id);
             if wide {
                 Row::new([
                     Cell::from(station_label(state, destination.station_id).to_owned()),
-                    Cell::from(format!(
-                        "{} waiting",
-                        waiting_passengers(state, quote.origin_station_id, destination.station_id)
-                    )),
-                    Cell::from(format!("{} lines", quote.rail_line_path.len())),
+                    Cell::from(format!("{demand} waiting")),
                     Cell::from(format_distance(quote.distance.metres())),
+                    Cell::from(format_duration(quote.duration.seconds())),
+                    Cell::from(format_signed_money(quote.journey_profitability)),
                 ])
             } else {
                 Row::new([
                     Cell::from(station_label(state, destination.station_id).to_owned()),
-                    Cell::from(format!(
-                        "{} waiting",
-                        waiting_passengers(state, quote.origin_station_id, destination.station_id)
-                    )),
-                    Cell::from(format_distance(quote.distance.metres())),
+                    Cell::from(format!("{demand} waiting")),
+                    Cell::from(format_duration(quote.duration.seconds())),
+                    Cell::from(format_signed_money(quote.journey_profitability)),
                 ])
             }
         })
         .collect::<Vec<_>>();
-    let widths = if wide {
-        vec![
-            Constraint::Percentage(38),
-            Constraint::Percentage(24),
-            Constraint::Percentage(18),
-            Constraint::Percentage(20),
-        ]
+    let (headers, widths) = if wide {
+        (
+            Row::new(["Destination", "Demand", "Distance", "Time", "Est. result"]),
+            vec![
+                Constraint::Percentage(30),
+                Constraint::Percentage(20),
+                Constraint::Length(12),
+                Constraint::Length(12),
+                Constraint::Length(14),
+            ],
+        )
     } else {
-        vec![
-            Constraint::Percentage(48),
-            Constraint::Percentage(28),
-            Constraint::Percentage(24),
-        ]
-    };
-    let headers = if wide {
-        Row::new(["Destination", "Demand", "Path", "Distance"])
-    } else {
-        Row::new(["Destination", "Demand", "Distance"])
+        (
+            Row::new(["Destination", "Demand", "Time", "Est. result"]),
+            vec![
+                Constraint::Percentage(36),
+                Constraint::Percentage(26),
+                Constraint::Length(12),
+                Constraint::Length(14),
+            ],
+        )
     };
     let table = Table::new(rows, widths)
         .header(headers.style(theme::table_header()).bottom_margin(1))
-        .block(dispatch_panel_block(
-            "Manual Dispatch · reachable destinations",
-            true,
-        ))
+        .block(dispatch_panel_block("Choose Destination", true))
         .row_highlight_style(theme::selected_row())
-        .highlight_symbol("> ")
+        .highlight_symbol("▶ ")
         .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(table, table_area, table_state);
 
@@ -950,16 +1003,13 @@ fn render_destination_chooser(
     }
 
     let controls = if area.width <= 80 {
-        "↑↓/J K · route  Enter · review  Left/Backspace · Train  Esc · cancel"
+        "↑↓/jk Select  Enter Review  ← Back  Esc Cancel"
     } else {
-        "↑↓ / J K · select route   PageUp / PageDown · scroll   Enter · review   Left / Backspace · Train   Esc · cancel"
+        "↑↓/jk Select   PgUp/PgDn Scroll   Enter Review   ←/Backspace Train   Esc Cancel"
     };
     let mut footer = vec![Line::styled(controls, theme::hint())];
     if let Some(rejection) = chooser.rejection {
-        footer.insert(
-            0,
-            Line::styled(format!("Dispatch unavailable: {rejection}"), theme::error()),
-        );
+        footer.insert(0, Line::styled(rejection, theme::error()));
     }
     frame.render_widget(
         Paragraph::new(footer)
@@ -995,8 +1045,8 @@ fn render_route_inspector(
 ) {
     let Some(destination) = destination else {
         frame.render_widget(
-            Paragraph::new("Select a reachable destination to inspect its route.")
-                .block(dispatch_panel_block("Route inspector", true))
+            Paragraph::new("Select a destination to preview its Journey.")
+                .block(dispatch_panel_block("Journey Preview", false))
                 .style(theme::panel())
                 .wrap(Wrap { trim: true }),
             area,
@@ -1006,41 +1056,43 @@ fn render_route_inspector(
     let quote = &destination.quote;
     let demand = waiting_passengers(state, quote.origin_station_id, destination.station_id);
     let service = if destination.reuses_service {
-        "Existing Passenger Service"
+        "existing service"
     } else {
-        "New Passenger Service preview"
+        "new service"
     };
     let lines = if wide {
         vec![
-            Line::from(vec![
-                Span::styled("Origin  ", theme::secondary()),
-                Span::styled(
-                    station_label(state, quote.origin_station_id),
-                    theme::primary_value(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Destination  ", theme::secondary()),
-                Span::styled(
-                    station_label(state, destination.station_id),
-                    theme::primary_value(),
-                ),
-            ]),
             Line::styled(
-                format!("Directional demand  {demand} waiting"),
+                format!(
+                    "{} → {}",
+                    station_label(state, quote.origin_station_id),
+                    station_label(state, destination.station_id)
+                ),
                 theme::primary_value(),
             ),
             Line::styled(
-                format!("Path  {}", format_path(state, quote)),
+                format!("{demand} waiting · {}", format_duration(quote.duration.seconds())),
                 theme::secondary(),
             ),
             Line::styled(
-                format!(
-                    "Distance  {} · {}",
-                    format_distance(quote.distance.metres()),
-                    service
-                ),
+                format!("{} · {service}", format_distance(quote.distance.metres())),
                 theme::secondary(),
+            ),
+            Line::styled(
+                format!("Revenue  {}", format_money(quote.operating_revenue)),
+                theme::secondary(),
+            ),
+            Line::styled(
+                format!("Cost     {}", format_money(quote.operating_cost)),
+                theme::secondary(),
+            ),
+            Line::styled(
+                format!("Result   {}", format_signed_money(quote.journey_profitability)),
+                if quote.journey_profitability.cents() >= 0 {
+                    theme::success()
+                } else {
+                    theme::error()
+                },
             ),
         ]
     } else {
@@ -1054,18 +1106,20 @@ fn render_route_inspector(
                 theme::primary_value(),
             ),
             Line::styled(
-                format!("Path: {}", format_path(state, quote)),
+                format!(
+                    "{} · {} · {}",
+                    format_distance(quote.distance.metres()),
+                    format_duration(quote.duration.seconds()),
+                    format_signed_money(quote.journey_profitability)
+                ),
                 theme::secondary(),
             ),
-            Line::styled(
-                format!("{} · {service}", format_distance(quote.distance.metres())),
-                theme::secondary(),
-            ),
+            Line::styled(format_path(state, quote), theme::secondary()),
         ]
     };
     frame.render_widget(
         Paragraph::new(lines)
-            .block(dispatch_panel_block("Route inspector", true))
+            .block(dispatch_panel_block("Journey Preview", false))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         area,
@@ -1453,6 +1507,15 @@ mod tests {
         let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
         let train_id = purchase_train(&mut state, 0, at).unwrap();
         (state, train_id)
+    }
+
+    #[test]
+    fn map_dispatch_skips_train_choice_when_only_one_ready_train_is_at_station() {
+        let (state, _) = game_with_ready_train(RailStationId::new(1));
+        let flow = DispatchFlow::start_at_station(&state, Some(RailStationId::new(1))).unwrap();
+
+        assert!(flow.is_selecting_destination());
+        assert!(!flow.is_selecting_train());
     }
 
     #[test]
