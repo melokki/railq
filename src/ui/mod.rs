@@ -164,6 +164,7 @@ pub struct Shell {
     dispatch_flow: Option<dispatch::DispatchFlow>,
     dispatch_returns_to_fleet: bool,
     map_location_selection: map::MapLocationSelection,
+    world_details_visible: bool,
     services_open: bool,
     service_workspace: services::ServiceWorkspace,
     fleet_flow: Option<fleet::FleetFlow>,
@@ -193,6 +194,7 @@ impl Shell {
             dispatch_flow: None,
             dispatch_returns_to_fleet: false,
             map_location_selection: map::MapLocationSelection::default(),
+            world_details_visible: false,
             services_open: false,
             service_workspace: services::ServiceWorkspace::default(),
             fleet_flow: None,
@@ -293,6 +295,22 @@ impl Shell {
             self.help_visible = true;
             self.help_offset = 0;
             return ShellAction::Continue;
+        }
+
+        if self.world_details_visible {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('w' | 'W') => {
+                    self.world_details_visible = false;
+                    self.notice = None;
+                    return ShellAction::Continue;
+                }
+                KeyCode::Char(
+                    '1' | '2' | '3' | '4' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C',
+                ) => {
+                    self.world_details_visible = false;
+                }
+                _ => return ShellAction::Continue,
+            }
         }
 
         if is_bankrupt(state) {
@@ -588,6 +606,10 @@ impl Shell {
                 if self.active_view == View::Trains =>
             {
                 self.fleet_selection.handle_key(key.code, state);
+            }
+            KeyCode::Char('w' | 'W') if self.active_view == View::Map => {
+                self.world_details_visible = true;
+                self.notice = None;
             }
             KeyCode::Left
             | KeyCode::Right
@@ -1357,6 +1379,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         hints_area,
     );
 
+    if shell.world_details_visible {
+        render_world_details_overlay(frame, area, state);
+    }
     if shell.help_visible {
         render_help_overlay(frame, area, shell, state);
     }
@@ -1371,6 +1396,9 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
     let compact = width <= 80;
     if shell.help_visible {
         return "↑↓/jk Scroll  PgUp/PgDn Page  ?/Esc Close  q Quit".into();
+    }
+    if shell.world_details_visible {
+        return "w/Esc Close World Details  ·  ? Help  q Quit".into();
     }
     if is_bankrupt(state) {
         return if shell.restart_confirmation {
@@ -1471,9 +1499,9 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             format!("d Dispatch · {ready} READY")
         };
         if compact {
-            format!("↑↓←→ Select  s Services  {action}")
+            format!("↑↓←→ Select  s Services  w World  {action}")
         } else {
-            format!("↑↓←→/hjkl Select  s Services  {action}")
+            format!("↑↓←→/hjkl Select  s Services  w World  {action}")
         }
     } else if shell.active_view == View::Company {
         if shell.company_recovery_review_open {
@@ -1604,6 +1632,15 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         return lines;
     }
 
+    if shell.world_details_visible {
+        lines.extend([
+            "Current · World Details".into(),
+            "w / Esc Return to Map".into(),
+            "The railway registration belongs to the Region and remains stable for this save.".into(),
+        ]);
+        return lines;
+    }
+
     if let Some(flow) = &shell.dispatch_flow {
         lines.push("Current · Manual Dispatch".into());
         if flow.is_selecting_train() {
@@ -1715,6 +1752,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                 "Current · Map".into(),
                 "↑↓←→ / hjkl Select a map location".into(),
                 "s Open Passenger Services".into(),
+                "w Open World Details".into(),
             ]);
             if train_count == 0 {
                 lines.extend([
@@ -1807,6 +1845,125 @@ fn dispatch_modal_rect(area: Rect) -> Rect {
         width: width.min(area.width),
         height: height.min(area.height),
     }
+}
+
+fn render_world_details_overlay(frame: &mut ratatui::Frame, area: Rect, state: &GameState) {
+    let compact = area.width < 84 || area.height < 24;
+    let overlay_area = if compact {
+        area
+    } else {
+        let width = area.width.saturating_sub(8).min(86).max(64);
+        let height = area.height.saturating_sub(4).min(23).max(18);
+        Rect::new(
+            area.x.saturating_add((area.width.saturating_sub(width)) / 2),
+            area.y.saturating_add((area.height.saturating_sub(height)) / 2),
+            width,
+            height,
+        )
+    };
+
+    let region = &state.region;
+    let registration = &region.railway_registration;
+    let network = &region.rail_authority.rail_network;
+    let connected = region
+        .settlements
+        .iter()
+        .filter(|settlement| {
+            network
+                .rail_stations
+                .iter()
+                .any(|station| station.settlement_id == settlement.id)
+        })
+        .count();
+    let total = region.settlements.len();
+    let coverage_percent = if total == 0 {
+        0
+    } else {
+        connected.saturating_mul(100) / total
+    };
+    let network_metres = network.rail_lines.iter().fold(0_u64, |total, line| {
+        total.saturating_add(line.distance.metres())
+    });
+    let territory = region
+        .name
+        .rsplit_once(" of ")
+        .map_or(region.name.as_str(), |(_, territory)| territory);
+
+    let lines = vec![
+        world_section("REGION"),
+        world_field("Region", &region.name),
+        world_field("Rail Authority", &region.rail_authority.name),
+        world_field("Population", &grouped_u64(region.population)),
+        Line::from(""),
+        world_section("RAILWAY REGISTRATION"),
+        world_field(
+            "Identity",
+            &format!("{} · {}", registration.display_code(), registration.mark),
+        ),
+        world_field(
+            &registration.display_code(),
+            "fictional numeric railway registration code for this Region",
+        ),
+        world_field(
+            &registration.mark,
+            &format!("fictional two-letter railway mark assigned to {territory}"),
+        ),
+        Line::styled(
+            "Used as part of RailQ vehicle numbering; it remains stable for this world.",
+            theme::secondary(),
+        ),
+        Line::from(""),
+        world_section("NETWORK"),
+        world_field("Settlements", &format!("{total}")),
+        world_field(
+            "Connected",
+            &format!("{connected} / {total} ({coverage_percent}%)"),
+        ),
+        world_field("Rail stations", &format!("{}", network.rail_stations.len())),
+        world_field("Rail lines", &format!("{}", network.rail_lines.len())),
+        world_field("Rail network", &format::distance(network_metres)),
+        Line::from(""),
+        Line::styled("w / Esc · return to Map", theme::hint()),
+    ];
+
+    frame.render_widget(Clear, overlay_area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(theme::THIN_BORDERS)
+                    .border_style(theme::focused_border())
+                    .title("World Details")
+                    .title_style(theme::focused_title())
+                    .style(theme::panel()),
+            )
+            .style(theme::panel())
+            .wrap(Wrap { trim: false }),
+        overlay_area,
+    );
+}
+
+fn world_section(label: &str) -> Line<'static> {
+    Line::styled(label.to_owned(), theme::focused_title())
+}
+
+fn world_field(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<16}"), theme::secondary()),
+        Span::styled(value.to_owned(), theme::primary_value()),
+    ])
+}
+
+fn grouped_u64(value: u64) -> String {
+    let digits = value.to_string();
+    let mut result = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
+    for (index, digit) in digits.chars().enumerate() {
+        if index != 0 && (digits.len() - index) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(digit);
+    }
+    result
 }
 
 fn render_help_overlay(
@@ -2153,6 +2310,42 @@ mod tests {
             );
             assert_eq!(shell.active_view(), expected_view);
         }
+    }
+
+    #[test]
+    fn map_world_details_explains_the_region_registration_identity() {
+        let mut shell = Shell::new();
+        let state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
+
+        assert_eq!(
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+                &state,
+            ),
+            ShellAction::Continue
+        );
+        assert!(shell.world_details_visible);
+
+        let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+        let registration = format!(
+            "{} · {}",
+            state.region.railway_registration.display_code(),
+            state.region.railway_registration.mark
+        );
+        assert!(rendered.contains("World Details"));
+        assert!(rendered.contains(&state.region.name));
+        assert!(rendered.contains(&state.region.rail_authority.name));
+        assert!(rendered.contains(&registration));
+        assert!(rendered.contains("RAILWAY REGISTRATION"));
+        assert!(rendered.contains("fictional two-letter railway mark"));
+        assert!(rendered.contains("Connected"));
+        assert!(rendered.contains("Rail network"));
+
+        assert_eq!(
+            shell.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
+            ShellAction::Continue
+        );
+        assert!(!shell.world_details_visible);
     }
 
     #[test]
