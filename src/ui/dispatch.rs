@@ -88,23 +88,21 @@ impl DispatchFlow {
         Self::start_at_station(state, None)
     }
 
-    /// Starts at a focused Rail Station, preferring one of its READY Trains.
-    /// The player can still deliberately choose any other available Fleet Train.
+    /// Starts at a focused Rail Station and limits the chooser to READY Trains
+    /// physically based at that station. Map dispatch therefore keeps the
+    /// selected station as the Journey origin instead of silently switching it.
     pub fn start_at_station(
         state: &GameState,
         preferred_station_id: Option<RailStationId>,
     ) -> Result<Self, &'static str> {
-        let train_ids = ready_train_ids(state);
+        let train_ids = ready_train_ids_for_station(state, preferred_station_id);
         if train_ids.is_empty() {
-            return Err(no_ready_train_reason(state));
+            return Err(match preferred_station_id {
+                Some(_) => "No READY Train is available at the selected Rail Station.",
+                None => no_ready_train_reason(state),
+            });
         }
-        let selected = preferred_station_id
-            .and_then(|station_id| {
-                train_ids
-                    .iter()
-                    .position(|train_id| ready_train_station(state, *train_id) == Some(station_id))
-            })
-            .unwrap_or(0);
+        let selected = 0;
         let mut table_state = TableState::default();
         table_state.select(Some(selected));
         Ok(Self {
@@ -157,9 +155,12 @@ impl DispatchFlow {
                 table_state,
                 page_size,
             } => {
-                let trains = ready_train_ids(state);
+                let trains = ready_train_ids_for_station(state, self.preferred_station_id);
                 if trains.is_empty() {
-                    self.rejection = Some(no_ready_train_reason(state).into());
+                    self.rejection = Some(match self.preferred_station_id {
+                        Some(_) => "No READY Train is available at the selected Rail Station.".into(),
+                        None => no_ready_train_reason(state).into(),
+                    });
                     return DispatchFlowAction::Continue;
                 }
                 if synchronize_train_selection(selected_train_id, table_state, &trains) {
@@ -205,7 +206,11 @@ impl DispatchFlow {
             } => {
                 if matches!(key.code, KeyCode::Left | KeyCode::Backspace) {
                     let selected_train_id = *train_id;
-                    self.step = train_selection_step(state, Some(selected_train_id));
+                    self.step = train_selection_step(
+                        state,
+                        Some(selected_train_id),
+                        self.preferred_station_id,
+                    );
                     self.rejection = None;
                     return DispatchFlowAction::Continue;
                 }
@@ -451,7 +456,11 @@ impl DispatchFlow {
                 table_state,
                 ..
             } => {
-                synchronize_train_selection(selected_train_id, table_state, &ready_train_ids(state))
+                synchronize_train_selection(
+                    selected_train_id,
+                    table_state,
+                    &ready_train_ids_for_station(state, self.preferred_station_id),
+                )
             }
             DispatchStep::SelectDestination { .. } | DispatchStep::Confirm { .. } => false,
         };
@@ -687,12 +696,13 @@ fn render_train_chooser(
     page_size: &mut usize,
 ) {
     let state = chooser.state;
+    let allowed_train_ids = ready_train_ids_for_station(state, chooser.preferred_station_id);
     let trains = state
         .player_company
         .fleet
         .trains
         .iter()
-        .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
+        .filter(|train| allowed_train_ids.contains(&train.id))
         .collect::<Vec<_>>();
     let station_context = chooser.preferred_station_id.map_or_else(
         || "Choose a READY Train from the available Fleet.".to_owned(),
@@ -702,9 +712,9 @@ fn render_train_chooser(
                 .iter()
                 .any(|train| matches!(train.status, TrainStatus::Ready { at } if at == station_id))
             {
-                format!("{station}: a READY Train here is preselected.")
+                format!("{station}: choose a READY Train based here.")
             } else {
-                format!("No READY Train at {station}; showing the available Fleet.")
+                format!("No READY Train is available at {station}.")
             }
         },
     );
@@ -1092,6 +1102,21 @@ fn ready_train_ids(state: &GameState) -> Vec<TrainId> {
         .collect()
 }
 
+fn ready_train_ids_for_station(
+    state: &GameState,
+    station_id: Option<RailStationId>,
+) -> Vec<TrainId> {
+    ready_train_ids(state)
+        .into_iter()
+        .filter(|train_id| {
+            match station_id {
+                Some(station_id) => ready_train_station(state, *train_id) == Some(station_id),
+                None => true,
+            }
+        })
+        .collect()
+}
+
 fn no_ready_train_reason(state: &GameState) -> &'static str {
     if state.player_company.fleet.trains.is_empty() {
         "No READY Train in the Fleet. Press B to buy a Train."
@@ -1176,8 +1201,12 @@ fn train_capacity(state: &GameState, train_id: TrainId) -> u32 {
         .map_or(0, |train| train.passenger_capacity.passengers())
 }
 
-fn train_selection_step(state: &GameState, selected_train_id: Option<TrainId>) -> DispatchStep {
-    let train_ids = ready_train_ids(state);
+fn train_selection_step(
+    state: &GameState,
+    selected_train_id: Option<TrainId>,
+    preferred_station_id: Option<RailStationId>,
+) -> DispatchStep {
+    let train_ids = ready_train_ids_for_station(state, preferred_station_id);
     let selected = selected_train_id.and_then(|train_id| {
         train_ids
             .iter()
