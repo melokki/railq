@@ -181,6 +181,7 @@ struct OperationalPlace {
 struct OperationalLine {
     first_settlement_id: SettlementId,
     second_settlement_id: SettlementId,
+    distance_metres: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -307,54 +308,16 @@ fn render_location_inspector(
         .rail_stations
         .iter()
         .find(|station| station.settlement_id == settlement.id);
-    let mut lines = vec![labelled_line(
-        "Population",
-        &format_population(settlement.population),
-    )];
+    let mut lines = Vec::new();
 
     if let Some(station) = station {
         let ready = ready_trains(state, station.id);
-        lines.insert(
-            0,
-            Line::from(vec![
-                Span::styled("● CONNECTED", theme::success()),
-                Span::styled(
-                    format!("   {} READY", ready.len()),
-                    if ready.is_empty() {
-                        theme::secondary()
-                    } else {
-                        theme::primary_value()
-                    },
-                ),
-            ]),
-        );
-        lines.push(Line::from(""));
-        lines.push(Line::styled("RAIL LINKS", theme::title()));
-        let mut links = state
-            .region
-            .rail_authority
-            .rail_network
-            .rail_lines
-            .iter()
-            .filter(|line| {
-                line.first_station_id == station.id || line.second_station_id == station.id
-            })
-            .map(|line| {
-                let other = if line.first_station_id == station.id {
-                    line.second_station_id
-                } else {
-                    line.first_station_id
-                };
-                (station_name(state, other), line.distance.metres())
-            })
-            .collect::<Vec<_>>();
-        links.sort_by_key(|(_, metres)| *metres);
-        for (name, metres) in links.into_iter().take(3) {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{name:<14}"), theme::secondary()),
-                Span::raw(format_distance(metres)),
-            ]));
-        }
+        lines.push(Line::styled("● CONNECTED", theme::success()));
+        lines.push(labelled_line("Ready trains", &ready.len().to_string()));
+        lines.push(labelled_line(
+            "Population",
+            &format_population(settlement.population),
+        ));
 
         lines.push(Line::from(""));
         lines.push(Line::styled("PASSENGER DEMAND", theme::title()));
@@ -377,18 +340,56 @@ fn render_location_inspector(
             for (name, waiting, per_hour) in demand.into_iter().take(4) {
                 lines.push(Line::from(vec![
                     Span::styled(format!("→ {name:<12}"), theme::secondary()),
-                    Span::raw(format!("{waiting} waiting · +{per_hour}/h")),
+                    Span::raw(format!("{waiting} · +{per_hour}/h")),
                 ]));
             }
         }
+
+        lines.push(Line::from(""));
+        lines.push(Line::styled("RAIL LINKS", theme::title()));
+        let mut links = state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_lines
+            .iter()
+            .filter(|line| {
+                line.first_station_id == station.id || line.second_station_id == station.id
+            })
+            .map(|line| {
+                let other = if line.first_station_id == station.id {
+                    line.second_station_id
+                } else {
+                    line.first_station_id
+                };
+                (station_name(state, other), line.distance.metres())
+            })
+            .collect::<Vec<_>>();
+        links.sort_by_key(|(_, metres)| *metres);
+        if links.is_empty() {
+            lines.push(Line::styled("No direct Rail Links.", theme::secondary()));
+        } else {
+            for (name, metres) in links.into_iter().take(4) {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{name:<16}"), theme::secondary()),
+                    Span::raw(format_distance(metres)),
+                ]));
+            }
+        }
+
         lines.push(Line::from(""));
         lines.push(Line::styled(
-            "d Dispatch · choose from all READY Trains",
+            "d Dispatch · all READY Trains",
             theme::hint(),
         ));
     } else {
-        lines.insert(0, Line::styled("○ UNCONNECTED", theme::warning()));
+        lines.push(Line::styled("○ UNCONNECTED", theme::warning()));
+        lines.push(labelled_line(
+            "Population",
+            &format_population(settlement.population),
+        ));
         lines.push(Line::from(""));
+        lines.push(Line::styled("RAIL ACCESS", theme::title()));
         lines.push(Line::styled("No Rail Station", theme::secondary()));
         lines.push(Line::styled(
             "Passenger rail service is not currently available.",
@@ -396,7 +397,7 @@ fn render_location_inspector(
         ));
         lines.push(Line::from(""));
         lines.push(Line::styled(
-            "d Dispatch · choose from all READY Trains",
+            "d Dispatch · all READY Trains",
             theme::hint(),
         ));
     }
@@ -565,6 +566,7 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
             Some(OperationalLine {
                 first_settlement_id: first.settlement_id,
                 second_settlement_id: second.settlement_id,
+                distance_metres: line.distance.metres(),
             })
         })
         .collect();
@@ -722,8 +724,8 @@ fn render_map_rows(
         state.last_processed_at,
     );
 
-    // Markers are placed first so labels can avoid both stations and existing
-    // rail geometry. Labels are then assigned above/below as space allows.
+    // Markers are placed first so annotations and labels can avoid stations,
+    // travelling Trains, and the existing rail geometry.
     for place in &layout.places {
         let (x, y) = screen_position(place);
         let ink = place_ink(place, selected);
@@ -737,9 +739,31 @@ fn render_map_rows(
         put_cell(&mut grid, x, y, marker, ink);
     }
 
+    // Exact distances appear only for Rail Links incident to the current
+    // selection. The rest of the network stays quiet enough to scan quickly.
+    if let Some(selected_id) = selected {
+        for line in layout.lines.iter().filter(|line| {
+            line.first_settlement_id == selected_id || line.second_settlement_id == selected_id
+        }) {
+            let (Some(first), Some(second)) = (
+                by_id.get(&line.first_settlement_id),
+                by_id.get(&line.second_settlement_id),
+            ) else {
+                continue;
+            };
+            place_link_distance_label(
+                &mut grid,
+                screen_position(first),
+                screen_position(second),
+                line.distance_metres,
+            );
+        }
+    }
+
     for place in &layout.places {
         let (x, y) = screen_position(place);
-        place_map_label(&mut grid, x, y, &place.name, place_ink(place, selected));
+        let label = map_place_label(state, place, selected);
+        place_map_label(&mut grid, x, y, &label, place_ink(place, selected));
     }
 
     grid.into_iter()
@@ -935,6 +959,59 @@ fn place_ink(place: &OperationalPlace, selected: Option<SettlementId>) -> MapInk
     }
 }
 
+fn map_place_label(
+    state: &GameState,
+    place: &OperationalPlace,
+    selected: Option<SettlementId>,
+) -> String {
+    let mut label = if selected == Some(place.settlement_id) {
+        place.name.to_uppercase()
+    } else {
+        place.name.clone()
+    };
+
+    if let Some(station_id) = place.station_id {
+        let ready_count = ready_trains(state, station_id).len();
+        if ready_count > 0 {
+            let _ = write!(label, " [{ready_count}]");
+        }
+    }
+
+    label
+}
+
+fn place_link_distance_label(
+    grid: &mut [Vec<MapCell>],
+    start: (i32, i32),
+    end: (i32, i32),
+    distance_metres: u64,
+) {
+    let text = format_distance(distance_metres);
+    let text_width = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+    let horizontal_steps = (end.0 - start.0).abs();
+    let vertical_steps = (end.1 - start.1).abs();
+
+    let candidates = if horizontal_steps >= vertical_steps && horizontal_steps > 0 {
+        let midpoint_x = start.0 + (end.0 - start.0) / 2;
+        let start_x = midpoint_x - text_width / 2;
+        vec![(start_x, start.1 - 1), (start_x, start.1 + 1)]
+    } else {
+        let midpoint_y = start.1 + (end.1 - start.1) / 2;
+        let rail_x = end.0;
+        vec![
+            (rail_x + 2, midpoint_y),
+            (rail_x - text_width - 2, midpoint_y),
+        ]
+    };
+
+    if let Some((x, y)) = candidates
+        .into_iter()
+        .find(|(x, y)| can_place_text(grid, *x, *y, &text))
+    {
+        put_text(grid, x, y, &text, MapInk::RailAccent);
+    }
+}
+
 fn place_map_label(
     grid: &mut [Vec<MapCell>],
     marker_x: i32,
@@ -1106,7 +1183,7 @@ fn put_text(grid: &mut [Vec<MapCell>], x: i32, y: i32, text: &str, ink: MapInk) 
 fn map_ink_style(ink: MapInk) -> Style {
     match ink {
         MapInk::Empty => theme::panel(),
-        MapInk::Rail => theme::secondary(),
+        MapInk::Rail => theme::secondary().add_modifier(Modifier::DIM),
         MapInk::RailAccent => theme::focused_title(),
         MapInk::Connected => theme::primary_value(),
         MapInk::Unconnected => theme::secondary(),
@@ -2509,9 +2586,9 @@ mod tests {
     };
 
     use super::{
-        MapDirection, TERMINAL_CELL_HEIGHT_TO_WIDTH, directional_line_length,
-        journey_progress_percent, journey_route_segments, point_along_orthogonal_rail, render_at,
-        schematic_layout,
+        MapCell, MapDirection, TERMINAL_CELL_HEIGHT_TO_WIDTH, directional_line_length,
+        journey_progress_percent, journey_route_segments, map_place_label, operational_layout,
+        place_link_distance_label, point_along_orthogonal_rail, render_at, schematic_layout,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
@@ -2581,6 +2658,39 @@ mod tests {
         assert!(travelling_map.contains("progress: 50%"));
         assert!(travelling_map.contains("ETA:"));
         assert!(travelling_map.contains("Alden") || travelling_map.contains("Bellhaven"));
+    }
+
+    #[test]
+    fn operational_map_labels_show_ready_train_count_and_stronger_selection() {
+        let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let station_id = RailStationId::new(1);
+        purchase_train(&mut state, 0, station_id).unwrap();
+        let layout = operational_layout(&state).expect("starter map layout");
+        let place = layout
+            .places
+            .iter()
+            .find(|place| place.station_id == Some(station_id))
+            .expect("starter Rail Station should be on map");
+
+        let normal = map_place_label(&state, place, None);
+        assert!(normal.ends_with("[1]"));
+
+        let selected = map_place_label(&state, place, Some(place.settlement_id));
+        assert!(selected.starts_with(&place.name.to_uppercase()));
+        assert!(selected.ends_with("[1]"));
+    }
+
+    #[test]
+    fn selected_link_distance_label_is_drawn_off_the_rail_when_space_allows() {
+        let mut grid = vec![vec![MapCell::default(); 32]; 8];
+        place_link_distance_label(&mut grid, (3, 4), (24, 4), 42_000);
+        let rendered = grid
+            .iter()
+            .map(|row| row.iter().map(|cell| cell.ch).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("42 km"));
     }
 
     #[test]
