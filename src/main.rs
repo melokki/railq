@@ -71,6 +71,12 @@ fn run_dashboard(
             ui::TerminalCommand::DeletePassengerService { service_id, now } => {
                 app.delete_passenger_service(service_id, now)?;
             }
+            ui::TerminalCommand::UpdateCompanyVkm {
+                vehicle_keeper_mark,
+                now,
+            } => {
+                app.update_company_vkm(vehicle_keeper_mark, now)?;
+            }
             ui::TerminalCommand::RestartAfterBankruptcy { world_seed, now } => {
                 app.restart_after_bankruptcy(world_seed, now)?;
             }

@@ -7,7 +7,10 @@
 use std::{error::Error, fmt, path::PathBuf};
 
 use crate::{
-    model::{GameState, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds},
+    model::{
+        GameState, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
+        VehicleKeeperMark,
+    },
     sim::{
         economy::EconomyError,
         finance::{FinanceError, FinancialStatus, evaluate_financial_recovery},
@@ -302,6 +305,18 @@ impl<S: GameStore> App<S> {
         })
     }
 
+    /// Updates the Player Company's Vehicle Keeper Mark and persists it.
+    pub fn update_company_vkm(
+        &mut self,
+        vehicle_keeper_mark: VehicleKeeperMark,
+        now: UtcSeconds,
+    ) -> Result<(), AppError<S::Error>> {
+        self.transact(now, |state, _| {
+            state.player_company.vehicle_keeper_mark = vehicle_keeper_mark;
+            Ok(())
+        })
+    }
+
     /// Reconciles due Journeys and persists their settlement before publishing
     /// the resulting Train, receipts, and Company Funds.
     pub fn reconcile(&mut self, now: UtcSeconds) -> Result<(), AppError<S::Error>> {
@@ -337,7 +352,10 @@ impl App<SaveSlot> {
                 status: evaluation.status,
             });
         }
-        let replacement = create_new_game(world_seed, self.state.player_company.name.clone(), now);
+        let mut replacement =
+            create_new_game(world_seed, self.state.player_company.name.clone(), now);
+        replacement.player_company.vehicle_keeper_mark =
+            self.state.player_company.vehicle_keeper_mark.clone();
         let backup_path = self
             .store
             .save_after_backup(&replacement)

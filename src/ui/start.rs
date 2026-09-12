@@ -433,6 +433,14 @@ fn render_concession_review(frame: &mut Frame, state: &GameState) {
             ),
         ]),
         Line::from(""),
+        metric_line(
+            "Company VKM",
+            state.player_company.vehicle_keeper_mark.as_str().to_owned(),
+        ),
+        Line::from(Span::styled(
+            "You can edit the VKM later from Company with V.",
+            theme::secondary(),
+        )),
         metric_line("Starting funds", format::money(state.player_company.funds)),
         metric_line("Fleet", format!("{} trains", state.player_company.fleet.trains.len())),
         Line::from(""),
@@ -689,7 +697,7 @@ pub fn onboarding_summary(state: &GameState) -> String {
         .map(|line| line.distance.metres())
         .sum::<u64>();
     format!(
-        "Region: {}\nRail registration: {} · {}\nPopulation: {}\nSettlements: {}\nRail stations: {}\nRail network: {}\n\nConcession: {} has awarded {} the right to operate passenger railway services over the public Rail Network.\nStarting funds: {}",
+        "Region: {}\nRail registration: {} · {}\nPopulation: {}\nSettlements: {}\nRail stations: {}\nRail network: {}\n\nConcession: {} has awarded {} the right to operate passenger railway services over the public Rail Network.\nCompany VKM: {}\nStarting funds: {}",
         state.region.name,
         state.region.railway_registration.display_code(),
         state.region.railway_registration.mark,
@@ -699,6 +707,7 @@ pub fn onboarding_summary(state: &GameState) -> String {
         format::distance(network_metres),
         state.region.rail_authority.name,
         state.player_company.name,
+        state.player_company.vehicle_keeper_mark,
         format::money(state.player_company.funds),
     )
 }

@@ -13,14 +13,16 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
     widgets::{
-        Block, Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
+        Block, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
         TableState, Wrap,
     },
 };
 
 use crate::{
     catalog::train_catalogue,
-    model::{GameState, JourneyId, JourneyReceipt, Money, RailStationId},
+    model::{
+        GameState, JourneyId, JourneyReceipt, Money, RailStationId, VehicleKeeperMark,
+    },
     sim::finance::{
         FinancialEvaluation, FinancialStatus, RecoveryJourney, RecoveryOption,
         evaluate_financial_recovery,
@@ -29,6 +31,129 @@ use crate::{
 };
 
 const MAXIMUM_RECOVERY_OPTIONS_SHOWN: usize = 3;
+
+/// Presentation-only editor for the Player Company's Vehicle Keeper Mark.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VkmEditor {
+    draft: String,
+    error: Option<String>,
+}
+
+/// Outcome of one key handled by the VKM editor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VkmEditorAction {
+    Continue,
+    Cancel,
+    Confirm(VehicleKeeperMark),
+}
+
+impl VkmEditor {
+    /// Starts editing from the Company's currently persisted mark.
+    pub fn start(state: &GameState) -> Self {
+        Self {
+            draft: state.player_company.vehicle_keeper_mark.as_str().to_owned(),
+            error: None,
+        }
+    }
+
+    /// Handles text editing without mutating the simulation state.
+    pub fn handle_key(&mut self, key: KeyCode) -> VkmEditorAction {
+        match key {
+            KeyCode::Esc => VkmEditorAction::Cancel,
+            KeyCode::Enter => match VehicleKeeperMark::parse(&self.draft) {
+                Ok(mark) => VkmEditorAction::Confirm(mark),
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    VkmEditorAction::Continue
+                }
+            },
+            KeyCode::Backspace => {
+                self.draft.pop();
+                self.error = None;
+                VkmEditorAction::Continue
+            }
+            KeyCode::Char(character)
+                if character.is_ascii_alphabetic() && self.draft.len() < 5 =>
+            {
+                self.draft.push(character.to_ascii_uppercase());
+                self.error = None;
+                VkmEditorAction::Continue
+            }
+            KeyCode::Char(_) => {
+                self.error = Some("VKM accepts 2–5 letters A-Z only.".into());
+                VkmEditorAction::Continue
+            }
+            _ => VkmEditorAction::Continue,
+        }
+    }
+
+    pub fn draft(&self) -> &str {
+        &self.draft
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
+/// Renders the VKM edit dialog above the Company workspace.
+pub fn render_vkm_editor(
+    frame: &mut Frame,
+    area: Rect,
+    editor: &VkmEditor,
+    state: &GameState,
+) {
+    let width = area.width.min(68).max(36);
+    let height = area.height.min(11).max(8);
+    let card = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, card);
+    let block = panel_block("Vehicle Keeper Mark", true);
+    let inner = block.inner(card);
+    frame.render_widget(block, card);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Company  ", theme::secondary()),
+            Span::styled(state.player_company.name.clone(), theme::title()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "VKM is the 2–5 letter keeper mark used to identify your company on rolling stock.",
+            theme::secondary(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("VKM  ", theme::secondary()),
+            Span::styled(format!("{:<5}", editor.draft()), theme::focused_title()),
+        ]),
+    ];
+    if let Some(error) = editor.error() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(error.to_owned(), theme::error())));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Enter", theme::focused_title()),
+        Span::styled(" Save   ", theme::secondary()),
+        Span::styled("Backspace", theme::focused_title()),
+        Span::styled(" Delete   ", theme::secondary()),
+        Span::styled("Esc", theme::focused_title()),
+        Span::styled(" Cancel", theme::secondary()),
+    ]));
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
+}
+
 
 /// A workspace that can present the next review in a financial recovery route.
 /// Opening one never performs the suggested action.
@@ -561,7 +686,12 @@ fn render_company_summary(
     };
 
     let metrics = Line::from(vec![
-        Span::styled("Cash ", theme::secondary()),
+        Span::styled("VKM ", theme::secondary()),
+        Span::styled(
+            state.player_company.vehicle_keeper_mark.as_str().to_owned(),
+            theme::primary_value(),
+        ),
+        Span::styled("   Cash ", theme::secondary()),
         Span::styled(format_money(state.player_company.funds), theme::title()),
         Span::styled("   Operating result ", theme::secondary()),
         Span::styled(format_signed_cents(result), result_style(result)),
@@ -609,6 +739,12 @@ fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
         });
     let lines = vec![
         Line::from(vec![
+            Span::styled("VKM ", theme::secondary()),
+            Span::styled(
+                state.player_company.vehicle_keeper_mark.as_str().to_owned(),
+                theme::primary_value(),
+            ),
+            Span::raw("  "),
             Span::styled("Funds ", theme::secondary()),
             Span::styled(format_money(state.player_company.funds), theme::title()),
             Span::raw("  "),
@@ -841,6 +977,11 @@ fn render_compact_summary(
             ),
             Err(error) => Line::styled(format!("[?] STATUS UNAVAILABLE: {error}"), theme::error()),
         },
+        financial_line(
+            "VKM",
+            state.player_company.vehicle_keeper_mark.as_str().to_owned(),
+            theme::primary_value(),
+        ),
         financial_line(
             "Cash",
             format_money(state.player_company.funds),
@@ -1126,6 +1267,12 @@ pub fn render(state: &GameState) -> String {
     let financials = &state.financials;
 
     writeln!(output, "{}", state.player_company.name).expect("writing to a String cannot fail");
+    writeln!(
+        output,
+        "Vehicle Keeper Mark (VKM): {}",
+        state.player_company.vehicle_keeper_mark
+    )
+    .expect("writing to a String cannot fail");
     writeln!(
         output,
         "Company Funds: {}",

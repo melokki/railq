@@ -478,6 +478,9 @@ mod tests {
             },
             player_company: PlayerCompany {
                 name: "Fixture Passenger".into(),
+                vehicle_keeper_mark: crate::model::VehicleKeeperMark::generated_from_company_name(
+                    "Fixture Passenger",
+                ),
                 funds: Money::from_cents(10_000),
                 fleet: Fleet {
                     trains: vec![Train {

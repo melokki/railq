@@ -10,7 +10,7 @@ use crate::{
     model::{
         DemandRules, Financials, Fleet, GameRules, GameState, Money, PlayerCompany, RailAuthority,
         RailLine, RailLineId, RailNetwork, RailStation, RailStationId, Region,
-        RailwayRegistration, Settlement, SettlementId, UtcSeconds,
+        RailwayRegistration, Settlement, SettlementId, UtcSeconds, VehicleKeeperMark,
     },
     sim::demand::seed_directional_demand,
 };
@@ -147,12 +147,15 @@ pub fn create_new_game(
 ) -> GameState {
     let balance = BalanceConfig::provisional();
     let region = generate_region(world_seed);
+    let company_name = company_name.into();
+    let vehicle_keeper_mark = VehicleKeeperMark::generated_from_company_name(&company_name);
     GameState {
         world_seed,
         origin_destination_demand: seed_directional_demand(&region, world_seed),
         region,
         player_company: PlayerCompany {
-            name: company_name.into(),
+            name: company_name,
+            vehicle_keeper_mark,
             funds: balance.starting_company_funds(),
             fleet: Fleet::default(),
             passenger_services: vec![],

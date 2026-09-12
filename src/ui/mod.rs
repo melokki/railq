@@ -30,7 +30,10 @@ use ratatui::{
 use crate::{
     APPLICATION_NAME,
     catalog::{model_for_train, train_catalogue},
-    model::{GameState, Money, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds},
+    model::{
+        GameState, Money, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
+        VehicleKeeperMark,
+    },
     sim::{
         finance::{FinancialStatus, evaluate_financial_recovery},
         time::SettledJourney,
@@ -110,6 +113,8 @@ pub enum ShellAction {
     CreatePassengerService { stop_station_ids: Vec<RailStationId> },
     /// Confirmed player input deleting one unused Passenger Service.
     DeletePassengerService { service_id: ServiceId },
+    /// Confirmed player input updating the Player Company's Vehicle Keeper Mark.
+    UpdateCompanyVkm { vehicle_keeper_mark: VehicleKeeperMark },
     /// Confirmed Bankruptcy restart requiring an archived-save application action.
     RestartAfterBankruptcy,
 }
@@ -137,6 +142,11 @@ pub enum TerminalCommand {
     CreatePassengerService { stop_station_ids: Vec<RailStationId>, now: UtcSeconds },
     /// Delete one unused Passenger Service.
     DeletePassengerService { service_id: ServiceId, now: UtcSeconds },
+    /// Persist a new Player Company Vehicle Keeper Mark.
+    UpdateCompanyVkm {
+        vehicle_keeper_mark: VehicleKeeperMark,
+        now: UtcSeconds,
+    },
     /// Archive the Bankrupt Player Company save and start a fresh game.
     RestartAfterBankruptcy { world_seed: u64, now: UtcSeconds },
 }
@@ -177,6 +187,7 @@ pub struct Shell {
     company_receipt_details_open: bool,
     company_recovery_selection: company::RecoverySelection,
     company_recovery_review_open: bool,
+    company_vkm_editor: Option<company::VkmEditor>,
     notice: Option<String>,
     pending_action: Option<PendingAction>,
     action_outcome: Option<ActionOutcome>,
@@ -207,6 +218,7 @@ impl Shell {
             company_receipt_details_open: false,
             company_recovery_selection: company::RecoverySelection::default(),
             company_recovery_review_open: false,
+            company_vkm_editor: None,
             notice: None,
             pending_action: None,
             action_outcome: None,
@@ -231,6 +243,20 @@ impl Shell {
     pub fn handle_key(&mut self, key: KeyEvent, state: &GameState) -> ShellAction {
         if key.kind != KeyEventKind::Press {
             return ShellAction::Continue;
+        }
+
+        if let Some(editor) = &mut self.company_vkm_editor {
+            return match editor.handle_key(key.code) {
+                company::VkmEditorAction::Continue => ShellAction::Continue,
+                company::VkmEditorAction::Cancel => {
+                    self.company_vkm_editor = None;
+                    self.notice = Some("VKM edit cancelled; no changes were made.".into());
+                    ShellAction::Continue
+                }
+                company::VkmEditorAction::Confirm(vehicle_keeper_mark) => {
+                    ShellAction::UpdateCompanyVkm { vehicle_keeper_mark }
+                }
+            };
         }
 
         if matches!(key.code, KeyCode::Char('q' | 'Q'))
@@ -500,6 +526,13 @@ impl Shell {
                 self.services_open = false;
                 self.company_receipt_details_open = false;
                 self.company_recovery_review_open = false;
+                self.company_vkm_editor = None;
+            }
+            KeyCode::Char('v' | 'V') if self.active_view == View::Company => {
+                self.company_vkm_editor = Some(company::VkmEditor::start(state));
+                self.company_receipt_details_open = false;
+                self.company_recovery_review_open = false;
+                self.notice = None;
             }
             KeyCode::Char('r' | 'R') if self.active_view == View::Company => {
                 if self
@@ -839,6 +872,20 @@ impl Shell {
         self.notice = Some("Passenger Service deleted and saved.".into());
     }
 
+    /// Closes the Company VKM editor after a persisted update.
+    pub fn confirm_company_vkm_saved(&mut self, state: &GameState) {
+        self.company_vkm_editor = None;
+        self.notice = Some(format!(
+            "Company VKM updated and saved as {}.",
+            state.player_company.vehicle_keeper_mark
+        ));
+    }
+
+    /// Keeps the Company VKM editor open after a persistence failure.
+    pub fn reject_company_vkm_update(&mut self, error: impl Into<String>) {
+        self.notice = Some(error.into());
+    }
+
     /// Shows the persisted outcome of an explicitly confirmed Bankruptcy restart.
     pub fn confirm_restart_after_bankruptcy(&mut self) {
         self.active_view = View::Map;
@@ -850,6 +897,7 @@ impl Shell {
         self.service_workspace = services::ServiceWorkspace::default();
         self.restart_confirmation = false;
         self.company_recovery_review_open = false;
+        self.company_vkm_editor = None;
         self.notice = Some(
             "Fresh game saved. The former Player Company save was preserved in a restart backup."
                 .into(),
@@ -1133,6 +1181,18 @@ where
                             Err(error) => shell.reject_passenger_service_action(error.to_string()),
                         }
                     }
+                    ShellAction::UpdateCompanyVkm { vehicle_keeper_mark } => {
+                        match command(TerminalCommand::UpdateCompanyVkm {
+                            vehicle_keeper_mark,
+                            now: current_utc_seconds(),
+                        }) {
+                            Ok(next_state) => {
+                                state = next_state;
+                                shell.confirm_company_vkm_saved(&state);
+                            }
+                            Err(error) => shell.reject_company_vkm_update(error.to_string()),
+                        }
+                    }
                     ShellAction::RestartAfterBankruptcy => {
                         match command(TerminalCommand::RestartAfterBankruptcy {
                             world_seed: restart_seed(),
@@ -1382,6 +1442,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
     if shell.world_details_visible {
         render_world_details_overlay(frame, area, state);
     }
+    if let Some(editor) = &shell.company_vkm_editor {
+        company::render_vkm_editor(frame, content_area, editor, state);
+    }
     if shell.help_visible {
         render_help_overlay(frame, area, shell, state);
     }
@@ -1399,6 +1462,9 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
     }
     if shell.world_details_visible {
         return "w/Esc Close World Details  ·  ? Help  q Quit".into();
+    }
+    if shell.company_vkm_editor.is_some() {
+        return "Type 2–5 letters  Enter Save  Backspace Delete  Esc Cancel".into();
     }
     if is_bankrupt(state) {
         return if shell.restart_confirmation {
@@ -1507,11 +1573,11 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
         if shell.company_recovery_review_open {
             "↑↓/jk Route  Enter Open  Esc Back".into()
         } else if shell.company_receipt_details_open {
-            "Esc Back  1–4 Navigate".into()
+            "Esc Back  v VKM  1–4 Navigate".into()
         } else if state.financials.recent_journey_receipts.is_empty() {
-            "No journey history yet  ·  1 Map".into()
+            "v Edit VKM  ·  No journey history yet  ·  1 Map".into()
         } else {
-            "↑↓/jk Receipt  Enter Details  r Recovery".into()
+            "↑↓/jk Receipt  Enter Details  r Recovery  v Edit VKM".into()
         }
     } else if shell.active_view == View::BuyTrains {
         if let Some(flow) = &shell.market_flow {
@@ -1808,6 +1874,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         }
         View::Company => {
             lines.push("Current · Company".into());
+            lines.push("v Edit Company VKM".into());
             if state.financials.recent_journey_receipts.is_empty() {
                 lines.extend([
                     "No settled Journey receipts yet".into(),
@@ -2346,6 +2413,58 @@ mod tests {
             ShellAction::Continue
         );
         assert!(!shell.world_details_visible);
+    }
+
+    #[test]
+    fn company_vkm_editor_normalizes_input_and_emits_a_persisted_action() {
+        let mut shell = Shell::new();
+        let state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
+
+        assert_eq!(
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE),
+                &state,
+            ),
+            ShellAction::Continue
+        );
+        assert_eq!(
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                &state,
+            ),
+            ShellAction::Continue
+        );
+        assert!(shell.company_vkm_editor.is_some());
+
+        for _ in 0..3 {
+            assert_eq!(
+                shell.handle_key(
+                    KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                    &state,
+                ),
+                ShellAction::Continue
+            );
+        }
+        for character in ['o', 'm', 'p'] {
+            assert_eq!(
+                shell.handle_key(
+                    KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+                    &state,
+                ),
+                ShellAction::Continue
+            );
+        }
+
+        let action = shell.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &state,
+        );
+        match action {
+            ShellAction::UpdateCompanyVkm { vehicle_keeper_mark } => {
+                assert_eq!(vehicle_keeper_mark.as_str(), "OMP");
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
     }
 
     #[test]

@@ -30,8 +30,8 @@ use crate::{
         OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
         PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork, RailStation,
         RailStationId, Region, RailwayRegistration, ServiceId, Settlement, SettlementId,
-        SpeedMetresPerSecond, Train,
-        TrainId, TrainModelId, TrainStatus, UtcSeconds,
+        SpeedMetresPerSecond, Train, TrainId, TrainModelId, TrainStatus, UtcSeconds,
+        VehicleKeeperMark,
     },
     sim::{
         services::{path_between_stations, service_path_for_stops},
@@ -40,7 +40,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 5;
+pub const SAVE_VERSION: u32 = 6;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -352,6 +352,7 @@ CREATE TABLE IF NOT EXISTS rail_lines (
 CREATE TABLE IF NOT EXISTS company (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     name TEXT NOT NULL,
+    vkm TEXT NOT NULL CHECK (length(vkm) BETWEEN 2 AND 5) CHECK (vkm NOT GLOB '*[^A-Z]*'),
     funds_cents INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS trains (
@@ -469,17 +470,24 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v2_to_v3(connection, path)?;
             migrate_v3_to_v4(connection, path)?;
             migrate_v4_to_v5(connection, path)?;
+            migrate_v5_to_v6(connection, path)?;
         }
         2 => {
             migrate_v2_to_v3(connection, path)?;
             migrate_v3_to_v4(connection, path)?;
             migrate_v4_to_v5(connection, path)?;
+            migrate_v5_to_v6(connection, path)?;
         }
         3 => {
             migrate_v3_to_v4(connection, path)?;
             migrate_v4_to_v5(connection, path)?;
+            migrate_v5_to_v6(connection, path)?;
         }
-        4 => migrate_v4_to_v5(connection, path)?,
+        4 => {
+            migrate_v4_to_v5(connection, path)?;
+            migrate_v5_to_v6(connection, path)?;
+        }
+        5 => migrate_v5_to_v6(connection, path)?,
         SAVE_VERSION => {
             connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
                 action: "verify schema for",
@@ -861,7 +869,7 @@ fn migrate_v4_to_v5(connection: &Connection, path: &Path) -> Result<(), SaveSlot
         }
 
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 5_u32)
             .map_err(|source| db_error("write v5 schema version to", path, source))?;
         Ok(())
     })();
@@ -870,6 +878,54 @@ fn migrate_v4_to_v5(connection: &Connection, path: &Path) -> Result<(), SaveSlot
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v4 to v5 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+
+fn migrate_v5_to_v6(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE company ADD COLUMN vkm TEXT NOT NULL DEFAULT 'RQ'
+                 CHECK (length(vkm) BETWEEN 2 AND 5)
+                 CHECK (vkm NOT GLOB '*[^A-Z]*');",
+        )
+        .map_err(|source| db_error("begin v5 to v6 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let company_name: Option<String> = connection
+            .query_row(
+                "SELECT name FROM company WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|source| db_error("read Company VKM migration data from", path, source))?;
+
+        if let Some(company_name) = company_name {
+            let vkm = VehicleKeeperMark::generated_from_company_name(&company_name);
+            connection
+                .execute(
+                    "UPDATE company SET vkm = ?1 WHERE singleton = 1",
+                    params![vkm.as_str()],
+                )
+                .map_err(|source| db_error("write Company VKM to", path, source))?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v6 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v5 to v6 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -955,8 +1011,12 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
     }
 
     transaction.execute(
-        "INSERT INTO company(singleton, name, funds_cents) VALUES(1, ?1, ?2)",
-        params![&state.player_company.name, state.player_company.funds.cents()],
+        "INSERT INTO company(singleton, name, vkm, funds_cents) VALUES(1, ?1, ?2, ?3)",
+        params![
+            &state.player_company.name,
+            state.player_company.vehicle_keeper_mark.as_str(),
+            state.player_company.funds.cents()
+        ],
     ).map_err(|source| db_error("write Player Company to", path, source))?;
 
     for train in &state.player_company.fleet.trains {
@@ -1123,9 +1183,15 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         })
     })?;
 
-    let (company_name, company_funds): (String, i64) = connection
-        .query_row("SELECT name, funds_cents FROM company WHERE singleton = 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
+    let (company_name, company_vkm, company_funds): (String, String, i64) = connection
+        .query_row(
+            "SELECT name, vkm, funds_cents FROM company WHERE singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
         .map_err(|source| db_error("read Player Company from", path, source))?;
+    let company_vkm = VehicleKeeperMark::parse(&company_vkm)
+        .map_err(|_| invalid_value(path, "Player Company VKM"))?;
 
     let trains = query_all(connection, "SELECT id, status_kind, status_ref_id, model_id, original_purchase_price_cents FROM trains ORDER BY id", path, |row| {
         let status_kind: String = row.get(1)?;
@@ -1276,6 +1342,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         },
         player_company: PlayerCompany {
             name: company_name,
+            vehicle_keeper_mark: company_vkm,
             funds: Money::from_cents(company_funds),
             fleet: Fleet { trains },
             passenger_services: services,
@@ -1522,6 +1589,9 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
         world_seed: legacy.world_seed,
         region,
         player_company: PlayerCompany {
+            vehicle_keeper_mark: VehicleKeeperMark::generated_from_company_name(
+                &legacy.player_company.name,
+            ),
             name: legacy.player_company.name,
             funds: legacy.player_company.funds,
             fleet: Fleet { trains },
@@ -1606,6 +1676,12 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
     {
         return Err(SaveValidationError::InvalidValue {
             field: "Region railway registration mark",
+        });
+    }
+
+    if VehicleKeeperMark::parse(state.player_company.vehicle_keeper_mark.as_str()).is_err() {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Player Company VKM",
         });
     }
 
@@ -2544,6 +2620,12 @@ mod tests {
                  );
                  INSERT INTO game_meta VALUES(1, '42', 0);
                  INSERT INTO region VALUES(1, 'Federation of Varelia', 1000, 'Federation of Varelia Rail Authority');
+                 CREATE TABLE company (
+                     singleton INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     funds_cents INTEGER NOT NULL
+                 );
+                 INSERT INTO company VALUES(1, 'One More Prime', 1000000);
                  CREATE TABLE trains (
                      id INTEGER PRIMARY KEY,
                      status_kind TEXT NOT NULL,
@@ -2636,6 +2718,9 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
+        let company_vkm: String = connection
+            .query_row("SELECT vkm FROM company WHERE singleton = 1", [], |row| row.get(0))
+            .unwrap();
 
         assert_eq!(version, SAVE_VERSION);
         assert_eq!(model_id, "local-70");
@@ -2646,6 +2731,7 @@ mod tests {
         assert_eq!(foreign_key_violations, 0);
         assert_eq!(registration_code, 67);
         assert_eq!(registration_mark, "VA");
+        assert_eq!(company_vkm, "OMP");
     }
 
     #[test]

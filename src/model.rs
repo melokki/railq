@@ -461,10 +461,112 @@ pub struct RailLine {
     pub distance: DistanceMetres,
 }
 
+
+/// A 2–5 letter Vehicle Keeper Mark (VKM) used to identify the Player Company.
+///
+/// RailQ treats the mark as a stable company identity that can later appear
+/// alongside European-style vehicle numbers.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct VehicleKeeperMark(String);
+
+impl VehicleKeeperMark {
+    /// Parses and normalizes a player-entered VKM.
+    pub fn parse(value: &str) -> Result<Self, VehicleKeeperMarkError> {
+        let normalized = value.trim().to_ascii_uppercase();
+        if !(2..=5).contains(&normalized.len()) {
+            return Err(VehicleKeeperMarkError::InvalidLength);
+        }
+        if !normalized
+            .chars()
+            .all(|character| character.is_ascii_uppercase())
+        {
+            return Err(VehicleKeeperMarkError::InvalidCharacter);
+        }
+        Ok(Self(normalized))
+    }
+
+    /// Generates a deterministic default mark from a Player Company name.
+    ///
+    /// Multi-word names prefer initials (`One More Prime` -> `OMP`). A
+    /// single-word ASCII name uses its first five letters. Names without
+    /// enough ASCII letters fall back to a stable RailQ mark.
+    pub fn generated_from_company_name(name: &str) -> Self {
+        let words = name
+            .split(|character: char| !character.is_ascii_alphabetic())
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+
+        let mut mark = String::new();
+        if words.len() >= 2 {
+            for word in words.iter().take(5) {
+                if let Some(character) = word.chars().next() {
+                    mark.push(character.to_ascii_uppercase());
+                }
+            }
+        } else if let Some(word) = words.first() {
+            for character in word.chars().take(5) {
+                mark.push(character.to_ascii_uppercase());
+            }
+        }
+
+        if mark.len() < 2 {
+            for character in name.chars().filter(|character| character.is_ascii_alphabetic()) {
+                if mark.len() >= 2 {
+                    break;
+                }
+                let character = character.to_ascii_uppercase();
+                if mark.chars().last() != Some(character) {
+                    mark.push(character);
+                }
+            }
+        }
+
+        if mark.is_empty() {
+            mark.push_str("RQ");
+        } else if mark.len() == 1 {
+            mark.push('X');
+        }
+        mark.truncate(5);
+        Self(mark)
+    }
+
+    /// Returns the canonical uppercase mark.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for VehicleKeeperMark {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Why a Player Company VKM cannot be used.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VehicleKeeperMarkError {
+    /// A VKM must contain between two and five letters.
+    InvalidLength,
+    /// A VKM may contain uppercase ASCII letters only.
+    InvalidCharacter,
+}
+
+impl fmt::Display for VehicleKeeperMarkError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLength => write!(formatter, "VKM must contain 2 to 5 letters"),
+            Self::InvalidCharacter => write!(formatter, "VKM may contain letters A-Z only"),
+        }
+    }
+}
+
+impl Error for VehicleKeeperMarkError {}
+
 /// The passenger railway company controlled by the player.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PlayerCompany {
     pub name: String,
+    pub vehicle_keeper_mark: VehicleKeeperMark,
     pub funds: Money,
     pub fleet: Fleet,
     pub passenger_services: Vec<PassengerService>,
@@ -805,6 +907,27 @@ mod tests {
     }
 
     #[test]
+    fn vehicle_keeper_mark_generates_from_company_name_and_validates_edits() {
+        assert_eq!(
+            VehicleKeeperMark::generated_from_company_name("One More Prime").as_str(),
+            "OMP"
+        );
+        assert_eq!(
+            VehicleKeeperMark::generated_from_company_name("Northstar").as_str(),
+            "NORTH"
+        );
+        assert_eq!(VehicleKeeperMark::parse(" omp ").unwrap().as_str(), "OMP");
+        assert_eq!(
+            VehicleKeeperMark::parse("O"),
+            Err(VehicleKeeperMarkError::InvalidLength)
+        );
+        assert_eq!(
+            VehicleKeeperMark::parse("O1P"),
+            Err(VehicleKeeperMarkError::InvalidCharacter)
+        );
+    }
+
+    #[test]
     fn a_small_valid_game_state_fixture_builds() {
         let settlement_id = SettlementId::new(1);
         let station_id = RailStationId::new(1);
@@ -837,6 +960,7 @@ mod tests {
             },
             player_company: PlayerCompany {
                 name: "Alden Passenger".into(),
+                vehicle_keeper_mark: VehicleKeeperMark::generated_from_company_name("Alden Passenger"),
                 funds: Money::from_cents(10_000),
                 fleet: Fleet {
                     trains: vec![Train {
@@ -881,6 +1005,7 @@ mod tests {
         };
         let company = PlayerCompany {
             name: "Alden Passenger".into(),
+            vehicle_keeper_mark: VehicleKeeperMark::generated_from_company_name("Alden Passenger"),
             funds: Money::ZERO,
             fleet: Fleet::default(),
             passenger_services: vec![],
