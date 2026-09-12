@@ -31,8 +31,8 @@ use crate::{
     APPLICATION_NAME,
     catalog::{model_for_train, train_catalogue},
     model::{
-        GameState, Money, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
-        VehicleKeeperMark,
+        GameState, Money, RailStationId, ServiceId, TrainId, TrainNickname, TrainStatus,
+        UtcSeconds, VehicleKeeperMark,
     },
     sim::{
         finance::{FinancialStatus, evaluate_financial_recovery},
@@ -115,6 +115,11 @@ pub enum ShellAction {
     DeletePassengerService { service_id: ServiceId },
     /// Confirmed player input updating the Player Company's Vehicle Keeper Mark.
     UpdateCompanyVkm { vehicle_keeper_mark: VehicleKeeperMark },
+    /// Confirmed player input changing or clearing one Train nickname.
+    UpdateTrainNickname {
+        train_id: TrainId,
+        nickname: Option<TrainNickname>,
+    },
     /// Confirmed Bankruptcy restart requiring an archived-save application action.
     RestartAfterBankruptcy,
 }
@@ -145,6 +150,12 @@ pub enum TerminalCommand {
     /// Persist a new Player Company Vehicle Keeper Mark.
     UpdateCompanyVkm {
         vehicle_keeper_mark: VehicleKeeperMark,
+        now: UtcSeconds,
+    },
+    /// Persist a Train nickname change without touching its official EVN.
+    UpdateTrainNickname {
+        train_id: TrainId,
+        nickname: Option<TrainNickname>,
         now: UtcSeconds,
     },
     /// Archive the Bankrupt Player Company save and start a fresh game.
@@ -188,6 +199,7 @@ pub struct Shell {
     company_recovery_selection: company::RecoverySelection,
     company_recovery_review_open: bool,
     company_vkm_editor: Option<company::VkmEditor>,
+    train_nickname_editor: Option<fleet::TrainNicknameEditor>,
     notice: Option<String>,
     pending_action: Option<PendingAction>,
     action_outcome: Option<ActionOutcome>,
@@ -219,6 +231,7 @@ impl Shell {
             company_recovery_selection: company::RecoverySelection::default(),
             company_recovery_review_open: false,
             company_vkm_editor: None,
+            train_nickname_editor: None,
             notice: None,
             pending_action: None,
             action_outcome: None,
@@ -243,6 +256,20 @@ impl Shell {
     pub fn handle_key(&mut self, key: KeyEvent, state: &GameState) -> ShellAction {
         if key.kind != KeyEventKind::Press {
             return ShellAction::Continue;
+        }
+
+        if let Some(editor) = &mut self.train_nickname_editor {
+            return match editor.handle_key(key.code) {
+                fleet::TrainNicknameEditorAction::Continue => ShellAction::Continue,
+                fleet::TrainNicknameEditorAction::Cancel => {
+                    self.train_nickname_editor = None;
+                    self.notice = Some("Train rename cancelled; no changes were made.".into());
+                    ShellAction::Continue
+                }
+                fleet::TrainNicknameEditorAction::Confirm { train_id, nickname } => {
+                    ShellAction::UpdateTrainNickname { train_id, nickname }
+                }
+            };
         }
 
         if let Some(editor) = &mut self.company_vkm_editor {
@@ -589,6 +616,20 @@ impl Shell {
             KeyCode::Esc if self.active_view == View::Trains && self.fleet_details_open => {
                 self.fleet_details_open = false;
             }
+            KeyCode::Char('n' | 'N') if self.active_view == View::Trains => {
+                match self.fleet_selection.selected_train_id(state) {
+                    Some(train_id) => match fleet::TrainNicknameEditor::start(state, train_id) {
+                        Ok(editor) => {
+                            self.train_nickname_editor = Some(editor);
+                            self.notice = None;
+                        }
+                        Err(message) => self.notice = Some(message),
+                    },
+                    None => {
+                        self.notice = Some("Select a Train before renaming it.".into());
+                    }
+                }
+            }
             KeyCode::Char('s' | 'S') if self.active_view == View::Trains => {
                 match self.fleet_selection.selected_train_id(state) {
                     Some(train_id) => match fleet::FleetFlow::start(state, train_id) {
@@ -881,7 +922,40 @@ impl Shell {
         ));
     }
 
-    /// Keeps the Company VKM editor open after a persistence failure.
+    /// Closes a saved Train nickname edit and reports its current label.
+    pub fn confirm_train_nickname_saved(&mut self, state: &GameState) {
+        let train_id = self
+            .train_nickname_editor
+            .as_ref()
+            .map(fleet::TrainNicknameEditor::train_id);
+        self.train_nickname_editor = None;
+        let summary = train_id
+            .and_then(|train_id| {
+                state
+                    .player_company
+                    .fleet
+                    .trains
+                    .iter()
+                    .find(|train| train.id == train_id)
+            })
+            .map(|train| match &train.nickname {
+                Some(nickname) => format!(
+                    "Train {:02} is now named {}.",
+                    train.id.get(),
+                    nickname.as_str()
+                ),
+                None => format!("Train {:02} nickname cleared.", train.id.get()),
+            })
+            .unwrap_or_else(|| "Train nickname saved.".into());
+        self.notice = Some(summary);
+    }
+
+    /// Keeps the nickname editor open after an application-boundary rejection.
+    pub fn reject_train_nickname_update(&mut self, error: impl Into<String>) {
+        self.notice = Some(error.into());
+    }
+
+    /// Keeps the Company VKM editor open after an application-boundary rejection.
     pub fn reject_company_vkm_update(&mut self, error: impl Into<String>) {
         self.notice = Some(error.into());
     }
@@ -898,6 +972,7 @@ impl Shell {
         self.restart_confirmation = false;
         self.company_recovery_review_open = false;
         self.company_vkm_editor = None;
+        self.train_nickname_editor = None;
         self.notice = Some(
             "Fresh game saved. The former Player Company save was preserved in a restart backup."
                 .into(),
@@ -1193,6 +1268,19 @@ where
                             Err(error) => shell.reject_company_vkm_update(error.to_string()),
                         }
                     }
+                    ShellAction::UpdateTrainNickname { train_id, nickname } => {
+                        match command(TerminalCommand::UpdateTrainNickname {
+                            train_id,
+                            nickname,
+                            now: current_utc_seconds(),
+                        }) {
+                            Ok(next_state) => {
+                                state = next_state;
+                                shell.confirm_train_nickname_saved(&state);
+                            }
+                            Err(error) => shell.reject_train_nickname_update(error.to_string()),
+                        }
+                    }
                     ShellAction::RestartAfterBankruptcy => {
                         match command(TerminalCommand::RestartAfterBankruptcy {
                             world_seed: restart_seed(),
@@ -1442,6 +1530,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
     if shell.world_details_visible {
         render_world_details_overlay(frame, area, state);
     }
+    if let Some(editor) = &shell.train_nickname_editor {
+        fleet::render_nickname_editor(frame, content_area, editor, state);
+    }
     if let Some(editor) = &shell.company_vkm_editor {
         company::render_vkm_editor(frame, content_area, editor, state);
     }
@@ -1462,6 +1553,9 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
     }
     if shell.world_details_visible {
         return "w/Esc Close World Details  ·  ? Help  q Quit".into();
+    }
+    if shell.train_nickname_editor.is_some() {
+        return "Type nickname  Enter Save  Backspace Delete  Esc Cancel".into();
     }
     if shell.company_vkm_editor.is_some() {
         return "Type 2–5 letters  Enter Save  Backspace Delete  Esc Cancel".into();
@@ -1508,10 +1602,10 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
             });
         let actions = match action {
             Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
-                "d Dispatch  s Resale"
+                "n Rename  d Dispatch  s Resale"
             }
-            Some(_) => "d/s available after arrival",
-            None => "d/s unavailable",
+            Some(_) => "n Rename  d/s after arrival",
+            None => "n Rename  d/s unavailable",
         };
         format!("Esc Back  {actions}")
     } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
@@ -1531,10 +1625,10 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
                 });
             let actions = match action {
                 Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
-                    "d Dispatch  s Resale"
+                    "n Rename  d Dispatch  s Resale"
                 }
-                Some(_) => "d/s available after arrival",
-                None => "d/s unavailable",
+                Some(_) => "n Rename  d/s after arrival",
+                None => "n Rename  d/s unavailable",
             };
             if shell.fleet_split_visible {
                 format!("↑↓/jk Select  PgUp/PgDn Scroll  {actions}")
@@ -1850,6 +1944,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
             } else if shell.fleet_details_open {
                 lines.extend([
                     "Esc Back to Fleet".into(),
+                    "n Rename selected Train".into(),
                     "d Dispatch selected READY Train".into(),
                     "s Review resale of selected READY Train".into(),
                 ]);
@@ -1858,6 +1953,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                     "↑↓ / jk Select Train".into(),
                     "PgUp / PgDn Scroll".into(),
                     "Enter Details".into(),
+                    "n Rename selected Train".into(),
                     "d Dispatch selected READY Train".into(),
                     "s Review resale of selected READY Train".into(),
                 ]);

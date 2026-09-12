@@ -492,6 +492,7 @@ mod tests {
                             1,
                         )
                         .unwrap(),
+                        nickname: None,
                         status: TrainStatus::Ready { at: ORIGIN },
                         model_id: crate::model::TrainModelId::new("local-70"),
                         original_purchase_price: Money::from_cents(5_000),

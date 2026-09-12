@@ -17,7 +17,10 @@ use ratatui::{
 
 use crate::{
     catalog::{model_for_train, train_catalogue},
-    model::{GameState, Journey, Money, RailStationId, Train, TrainId, TrainStatus, UtcSeconds},
+    model::{
+        GameState, Journey, Money, RailStationId, Train, TrainId, TrainNickname, TrainStatus,
+        UtcSeconds,
+    },
     ui::theme,
 };
 
@@ -119,6 +122,179 @@ impl FleetSelection {
                 selected.saturating_add(1).saturating_sub(visible_items);
         }
     }
+}
+
+
+/// Presentation-only editor for one Train's optional player nickname.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrainNicknameEditor {
+    train_id: TrainId,
+    draft: String,
+    error: Option<String>,
+}
+
+/// Outcome of one key handled by the Train nickname editor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrainNicknameEditorAction {
+    Continue,
+    Cancel,
+    Confirm {
+        train_id: TrainId,
+        nickname: Option<TrainNickname>,
+    },
+}
+
+impl TrainNicknameEditor {
+    /// Starts editing the selected Train's current nickname.
+    pub fn start(state: &GameState, train_id: TrainId) -> Result<Self, String> {
+        let train = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == train_id)
+            .ok_or_else(|| format!("Train {} is no longer in the Fleet.", train_id.get()))?;
+        Ok(Self {
+            train_id,
+            draft: train
+                .nickname
+                .as_ref()
+                .map(TrainNickname::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            error: None,
+        })
+    }
+
+    /// Handles nickname text editing without mutating the saved Train.
+    pub fn handle_key(&mut self, key: KeyCode) -> TrainNicknameEditorAction {
+        match key {
+            KeyCode::Esc => TrainNicknameEditorAction::Cancel,
+            KeyCode::Enter => {
+                let trimmed = self.draft.trim();
+                if trimmed.is_empty() {
+                    TrainNicknameEditorAction::Confirm {
+                        train_id: self.train_id,
+                        nickname: None,
+                    }
+                } else {
+                    match TrainNickname::parse(trimmed) {
+                        Ok(nickname) => TrainNicknameEditorAction::Confirm {
+                            train_id: self.train_id,
+                            nickname: Some(nickname),
+                        },
+                        Err(error) => {
+                            self.error = Some(error.to_string());
+                            TrainNicknameEditorAction::Continue
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.draft.pop();
+                self.error = None;
+                TrainNicknameEditorAction::Continue
+            }
+            KeyCode::Char(character)
+                if !character.is_control()
+                    && self.draft.chars().count() < TrainNickname::MAX_CHARACTERS =>
+            {
+                self.draft.push(character);
+                self.error = None;
+                TrainNicknameEditorAction::Continue
+            }
+            KeyCode::Char(_) => {
+                self.error = Some(format!(
+                    "Nickname accepts up to {} visible characters.",
+                    TrainNickname::MAX_CHARACTERS
+                ));
+                TrainNicknameEditorAction::Continue
+            }
+            _ => TrainNicknameEditorAction::Continue,
+        }
+    }
+
+    pub fn train_id(&self) -> TrainId {
+        self.train_id
+    }
+
+    pub fn draft(&self) -> &str {
+        &self.draft
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
+/// Renders the Train nickname editor above the Fleet workspace.
+pub fn render_nickname_editor(
+    frame: &mut Frame,
+    area: Rect,
+    editor: &TrainNicknameEditor,
+    state: &GameState,
+) {
+    let width = area.width.min(70).max(38);
+    let height = area.height.min(13).max(9);
+    let card = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(ratatui::widgets::Clear, card);
+    let block = panel_block("Rename Train", true);
+    let inner = block.inner(card);
+    frame.render_widget(block, card);
+
+    let train = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == editor.train_id());
+    let (model, evn) = train.map_or_else(
+        || ("Unknown Train".to_owned(), "Unavailable".to_owned()),
+        |train| (train_model_name(train), train.evn.formatted()),
+    );
+
+    let mut lines = vec![
+        labelled_line("Train", &format!("{:02} · {model}", editor.train_id().get())),
+        labelled_line("EVN", &evn),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Nickname is a player-facing label only; the official EVN never changes.",
+            theme::secondary(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Nickname     ", theme::secondary()),
+            Span::styled(editor.draft().to_owned(), theme::focused_title()),
+        ]),
+        Line::from(Span::styled(
+            "Leave empty and press Enter to clear the nickname.",
+            theme::secondary(),
+        )),
+    ];
+    if let Some(error) = editor.error() {
+        lines.push(Line::from(Span::styled(error.to_owned(), theme::error())));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Enter", theme::focused_title()),
+        Span::styled(" Save   ", theme::secondary()),
+        Span::styled("Backspace", theme::focused_title()),
+        Span::styled(" Delete   ", theme::secondary()),
+        Span::styled("Esc", theme::focused_title()),
+        Span::styled(" Cancel", theme::secondary()),
+    ]));
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
 }
 
 /// The result of handling a key within the resale flow.
@@ -361,14 +537,14 @@ fn render_wide_dashboard(
             let fields = train_fields(state, train, now);
             Row::new([
                 Cell::from(format!("{:02}", train.id.get())),
-                Cell::from(fields.model),
+                Cell::from(train_list_label(train, &fields.model)),
                 Cell::from(fields.status).style(train_status_style(train)),
                 Cell::from(fields.place),
                 Cell::from(fields.eta),
             ])
         })
         .collect::<Vec<_>>();
-    let header = Row::new(["#", "Model", "State", "Position", "ETA"])
+    let header = Row::new(["#", "Train", "State", "Position", "ETA"])
         .style(theme::table_header())
         .bottom_margin(1);
     let title = fleet_title(state);
@@ -496,7 +672,11 @@ fn render_train_inspector(
     };
 
     let fields = train_fields(state, train, now);
-    let title = format!("Train {:02} · {}", train.id.get(), fields.model);
+    let title = train
+        .nickname
+        .as_ref()
+        .map(|nickname| format!("{} · Train {:02}", nickname.as_str(), train.id.get()))
+        .unwrap_or_else(|| format!("Train {:02} · {}", train.id.get(), fields.model));
     let block = panel_block(&title, compact_detail);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -513,6 +693,11 @@ fn render_train_inspector(
         ]),
         Line::from(""),
         section_heading("IDENTITY"),
+        labelled_line(
+            "Nickname",
+            train.nickname.as_ref().map(TrainNickname::as_str).unwrap_or("—"),
+        ),
+        labelled_line("Model", &fields.model),
         labelled_line("EVN", &train.evn.formatted()),
         labelled_line(
             "Keeper mark",
@@ -618,12 +803,10 @@ fn train_status_style(train: &Train) -> Style {
 
 fn train_action_line(train: &Train, compact_detail: bool) -> &'static str {
     match (&train.status, compact_detail) {
-        (TrainStatus::Ready { .. }, true) => "d Dispatch   s Resale   Esc Back",
-        (TrainStatus::Ready { .. }, false) => "d Dispatch   s Resale",
-        (TrainStatus::Travelling { .. }, true) => {
-            "No actions until arrival   Esc Back"
-        }
-        (TrainStatus::Travelling { .. }, false) => "No actions available until arrival",
+        (TrainStatus::Ready { .. }, true) => "n Rename   d Dispatch   s Resale   Esc Back",
+        (TrainStatus::Ready { .. }, false) => "n Rename   d Dispatch   s Resale",
+        (TrainStatus::Travelling { .. }, true) => "n Rename   Esc Back",
+        (TrainStatus::Travelling { .. }, false) => "n Rename",
     }
 }
 
@@ -653,13 +836,21 @@ fn compact_train_lines(
             format!(
                 "{marker} {:02}  {} · {}",
                 train.id.get(),
-                fields.model,
+                train_list_label(train, &fields.model),
                 train_status_label(train)
             ),
             row_style.add_modifier(Modifier::BOLD),
         ),
         Line::styled(format!("  {} · {}", fields.place, fields.eta), row_style),
     ]
+}
+
+fn train_list_label(train: &Train, model: &str) -> String {
+    train
+        .nickname
+        .as_ref()
+        .map(|nickname| format!("{} · {model}", nickname.as_str()))
+        .unwrap_or_else(|| model.to_owned())
 }
 
 fn labelled_line(label: &str, value: &str) -> Line<'static> {
@@ -808,9 +999,10 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
             TrainStatus::Ready { at } => {
                 writeln!(
                     output,
-                    "\nTrain {} — {}\n  EVN {}\n  READY at {}\n  Eligible sale proceeds: {} (70% of original purchase price)",
+                    "\nTrain {} — {}\n  Nickname {}\n  EVN {}\n  READY at {}\n  Eligible sale proceeds: {} (70% of original purchase price)",
                     train.id.get(),
                     train_model_name(train),
+                    train.nickname.as_ref().map(TrainNickname::as_str).unwrap_or("—"),
                     train.evn.formatted(),
                     station_label(state, at),
                     resale_proceeds(train.original_purchase_price)
@@ -827,9 +1019,10 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                 match journey {
                     Some(journey) => writeln!(
                         output,
-                        "\nTrain {} — {}\n  EVN {}\n  TRAVELLING {} -> {} | next: {} | leg: {}% | ETA: {} | onboard: {}\n  Sale unavailable while this Journey is in transit.",
+                        "\nTrain {} — {}\n  Nickname {}\n  EVN {}\n  TRAVELLING {} -> {} | next: {} | leg: {}% | ETA: {} | onboard: {}\n  Sale unavailable while this Journey is in transit.",
                         train.id.get(),
                         train_model_name(train),
+                        train.nickname.as_ref().map(TrainNickname::as_str).unwrap_or("—"),
                         train.evn.formatted(),
                         station_label(state, journey.origin_station_id),
                         station_label(state, journey.destination_station_id),
@@ -843,9 +1036,10 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                     .expect("writing to a String cannot fail"),
                     None => writeln!(
                         output,
-                        "\nTrain {} — {}\n  EVN {}\n  TRAVELLING on Journey {} (details unavailable)\n  Sale unavailable while this Journey is in transit.",
+                        "\nTrain {} — {}\n  Nickname {}\n  EVN {}\n  TRAVELLING on Journey {} (details unavailable)\n  Sale unavailable while this Journey is in transit.",
                         train.id.get(),
                         train_model_name(train),
+                        train.nickname.as_ref().map(TrainNickname::as_str).unwrap_or("—"),
                         train.evn.formatted(),
                         journey_id.get(),
                     )
@@ -856,7 +1050,7 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
     }
     writeln!(
         output,
-        "\nPress S to review resale for the selected READY Train."
+        "\nPress N to rename the selected Train. Press S to review resale for a READY Train."
     )
     .expect("writing to a String cannot fail");
     if state
@@ -990,12 +1184,46 @@ mod tests {
         },
     };
 
-    use super::{FleetFlow, FleetFlowAction, render_at};
+    use super::{
+        FleetFlow, FleetFlowAction, TrainNicknameEditor, TrainNicknameEditorAction, render_at,
+    };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn nickname_editor_can_set_and_clear_a_train_name() {
+        let mut state = create_new_game(42, "One More Prime", STARTED_AT);
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let mut editor = TrainNicknameEditor::start(&state, train_id).unwrap();
+        for character in "Little Runner".chars() {
+            assert_eq!(
+                editor.handle_key(KeyCode::Char(character)),
+                TrainNicknameEditorAction::Continue
+            );
+        }
+        let action = editor.handle_key(KeyCode::Enter);
+        let TrainNicknameEditorAction::Confirm { nickname, .. } = action else {
+            panic!("expected nickname confirmation");
+        };
+        assert_eq!(nickname.unwrap().as_str(), "Little Runner");
+
+        state.player_company.fleet.trains[0].nickname =
+            Some(crate::model::TrainNickname::parse("Little Runner").unwrap());
+        let mut editor = TrainNicknameEditor::start(&state, train_id).unwrap();
+        while !editor.draft().is_empty() {
+            editor.handle_key(KeyCode::Backspace);
+        }
+        assert_eq!(
+            editor.handle_key(KeyCode::Enter),
+            TrainNicknameEditorAction::Confirm {
+                train_id,
+                nickname: None,
+            }
+        );
     }
 
     #[test]

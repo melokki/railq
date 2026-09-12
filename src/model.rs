@@ -745,6 +745,69 @@ impl fmt::Display for VehicleKeeperMarkError {
 
 impl Error for VehicleKeeperMarkError {}
 
+/// Optional player-facing name for one owned Train.
+///
+/// The official EVN remains the Train's permanent railway identity. A nickname
+/// is deliberately separate so the player can rename a Train without changing
+/// its official number or catalogue model.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct TrainNickname(String);
+
+impl TrainNickname {
+    pub const MAX_CHARACTERS: usize = 32;
+
+    /// Parses a player-entered nickname after trimming surrounding whitespace.
+    pub fn parse(value: &str) -> Result<Self, TrainNicknameError> {
+        let normalized = value.trim();
+        if normalized.is_empty() {
+            return Err(TrainNicknameError::Empty);
+        }
+        if normalized.chars().count() > Self::MAX_CHARACTERS {
+            return Err(TrainNicknameError::TooLong);
+        }
+        if normalized.chars().any(char::is_control) {
+            return Err(TrainNicknameError::InvalidCharacter);
+        }
+        Ok(Self(normalized.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for TrainNickname {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Why a Train nickname cannot be used.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrainNicknameError {
+    Empty,
+    TooLong,
+    InvalidCharacter,
+}
+
+impl fmt::Display for TrainNicknameError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(formatter, "Train nickname cannot be empty"),
+            Self::TooLong => write!(
+                formatter,
+                "Train nickname must be at most {} characters",
+                TrainNickname::MAX_CHARACTERS
+            ),
+            Self::InvalidCharacter => {
+                write!(formatter, "Train nickname cannot contain control characters")
+            }
+        }
+    }
+}
+
+impl Error for TrainNicknameError {}
+
 /// The passenger railway company controlled by the player.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PlayerCompany {
@@ -793,6 +856,9 @@ pub struct Train {
     pub id: TrainId,
     /// Permanent official vehicle number assigned when the Train joins the Fleet.
     pub evn: EuropeanVehicleNumber,
+    /// Optional player-facing name. It never changes the official EVN.
+    #[serde(default)]
+    pub nickname: Option<TrainNickname>,
     pub status: TrainStatus,
     pub model_id: TrainModelId,
     /// The amount actually paid when this Train joined the Fleet.
@@ -1044,6 +1110,21 @@ mod tests {
     }
 
     #[test]
+    fn train_nickname_trims_and_preserves_player_casing() {
+        let nickname = TrainNickname::parse("  Little Runner  ").unwrap();
+        assert_eq!(nickname.as_str(), "Little Runner");
+    }
+
+    #[test]
+    fn train_nickname_rejects_empty_and_overlong_values() {
+        assert_eq!(TrainNickname::parse("   "), Err(TrainNicknameError::Empty));
+        assert_eq!(
+            TrainNickname::parse(&"x".repeat(TrainNickname::MAX_CHARACTERS + 1)),
+            Err(TrainNicknameError::TooLong)
+        );
+    }
+
+    #[test]
     fn rejects_an_invalid_evn_check_digit() {
         assert_eq!(
             EuropeanVehicleNumber::parse("957200700013"),
@@ -1199,6 +1280,7 @@ mod tests {
                     trains: vec![Train {
                         id: train_id,
                         evn: EuropeanVehicleNumber::generate(95, 67, 70, 1).unwrap(),
+                        nickname: None,
                         status: TrainStatus::Ready { at: station_id },
                         model_id: TrainModelId::new("local-70"),
                         original_purchase_price: Money::from_cents(5_000),

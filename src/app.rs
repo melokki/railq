@@ -8,7 +8,7 @@ use std::{error::Error, fmt, path::PathBuf};
 
 use crate::{
     model::{
-        GameState, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
+        GameState, RailStationId, ServiceId, TrainId, TrainNickname, TrainStatus, UtcSeconds,
         VehicleKeeperMark,
     },
     sim::{
@@ -63,6 +63,8 @@ pub enum AppError<E> {
     Purchase(FleetError),
     /// A Train resale was rejected by the simulation.
     Resale(FleetError),
+    /// A Train nickname update was rejected by the simulation.
+    Rename(FleetError),
     /// A Manual Dispatch was rejected by the simulation.
     Dispatch(DispatchError),
     /// A Passenger Service could not be created or reused for a Manual Dispatch.
@@ -83,6 +85,7 @@ impl<E: fmt::Display> fmt::Display for AppError<E> {
             Self::Advance(error) => error.fmt(formatter),
             Self::Purchase(error) => error.fmt(formatter),
             Self::Resale(error) => error.fmt(formatter),
+            Self::Rename(error) => error.fmt(formatter),
             Self::Dispatch(error) => error.fmt(formatter),
             Self::Service(error) => error.fmt(formatter),
             Self::Finance(error) => error.fmt(formatter),
@@ -105,7 +108,7 @@ impl<E: Error + 'static> Error for AppError<E> {
             Self::Advance(error) => Some(error),
             Self::Service(error) => Some(error),
             Self::Finance(error) => Some(error),
-            Self::Purchase(error) | Self::Resale(error) => Some(error),
+            Self::Purchase(error) | Self::Resale(error) | Self::Rename(error) => Some(error),
             Self::Dispatch(error) => Some(error),
             Self::Bankruptcy | Self::RestartUnavailable { .. } => None,
         }
@@ -313,6 +316,20 @@ impl<S: GameStore> App<S> {
     ) -> Result<(), AppError<S::Error>> {
         self.transact(now, |state, _| {
             state.player_company.vehicle_keeper_mark = vehicle_keeper_mark;
+            Ok(())
+        })
+    }
+
+    /// Changes or clears the player-facing nickname of one owned Train.
+    pub fn update_train_nickname(
+        &mut self,
+        train_id: TrainId,
+        nickname: Option<TrainNickname>,
+        now: UtcSeconds,
+    ) -> Result<(), AppError<S::Error>> {
+        self.transact(now, |state, _| {
+            crate::sim::fleet::rename_train(state, train_id, nickname)
+                .map_err(AppError::Rename)?;
             Ok(())
         })
     }

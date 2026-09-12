@@ -9,7 +9,7 @@ use crate::{
     catalog::{TrainModel, train_catalogue},
     model::{
         CalculationError, EuropeanVehicleNumber, GameState, Money, RailStationId, Train, TrainId,
-        TrainStatus,
+        TrainNickname, TrainStatus,
     },
 };
 
@@ -206,6 +206,26 @@ pub fn sell_train(state: &mut GameState, train_id: TrainId) -> Result<Money, Fle
     Ok(proceeds)
 }
 
+/// Changes or clears the player-facing nickname of one owned Train.
+///
+/// Renaming is metadata only: it is allowed while the Train is travelling and
+/// never changes its EVN, model, Journey, or financial state.
+pub fn rename_train(
+    state: &mut GameState,
+    train_id: TrainId,
+    nickname: Option<TrainNickname>,
+) -> Result<(), FleetError> {
+    let train = state
+        .player_company
+        .fleet
+        .trains
+        .iter_mut()
+        .find(|train| train.id == train_id)
+        .ok_or(FleetError::TrainNotFound { train_id })?;
+    train.nickname = nickname;
+    Ok(())
+}
+
 fn purchased_train(
     train_id: TrainId,
     evn: EuropeanVehicleNumber,
@@ -215,6 +235,7 @@ fn purchased_train(
     Train {
         id: train_id,
         evn,
+        nickname: None,
         status: TrainStatus::Ready {
             at: delivery_station_id,
         },
@@ -290,6 +311,7 @@ mod tests {
                     1,
                 )
                 .unwrap(),
+                nickname: None,
                 status: TrainStatus::Ready {
                     at: RailStationId::new(1)
                 },
@@ -332,6 +354,28 @@ mod tests {
     }
 
     #[test]
+    fn rename_changes_only_the_player_facing_nickname() {
+        let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
+        let station_id = state.region.rail_authority.rail_network.rail_stations[0].id;
+        let train_id = purchase_train(&mut state, 0, station_id).unwrap();
+        let original_evn = state.player_company.fleet.trains[0].evn.clone();
+
+        rename_train(
+            &mut state,
+            train_id,
+            Some(TrainNickname::parse("Little Runner").unwrap()),
+        )
+        .unwrap();
+
+        let train = &state.player_company.fleet.trains[0];
+        assert_eq!(train.nickname.as_ref().unwrap().as_str(), "Little Runner");
+        assert_eq!(train.evn, original_evn);
+
+        rename_train(&mut state, train_id, None).unwrap();
+        assert!(state.player_company.fleet.trains[0].nickname.is_none());
+    }
+
+    #[test]
     fn resale_uses_the_original_price_and_rounds_down() {
         let mut state = game();
         let train_id = TrainId::new(1);
@@ -344,6 +388,7 @@ mod tests {
                 1,
             )
             .unwrap(),
+            nickname: None,
             status: TrainStatus::Ready {
                 at: RailStationId::new(1),
             },

@@ -722,9 +722,14 @@ fn train_model_name(state: &GameState, train_id: TrainId) -> String {
     else {
         return "Unknown Train".into();
     };
-    model_for_train(train)
+    let model = model_for_train(train)
         .map(|model| model.name().to_owned())
-        .unwrap_or_else(|| format!("Unknown model ({})", train.model_id.as_str()))
+        .unwrap_or_else(|| format!("Unknown model ({})", train.model_id.as_str()));
+    train
+        .nickname
+        .as_ref()
+        .map(|nickname| format!("{} · {model}", nickname.as_str()))
+        .unwrap_or(model)
 }
 
 fn format_signed_money(money: Money) -> String {

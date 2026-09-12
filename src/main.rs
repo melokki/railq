@@ -77,6 +77,13 @@ fn run_dashboard(
             } => {
                 app.update_company_vkm(vehicle_keeper_mark, now)?;
             }
+            ui::TerminalCommand::UpdateTrainNickname {
+                train_id,
+                nickname,
+                now,
+            } => {
+                app.update_train_nickname(train_id, nickname, now)?;
+            }
             ui::TerminalCommand::RestartAfterBankruptcy { world_seed, now } => {
                 app.restart_after_bankruptcy(world_seed, now)?;
             }

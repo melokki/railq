@@ -2571,9 +2571,14 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
 }
 
 fn train_model_name(train: &Train) -> String {
-    model_for_train(train)
+    let model = model_for_train(train)
         .map(|model| model.name().to_owned())
-        .unwrap_or_else(|| format!("Unknown model ({})", train.model_id.as_str()))
+        .unwrap_or_else(|| format!("Unknown model ({})", train.model_id.as_str()));
+    train
+        .nickname
+        .as_ref()
+        .map(|nickname| format!("{} · {model}", nickname.as_str()))
+        .unwrap_or(model)
 }
 
 fn render_travelling_train(

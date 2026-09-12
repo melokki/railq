@@ -31,8 +31,8 @@ use crate::{
         OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
         PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork, RailStation,
         RailStationId, Region, RailwayRegistration, ServiceId, Settlement, SettlementId,
-        SpeedMetresPerSecond, Train, TrainId, TrainModelId, TrainStatus, UtcSeconds,
-        VehicleKeeperMark,
+        SpeedMetresPerSecond, Train, TrainId, TrainModelId, TrainNickname, TrainStatus,
+        UtcSeconds, VehicleKeeperMark,
     },
     sim::{
         services::{path_between_stations, service_path_for_stops},
@@ -41,7 +41,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 8;
+pub const SAVE_VERSION: u32 = 9;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -360,6 +360,7 @@ CREATE TABLE IF NOT EXISTS company (
 CREATE TABLE IF NOT EXISTS trains (
     id INTEGER PRIMARY KEY,
     evn TEXT NOT NULL UNIQUE CHECK (length(evn) = 12) CHECK (evn NOT GLOB '*[^0-9]*'),
+    nickname TEXT CHECK (nickname IS NULL OR length(trim(nickname)) BETWEEN 1 AND 32),
     status_kind TEXT NOT NULL CHECK (status_kind IN ('ready', 'travelling')),
     status_ref_id INTEGER NOT NULL,
     model_id TEXT NOT NULL,
@@ -480,6 +481,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
+            migrate_v8_to_v9(connection, path)?;
         }
         2 => {
             migrate_v2_to_v3(connection, path)?;
@@ -488,6 +490,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
+            migrate_v8_to_v9(connection, path)?;
         }
         3 => {
             migrate_v3_to_v4(connection, path)?;
@@ -495,23 +498,31 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
+            migrate_v8_to_v9(connection, path)?;
         }
         4 => {
             migrate_v4_to_v5(connection, path)?;
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
+            migrate_v8_to_v9(connection, path)?;
         }
         5 => {
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
+            migrate_v8_to_v9(connection, path)?;
         }
         6 => {
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
+            migrate_v8_to_v9(connection, path)?;
         }
-        7 => migrate_v7_to_v8(connection, path)?,
+        7 => {
+            migrate_v7_to_v8(connection, path)?;
+            migrate_v8_to_v9(connection, path)?;
+        }
+        8 => migrate_v8_to_v9(connection, path)?,
         SAVE_VERSION => {
             connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
                 action: "verify schema for",
@@ -1175,7 +1186,7 @@ fn migrate_v7_to_v8(connection: &Connection, path: &Path) -> Result<(), SaveSlot
         }
 
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 8_u32)
             .map_err(|source| db_error("write v8 schema version to", path, source))?;
         Ok(())
     })();
@@ -1184,6 +1195,31 @@ fn migrate_v7_to_v8(connection: &Connection, path: &Path) -> Result<(), SaveSlot
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v7 to v8 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+
+fn migrate_v8_to_v9(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE trains ADD COLUMN nickname TEXT
+                 CHECK (nickname IS NULL OR length(trim(nickname)) BETWEEN 1 AND 32);",
+        )
+        .map_err(|source| db_error("begin v8 to v9 migration for", path, source))?;
+
+    let migration = connection
+        .pragma_update(None, "user_version", SAVE_VERSION)
+        .map_err(|source| db_error("write v9 schema version to", path, source));
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v8 to v9 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -1293,10 +1329,11 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
             TrainStatus::Travelling { journey_id } => ("travelling", journey_id.get()),
         };
         transaction.execute(
-            "INSERT INTO trains(id, evn, status_kind, status_ref_id, model_id, original_purchase_price_cents)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO trains(id, evn, nickname, status_kind, status_ref_id, model_id, original_purchase_price_cents)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
-                db(train.id.get(), "Train ID")?, train.evn.as_str(), status_kind,
+                db(train.id.get(), "Train ID")?, train.evn.as_str(),
+                train.nickname.as_ref().map(TrainNickname::as_str), status_kind,
                 db(status_ref_id, "Train status reference")?, train.model_id.as_str(),
                 train.original_purchase_price.cents()
             ],
@@ -1477,12 +1514,16 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
     .into_iter()
     .collect();
 
-    let trains = query_all(connection, "SELECT id, evn, status_kind, status_ref_id, model_id, original_purchase_price_cents FROM trains ORDER BY id", path, |row| {
+    let trains = query_all(connection, "SELECT id, evn, nickname, status_kind, status_ref_id, model_id, original_purchase_price_cents FROM trains ORDER BY id", path, |row| {
         let evn_text: String = row.get(1)?;
         let evn = EuropeanVehicleNumber::parse(&evn_text)
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let status_kind: String = row.get(2)?;
-        let status_ref = row_u64(row, 3, "Train status reference")?;
+        let nickname = row
+            .get::<_, Option<String>>(2)?
+            .map(|value| TrainNickname::parse(&value).map_err(|_| rusqlite::Error::InvalidQuery))
+            .transpose()?;
+        let status_kind: String = row.get(3)?;
+        let status_ref = row_u64(row, 4, "Train status reference")?;
         let status = match status_kind.as_str() {
             "ready" => TrainStatus::Ready { at: RailStationId::new(status_ref) },
             "travelling" => TrainStatus::Travelling { journey_id: JourneyId::new(status_ref) },
@@ -1491,9 +1532,10 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         Ok(Train {
             id: TrainId::new(row_u64(row, 0, "Train ID")?),
             evn,
+            nickname,
             status,
-            model_id: TrainModelId::new(row.get::<_, String>(4)?),
-            original_purchase_price: Money::from_cents(row.get(5)?),
+            model_id: TrainModelId::new(row.get::<_, String>(5)?),
+            original_purchase_price: Money::from_cents(row.get(6)?),
         })
     })?;
 
@@ -1859,6 +1901,7 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
             Ok(Train {
                 id: train.id,
                 evn,
+                nickname: None,
                 status: train.status,
                 model_id: model.id().clone(),
                 original_purchase_price: train.original_purchase_price,
@@ -2841,6 +2884,8 @@ mod tests {
         let departed_at = UtcSeconds::from_unix_seconds(1_000);
         let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
         let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        state.player_company.fleet.trains[0].nickname =
+            Some(TrainNickname::parse("Morning Star").unwrap());
         let service_id =
             find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))
                 .unwrap();
