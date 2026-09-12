@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    text::Line,
+    text::{Line, Span},
     widgets::{
         Block, Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
         TableState, Wrap,
@@ -374,7 +374,7 @@ fn render_purchase_review(
                 ),
                 Line::styled("Left / Backspace · delivery   Esc · cancel", theme::hint()),
             ])
-            .block(panel_block("Buy Trains · purchase review", true))
+            .block(panel_block("Train Market · purchase review", true))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
             area,
@@ -423,7 +423,7 @@ fn render_purchase_review(
         lines.extend(sample_reserve_lines(state, train));
         frame.render_widget(
             Paragraph::new(lines)
-                .block(panel_block("Buy Trains · purchase review", true))
+                .block(panel_block("Train Market · purchase review", true))
                 .style(theme::panel())
                 .wrap(Wrap { trim: true }),
             body_area,
@@ -435,7 +435,7 @@ fn render_purchase_review(
                 train,
                 delivery_station_id,
             ))
-            .block(panel_block("Buy Trains · purchase review", true))
+            .block(panel_block("Train Market · purchase review", true))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
             body_area,
@@ -674,8 +674,9 @@ pub fn render(state: &GameState) -> String {
 
 /// Renders the selectable catalogue and focused model inspector.
 ///
-/// The compact table deliberately retains price, capacity, speed and fuel
-/// cost, so both catalogue models remain comparable at 80×24.
+/// The catalogue prioritises the purchase decision: price and remaining
+/// Company Funds stay visible in the table, while the inspector carries the
+/// selected Train's operating details and reserve implications.
 pub fn render_dashboard(
     frame: &mut Frame,
     area: Rect,
@@ -687,7 +688,7 @@ pub fn render_dashboard(
     if catalogue.is_empty() {
         frame.render_widget(
             Paragraph::new("No diesel Train is available in the catalogue.")
-                .block(panel_block("Buy Trains · catalogue", true))
+                .block(panel_block("Train Market", true))
                 .style(theme::panel()),
             area,
         );
@@ -696,7 +697,7 @@ pub fn render_dashboard(
 
     let wide = area.width >= 96 && area.height >= 14;
     let [table_area, inspector_area] = if wide {
-        Layout::horizontal([Constraint::Min(54), Constraint::Length(34)])
+        Layout::horizontal([Constraint::Min(58), Constraint::Length(38)])
             .spacing(1)
             .areas(area)
     } else {
@@ -708,49 +709,63 @@ pub fn render_dashboard(
     let rows = catalogue
         .iter()
         .map(|train| {
-            Row::new([
-                Cell::from(train.name().to_owned()),
-                Cell::from(format_money(train.purchase_price())),
-                Cell::from(format!("{} pax", train.passenger_capacity().passengers())),
-                Cell::from(format_speed_kmh(train)),
-                Cell::from(format!(
-                    "{}/km",
-                    format_money_per_kilometre(
-                        train.fuel_cost_per_kilometre().cents_per_kilometre()
-                    )
-                )),
-            ])
+            if wide {
+                Row::new([
+                    Cell::from(train.name().to_owned()),
+                    Cell::from(format_money(train.purchase_price())),
+                    Cell::from(funds_after_purchase_display(state, train)),
+                    Cell::from(format!("{}", train.passenger_capacity().passengers())),
+                    Cell::from(format_speed_kmh(train)),
+                    Cell::from(format_money_per_kilometre(
+                        train.fuel_cost_per_kilometre().cents_per_kilometre(),
+                    )),
+                ])
+            } else {
+                Row::new([
+                    Cell::from(train.name().to_owned()),
+                    Cell::from(format_money(train.purchase_price())),
+                    Cell::from(funds_after_purchase_display(state, train)),
+                    Cell::from(format!("{}", train.passenger_capacity().passengers())),
+                ])
+            }
         })
         .collect::<Vec<_>>();
-    let table = Table::new(
-        rows,
-        if wide {
-            vec![
-                Constraint::Percentage(25),
-                Constraint::Percentage(22),
-                Constraint::Percentage(16),
-                Constraint::Percentage(18),
-                Constraint::Percentage(19),
-            ]
-        } else {
+
+    let (headers, widths) = if wide {
+        (
+            vec!["Model", "Price", "Cash after", "Seats", "Speed", "Fuel/km"],
             vec![
                 Constraint::Percentage(23),
-                Constraint::Percentage(22),
+                Constraint::Percentage(17),
+                Constraint::Percentage(20),
+                Constraint::Percentage(10),
                 Constraint::Percentage(14),
-                Constraint::Percentage(19),
-                Constraint::Percentage(22),
-            ]
-        },
-    )
-    .header(
-        Row::new(["Model", "Price", "Capacity", "km/h", "Fuel / km"])
-            .style(theme::table_header())
-            .bottom_margin(1),
-    )
-    .block(panel_block("Buy Trains · catalogue", true))
-    .row_highlight_style(theme::selected_row())
-    .highlight_symbol("> ")
-    .highlight_spacing(HighlightSpacing::Always);
+                Constraint::Percentage(16),
+            ],
+        )
+    } else {
+        (
+            vec!["Model", "Price", "Cash after", "Seats"],
+            vec![
+                Constraint::Percentage(30),
+                Constraint::Percentage(23),
+                Constraint::Percentage(29),
+                Constraint::Percentage(18),
+            ],
+        )
+    };
+
+    let market_title = format!("Train Market · {} models", catalogue.len());
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(headers)
+                .style(theme::table_header())
+                .bottom_margin(1),
+        )
+        .block(panel_block(&market_title, true))
+        .row_highlight_style(theme::selected_row())
+        .highlight_symbol("> ")
+        .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(table, table_area, &mut selection.table_state);
 
     let selected_train = selection
@@ -769,45 +784,127 @@ fn render_catalogue_inspector(
     let Some(train) = train else {
         return;
     };
+
+    let (status, status_style) = purchase_status(state, train);
     let mut lines = vec![
-        Line::styled(train.name(), theme::focused_title()),
-        Line::from(format!("Price: {}", format_money(train.purchase_price()))),
-        Line::from(format!(
-            "Capacity: {} passengers",
-            train.passenger_capacity().passengers()
-        )),
-        Line::from(format!("Speed: {}", format_speed_kmh(train))),
-        Line::from(format!(
-            "Fuel cost: {}/km",
-            format_money_per_kilometre(train.fuel_cost_per_kilometre().cents_per_kilometre())
-        )),
+        Line::from(vec![
+            Span::styled(train.name().to_owned(), theme::focused_title()),
+            Span::styled(format!("  {status}"), status_style),
+        ]),
+        Line::from(""),
+        labelled_value("Price", &format_money(train.purchase_price())),
+        labelled_value("Company Funds", &format_money(state.player_company.funds)),
+        labelled_value(
+            "Cash after purchase",
+            &funds_after_purchase_display(state, train),
+        ),
+        Line::from(""),
+        Line::styled("OPERATING PROFILE", theme::secondary()),
+        labelled_value(
+            "Capacity",
+            &format!("{} passengers", train.passenger_capacity().passengers()),
+        ),
+        labelled_value("Maximum speed", &format_speed_kmh(train)),
+        labelled_value(
+            "Fuel",
+            &format!(
+                "{}/km",
+                format_money_per_kilometre(
+                    train.fuel_cost_per_kilometre().cents_per_kilometre()
+                )
+            ),
+        ),
     ];
+
     if wide {
+        lines.push(Line::from(""));
+        lines.push(Line::styled("RESERVE CHECK", theme::secondary()));
         if let Some(sample) = sample_trip(state, train) {
-            lines.push(Line::from(""));
+            lines.push(Line::from(format!(
+                "{} · {}",
+                sample.route, sample.distance
+            )));
+            lines.push(labelled_value(
+                "Sample departure",
+                &format_money(sample.departure_cost),
+            ));
+            lines.push(labelled_value(
+                "Reserve afterwards",
+                &reserve_after_sample_display(state, train, &sample),
+            ));
+        } else {
             lines.push(Line::styled(
-                format!("Sample Rail Line · {}", sample.route),
+                "No sample Rail Line is available.",
                 theme::secondary(),
             ));
-            lines.push(Line::from(format!(
-                "{} · departure cost {}",
-                sample.distance,
-                format_money(sample.departure_cost)
-            )));
         }
-        lines.push(Line::from(""));
     }
+
+    lines.push(Line::from(""));
     lines.push(Line::styled(
         "Enter · choose delivery Rail Station",
         theme::hint(),
     ));
+
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel_block("Selected model", true))
+            .block(panel_block("Purchase decision", true))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn labelled_value(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}: "), theme::secondary()),
+        Span::styled(value.to_owned(), theme::primary_value()),
+    ])
+}
+
+fn purchase_status(
+    state: &GameState,
+    train: &DieselTrainCatalogueRecord,
+) -> (&'static str, ratatui::style::Style) {
+    if state.player_company.funds < train.purchase_price() {
+        ("UNAFFORDABLE", theme::error())
+    } else if low_reserve(state, train) {
+        ("LOW RESERVE", theme::warning())
+    } else {
+        ("AFFORDABLE", theme::success())
+    }
+}
+
+fn funds_after_purchase_display(
+    state: &GameState,
+    train: &DieselTrainCatalogueRecord,
+) -> String {
+    if state.player_company.funds < train.purchase_price() {
+        return "insufficient".into();
+    }
+    funds_after_purchase(state, train)
+}
+
+fn reserve_after_sample_display(
+    state: &GameState,
+    train: &DieselTrainCatalogueRecord,
+    sample: &SampleTrip,
+) -> String {
+    let Ok(after_purchase) = state
+        .player_company
+        .funds
+        .checked_sub(train.purchase_price())
+    else {
+        return "unavailable".into();
+    };
+    if after_purchase < Money::ZERO {
+        return "insufficient".into();
+    }
+    match after_purchase.checked_sub(sample.departure_cost) {
+        Ok(remaining) if remaining >= Money::ZERO => format_money(remaining),
+        Ok(_) => "insufficient".into(),
+        Err(_) => "unavailable".into(),
+    }
 }
 
 struct DeliveryChooserContext<'a> {
@@ -918,7 +1015,7 @@ fn render_delivery_unavailable(frame: &mut Frame, area: Rect, reason: &str) {
             Line::styled(reason, theme::error()),
             Line::styled("Left / Backspace · model   Esc · cancel", theme::hint()),
         ])
-        .block(panel_block("Buy Trains · delivery unavailable", true))
+        .block(panel_block("Train Market · delivery unavailable", true))
         .style(theme::panel())
         .wrap(Wrap { trim: true }),
         area,
