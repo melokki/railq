@@ -30,6 +30,7 @@ use crate::{
         GameState, Journey, JourneyId, Money, RailStation, RailStationId, Settlement, SettlementId,
         Train, TrainId, TrainStatus, UtcSeconds,
     },
+    sim::services::path_between_stations,
     ui::theme,
 };
 
@@ -882,18 +883,17 @@ fn journey_route_segments(state: &GameState, journey: &Journey) -> Option<Vec<Jo
         .iter()
         .find(|service| service.id == journey.service_id)?;
     let network = &state.region.rail_authority.rail_network;
-
-    let service_origin = service.origin_station_id()?;
-    let service_destination = service.destination_station_id()?;
-    let line_ids = if journey.origin_station_id == service_origin {
-        service.rail_line_ids.iter().copied().collect::<Vec<_>>()
-    } else if journey.origin_station_id == service_destination {
-        service.rail_line_ids.iter().rev().copied().collect::<Vec<_>>()
+    let direction = journey_service_direction(service, journey)?;
+    let next_index = if direction > 0 {
+        journey.current_stop_index.checked_add(1)?
     } else {
-        return None;
+        journey.current_stop_index.checked_sub(1)?
     };
+    let from_station_id = *service.stop_station_ids.get(journey.current_stop_index)?;
+    let to_station_id = *service.stop_station_ids.get(next_index)?;
+    let line_ids = path_between_stations(network, from_station_id, to_station_id).ok()?;
 
-    let mut current_station_id = journey.origin_station_id;
+    let mut current_station_id = from_station_id;
     let mut segments = Vec::with_capacity(line_ids.len());
     for rail_line_id in line_ids {
         let line = network
@@ -915,7 +915,37 @@ fn journey_route_segments(state: &GameState, journey: &Journey) -> Option<Vec<Jo
         current_station_id = next_station_id;
     }
 
-    (current_station_id == journey.destination_station_id).then_some(segments)
+    (current_station_id == to_station_id).then_some(segments)
+}
+
+fn journey_service_direction(
+    service: &crate::model::PassengerService,
+    journey: &Journey,
+) -> Option<i32> {
+    let first = service.stop_station_ids.first().copied()?;
+    let last = service.stop_station_ids.last().copied()?;
+    if journey.origin_station_id == first && journey.destination_station_id == last {
+        Some(1)
+    } else if journey.origin_station_id == last && journey.destination_station_id == first {
+        Some(-1)
+    } else {
+        None
+    }
+}
+
+fn journey_next_stop_station_id(state: &GameState, journey: &Journey) -> Option<RailStationId> {
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)?;
+    let direction = journey_service_direction(service, journey)?;
+    let index = if direction > 0 {
+        journey.current_stop_index.checked_add(1)?
+    } else {
+        journey.current_stop_index.checked_sub(1)?
+    };
+    service.stop_station_ids.get(index).copied()
 }
 
 fn point_along_orthogonal_rail(
@@ -1575,7 +1605,11 @@ fn render_journey_table(
             Row::new([
                 Cell::from(format!("Train {:02}", journey.train_id.get())),
                 Cell::from(station_name(state, journey.origin_station_id)),
-                Cell::from(station_name(state, journey.destination_station_id)),
+                Cell::from(
+                    journey_next_stop_station_id(state, journey)
+                        .map(|station_id| station_name(state, station_id))
+                        .unwrap_or("unknown"),
+                ),
                 Cell::from(format!(
                     "in {}",
                     format_duration(remaining_seconds(journey, now))
@@ -1593,7 +1627,7 @@ fn render_journey_table(
         ],
     )
     .header(
-        Row::new(["Train", "Origin", "Destination", "ETA"])
+        Row::new(["Train", "Origin", "Next stop", "ETA"])
             .style(theme::table_header())
             .bottom_margin(1),
     )
@@ -1684,12 +1718,19 @@ fn render_journey_inspector(
             ),
         ),
         labelled_line(
+            "Next stop",
+            &journey_next_stop_station_id(state, journey)
+                .map(|station_id| station_name(state, station_id).to_owned())
+                .unwrap_or_else(|| "unknown".into()),
+        ),
+        labelled_line(
             "ETA",
             &format!("in {}", format_duration(remaining_seconds(journey, now))),
         ),
-        labelled_line("Progress", &format!("{percent}%")),
+        labelled_line("On board", &journey.onboard_passengers().to_string()),
+        labelled_line("Leg progress", &format!("{percent}%")),
         Line::from(""),
-        Line::styled("No map position is inferred.", theme::secondary()),
+        Line::styled("Map marker follows the current Service leg.", theme::secondary()),
         Line::styled("Real-time Journeys continue", theme::hint()),
         Line::styled("after exit.", theme::hint()),
         Line::from(""),
@@ -1763,7 +1804,7 @@ fn compact_journey_lines(
             row_style,
         ),
         Line::styled(
-            format!("  {}% complete", journey_progress_percent(journey, now)),
+            format!("  {}% to next stop", journey_progress_percent(journey, now)),
             row_style,
         ),
     ]
@@ -2523,11 +2564,15 @@ fn render_travelling_train(
 ) {
     writeln!(
         output,
-        "  Train {train_id} ({model_name}) — TRAVELLING {} -> {} | progress: {}% | ETA: {}",
+        "  Train {train_id} ({model_name}) — TRAVELLING {} -> {} | next: {} | leg: {}% | ETA: {} | onboard: {}",
         station_label(state, journey.origin_station_id),
         station_label(state, journey.destination_station_id),
+        journey_next_stop_station_id(state, journey)
+            .map(|station_id| station_label(state, station_id))
+            .unwrap_or("unknown Rail Station"),
         journey_progress_percent(journey, now),
         format_duration(remaining_seconds(journey, now)),
+        journey.onboard_passengers(),
     )
     .expect("writing to a String cannot fail");
 }

@@ -522,8 +522,12 @@ fn render_train_inspector(
             &format_duration(remaining_seconds(journey, now)),
         ));
         lines.push(labelled_line(
-            "Progress",
+            "Leg progress",
             &format!("{}%", journey_progress_percent(journey, now)),
+        ));
+        lines.push(labelled_line(
+            "On board",
+            &journey.onboard_passengers().to_string(),
         ));
     } else {
         lines.push(labelled_line("Availability", "Ready for dispatch"));
@@ -707,11 +711,15 @@ fn train_fields(state: &GameState, train: &Train, now: UtcSeconds) -> TrainField
             TrainFields {
                 model,
                 status: "TRAVELLING".into(),
-                place: format!(
-                    "{} → {}",
-                    station_label_or_missing(state, journey.origin_station_id),
-                    station_label_or_missing(state, journey.destination_station_id),
-                ),
+                place: journey_next_stop_station_id(state, journey)
+                    .map(|station_id| format!("Next {}", station_label_or_missing(state, station_id)))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{} → {}",
+                            station_label_or_missing(state, journey.origin_station_id),
+                            station_label_or_missing(state, journey.destination_station_id),
+                        )
+                    }),
                 eta: format!("in {}", format_duration(remaining_seconds(journey, now))),
             }
         }
@@ -807,13 +815,17 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                 match journey {
                     Some(journey) => writeln!(
                         output,
-                        "\nTrain {} — {}\n  TRAVELLING {} -> {} | progress: {}% | ETA: {}\n  Sale unavailable while this Journey is in transit.",
+                        "\nTrain {} — {}\n  TRAVELLING {} -> {} | next: {} | leg: {}% | ETA: {} | onboard: {}\n  Sale unavailable while this Journey is in transit.",
                         train.id.get(),
                         train_model_name(train),
                         station_label(state, journey.origin_station_id),
                         station_label(state, journey.destination_station_id),
+                        journey_next_stop_station_id(state, journey)
+                            .map(|station_id| station_label(state, station_id))
+                            .unwrap_or("unknown Rail Station"),
                         journey_progress_percent(journey, now),
                         format_duration(remaining_seconds(journey, now)),
+                        journey.onboard_passengers(),
                     )
                     .expect("writing to a String cannot fail"),
                     None => writeln!(
@@ -882,6 +894,29 @@ fn station_label(state: &GameState, station_id: RailStationId) -> &str {
         .iter()
         .find(|settlement| settlement.id == station.settlement_id)
         .map_or("unknown Settlement", |settlement| settlement.name.as_str())
+}
+
+fn journey_next_stop_station_id(state: &GameState, journey: &Journey) -> Option<RailStationId> {
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)?;
+    let first = service.stop_station_ids.first().copied()?;
+    let last = service.stop_station_ids.last().copied()?;
+    let direction = if journey.origin_station_id == first && journey.destination_station_id == last {
+        1_i32
+    } else if journey.origin_station_id == last && journey.destination_station_id == first {
+        -1_i32
+    } else {
+        return None;
+    };
+    let index = if direction > 0 {
+        journey.current_stop_index.checked_add(1)?
+    } else {
+        journey.current_stop_index.checked_sub(1)?
+    };
+    service.stop_station_ids.get(index).copied()
 }
 
 fn journey_progress_percent(journey: &Journey, now: UtcSeconds) -> u64 {

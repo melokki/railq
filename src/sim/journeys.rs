@@ -3,14 +3,14 @@
 //! Dispatch recalculates a quote from the current state, then commits every
 //! departure effect together: Company Funds and Waiting Passengers decrease,
 //! the Train begins travelling, and one active Journey records the accepted
-//! commercial terms. Operating Revenue remains due until arrival.
+//! commercial terms. Passenger revenue is credited as groups reach their Service stops.
 
 use std::{error::Error, fmt};
 
 use crate::{
     model::{
-        CalculationError, GameState, Journey, JourneyId, Money, RailStationId, ServiceId, TrainId,
-        TrainStatus, UtcSeconds,
+        CalculationError, GameState, Journey, JourneyId, JourneyPassengerGroup, Money, RailStationId,
+        ServiceId, TrainId, TrainStatus, UtcSeconds,
     },
     sim::economy::{EconomyError, quote_journey},
 };
@@ -89,8 +89,33 @@ pub fn dispatch_journey(
         });
     }
 
+    // Revalidate every quoted OD pool before mutating any of them. A Service
+    // origin may board passengers for several later stops in one departure.
+    let mut demand_deductions = Vec::new();
+    for group in &quote.boarding_groups {
+        let demand_index = state
+            .origin_destination_demand
+            .iter()
+            .position(|demand| {
+                demand.origin_station_id == group.origin_station_id
+                    && demand.destination_station_id == group.destination_station_id
+            })
+            .ok_or(DispatchError::WaitingPassengersUnavailable {
+                origin_station_id: group.origin_station_id,
+                destination_station_id: group.destination_station_id,
+            })?;
+        let remaining = state.origin_destination_demand[demand_index]
+            .waiting_passengers
+            .checked_sub(group.passengers)
+            .ok_or(DispatchError::WaitingPassengersUnavailable {
+                origin_station_id: group.origin_station_id,
+                destination_station_id: group.destination_station_id,
+            })?;
+        demand_deductions.push((demand_index, remaining));
+    }
+
     let journey_id = next_journey_id(state)?;
-    let arrives_at = departed_at.checked_add(quote.duration)?;
+    let arrives_at = departed_at.checked_add(quote.first_leg_duration)?;
     let funds_after_departure = state
         .player_company
         .funds
@@ -100,24 +125,6 @@ pub fn dispatch_journey(
         .infrastructure_access_fees
         .checked_add(quote.infrastructure_access_fee)?;
     let fuel_costs_after_departure = state.financials.fuel_costs.checked_add(quote.fuel_cost)?;
-    let demand_index = state
-        .origin_destination_demand
-        .iter()
-        .position(|demand| {
-            demand.origin_station_id == quote.origin_station_id
-                && demand.destination_station_id == quote.destination_station_id
-        })
-        .ok_or(DispatchError::WaitingPassengersUnavailable {
-            origin_station_id: quote.origin_station_id,
-            destination_station_id: quote.destination_station_id,
-        })?;
-    let remaining_waiting_passengers = state.origin_destination_demand[demand_index]
-        .waiting_passengers
-        .checked_sub(quote.boarded_passengers)
-        .ok_or(DispatchError::WaitingPassengersUnavailable {
-            origin_station_id: quote.origin_station_id,
-            destination_station_id: quote.destination_station_id,
-        })?;
     let train_index = state
         .player_company
         .fleet
@@ -131,7 +138,9 @@ pub fn dispatch_journey(
     state.player_company.funds = funds_after_departure;
     state.financials.infrastructure_access_fees = access_fees_after_departure;
     state.financials.fuel_costs = fuel_costs_after_departure;
-    state.origin_destination_demand[demand_index].waiting_passengers = remaining_waiting_passengers;
+    for (index, remaining) in demand_deductions {
+        state.origin_destination_demand[index].waiting_passengers = remaining;
+    }
     state.player_company.fleet.trains[train_index].status = TrainStatus::Travelling { journey_id };
     state.active_journeys.push(Journey {
         id: journey_id,
@@ -142,8 +151,20 @@ pub fn dispatch_journey(
         passengers_carried: quote.boarded_passengers,
         fare: quote.fare,
         operating_revenue: quote.operating_revenue,
+        credited_revenue: Money::ZERO,
         infrastructure_access_fee: quote.infrastructure_access_fee,
         fuel_cost: quote.fuel_cost,
+        current_stop_index: 0,
+        passenger_groups: quote
+            .boarding_groups
+            .into_iter()
+            .map(|group| JourneyPassengerGroup {
+                origin_station_id: group.origin_station_id,
+                destination_station_id: group.destination_station_id,
+                passengers: group.passengers,
+                fare: group.fare,
+            })
+            .collect(),
         departed_at,
         arrives_at,
     });

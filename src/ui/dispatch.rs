@@ -395,11 +395,7 @@ impl DispatchFlow {
                         " {marker} {} — {} — {} waiting, {}, {}\n",
                         service_name(state, service.service_id),
                         service_route_label(state, service.service_id),
-                        waiting_passengers(
-                            state,
-                            service.quote.origin_station_id,
-                            service.quote.destination_station_id
-                        ),
+                        waiting_passengers_for_service(state, service.service_id),
                         format_distance(service.quote.distance.metres()),
                         format_duration(service.quote.duration.seconds()),
                     ));
@@ -416,16 +412,12 @@ impl DispatchFlow {
                 ));
                 output.push_str(&format!(
                     "Directional Demand: {} Waiting Passengers; {} boarding / {} capacity\n",
-                    waiting_passengers(
-                        state,
-                        quote.origin_station_id,
-                        quote.destination_station_id
-                    ),
+                    waiting_passengers_for_service(state, quote.service_id),
                     quote.boarded_passengers,
                     train_capacity(state, quote.train_id),
                 ));
                 output.push_str(&format!(
-                    "Route: {} | Duration: {} | Arrival revenue: {}\n",
+                    "Route: {} | Duration: {} | Revenue booked at origin: {}\n",
                     format_path(state, quote),
                     format_duration(quote.duration.seconds()),
                     format_money(quote.operating_revenue),
@@ -442,7 +434,15 @@ impl DispatchFlow {
                     format_money(quote.cash_after_cost),
                 ));
                 if quote.boarded_passengers == 0 {
-                    output.push_str("EMPTY REPOSITIONING: no arrival revenue is expected.\n");
+                    if service_stop_count(state, *service_id) > 2 {
+                        output.push_str(
+                            "NO ORIGIN BOARDING: later Service stops may still board passengers.\n",
+                        );
+                    } else {
+                        output.push_str(
+                            "EMPTY REPOSITIONING: no passenger revenue is currently booked.\n",
+                        );
+                    }
                 }
                 if quote.cash_after_cost < Money::ZERO {
                     output.push_str(
@@ -597,7 +597,7 @@ fn render_quote_review(
     );
 
     let capacity = train_capacity(state, quote.train_id);
-    let waiting = waiting_passengers(state, quote.origin_station_id, quote.destination_station_id);
+    let waiting = waiting_passengers_for_service(state, quote.service_id);
     let occupancy_ratio = if capacity == 0 {
         0.0
     } else {
@@ -629,24 +629,26 @@ fn render_quote_review(
             "Funds after departure",
             quote.cash_after_cost,
         ),
-        Line::styled("EXPECTED AT ARRIVAL", theme::success()),
+        Line::styled("BOOKED FROM ORIGIN", theme::success()),
         money_pair_line(
             "Revenue",
             quote.operating_revenue,
-            "Journey result",
+            "Quoted result",
             quote.journey_profitability,
         ),
     ];
     if quote.boarded_passengers == 0 {
-        terms.push(Line::styled(
-            "EMPTY REPOSITIONING · no passengers will board and no arrival revenue is expected.",
-            theme::warning(),
-        ));
+        let message = if service_stop_count(state, service_id) > 2 {
+            "NO ORIGIN BOARDING · later Service stops may still board passengers."
+        } else {
+            "EMPTY REPOSITIONING · no passenger revenue is currently booked."
+        };
+        terms.push(Line::styled(message, theme::warning()));
     }
     if service_stop_count(state, service_id) > 2 {
         terms.push(Line::styled(
-            "INTERMEDIATE STOPS · this release runs the Service end-to-end; stop-by-stop boarding/alighting arrives in the next roadmap item.",
-            theme::warning(),
+            "STOP-BY-STOP · passengers alight and new OD demand may board at each intermediate stop.",
+            theme::hint(),
         ));
     }
     frame.render_widget(
@@ -953,7 +955,7 @@ fn render_service_chooser(
         .map(|service| {
             let quote = &service.quote;
             let demand =
-                waiting_passengers(state, quote.origin_station_id, quote.destination_station_id);
+                waiting_passengers_for_service(state, quote.service_id);
             if wide {
                 Row::new([
                     Cell::from(service_name(state, service.service_id)),
@@ -1064,7 +1066,7 @@ fn render_service_inspector(
     };
     let quote = &service.quote;
     let demand =
-        waiting_passengers(state, quote.origin_station_id, quote.destination_station_id);
+        waiting_passengers_for_service(state, quote.service_id);
     let name = service_name(state, service.service_id);
     let route = service_route_label(state, service.service_id);
     let lines = if wide {
@@ -1498,19 +1500,29 @@ fn station_label(state: &GameState, station_id: RailStationId) -> &str {
         .map_or("unknown Settlement", |settlement| settlement.name.as_str())
 }
 
-fn waiting_passengers(
-    state: &GameState,
-    origin_station_id: RailStationId,
-    destination_station_id: RailStationId,
-) -> u32 {
-    state
-        .origin_destination_demand
+fn waiting_passengers_for_service(state: &GameState, service_id: ServiceId) -> u32 {
+    let Some(service) = state
+        .player_company
+        .passenger_services
         .iter()
-        .find(|demand| {
-            demand.origin_station_id == origin_station_id
-                && demand.destination_station_id == destination_station_id
+        .find(|service| service.id == service_id)
+    else {
+        return 0;
+    };
+    let Some(origin_station_id) = service.origin_station_id() else {
+        return 0;
+    };
+    service
+        .stop_station_ids
+        .iter()
+        .skip(1)
+        .filter_map(|destination_station_id| {
+            state.origin_destination_demand.iter().find(|demand| {
+                demand.origin_station_id == origin_station_id
+                    && demand.destination_station_id == *destination_station_id
+            })
         })
-        .map_or(0, |demand| demand.waiting_passengers)
+        .fold(0_u32, |total, demand| total.saturating_add(demand.waiting_passengers))
 }
 
 fn format_path(state: &GameState, quote: &JourneyQuote) -> String {

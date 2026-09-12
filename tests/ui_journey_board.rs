@@ -60,12 +60,12 @@ fn departure_board_shows_selected_journey_progress_in_wide_and_compact_layouts()
     assert!(wide.contains("Departure Board · active Journeys"));
     assert!(wide.contains("Train"));
     assert!(wide.contains("Origin"));
-    assert!(wide.contains("Destination"));
+    assert!(wide.contains("Next stop"));
     assert!(wide.contains("ETA"));
     assert!(wide.contains("Train 01"));
-    assert!(wide.contains("Progress"));
+    assert!(wide.contains("Leg progress"));
     assert!(wide.contains("50%"));
-    assert!(wide.contains("No map position is inferred."));
+    assert!(wide.contains("Map marker follows the current Service leg."));
     assert!(wide.contains("Real-time Journeys continue"));
     assert!(wide.contains("after exit."));
     let (selected_row, selected_column) = wide
@@ -95,7 +95,7 @@ fn departure_board_shows_selected_journey_progress_in_wide_and_compact_layouts()
     press(&mut shell, &state, KeyCode::Enter);
     let compact_details = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     assert!(compact_details.contains("Selected Journey"));
-    assert!(compact_details.contains("Progress"));
+    assert!(compact_details.contains("Leg progress"));
     assert!(compact_details.contains("50%"));
     fs::write(
         Path::new(EVIDENCE_DIR).join("departure-board-80x24.txt"),

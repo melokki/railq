@@ -692,7 +692,7 @@ fn render_receipts_table(
     let title = format!("Journey history · {} receipts", receipts.len());
     if receipts.is_empty() {
         frame.render_widget(
-            Paragraph::new("No retained Journey receipts yet. Operating Revenue is credited when a Journey arrives.")
+            Paragraph::new("No retained Journey receipts yet. Operating Revenue is credited as passengers reach their stops; a Journey receipt is retained at the Service terminus.")
                 .block(panel_block(&title, true))
                 .style(theme::panel())
                 .wrap(Wrap { trim: true }),
@@ -1401,23 +1401,14 @@ fn receipt_train_label(receipt: &JourneyReceipt) -> String {
 
 fn receipt_passenger_label(receipt: &JourneyReceipt) -> String {
     match (receipt.passengers_carried, receipt.passenger_capacity) {
-        (Some(passengers), Some(capacity)) => format!("{passengers}/{capacity}"),
-        (Some(passengers), None) => passengers.to_string(),
+        (Some(passengers), Some(capacity)) => format!("{passengers} boarded · {capacity} seats"),
+        (Some(passengers), None) => format!("{passengers} boarded"),
         _ => "—".into(),
     }
 }
 
 fn receipt_passenger_detail(receipt: &JourneyReceipt) -> String {
-    match (receipt.passengers_carried, receipt.passenger_capacity) {
-        (Some(passengers), Some(capacity)) if capacity > 0 => {
-            let load_factor = u64::from(passengers)
-                .saturating_mul(100)
-                .checked_div(u64::from(capacity))
-                .unwrap_or(0);
-            format!("{passengers} / {capacity} · {load_factor}% load")
-        }
-        _ => receipt_passenger_label(receipt),
-    }
+    receipt_passenger_label(receipt)
 }
 
 fn receipt_age_label(state: &GameState, receipt: &JourneyReceipt) -> String {

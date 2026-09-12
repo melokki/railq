@@ -26,17 +26,17 @@ use crate::{
     catalog::{model_for_train, train_catalogue},
     model::{
         CalculationError, DemandRules, DistanceMetres, DurationSeconds, Financials, Fleet,
-        GameRules, GameState, Journey, JourneyId, JourneyReceipt, Money, MoneyPerKilometre,
+        GameRules, GameState, Journey, JourneyId, JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre,
         OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
         PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork, RailStation,
         RailStationId, Region, ServiceId, Settlement, SettlementId, SpeedMetresPerSecond, Train,
         TrainId, TrainModelId, TrainStatus, UtcSeconds,
     },
-    sim::services::service_path_for_stops,
+    sim::services::{path_between_stations, service_path_for_stops},
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 3;
+pub const SAVE_VERSION: u32 = 4;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -388,10 +388,21 @@ CREATE TABLE IF NOT EXISTS active_journeys (
     passengers_carried INTEGER NOT NULL,
     fare_cents INTEGER NOT NULL,
     operating_revenue_cents INTEGER NOT NULL,
+    credited_revenue_cents INTEGER NOT NULL,
     infrastructure_access_fee_cents INTEGER NOT NULL,
     fuel_cost_cents INTEGER NOT NULL,
+    current_stop_index INTEGER NOT NULL,
     departed_at INTEGER NOT NULL,
     arrives_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS journey_passenger_groups (
+    journey_id INTEGER NOT NULL REFERENCES active_journeys(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    passengers INTEGER NOT NULL,
+    fare_cents INTEGER NOT NULL,
+    PRIMARY KEY (journey_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS financials (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -450,8 +461,13 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
         1 => {
             migrate_v1_to_v2(connection, path)?;
             migrate_v2_to_v3(connection, path)?;
+            migrate_v3_to_v4(connection, path)?;
         }
-        2 => migrate_v2_to_v3(connection, path)?,
+        2 => {
+            migrate_v2_to_v3(connection, path)?;
+            migrate_v3_to_v4(connection, path)?;
+        }
+        3 => migrate_v3_to_v4(connection, path)?,
         SAVE_VERSION => {
             connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
                 action: "verify schema for",
@@ -658,7 +674,7 @@ fn migrate_v2_to_v3(connection: &Connection, path: &Path) -> Result<(), SaveSlot
 
     let migration = (|| -> Result<(), SaveSlotError> {
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 3_u32)
             .map_err(|source| db_error("write v3 schema version to", path, source))?;
         let foreign_key_violation: Option<i64> = connection
             .query_row("SELECT 1 FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0))
@@ -697,6 +713,91 @@ fn migrate_v2_to_v3(connection: &Connection, path: &Path) -> Result<(), SaveSlot
     }
 }
 
+
+fn migrate_v3_to_v4(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             BEGIN IMMEDIATE;
+             ALTER TABLE active_journeys ADD COLUMN credited_revenue_cents INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE active_journeys ADD COLUMN current_stop_index INTEGER NOT NULL DEFAULT 0;
+             CREATE TABLE journey_passenger_groups (
+                 journey_id INTEGER NOT NULL REFERENCES active_journeys(id) ON DELETE CASCADE,
+                 sequence INTEGER NOT NULL,
+                 origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+                 destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+                 passengers INTEGER NOT NULL,
+                 fare_cents INTEGER NOT NULL,
+                 PRIMARY KEY (journey_id, sequence)
+             );
+             INSERT INTO journey_passenger_groups(
+                 journey_id, sequence, origin_station_id, destination_station_id, passengers, fare_cents
+             )
+                 SELECT id, 0, origin_station_id, destination_station_id, passengers_carried, fare_cents
+                 FROM active_journeys
+                 WHERE passengers_carried > 0;
+             UPDATE active_journeys
+             SET current_stop_index = CASE
+                 WHEN origin_station_id = (
+                     SELECT station_id FROM service_stops
+                     WHERE service_id = active_journeys.service_id
+                     ORDER BY sequence ASC LIMIT 1
+                 ) THEN MAX((
+                     SELECT COUNT(*) FROM service_stops
+                     WHERE service_id = active_journeys.service_id
+                 ) - 2, 0)
+                 WHEN origin_station_id = (
+                     SELECT station_id FROM service_stops
+                     WHERE service_id = active_journeys.service_id
+                     ORDER BY sequence DESC LIMIT 1
+                 ) THEN MIN(1, (
+                     SELECT COUNT(*) FROM service_stops
+                     WHERE service_id = active_journeys.service_id
+                 ) - 1)
+                 ELSE 0
+             END;",
+        )
+        .map_err(|source| db_error("begin v3 to v4 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v4 schema version to", path, source))?;
+        let foreign_key_violation: Option<i64> = connection
+            .query_row("SELECT 1 FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0))
+            .optional()
+            .map_err(|source| db_error("verify v3 to v4 migration for", path, source))?;
+        if foreign_key_violation.is_some() {
+            return Err(SaveSlotError::InvalidSave {
+                path: path.to_path_buf(),
+                source: Box::new(SaveCodecError::InvalidValue {
+                    field: "foreign keys after v3 to v4 migration",
+                }),
+            });
+        }
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => {
+            connection
+                .execute_batch(
+                    "COMMIT;
+                     PRAGMA foreign_keys = ON;",
+                )
+                .map_err(|source| db_error("commit v3 to v4 migration for", path, source))?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "ROLLBACK;
+                 PRAGMA foreign_keys = ON;",
+            );
+            Err(error)
+        }
+    }
+}
+
 fn clear_state(
     transaction: &Transaction<'_>,
     path: &Path,
@@ -712,7 +813,8 @@ fn clear_state(
             })?;
     }
     transaction.execute_batch(
-        "DELETE FROM active_journeys;
+        "DELETE FROM journey_passenger_groups;
+         DELETE FROM active_journeys;
          DELETE FROM origin_destination_demand;
          DELETE FROM service_lines;
          DELETE FROM service_stops;
@@ -819,15 +921,35 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
 
     for journey in &state.active_journeys {
         transaction.execute(
-            "INSERT INTO active_journeys(id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, departed_at, arrives_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO active_journeys(id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 db(journey.id.get(), "Journey ID")?, db(journey.service_id.get(), "Passenger Service ID")?, db(journey.train_id.get(), "Train ID")?,
                 db(journey.origin_station_id.get(), "Journey origin")?, db(journey.destination_station_id.get(), "Journey destination")?, i64::from(journey.passengers_carried),
-                journey.fare.cents(), journey.operating_revenue.cents(), journey.infrastructure_access_fee.cents(), journey.fuel_cost.cents(),
+                journey.fare.cents(), journey.operating_revenue.cents(), journey.credited_revenue.cents(),
+                journey.infrastructure_access_fee.cents(), journey.fuel_cost.cents(),
+                i64::try_from(journey.current_stop_index).map_err(|_| SaveSlotError::InvalidSave {
+                    path: path.to_path_buf(),
+                    source: Box::new(SaveCodecError::InvalidValue { field: "Journey current stop index" }),
+                })?,
                 journey.departed_at.unix_seconds(), journey.arrives_at.unix_seconds()
             ],
         ).map_err(|source| db_error("write active Journeys to", path, source))?;
+
+        for (sequence, group) in journey.passenger_groups.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO journey_passenger_groups(journey_id, sequence, origin_station_id, destination_station_id, passengers, fare_cents)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    db(journey.id.get(), "Journey ID")?,
+                    i64::try_from(sequence).unwrap_or(i64::MAX),
+                    db(group.origin_station_id.get(), "Journey passenger origin")?,
+                    db(group.destination_station_id.get(), "Journey passenger destination")?,
+                    i64::from(group.passengers),
+                    group.fare.cents(),
+                ],
+            ).map_err(|source| db_error("write Journey passenger groups to", path, source))?;
+        }
     }
 
     transaction.execute(
@@ -961,7 +1083,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         })
     })?;
 
-    let active_journeys = query_all(connection, "SELECT id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, departed_at, arrives_at FROM active_journeys ORDER BY id", path, |row| {
+    let mut active_journeys = query_all(connection, "SELECT id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at FROM active_journeys ORDER BY id", path, |row| {
         Ok(Journey {
             id: JourneyId::new(row_u64(row, 0, "Journey ID")?),
             service_id: ServiceId::new(row_u64(row, 1, "Passenger Service ID")?),
@@ -969,11 +1091,41 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
             origin_station_id: RailStationId::new(row_u64(row, 3, "Journey origin")?),
             destination_station_id: RailStationId::new(row_u64(row, 4, "Journey destination")?),
             passengers_carried: u32::try_from(row.get::<_, i64>(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-            fare: Money::from_cents(row.get(6)?), operating_revenue: Money::from_cents(row.get(7)?),
-            infrastructure_access_fee: Money::from_cents(row.get(8)?), fuel_cost: Money::from_cents(row.get(9)?),
-            departed_at: UtcSeconds::from_unix_seconds(row.get(10)?), arrives_at: UtcSeconds::from_unix_seconds(row.get(11)?),
+            fare: Money::from_cents(row.get(6)?),
+            operating_revenue: Money::from_cents(row.get(7)?),
+            credited_revenue: Money::from_cents(row.get(8)?),
+            infrastructure_access_fee: Money::from_cents(row.get(9)?),
+            fuel_cost: Money::from_cents(row.get(10)?),
+            current_stop_index: usize::try_from(row.get::<_, i64>(11)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            passenger_groups: Vec::new(),
+            departed_at: UtcSeconds::from_unix_seconds(row.get(12)?),
+            arrives_at: UtcSeconds::from_unix_seconds(row.get(13)?),
         })
     })?;
+    for journey in &mut active_journeys {
+        let mut statement = connection.prepare(
+            "SELECT origin_station_id, destination_station_id, passengers, fare_cents
+             FROM journey_passenger_groups
+             WHERE journey_id = ?1
+             ORDER BY sequence"
+        ).map_err(|source| db_error("prepare Journey passenger group query for", path, source))?;
+        let rows = statement.query_map(
+            params![to_db_u64(journey.id.get(), "Journey ID", path)?],
+            |row| {
+                Ok(JourneyPassengerGroup {
+                    origin_station_id: RailStationId::new(row_u64(row, 0, "Journey passenger origin")?),
+                    destination_station_id: RailStationId::new(row_u64(row, 1, "Journey passenger destination")?),
+                    passengers: u32::try_from(row.get::<_, i64>(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    fare: Money::from_cents(row.get(3)?),
+                })
+            },
+        ).map_err(|source| db_error("read Journey passenger groups from", path, source))?;
+        for row in rows {
+            journey.passenger_groups.push(
+                row.map_err(|source| db_error("read Journey passenger group from", path, source))?
+            );
+        }
+    }
 
     let (operating_revenue, access_fees, fuel_costs): (i64, i64, i64) = connection
         .query_row("SELECT operating_revenue_cents, infrastructure_access_fees_cents, fuel_costs_cents FROM financials WHERE singleton = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -1237,7 +1389,28 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
             stop_station_ids: vec![service.first_station_id, service.second_station_id],
             rail_line_ids: service.rail_line_ids,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let mut active_journeys = legacy.active_journeys;
+    for journey in &mut active_journeys {
+        if let Some(service) = passenger_services
+            .iter()
+            .find(|service| service.id == journey.service_id)
+        {
+            if journey.origin_station_id == service.destination_station_id().unwrap_or(journey.origin_station_id)
+                && journey.destination_station_id == service.origin_station_id().unwrap_or(journey.destination_station_id)
+            {
+                journey.current_stop_index = service.stop_station_ids.len().saturating_sub(1);
+            }
+        }
+        if journey.passenger_groups.is_empty() && journey.passengers_carried > 0 {
+            journey.passenger_groups.push(JourneyPassengerGroup {
+                origin_station_id: journey.origin_station_id,
+                destination_station_id: journey.destination_station_id,
+                passengers: journey.passengers_carried,
+                fare: journey.fare,
+            });
+        }
+    }
 
     let state = GameState {
         world_seed: legacy.world_seed,
@@ -1249,7 +1422,7 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
             passenger_services,
         },
         origin_destination_demand: legacy.origin_destination_demand,
-        active_journeys: legacy.active_journeys,
+        active_journeys,
         financials: legacy.financials,
         rules: GameRules {
             balance: BalanceConfig::new(
@@ -1690,7 +1863,7 @@ fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
             let destination = receipt
                 .destination_station_id
                 .expect("complete receipt context has destination");
-            let passengers = receipt
+            let _passengers = receipt
                 .passengers_carried
                 .expect("complete receipt context has passengers");
             let capacity = receipt
@@ -1702,7 +1875,6 @@ fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
                 || !station_ids.contains(&origin)
                 || !station_ids.contains(&destination)
                 || capacity == 0
-                || passengers > capacity
             {
                 return Err(SaveValidationError::InvalidValue {
                     field: "Journey receipt operating context",
@@ -1777,6 +1949,7 @@ fn validate_journey(
             field: "Journey endpoint",
         });
     }
+
     let train = state
         .player_company
         .fleet
@@ -1793,75 +1966,234 @@ fn validate_journey(
             reason: "a Journey's Train is not travelling on that Journey",
         });
     }
-    // The Train model is validated separately by `validate_train_statuses`.
-    // Journey economics and arrival time are snapshots fixed at departure, so
-    // a later catalogue balance update must not invalidate an in-flight save.
+    let train_model = model_for_train(train).ok_or(SaveValidationError::InvalidValue {
+        field: "Journey Train catalogue model",
+    })?;
+
     let service = state
         .player_company
         .passenger_services
         .iter()
         .find(|service| service.id == journey.service_id)
         .expect("a validated Journey Passenger Service ID resolves in the Service Network");
-    let service_origin = service.origin_station_id().ok_or(
-        SaveValidationError::ImpossibleState {
+    let Some(service_origin) = service.origin_station_id() else {
+        return Err(SaveValidationError::ImpossibleState {
             reason: "Journey references a Passenger Service without an origin",
-        },
-    )?;
-    let service_destination = service.destination_station_id().ok_or(
-        SaveValidationError::ImpossibleState {
+        });
+    };
+    let Some(service_destination) = service.destination_station_id() else {
+        return Err(SaveValidationError::ImpossibleState {
             reason: "Journey references a Passenger Service without a destination",
-        },
-    )?;
-    let valid_direction = (journey.origin_station_id == service_origin
-        && journey.destination_station_id == service_destination)
-        || (journey.origin_station_id == service_destination
-            && journey.destination_station_id == service_origin);
-    if !valid_direction {
+        });
+    };
+    let direction = if journey.origin_station_id == service_origin
+        && journey.destination_station_id == service_destination
+    {
+        1_i32
+    } else if journey.origin_station_id == service_destination
+        && journey.destination_station_id == service_origin
+    {
+        -1_i32
+    } else {
         return Err(SaveValidationError::ImpossibleState {
             reason: "Journey endpoints do not match its Passenger Service",
         });
+    };
+
+    let next_stop_index = match direction {
+        1 => journey
+            .current_stop_index
+            .checked_add(1)
+            .filter(|index| *index < service.stop_station_ids.len()),
+        -1 => journey.current_stop_index.checked_sub(1),
+        _ => None,
     }
+    .ok_or(SaveValidationError::ImpossibleState {
+        reason: "Journey current Service stop cannot advance",
+    })?;
+
     let distance = service_distances
         .get(&journey.service_id)
         .copied()
         .expect("every validated Passenger Service has a calculated distance");
-    let expected_fare = state
+    let expected_through_fare = state
         .rules
         .balance
         .fare_per_passenger_kilometre()
         .checked_charge(distance)?;
-    let expected_revenue = expected_fare.checked_mul(u64::from(journey.passengers_carried))?;
     let expected_access_fee = state
         .rules
         .balance
         .access_fee_per_train_kilometre()
         .checked_charge(distance)?;
-    expected_access_fee.checked_add(journey.fuel_cost)?;
-    if journey.fare != expected_fare
-        || journey.operating_revenue != expected_revenue
+
+    if journey.fare != expected_through_fare
         || journey.infrastructure_access_fee != expected_access_fee
         || journey.fuel_cost.cents() <= 0
+        || journey.operating_revenue.cents() < 0
+        || journey.credited_revenue.cents() < 0
+        || journey.credited_revenue > journey.operating_revenue
         || journey.arrives_at <= journey.departed_at
     {
         return Err(SaveValidationError::ImpossibleState {
             reason: "Journey actuals do not match its saved rules and departure snapshot",
         });
     }
+    expected_access_fee.checked_add(journey.fuel_cost)?;
 
-    // An active Journey is a departure snapshot, not a fresh dispatch proposal.
-    // Pre-v3 Passenger Services were bidirectional, so a migrated Journey may
-    // legitimately be travelling opposite the newly directional Service order.
-    // Re-quoting it would incorrectly apply today's dispatch-direction rule to
-    // an operation that was already authorised before the migration.
-    if !state.origin_destination_demand.iter().any(|demand| {
-        demand.origin_station_id == journey.origin_station_id
-            && demand.destination_station_id == journey.destination_station_id
-    }) {
+    let mut onboard_passengers = 0_u32;
+    let mut onboard_revenue = Money::ZERO;
+    for group in &journey.passenger_groups {
+        if group.passengers == 0
+            || !station_ids.contains(&group.origin_station_id)
+            || !station_ids.contains(&group.destination_station_id)
+        {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Journey passenger group",
+            });
+        }
+
+        let Some(origin_index) = service
+            .stop_station_ids
+            .iter()
+            .position(|station_id| *station_id == group.origin_station_id)
+        else {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Journey passenger origin is not a Service stop",
+            });
+        };
+        let Some(destination_index) = service
+            .stop_station_ids
+            .iter()
+            .position(|station_id| *station_id == group.destination_station_id)
+        else {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Journey passenger destination is not a Service stop",
+            });
+        };
+
+        let valid_group_direction = if direction > 0 {
+            origin_index < destination_index
+                && destination_index >= next_stop_index
+                && origin_index <= journey.current_stop_index
+        } else {
+            origin_index > destination_index
+                && destination_index <= next_stop_index
+                && origin_index >= journey.current_stop_index
+        };
+        if !valid_group_direction {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Journey passenger group is not travelling in the Service direction",
+            });
+        }
+
+        let group_distance = distance_between_service_stops(
+            &state.region.rail_authority.rail_network,
+            service,
+            origin_index,
+            destination_index,
+        )?;
+        let expected_group_fare = state
+            .rules
+            .balance
+            .fare_per_passenger_kilometre()
+            .checked_charge(group_distance)?;
+        if group.fare != expected_group_fare {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Journey passenger fare does not match its origin-destination distance",
+            });
+        }
+
+        onboard_passengers = onboard_passengers
+            .checked_add(group.passengers)
+            .ok_or(SaveValidationError::Calculation(
+                CalculationError::Overflow {
+                    operation: "Journey onboard passenger count",
+                },
+            ))?;
+        onboard_revenue = onboard_revenue.checked_add(
+            group.fare.checked_mul(u64::from(group.passengers))?,
+        )?;
+    }
+
+    if onboard_passengers > train_model.passenger_capacity().passengers()
+        || journey.passengers_carried < onboard_passengers
+    {
         return Err(SaveValidationError::ImpossibleState {
-            reason: "Journey direction has no saved Passenger Demand",
+            reason: "Journey passenger counts exceed Train capacity or cumulative boardings",
         });
     }
+    let expected_booked_revenue = journey.credited_revenue.checked_add(onboard_revenue)?;
+    if expected_booked_revenue != journey.operating_revenue {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Journey booked revenue does not match credited and onboard passengers",
+        });
+    }
+
+    // Demand pools must exist for every currently onboard OD pair. Their
+    // waiting counts need not match the departure snapshot because demand keeps
+    // replenishing while the Journey is active.
+    for group in &journey.passenger_groups {
+        if !state.origin_destination_demand.iter().any(|demand| {
+            demand.origin_station_id == group.origin_station_id
+                && demand.destination_station_id == group.destination_station_id
+        }) {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Journey passenger group has no saved Passenger Demand",
+            });
+        }
+    }
+
     Ok(())
+}
+
+fn distance_between_service_stops(
+    network: &RailNetwork,
+    service: &PassengerService,
+    first_stop_index: usize,
+    second_stop_index: usize,
+) -> Result<DistanceMetres, SaveValidationError> {
+    let first_station_id = *service
+        .stop_station_ids
+        .get(first_stop_index)
+        .ok_or(SaveValidationError::ImpossibleState {
+            reason: "Passenger Service stop index is outside the stop pattern",
+        })?;
+    let second_station_id = *service
+        .stop_station_ids
+        .get(second_stop_index)
+        .ok_or(SaveValidationError::ImpossibleState {
+            reason: "Passenger Service stop index is outside the stop pattern",
+        })?;
+    let line_ids = path_between_stations(network, first_station_id, second_station_id).map_err(|_| {
+        SaveValidationError::ImpossibleState {
+            reason: "Passenger Service stops are not connected by the Rail Network",
+        }
+    })?;
+    let total_metres = line_ids.iter().try_fold(0_u64, |total, rail_line_id| {
+        let line = network
+            .rail_lines
+            .iter()
+            .find(|line| line.id == *rail_line_id)
+            .ok_or(SaveValidationError::DanglingReference {
+                field: "Passenger Service Rail Line",
+            })?;
+        total
+            .checked_add(line.distance.metres())
+            .ok_or(SaveValidationError::Calculation(
+                CalculationError::Overflow {
+                    operation: "Passenger Service stop distance",
+                },
+            ))
+    })?;
+    let metres = i64::try_from(total_metres).map_err(|_| {
+        SaveValidationError::Calculation(CalculationError::Overflow {
+            operation: "Passenger Service stop distance",
+        })
+    })?;
+    DistanceMetres::new(metres).map_err(|_| SaveValidationError::InvalidValue {
+        field: "Passenger Service stop distance",
+    })
 }
 
 
@@ -1940,6 +2272,10 @@ mod tests {
         state.player_company.passenger_services[0]
             .rail_line_ids
             .reverse();
+        state.active_journeys[0].current_stop_index = state.player_company.passenger_services[0]
+            .stop_station_ids
+            .len()
+            .saturating_sub(1);
 
         slot.save(&state).unwrap();
 
@@ -1974,6 +2310,13 @@ mod tests {
         let service_stop_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM service_stops", [], |row| row.get(0))
             .unwrap();
+        let passenger_group_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM journey_passenger_groups",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         let state_blob_table: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='game_state'",
@@ -1995,6 +2338,7 @@ mod tests {
         assert_eq!(train_count, 1);
         assert_eq!(journey_count, 1);
         assert_eq!(service_stop_count, 2);
+        assert!(passenger_group_count > 0);
         assert_eq!(state_blob_table, 0);
         assert_eq!(saved_catalogue_table, 0);
         assert_eq!(model_id, "local-70");

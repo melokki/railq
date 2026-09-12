@@ -725,7 +725,10 @@ impl Shell {
                 journey_id: journey.id,
                 train_id: journey.train_id,
                 destination_station_id: journey.destination_station_id,
-                credited_revenue: journey.operating_revenue,
+                credited_revenue: journey
+                    .operating_revenue
+                    .checked_sub(journey.credited_revenue)
+                    .unwrap_or(Money::ZERO),
             })
             .collect::<Vec<_>>();
         self.publish_settled_arrivals(after, &arrivals);
@@ -2006,7 +2009,7 @@ fn pending_dispatch(
     PendingAction {
         label: format!("Manual Dispatch · Train {:02} ({model})", train_id.get()),
         details: vec![format!(
-            "{service_name} · {route}. Departure costs and arrival revenue follow the saved Journey quote."
+            "{service_name} · {route}. Full operating costs are paid at departure; passenger revenue is credited stop by stop."
         )],
         funds_before: state.player_company.funds,
     }

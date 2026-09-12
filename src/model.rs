@@ -155,6 +155,12 @@ impl Money {
     }
 }
 
+impl Default for Money {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
 /// A positive passenger capacity.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PassengerCapacity(u32);
@@ -492,7 +498,25 @@ impl PassengerService {
     }
 }
 
-/// One physical movement of a Train under a Passenger Service.
+/// Passengers currently aboard one active Journey, grouped by their final stop.
+///
+/// A group keeps its boarding origin and accepted fare so revenue can be
+/// credited when those passengers actually alight, including after one or
+/// more intermediate Service stops.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JourneyPassengerGroup {
+    pub origin_station_id: RailStationId,
+    pub destination_station_id: RailStationId,
+    pub passengers: u32,
+    pub fare: Money,
+}
+
+/// One Train run over a directional Passenger Service.
+///
+/// `current_stop_index` identifies the Service stop from which the current leg
+/// departed. `arrives_at` is therefore the ETA of the next Service stop, not
+/// necessarily the Service terminus. The same Journey ID remains active while
+/// the Train calls at intermediate stops.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Journey {
     pub id: JourneyId,
@@ -500,17 +524,41 @@ pub struct Journey {
     pub train_id: TrainId,
     pub origin_station_id: RailStationId,
     pub destination_station_id: RailStationId,
+    /// Total passenger boardings across the Service run so far.
     pub passengers_carried: u32,
-    /// The fare actually quoted and accepted for each carried passenger.
+    /// Through fare from the Service origin to terminus. Kept as a stable
+    /// summary value; individual onboard groups may have shorter fares.
     pub fare: Money,
-    /// Revenue due when this Journey arrives, fixed at departure.
+    /// Total booked revenue for all passenger groups boarded so far.
     pub operating_revenue: Money,
-    /// The Rail Authority infrastructure charge paid at departure.
+    /// Revenue already credited because passengers have reached their stops.
+    #[serde(default)]
+    pub credited_revenue: Money,
+    /// The Rail Authority infrastructure charge for the complete Service run,
+    /// paid at initial dispatch.
     pub infrastructure_access_fee: Money,
-    /// The diesel fuel cost paid at departure.
+    /// Diesel fuel cost for the complete Service run, paid at initial dispatch.
     pub fuel_cost: Money,
+    /// Index of the Service stop at which the current leg began.
+    #[serde(default)]
+    pub current_stop_index: usize,
+    /// Passenger groups still aboard the Train.
+    #[serde(default)]
+    pub passenger_groups: Vec<JourneyPassengerGroup>,
+    /// Departure time of the current leg.
     pub departed_at: UtcSeconds,
+    /// Arrival time of the next Service stop.
     pub arrives_at: UtcSeconds,
+}
+
+impl Journey {
+    /// Current onboard occupancy. This may be lower than `passengers_carried`
+    /// because the latter counts every boarding over the full Service run.
+    pub fn onboard_passengers(&self) -> u32 {
+        self.passenger_groups
+            .iter()
+            .fold(0_u32, |total, group| total.saturating_add(group.passengers))
+    }
 }
 
 /// Waiting passengers for one directional origin-destination market.
