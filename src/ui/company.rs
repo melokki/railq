@@ -1007,7 +1007,7 @@ fn status_label(status: FinancialStatus) -> &'static str {
 
 fn status_explanation(status: FinancialStatus) -> &'static str {
     match status {
-        FinancialStatus::Operating => "At least one Journey can be funded now.",
+        FinancialStatus::Operating => "Working capital is sufficient to continue normal operations.",
         FinancialStatus::Insolvent => {
             "No Journey can be funded without a recovery action."
         }

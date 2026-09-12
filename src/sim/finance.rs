@@ -19,7 +19,8 @@ use crate::{
 /// The Player Company's present operating or financial-failure state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FinancialStatus {
-    /// Current Company Funds can pay the departure costs of at least one Journey.
+    /// The company can continue normal operations without relying on unsettled
+    /// Journey revenue. A Train may currently be travelling.
     Operating,
     /// The company cannot currently dispatch, but a finite recovery option exists.
     Insolvent,
@@ -119,12 +120,15 @@ impl From<CalculationError> for FinanceError {
 /// Evaluates whether the Player Company can operate, recover, or is Bankrupt.
 ///
 /// The evaluator first looks for a Journey that can be funded immediately.
-/// An unrelated active Journey must not mask an otherwise healthy company.
-/// Only when no current Journey can be funded does unsettled Operating Revenue
-/// defer Bankruptcy. Once every active Journey has settled, the evaluator can
-/// apply the finite recovery rules: sell all other Trains while retaining one,
-/// or sell every Train and buy and dispatch catalogue stock. Passenger
-/// Services do not constrain this check because creating one is free.
+/// If every owned Train is travelling, it also checks whether current Company
+/// Funds alone would be enough to fund a Journey after those Trains arrive.
+/// This keeps normal in-transit operation classified as Operating. Unsettled
+/// Operating Revenue only defers Bankruptcy when that future revenue is
+/// actually needed to restore viability. Once every active Journey has
+/// settled, the evaluator can apply the finite recovery rules: sell all other
+/// Trains while retaining one, or sell every Train and buy and dispatch
+/// catalogue stock. Passenger Services do not constrain this check because
+/// creating one is free.
 pub fn evaluate_financial_recovery(state: &GameState) -> Result<FinancialEvaluation, FinanceError> {
     let cash_only_options = cash_only_options(state)?;
     if !cash_only_options.is_empty() {
@@ -136,6 +140,14 @@ pub fn evaluate_financial_recovery(state: &GameState) -> Result<FinancialEvaluat
     }
 
     if !state.active_journeys.is_empty() {
+        if can_resume_after_active_journeys_without_revenue(state)? {
+            return Ok(FinancialEvaluation {
+                status: FinancialStatus::Operating,
+                cash_only_options: Vec::new(),
+                recovery_options: Vec::new(),
+            });
+        }
+
         return Ok(FinancialEvaluation {
             status: FinancialStatus::BankruptcyDeferred,
             cash_only_options: Vec::new(),
@@ -171,6 +183,29 @@ fn cash_only_options(state: &GameState) -> Result<Vec<RecoveryOption>, FinanceEr
         }
     }
     Ok(options)
+}
+
+fn can_resume_after_active_journeys_without_revenue(
+    state: &GameState,
+) -> Result<bool, FinanceError> {
+    let mut candidate = state.clone();
+
+    for journey in &state.active_journeys {
+        if let Some(train) = candidate
+            .player_company
+            .fleet
+            .trains
+            .iter_mut()
+            .find(|train| train.id == journey.train_id)
+        {
+            train.status = TrainStatus::Ready {
+                at: journey.destination_station_id,
+            };
+        }
+    }
+    candidate.active_journeys.clear();
+
+    Ok(!cash_only_options(&candidate)?.is_empty())
 }
 
 fn retained_fleet_options(state: &GameState) -> Result<Vec<RecoveryOption>, FinanceError> {
@@ -372,6 +407,30 @@ mod tests {
         let evaluation = evaluate_financial_recovery(&state).unwrap();
 
         assert_eq!(evaluation.status, FinancialStatus::BankruptcyDeferred);
+        assert!(evaluation.cash_only_options.is_empty());
+        assert!(evaluation.recovery_options.is_empty());
+    }
+
+    #[test]
+    fn travelling_train_with_enough_existing_cash_remains_operating() {
+        let mut state = configured_game(
+            Money::from_cents(1_450),
+            vec![diesel("Local", Money::from_cents(1_000))],
+        );
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        dispatch_journey(
+            &mut state,
+            train_id,
+            service_id,
+            UtcSeconds::from_unix_seconds(0),
+        )
+        .unwrap();
+        assert_eq!(state.player_company.funds, Money::from_cents(300));
+
+        let evaluation = evaluate_financial_recovery(&state).unwrap();
+
+        assert_eq!(evaluation.status, FinancialStatus::Operating);
         assert!(evaluation.cash_only_options.is_empty());
         assert!(evaluation.recovery_options.is_empty());
     }
