@@ -8,7 +8,7 @@ use railq::{
     storage::SaveSlot,
     ui::{
         self,
-        start::{Startup, capture_company_name, onboarding_summary, start},
+        start::{Startup, capture_new_game, start},
     },
 };
 
@@ -27,14 +27,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn run_onboarding(
     onboarding: railq::ui::start::Onboarding<SaveSlot>,
 ) -> Result<(), Box<dyn Error>> {
-    let Some(company_name) = capture_company_name()? else {
+    let world_seed = startup_seed();
+    let started_at = current_utc_seconds();
+    let Some(game) = capture_new_game(world_seed, started_at)? else {
         return Ok(());
     };
-    let game = onboarding.prepare_company(company_name, startup_seed(), current_utc_seconds());
 
-    println!("\n{}\n", onboarding_summary(&game));
     let mut app = onboarding.save(game)?;
-    println!("Player Company saved. Opening dashboard...");
     run_dashboard(&mut app, Vec::new())?;
     Ok(())
 }

@@ -25,13 +25,15 @@ use crate::{
     sim::world::create_new_game,
 };
 
-use super::{TerminalSession, theme};
+use super::{TerminalSession, format, theme};
 
 /// The maximum visible length of a Player Company name.
 pub const MAXIMUM_COMPANY_NAME_CHARACTERS: usize = 60;
 
 const MINIMUM_FORM_COLUMNS: u16 = 48;
 const MINIMUM_FORM_ROWS: u16 = 12;
+const MINIMUM_REVIEW_COLUMNS: u16 = 64;
+const MINIMUM_REVIEW_ROWS: u16 = 22;
 
 /// A presentation-only editable field for naming a new Player Company.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -51,6 +53,18 @@ enum CompanyNameFormAction {
 }
 
 impl CompanyNameForm {
+    fn from_name(name: &CompanyName) -> Self {
+        let draft = name.as_str().to_owned();
+        let cursor = draft.chars().count();
+        Self {
+            draft,
+            cursor,
+            scroll_cells: 0,
+            validation_error: None,
+            can_submit: true,
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> CompanyNameFormAction {
         if key.kind != KeyEventKind::Press {
             return CompanyNameFormAction::Continue;
@@ -117,7 +131,7 @@ impl CompanyNameForm {
         if !self.can_submit {
             frame.render_widget(
                 Paragraph::new(
-                    "RailQ\nResize to at least 48 × 12 to name your Player Company.\n[Esc] Cancel",
+                    "RailQ\nResize to at least 48 × 12 to name your railway company.\n[Esc] Cancel",
                 )
                 .style(theme::terminal())
                 .wrap(Wrap { trim: true }),
@@ -138,7 +152,7 @@ impl CompanyNameForm {
             .borders(Borders::ALL)
             .border_style(theme::focused_border())
             .style(theme::panel())
-            .title(Line::from(" NEW PLAYER COMPANY ").style(theme::focused_title()));
+            .title(Line::from(" NEW RAILWAY COMPANY ").style(theme::focused_title()));
         let inner = block.inner(card);
         frame.render_widget(block, card);
 
@@ -147,7 +161,7 @@ impl CompanyNameForm {
         self.reveal_cursor(content_width);
         frame.render_widget(
             Paragraph::new(
-                Line::from("Welcome to RailQ. Name the passenger operator for this concession.")
+                Line::from("A passenger operating concession is available in a newly generated region.")
                     .style(theme::primary_value()),
             )
             .wrap(Wrap { trim: true }),
@@ -159,13 +173,13 @@ impl CompanyNameForm {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(theme::focused_border())
-                        .title(Line::from(" Player Company name ").style(theme::focused_title())),
+                        .title(Line::from(" Company name ").style(theme::focused_title())),
                 )
                 .style(theme::primary_value()),
             input,
         );
         let feedback = self.validation_error.map_or_else(
-            || "Up to 60 characters · [Enter] Continue · [Esc] Cancel".to_owned(),
+            || "Name your railway company · Enter Continue · Esc Cancel".to_owned(),
             |error| error.to_string(),
         );
         frame.render_widget(
@@ -279,6 +293,207 @@ pub fn capture_company_name() -> io::Result<Option<CompanyName>> {
     }
 }
 
+/// Runs the complete new-game onboarding flow in one terminal session.
+///
+/// The Region seed and start timestamp remain fixed while the player moves
+/// between company-name editing and concession review, so editing the name
+/// never rerolls the generated world.
+pub fn capture_new_game(
+    world_seed: u64,
+    started_at: UtcSeconds,
+) -> io::Result<Option<GameState>> {
+    let mut terminal = TerminalSession::enter()?;
+    let mut form = CompanyNameForm::default();
+    let mut prepared: Option<GameState> = None;
+    let mut reviewing = false;
+
+    let result = (|| loop {
+        terminal.draw(|frame| {
+            if reviewing {
+                if let Some(state) = prepared.as_ref() {
+                    render_concession_review(frame, state);
+                }
+            } else {
+                form.render(frame);
+            }
+        })?;
+
+        match event::read()? {
+            Event::Key(key) if reviewing && key.kind == KeyEventKind::Press => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                    return Ok(None);
+                }
+                match key.code {
+                    KeyCode::Enter => return Ok(prepared.take()),
+                    KeyCode::Esc => {
+                        if let Some(state) = prepared.as_ref() {
+                            if let Ok(name) = CompanyName::parse(&state.player_company.name) {
+                                form = CompanyNameForm::from_name(&name);
+                            }
+                        }
+                        reviewing = false;
+                    }
+                    KeyCode::Char('q' | 'Q') => return Ok(None),
+                    _ => {}
+                }
+            }
+            Event::Key(key) if !reviewing => match form.handle_key(key) {
+                CompanyNameFormAction::Continue => {}
+                CompanyNameFormAction::Submit(name) => {
+                    prepared = Some(create_new_game(world_seed, name.0, started_at));
+                    reviewing = true;
+                }
+                CompanyNameFormAction::Cancel => return Ok(None),
+            },
+            Event::Resize(_, _) => {}
+            _ => {}
+        }
+    })();
+
+    let restore_result = terminal.restore();
+    match result {
+        Ok(state) => {
+            restore_result?;
+            Ok(state)
+        }
+        Err(error) => {
+            let _ = restore_result;
+            Err(error)
+        }
+    }
+}
+
+fn render_concession_review(frame: &mut Frame, state: &GameState) {
+    let area = frame.area();
+    frame.render_widget(Block::default().style(theme::terminal()), area);
+
+    if area.width < MINIMUM_REVIEW_COLUMNS || area.height < MINIMUM_REVIEW_ROWS {
+        frame.render_widget(
+            Paragraph::new(
+                "RailQ\nResize to at least 64 × 22 to review the passenger concession.\nEsc Back · q Cancel",
+            )
+            .style(theme::terminal())
+            .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+
+    let width = area.width.min(88);
+    let height = area.height.min(24);
+    let card = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::focused_border())
+        .style(theme::panel())
+        .title(Line::from(" NEW PASSENGER CONCESSION ").style(theme::focused_title()));
+    let inner = block.inner(card);
+    frame.render_widget(block, card);
+
+    let network = &state.region.rail_authority.rail_network;
+    let network_metres = network
+        .rail_lines
+        .iter()
+        .map(|line| line.distance.metres())
+        .sum::<u64>();
+    let content = vec![
+        Line::from(Span::styled(
+            state.region.name.clone(),
+            theme::focused_title(),
+        )),
+        Line::from(""),
+        metric_line("Population", grouped_number(state.region.population)),
+        metric_line("Settlements", state.region.settlements.len().to_string()),
+        metric_line("Rail stations", network.rail_stations.len().to_string()),
+        metric_line("Rail network", format::distance(network_metres)),
+        Line::from(""),
+        Line::from(Span::styled(
+            state.region.rail_authority.name.clone(),
+            theme::title(),
+        )),
+        Line::from(vec![
+            Span::styled("has awarded ", theme::secondary()),
+            Span::styled(state.player_company.name.clone(), theme::primary_value()),
+            Span::styled(
+                " the passenger operating concession for the public Rail Network.",
+                theme::secondary(),
+            ),
+        ]),
+        Line::from(""),
+        metric_line("Starting funds", format::money(state.player_company.funds)),
+        metric_line("Fleet", format!("{} trains", state.player_company.fleet.trains.len())),
+        Line::from(""),
+        Line::from(Span::styled("First objective", theme::title())),
+        Line::from(Span::styled(
+            "Acquire your first passenger train from the Market.",
+            theme::primary_value(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Enter", theme::focused_title()),
+            Span::styled(" Start operations   ", theme::secondary()),
+            Span::styled("Esc", theme::focused_title()),
+            Span::styled(" Edit company name   ", theme::secondary()),
+            Span::styled("q", theme::focused_title()),
+            Span::styled(" Cancel", theme::secondary()),
+        ]),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(content)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
+}
+
+fn metric_line(label: &str, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<18}"), theme::secondary()),
+        Span::styled(value, theme::primary_value()),
+    ])
+}
+
+fn grouped_number(value: u64) -> String {
+    let digits = value.to_string();
+    let mut result = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
+    for (index, digit) in digits.chars().enumerate() {
+        if index != 0 && (digits.len() - index) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(digit);
+    }
+    result
+}
+
+/// Renders a deterministic concession-review buffer for focused UI checks.
+pub fn capture_concession_review(state: &GameState, columns: u16, rows: u16) -> String {
+    let backend = TestBackend::new(columns, rows);
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(error) => match error {},
+    };
+    if terminal
+        .draw(|frame| render_concession_review(frame, state))
+        .is_err()
+    {
+        return String::new();
+    }
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(usize::from(columns))
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Renders a deterministic name-form buffer for focused UI checks and evidence.
 pub fn capture_company_name_form(form: &mut CompanyNameForm, columns: u16, rows: u16) -> String {
     let backend = TestBackend::new(columns, rows);
@@ -341,17 +556,17 @@ pub enum CompanyNameError {
 impl fmt::Display for CompanyNameError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty => write!(formatter, "Enter a Player Company name."),
+            Self::Empty => write!(formatter, "Enter a railway company name."),
             Self::TooLong { maximum } => {
                 write!(
                     formatter,
-                    "Use at most {maximum} characters for the Player Company name."
+                    "Use at most {maximum} characters for the railway company name."
                 )
             }
             Self::ContainsControlCharacter => {
                 write!(
                     formatter,
-                    "The Player Company name cannot contain control characters."
+                    "The railway company name cannot contain control characters."
                 )
             }
         }
@@ -457,16 +672,24 @@ impl<E: Error + 'static> Error for StartupError<E> {
     }
 }
 
-/// Formats the generated Region and Concession shown during onboarding.
+/// Formats the generated Region and Concession for non-interactive callers.
 pub fn onboarding_summary(state: &GameState) -> String {
+    let network = &state.region.rail_authority.rail_network;
+    let network_metres = network
+        .rail_lines
+        .iter()
+        .map(|line| line.distance.metres())
+        .sum::<u64>();
     format!(
-        "Region: {}\nPopulation: {}\nConnected settlements: {}\n\nConcession: {} has awarded {} the right to operate passenger railway services over the public Rail Network.\nCompany Funds: {} cents",
+        "Region: {}\nPopulation: {}\nSettlements: {}\nRail stations: {}\nRail network: {}\n\nConcession: {} has awarded {} the right to operate passenger railway services over the public Rail Network.\nStarting funds: {}",
         state.region.name,
-        state.region.population,
-        state.region.rail_authority.rail_network.rail_stations.len(),
+        grouped_number(state.region.population),
+        state.region.settlements.len(),
+        network.rail_stations.len(),
+        format::distance(network_metres),
         state.region.rail_authority.name,
         state.player_company.name,
-        state.player_company.funds.cents(),
+        format::money(state.player_company.funds),
     )
 }
 
@@ -485,7 +708,7 @@ mod tests {
 
     use super::{
         CompanyName, CompanyNameError, CompanyNameForm, CompanyNameFormAction, Startup,
-        capture_company_name_form, start,
+        capture_company_name_form, capture_concession_review, start,
     };
     use crate::ui::theme;
 
@@ -590,14 +813,14 @@ mod tests {
             .expect("compact evidence");
 
         let normal = capture_company_name_form(&mut form, 80, 24);
-        assert!(normal.contains("NEW PLAYER COMPANY"));
+        assert!(normal.contains("NEW RAILWAY COMPANY"));
         fs::write(evidence.join("company-name-form-80x24.txt"), &normal).expect("normal evidence");
 
         form.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
         let wide = capture_company_name_form(&mut form, 120, 40);
         assert_eq!(form.scroll_cells, 0);
-        assert!(wide.contains("NEW PLAYER COMPANY"));
-        assert!(wide.contains("Player Company name"));
+        assert!(wide.contains("NEW RAILWAY COMPANY"));
+        assert!(wide.contains("Company name"));
         fs::write(evidence.join("company-name-form-120x40.txt"), &wide).expect("wide evidence");
 
         let mut styled = CompanyNameForm::default();
@@ -629,6 +852,16 @@ mod tests {
     }
 
     #[test]
+    fn returning_from_review_prefills_the_existing_company_name() {
+        let name = CompanyName::parse("Northstar Rail").unwrap();
+        let form = CompanyNameForm::from_name(&name);
+
+        assert_eq!(form.draft, "Northstar Rail");
+        assert_eq!(form.cursor, "Northstar Rail".chars().count());
+        assert!(form.validation_error.is_none());
+    }
+
+    #[test]
     fn onboarding_shows_region_and_concession_then_persists_before_dashboard() {
         let store = TestStore::default();
         let Startup::Onboarding(onboarding) = start(store.clone(), STARTED_AT).unwrap() else {
@@ -640,9 +873,19 @@ mod tests {
             STARTED_AT,
         );
         let summary = super::onboarding_summary(&game);
+        let review = capture_concession_review(&game, 100, 28);
 
         assert!(summary.contains(&format!("Region: {}", game.region.name)));
-        assert!(summary.contains("Concession:"));
+        assert!(summary.contains("Settlements: 10"));
+        assert!(summary.contains("Rail stations: 4"));
+        assert!(summary.contains("Rail network: 83 km"));
+        assert!(summary.contains("Starting funds: $"));
+        assert!(review.contains("NEW PASSENGER CONCESSION"));
+        assert!(review.contains(&game.region.name));
+        assert!(review.contains(&game.region.rail_authority.name));
+        assert!(review.contains("First objective"));
+        assert!(review.contains("Acquire your first passenger train from the Market."));
+        assert!(review.contains("Start operations"));
         assert!(store.saved.borrow().is_none());
 
         let app = onboarding.save(game.clone()).unwrap();
