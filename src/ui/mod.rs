@@ -69,7 +69,7 @@ impl View {
     const fn label(self) -> &'static str {
         match self {
             Self::Map => "Map",
-            Self::Trains => "Fleet",
+            Self::Trains => "Trains",
             Self::Company => "Company",
             Self::BuyTrains => "Buy Trains",
         }
@@ -147,15 +147,6 @@ struct PendingAction {
     funds_before: Money,
 }
 
-/// The active panel within the Fleet workspace. Compact terminals expose one
-/// panel at a time; a wide workspace keeps both panels visible.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum FleetFocus {
-    #[default]
-    List,
-    Details,
-}
-
 /// Presentation-only state shared by the four primary views.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Shell {
@@ -166,7 +157,6 @@ pub struct Shell {
     fleet_flow: Option<fleet::FleetFlow>,
     fleet_selection: fleet::FleetSelection,
     fleet_details_open: bool,
-    fleet_focus: FleetFocus,
     fleet_split_visible: bool,
     market_flow: Option<market::MarketFlow>,
     market_selection: market::CatalogueSelection,
@@ -194,7 +184,6 @@ impl Shell {
             fleet_flow: None,
             fleet_selection: fleet::FleetSelection::default(),
             fleet_details_open: false,
-            fleet_focus: FleetFocus::List,
             fleet_split_visible: false,
             market_flow: None,
             market_selection: market::CatalogueSelection::default(),
@@ -324,7 +313,6 @@ impl Shell {
                     self.dispatch_flow = None;
                     if self.dispatch_returns_to_fleet {
                         self.fleet_details_open = false;
-                        self.fleet_focus = FleetFocus::List;
                     }
                     self.dispatch_returns_to_fleet = false;
                     self.notice = Some("Manual Dispatch cancelled; no changes were made.".into());
@@ -447,7 +435,6 @@ impl Shell {
             KeyCode::Char('2' | 't' | 'T') => {
                 self.active_view = View::Trains;
                 self.fleet_details_open = false;
-                self.fleet_focus = FleetFocus::List;
                 self.fleet_split_visible = false;
             }
             KeyCode::Char('4' | 'c' | 'C') => {
@@ -499,16 +486,16 @@ impl Shell {
                     }
                 }
             }
-            KeyCode::Enter if self.active_view == View::Trains => {
+            KeyCode::Enter
+                if self.active_view == View::Trains && !self.fleet_split_visible =>
+            {
                 if self.fleet_selection.selected_train_id(state).is_some() {
                     self.fleet_details_open = true;
-                    self.fleet_focus = FleetFocus::Details;
                     self.notice = None;
                 }
             }
             KeyCode::Esc if self.active_view == View::Trains && self.fleet_details_open => {
                 self.fleet_details_open = false;
-                self.fleet_focus = FleetFocus::List;
             }
             KeyCode::Char('s' | 'S') if self.active_view == View::Trains => {
                 match self.fleet_selection.selected_train_id(state) {
@@ -542,17 +529,6 @@ impl Shell {
                             Some("Select a READY Train before starting Manual Dispatch.".into());
                     }
                 }
-            }
-            KeyCode::Tab | KeyCode::BackTab
-                if self.active_view == View::Trains && self.fleet_split_visible =>
-            {
-                self.fleet_focus = match self.fleet_focus {
-                    FleetFocus::List => {
-                        self.fleet_details_open = true;
-                        FleetFocus::Details
-                    }
-                    FleetFocus::Details => FleetFocus::List,
-                };
             }
             KeyCode::Up
             | KeyCode::Down
@@ -622,7 +598,6 @@ impl Shell {
         self.dispatch_flow = None;
         if self.dispatch_returns_to_fleet {
             self.fleet_details_open = false;
-            self.fleet_focus = FleetFocus::List;
         }
         self.dispatch_returns_to_fleet = false;
         self.notice = Some("Manual Dispatch authorised and saved.".into());
@@ -674,7 +649,6 @@ impl Shell {
         self.pending_action = None;
         self.fleet_flow = None;
         self.fleet_details_open = false;
-        self.fleet_focus = FleetFocus::List;
         self.notice = Some(format!(
             "Train resold and saved. Sale proceeds of {} were added to Company Funds.",
             format_money(proceeds)
@@ -685,7 +659,6 @@ impl Shell {
     pub fn confirm_train_resale_saved(&mut self, state: &GameState) {
         self.fleet_flow = None;
         self.fleet_details_open = false;
-        self.fleet_focus = FleetFocus::List;
         self.publish_pending_outcome(state);
     }
 
@@ -1161,7 +1134,10 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         && shell.fleet_flow.is_none()
         && shell.dispatch_flow.is_none()
     {
-        shell.fleet_split_visible = content_area.width >= 96 && content_area.height >= 14;
+        shell.fleet_split_visible = content_area.width >= 96 && content_area.height >= 18;
+        if shell.fleet_split_visible {
+            shell.fleet_details_open = false;
+        }
         fleet::render_dashboard(
             frame,
             content_area,
@@ -1169,7 +1145,6 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             now,
             &mut shell.fleet_selection,
             shell.fleet_details_open,
-            shell.fleet_focus == FleetFocus::Details,
         );
     } else if shell.active_view == View::Trains && shell.dispatch_flow.is_some() {
         if let Some(flow) = &mut shell.dispatch_flow {
@@ -1340,14 +1315,14 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
                     .iter()
                     .find(|train| train.id == id)
             });
-        let (dispatch, resale) = match action {
-            Some(train) if matches!(train.status, TrainStatus::Ready { .. }) => {
-                ("d Dispatch", "s Resale")
+        let actions = match action {
+            Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
+                "d Dispatch  s Resale"
             }
-            Some(_) => ("d unavailable", "s unavailable"),
-            None => ("d unavailable", "s unavailable"),
+            Some(_) => "d/s available after arrival",
+            None => "d/s unavailable",
         };
-        format!("Esc Fleet  {dispatch}  {resale}")
+        format!("Esc Trains  {actions}")
     } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
         let action = shell
             .fleet_selection
@@ -1361,16 +1336,18 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Stri
                     .find(|train| train.id == id)
             });
         let actions = match action {
-            Some(train) if matches!(train.status, TrainStatus::Ready { .. }) => {
+            Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
                 "d Dispatch  s Resale"
             }
-            Some(_) => "d/s unavailable while travelling",
+            Some(_) => "d/s available after arrival",
             None => "d/s unavailable",
         };
-        if compact {
-            format!("↑↓ Trains  Enter Inspect  {actions}")
+        if shell.fleet_split_visible {
+            format!("↑↓/jk Select  PgUp/PgDn Scroll  {actions}")
+        } else if compact {
+            format!("↑↓ Trains  Enter Details  {actions}")
         } else {
-            format!("↑↓/jk Train  PgUp/PgDn Scroll  Enter Inspect  {actions}  Tab Panel")
+            format!("↑↓/jk Train  Enter Details  {actions}")
         }
     } else if shell.active_view == View::Map {
         let ready = state
@@ -1509,8 +1486,8 @@ const HELP_LINES: &[&str] = &[
     "",
     "Panels and lists",
     "Lists use [Up]/[Down] or [J]/[K]; Map uses all four directions or H/J/K/L.",
-    "[PageUp]/[PageDown] scrolls lists. [Enter] inspects the selected item.",
-    "Fleet: [D] starts destination selection for a selected READY Train; [S] opens resale.",
+    "[PageUp]/[PageDown] scrolls lists. [Enter] opens details when a compact view needs them.",
+    "Trains: select with [J]/[K]; [D] dispatches a READY Train and [S] reviews resale.",
     "Map: [D] opens all READY Trains for company-wide Manual Dispatch.",
     "Company: [R] opens calculated recovery routes during Insolvency.",
     "",
@@ -1997,6 +1974,13 @@ mod tests {
             .unwrap();
         assert_eq!(marker.fg, theme::BACKGROUND);
         assert_eq!(marker.bg, theme::ACCENT);
+
+        let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+        assert!(rendered.contains("Trains · 2 total · 2 READY · 0 EN ROUTE"));
+        assert!(rendered.contains("OPERATIONS"));
+        assert!(rendered.contains("SPECIFICATIONS"));
+        assert!(rendered.contains("D Dispatch"));
+        assert!(!rendered.contains("Enter Inspect"));
     }
 
     #[test]
