@@ -328,6 +328,7 @@ mod tests {
     };
 
     use crate::{
+        catalog::train_catalogue,
         model::{GameState, RailStationId, TrainStatus, UtcSeconds},
         sim::{
             economy::quote_journey, fleet::purchase_train, journeys::dispatch_journey,
@@ -642,7 +643,7 @@ mod tests {
     fn bankruptcy_blocks_normal_operations_without_publishing_a_change() {
         let store = TestStore::default();
         let mut state = new_game();
-        state.player_company.funds = state.rules.balance.diesel_catalogue()[0].purchase_price();
+        state.player_company.funds = train_catalogue().models()[0].purchase_price();
         let mut app = App::start_new(store.clone(), state.clone()).unwrap();
 
         assert!(matches!(

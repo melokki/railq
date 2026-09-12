@@ -1,4 +1,4 @@
-//! Deterministic balance playtests using the saved provisional configuration.
+//! Deterministic balance playtests using saved economic rules and the embedded Train catalogue.
 //!
 //! These scenarios use explicit timestamps so they exercise the same elapsed
 //! time rules as the game without waiting for real-world Journeys.

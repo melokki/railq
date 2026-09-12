@@ -25,6 +25,7 @@ use ratatui::{
 };
 
 use crate::{
+    catalog::model_for_train,
     model::{
         GameState, Journey, JourneyId, Money, RailStation, RailStationId, Settlement, SettlementId,
         Train, TrainId, TrainStatus, UtcSeconds,
@@ -2224,7 +2225,7 @@ fn render_station_inspector(
                         format!("Train {:02}  ", train.id.get()),
                         theme::primary_value(),
                     ),
-                    Span::raw(train.model_name.clone()),
+                    Span::raw(train_model_name(train)),
                 ])
             }));
         }
@@ -2469,7 +2470,7 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                     output,
                     "  Train {} ({}) — READY at {}",
                     train.id.get(),
-                    train.model_name,
+                    train_model_name(train),
                     station_label(state, at),
                 )
                 .expect("writing to a String cannot fail");
@@ -2484,7 +2485,7 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                         &mut output,
                         state,
                         train.id.get(),
-                        &train.model_name,
+                        &train_model_name(train),
                         journey,
                         now,
                     ),
@@ -2492,7 +2493,7 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                         output,
                         "  Train {} ({}) — TRAVELLING on Journey {} (details unavailable)",
                         train.id.get(),
-                        train.model_name,
+                        train_model_name(train),
                         journey_id.get(),
                     )
                     .expect("writing to a String cannot fail"),
@@ -2502,6 +2503,12 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
     }
 
     output
+}
+
+fn train_model_name(train: &Train) -> String {
+    model_for_train(train)
+        .map(|model| model.name().to_owned())
+        .unwrap_or_else(|| format!("Unknown model ({})", train.model_id.as_str()))
 }
 
 fn render_travelling_train(

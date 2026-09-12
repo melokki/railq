@@ -22,20 +22,21 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    balance::{BalanceConfig, DieselTrainCatalogueRecord},
+    balance::BalanceConfig,
+    catalog::{model_for_train, train_catalogue},
     model::{
         CalculationError, DemandRules, DistanceMetres, DurationSeconds, Financials, Fleet,
         GameRules, GameState, Journey, JourneyId, JourneyReceipt, Money, MoneyPerKilometre,
         OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
         PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork, RailStation,
         RailStationId, Region, ServiceId, Settlement, SettlementId, SpeedMetresPerSecond, Train,
-        TrainId, TrainStatus, UtcSeconds,
+        TrainId, TrainModelId, TrainStatus, UtcSeconds,
     },
     sim::economy::quote_journey,
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 1;
+pub const SAVE_VERSION: u32 = 2;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -114,6 +115,7 @@ pub enum SaveCodecError {
     UnsupportedVersion { found: u32 },
     InvalidState(SaveValidationError),
     InvalidValue { field: &'static str },
+    TrainModelNotFound { model_name: String },
     LegacyDecode(String),
 }
 
@@ -125,6 +127,10 @@ impl fmt::Display for SaveCodecError {
             }
             Self::InvalidState(error) => error.fmt(formatter),
             Self::InvalidValue { field } => write!(formatter, "invalid SQLite value for {field}"),
+            Self::TrainModelNotFound { model_name } => write!(
+                formatter,
+                "saved Train model {model_name:?} does not exist in the central catalogue"
+            ),
             Self::LegacyDecode(error) => write!(formatter, "could not decode legacy RON save: {error}"),
         }
     }
@@ -346,11 +352,8 @@ CREATE TABLE IF NOT EXISTS trains (
     id INTEGER PRIMARY KEY,
     status_kind TEXT NOT NULL CHECK (status_kind IN ('ready', 'travelling')),
     status_ref_id INTEGER NOT NULL,
-    model_name TEXT NOT NULL,
-    original_purchase_price_cents INTEGER NOT NULL,
-    passenger_capacity INTEGER NOT NULL,
-    speed_metres_per_second INTEGER NOT NULL,
-    fuel_cost_cents_per_km INTEGER NOT NULL
+    model_id TEXT NOT NULL,
+    original_purchase_price_cents INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS passenger_services (
     id INTEGER PRIMARY KEY,
@@ -411,14 +414,6 @@ CREATE TABLE IF NOT EXISTS game_rules (
     starting_company_funds_cents INTEGER NOT NULL,
     demand_cap_seconds INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS diesel_catalogue (
-    sequence INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    purchase_price_cents INTEGER NOT NULL,
-    passenger_capacity INTEGER NOT NULL,
-    speed_metres_per_second INTEGER NOT NULL,
-    fuel_cost_cents_per_km INTEGER NOT NULL
-);
 CREATE INDEX IF NOT EXISTS idx_active_journeys_arrival ON active_journeys(arrives_at);
 CREATE INDEX IF NOT EXISTS idx_receipts_completed_at ON journey_receipts(completed_at);
 "#;
@@ -431,27 +426,162 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             path: path.to_path_buf(),
             source,
         })?;
-    if version != 0 && version != SAVE_VERSION {
-        return Err(SaveSlotError::InvalidSave {
-            path: path.to_path_buf(),
-            source: Box::new(SaveCodecError::UnsupportedVersion { found: version }),
-        });
-    }
-    connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
-        action: "initialize schema for",
-        path: path.to_path_buf(),
-        source,
-    })?;
-    if version == 0 {
-        connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
-            .map_err(|source| SaveSlotError::Database {
-                action: "write schema version to",
+
+    match version {
+        0 => {
+            connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
+                action: "initialize schema for",
                 path: path.to_path_buf(),
                 source,
             })?;
+            connection
+                .pragma_update(None, "user_version", SAVE_VERSION)
+                .map_err(|source| SaveSlotError::Database {
+                    action: "write schema version to",
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        }
+        1 => migrate_v1_to_v2(connection, path)?,
+        SAVE_VERSION => {
+            connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
+                action: "verify schema for",
+                path: path.to_path_buf(),
+                source,
+            })?;
+        }
+        found => {
+            return Err(SaveSlotError::InvalidSave {
+                path: path.to_path_buf(),
+                source: Box::new(SaveCodecError::UnsupportedVersion { found }),
+            });
+        }
     }
     Ok(())
+}
+
+fn migrate_v1_to_v2(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             PRAGMA legacy_alter_table = ON;
+             BEGIN IMMEDIATE;
+             ALTER TABLE trains RENAME TO trains_v1;
+             CREATE TABLE trains (
+                 id INTEGER PRIMARY KEY,
+                 status_kind TEXT NOT NULL CHECK (status_kind IN ('ready', 'travelling')),
+                 status_ref_id INTEGER NOT NULL,
+                 model_id TEXT NOT NULL,
+                 original_purchase_price_cents INTEGER NOT NULL
+             );",
+        )
+        .map_err(|source| db_error("begin v1 to v2 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let mut statement = connection
+            .prepare(
+                "SELECT id, status_kind, status_ref_id, model_name, original_purchase_price_cents,
+                        passenger_capacity, speed_metres_per_second, fuel_cost_cents_per_km
+                 FROM trains_v1 ORDER BY id",
+            )
+            .map_err(|source| db_error("read v1 Trains from", path, source))?;
+        let mut rows = statement
+            .query([])
+            .map_err(|source| db_error("read v1 Trains from", path, source))?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|source| db_error("read v1 Train row from", path, source))?
+        {
+            let model_name: String = row
+                .get(3)
+                .map_err(|source| db_error("decode v1 Train model from", path, source))?;
+            let passenger_capacity: i64 = row
+                .get(5)
+                .map_err(|source| db_error("decode v1 Train capacity from", path, source))?;
+            let speed: i64 = row
+                .get(6)
+                .map_err(|source| db_error("decode v1 Train speed from", path, source))?;
+            let fuel_rate: i64 = row
+                .get(7)
+                .map_err(|source| db_error("decode v1 Train fuel rate from", path, source))?;
+            let model = train_catalogue()
+                .models()
+                .iter()
+                .find(|model| {
+                    model.name() == model_name
+                        && i64::from(model.passenger_capacity().passengers()) == passenger_capacity
+                        && i64::try_from(model.speed().metres_per_second()).ok() == Some(speed)
+                        && i64::try_from(model.fuel_cost_per_kilometre().cents_per_kilometre())
+                            .ok()
+                            == Some(fuel_rate)
+                })
+                .ok_or_else(|| SaveSlotError::InvalidSave {
+                    path: path.to_path_buf(),
+                    source: Box::new(SaveCodecError::TrainModelNotFound {
+                        model_name: model_name.clone(),
+                    }),
+                })?;
+
+            connection
+                .execute(
+                    "INSERT INTO trains(id, status_kind, status_ref_id, model_id, original_purchase_price_cents)
+                     VALUES(?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        row.get::<_, i64>(0).map_err(|source| db_error("decode v1 Train ID from", path, source))?,
+                        row.get::<_, String>(1).map_err(|source| db_error("decode v1 Train status from", path, source))?,
+                        row.get::<_, i64>(2).map_err(|source| db_error("decode v1 Train status reference from", path, source))?,
+                        model.id().as_str(),
+                        row.get::<_, i64>(4).map_err(|source| db_error("decode v1 Train price from", path, source))?,
+                    ],
+                )
+                .map_err(|source| db_error("write migrated Train to", path, source))?;
+        }
+        drop(rows);
+        drop(statement);
+        connection
+            .execute_batch(
+                "DROP TABLE trains_v1;
+                 DROP TABLE IF EXISTS diesel_catalogue;",
+            )
+            .map_err(|source| db_error("finish v1 to v2 schema migration for", path, source))?;
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v2 schema version to", path, source))?;
+        let foreign_key_violation: Option<i64> = connection
+            .query_row("SELECT 1 FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0))
+            .optional()
+            .map_err(|source| db_error("verify v1 to v2 migration for", path, source))?;
+        if foreign_key_violation.is_some() {
+            return Err(SaveSlotError::InvalidSave {
+                path: path.to_path_buf(),
+                source: Box::new(SaveCodecError::InvalidValue {
+                    field: "foreign keys after v1 to v2 migration",
+                }),
+            });
+        }
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => {
+            connection
+                .execute_batch(
+                    "COMMIT;
+                     PRAGMA legacy_alter_table = OFF;
+                     PRAGMA foreign_keys = ON;",
+                )
+                .map_err(|source| db_error("commit v1 to v2 migration for", path, source))?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "ROLLBACK;
+                 PRAGMA legacy_alter_table = OFF;
+                 PRAGMA foreign_keys = ON;",
+            );
+            Err(error)
+        }
+    }
 }
 
 fn clear_state(
@@ -474,7 +604,6 @@ fn clear_state(
          DELETE FROM service_lines;
          DELETE FROM passenger_services;
          DELETE FROM trains;
-         DELETE FROM diesel_catalogue;
          DELETE FROM financials;
          DELETE FROM game_rules;
          DELETE FROM company;
@@ -534,12 +663,11 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
             TrainStatus::Travelling { journey_id } => ("travelling", journey_id.get()),
         };
         transaction.execute(
-            "INSERT INTO trains(id, status_kind, status_ref_id, model_name, original_purchase_price_cents, passenger_capacity, speed_metres_per_second, fuel_cost_cents_per_km)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO trains(id, status_kind, status_ref_id, model_id, original_purchase_price_cents)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
             params![
-                db(train.id.get(), "Train ID")?, status_kind, db(status_ref_id, "Train status reference")?, &train.model_name,
-                train.original_purchase_price.cents(), db(u64::from(train.passenger_capacity.passengers()), "Train passenger capacity")?,
-                db(train.speed.metres_per_second(), "Train speed")?, db(train.fuel_cost_per_kilometre.cents_per_kilometre(), "Train fuel rate")?
+                db(train.id.get(), "Train ID")?, status_kind, db(status_ref_id, "Train status reference")?, train.model_id.as_str(),
+                train.original_purchase_price.cents()
             ],
         ).map_err(|source| db_error("write Trains to", path, source))?;
     }
@@ -610,17 +738,6 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
             balance.starting_company_funds().cents(), db(state.rules.demand.cap_duration.seconds(), "demand cap duration")?
         ],
     ).map_err(|source| db_error("write game rules to", path, source))?;
-    for (sequence, record) in balance.diesel_catalogue().iter().enumerate() {
-        transaction.execute(
-            "INSERT INTO diesel_catalogue(sequence, name, purchase_price_cents, passenger_capacity, speed_metres_per_second, fuel_cost_cents_per_km)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                i64::try_from(sequence).unwrap_or(i64::MAX), record.name(), record.purchase_price().cents(),
-                i64::from(record.passenger_capacity().passengers()), db(record.speed().metres_per_second(), "catalogue Train speed")?,
-                db(record.fuel_cost_per_kilometre().cents_per_kilometre(), "catalogue fuel rate")?
-            ],
-        ).map_err(|source| db_error("write diesel catalogue to", path, source))?;
-    }
     Ok(())
 }
 
@@ -670,7 +787,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         .query_row("SELECT name, funds_cents FROM company WHERE singleton = 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|source| db_error("read Player Company from", path, source))?;
 
-    let trains = query_all(connection, "SELECT id, status_kind, status_ref_id, model_name, original_purchase_price_cents, passenger_capacity, speed_metres_per_second, fuel_cost_cents_per_km FROM trains ORDER BY id", path, |row| {
+    let trains = query_all(connection, "SELECT id, status_kind, status_ref_id, model_id, original_purchase_price_cents FROM trains ORDER BY id", path, |row| {
         let status_kind: String = row.get(1)?;
         let status_ref = row_u64(row, 2, "Train status reference")?;
         let status = match status_kind.as_str() {
@@ -681,11 +798,8 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         Ok(Train {
             id: TrainId::new(row_u64(row, 0, "Train ID")?),
             status,
-            model_name: row.get(3)?,
+            model_id: TrainModelId::new(row.get::<_, String>(3)?),
             original_purchase_price: Money::from_cents(row.get(4)?),
-            passenger_capacity: PassengerCapacity::new(row.get(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-            speed: SpeedMetresPerSecond::new(row.get(6)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-            fuel_cost_per_kilometre: MoneyPerKilometre::new(row.get(7)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
         })
     })?;
 
@@ -764,14 +878,6 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
     let (fare_rate, access_rate, starting_funds, demand_cap): (i64, i64, i64, i64) = connection
         .query_row("SELECT fare_cents_per_passenger_km, access_fee_cents_per_train_km, starting_company_funds_cents, demand_cap_seconds FROM game_rules WHERE singleton = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
         .map_err(|source| db_error("read game rules from", path, source))?;
-    let catalogue = query_all(connection, "SELECT name, purchase_price_cents, passenger_capacity, speed_metres_per_second, fuel_cost_cents_per_km FROM diesel_catalogue ORDER BY sequence", path, |row| {
-        Ok(DieselTrainCatalogueRecord::new(
-            row.get::<_, String>(0)?, Money::from_cents(row.get(1)?),
-            PassengerCapacity::new(row.get(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-            SpeedMetresPerSecond::new(row.get(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-            MoneyPerKilometre::new(row.get(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-        ))
-    })?;
 
     let state = GameState {
         world_seed,
@@ -803,7 +909,6 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                 MoneyPerKilometre::new(fare_rate).map_err(|_| invalid_value(path, "fare rate"))?,
                 MoneyPerKilometre::new(access_rate).map_err(|_| invalid_value(path, "access fee rate"))?,
                 Money::from_cents(starting_funds),
-                catalogue,
             ),
             demand: DemandRules {
                 cap_duration: DurationSeconds::from_seconds(from_db_u64(demand_cap, "demand cap duration").map_err(|field| invalid_value(path, field))?),
@@ -883,20 +988,134 @@ fn invalid_value(path: &Path, field: &'static str) -> SaveSlotError {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct LegacySaveEnvelope<T = GameState> {
+struct LegacySaveEnvelope<T> {
     version: u32,
     state: T,
 }
 
-fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
-    let envelope: LegacySaveEnvelope = ron::from_str(source)
-        .map_err(|error| SaveCodecError::LegacyDecode(error.to_string()))?;
-    if envelope.version != SAVE_VERSION {
-        return Err(SaveCodecError::UnsupportedVersion { found: envelope.version });
-    }
-    validate_game_state(&envelope.state).map_err(SaveCodecError::InvalidState)?;
-    Ok(envelope.state)
+#[derive(Deserialize, Serialize)]
+struct LegacyGameStateV1 {
+    world_seed: u64,
+    region: Region,
+    player_company: LegacyPlayerCompanyV1,
+    origin_destination_demand: Vec<OriginDestinationDemand>,
+    active_journeys: Vec<Journey>,
+    financials: Financials,
+    rules: LegacyGameRulesV1,
+    last_processed_at: UtcSeconds,
 }
+
+#[derive(Deserialize, Serialize)]
+struct LegacyPlayerCompanyV1 {
+    name: String,
+    funds: Money,
+    fleet: LegacyFleetV1,
+    passenger_services: Vec<PassengerService>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct LegacyFleetV1 {
+    trains: Vec<LegacyTrainV1>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct LegacyTrainV1 {
+    id: TrainId,
+    status: TrainStatus,
+    model_name: String,
+    original_purchase_price: Money,
+    passenger_capacity: PassengerCapacity,
+    speed: SpeedMetresPerSecond,
+    fuel_cost_per_kilometre: MoneyPerKilometre,
+}
+
+#[derive(Deserialize, Serialize)]
+struct LegacyGameRulesV1 {
+    balance: LegacyBalanceConfigV1,
+    demand: DemandRules,
+}
+
+#[derive(Deserialize, Serialize)]
+struct LegacyBalanceConfigV1 {
+    fare_per_passenger_kilometre: MoneyPerKilometre,
+    access_fee_per_train_kilometre: MoneyPerKilometre,
+    starting_company_funds: Money,
+    diesel_catalogue: Vec<LegacyDieselTrainCatalogueRecordV1>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct LegacyDieselTrainCatalogueRecordV1 {
+    name: String,
+    purchase_price: Money,
+    passenger_capacity: PassengerCapacity,
+    speed: SpeedMetresPerSecond,
+    fuel_cost_per_kilometre: MoneyPerKilometre,
+}
+
+fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
+    const LEGACY_RON_VERSION: u32 = 1;
+    let envelope: LegacySaveEnvelope<LegacyGameStateV1> = ron::from_str(source)
+        .map_err(|error| SaveCodecError::LegacyDecode(error.to_string()))?;
+    if envelope.version != LEGACY_RON_VERSION {
+        return Err(SaveCodecError::UnsupportedVersion {
+            found: envelope.version,
+        });
+    }
+
+    let legacy = envelope.state;
+    let trains = legacy
+        .player_company
+        .fleet
+        .trains
+        .into_iter()
+        .map(|train| {
+            let model = train_catalogue()
+                .models()
+                .iter()
+                .find(|model| {
+                    model.name() == train.model_name
+                        && model.passenger_capacity() == train.passenger_capacity
+                        && model.speed() == train.speed
+                        && model.fuel_cost_per_kilometre() == train.fuel_cost_per_kilometre
+                })
+                .ok_or_else(|| SaveCodecError::TrainModelNotFound {
+                    model_name: train.model_name.clone(),
+                })?;
+            Ok(Train {
+                id: train.id,
+                status: train.status,
+                model_id: model.id().clone(),
+                original_purchase_price: train.original_purchase_price,
+            })
+        })
+        .collect::<Result<Vec<_>, SaveCodecError>>()?;
+
+    let state = GameState {
+        world_seed: legacy.world_seed,
+        region: legacy.region,
+        player_company: PlayerCompany {
+            name: legacy.player_company.name,
+            funds: legacy.player_company.funds,
+            fleet: Fleet { trains },
+            passenger_services: legacy.player_company.passenger_services,
+        },
+        origin_destination_demand: legacy.origin_destination_demand,
+        active_journeys: legacy.active_journeys,
+        financials: legacy.financials,
+        rules: GameRules {
+            balance: BalanceConfig::new(
+                legacy.rules.balance.fare_per_passenger_kilometre,
+                legacy.rules.balance.access_fee_per_train_kilometre,
+                legacy.rules.balance.starting_company_funds,
+            ),
+            demand: legacy.rules.demand,
+        },
+        last_processed_at: legacy.last_processed_at,
+    };
+    validate_game_state(&state).map_err(SaveCodecError::InvalidState)?;
+    Ok(state)
+}
+
 /// Why a decoded game cannot safely enter the simulation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SaveValidationError {
@@ -1138,20 +1357,6 @@ fn validate_rules(state: &GameState) -> Result<(), SaveValidationError> {
             field: "starting Company Funds",
         });
     }
-    if balance.diesel_catalogue().is_empty() {
-        return Err(SaveValidationError::InvalidValue {
-            field: "diesel Train catalogue",
-        });
-    }
-    if balance
-        .diesel_catalogue()
-        .iter()
-        .any(|record| record.name().trim().is_empty() || record.purchase_price().cents() <= 0)
-    {
-        return Err(SaveValidationError::InvalidValue {
-            field: "diesel Train catalogue record",
-        });
-    }
     if state.rules.demand.cap_duration.seconds() == 0 {
         return Err(SaveValidationError::InvalidValue {
             field: "demand cap duration",
@@ -1365,9 +1570,12 @@ fn validate_train_statuses(
 ) -> Result<(), SaveValidationError> {
     let mut travelling_journey_ids = HashSet::new();
     for train in trains {
-        if train.model_name.trim().is_empty() || train.original_purchase_price.cents() <= 0 {
+        if train.model_id.as_str().trim().is_empty()
+            || model_for_train(train).is_none()
+            || train.original_purchase_price.cents() <= 0
+        {
             return Err(SaveValidationError::InvalidValue {
-                field: "Train catalogue data",
+                field: "Train catalogue model reference",
             });
         }
         match train.status {
@@ -1435,11 +1643,9 @@ fn validate_journey(
             reason: "a Journey's Train is not travelling on that Journey",
         });
     }
-    if journey.passengers_carried > train.passenger_capacity.passengers() {
-        return Err(SaveValidationError::ImpossibleState {
-            reason: "a Journey carries more passengers than its Train capacity",
-        });
-    }
+    // The Train model is validated separately by `validate_train_statuses`.
+    // Journey economics and arrival time are snapshots fixed at departure, so
+    // a later catalogue balance update must not invalidate an in-flight save.
     let service = state
         .player_company
         .passenger_services
@@ -1470,18 +1676,15 @@ fn validate_journey(
         .balance
         .access_fee_per_train_kilometre()
         .checked_charge(distance)?;
-    let expected_fuel_cost = train.fuel_cost_per_kilometre.checked_charge(distance)?;
-    expected_access_fee.checked_add(expected_fuel_cost)?;
-    let expected_duration = distance.journey_duration(train.speed)?;
-    let expected_arrival = journey.departed_at.checked_add(expected_duration)?;
+    expected_access_fee.checked_add(journey.fuel_cost)?;
     if journey.fare != expected_fare
         || journey.operating_revenue != expected_revenue
         || journey.infrastructure_access_fee != expected_access_fee
-        || journey.fuel_cost != expected_fuel_cost
-        || journey.arrives_at != expected_arrival
+        || journey.fuel_cost.cents() <= 0
+        || journey.arrives_at <= journey.departed_at
     {
         return Err(SaveValidationError::ImpossibleState {
-            reason: "Journey actuals do not match its saved rules and Passenger Service",
+            reason: "Journey actuals do not match its saved rules and departure snapshot",
         });
     }
 
@@ -1599,10 +1802,22 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        let saved_catalogue_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='diesel_catalogue'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let model_id: String = connection
+            .query_row("SELECT model_id FROM trains LIMIT 1", [], |row| row.get(0))
+            .unwrap();
 
         assert_eq!(train_count, 1);
         assert_eq!(journey_count, 1);
         assert_eq!(state_blob_table, 0);
+        assert_eq!(saved_catalogue_table, 0);
+        assert_eq!(model_id, "local-70");
     }
 
     #[test]
@@ -1663,11 +1878,137 @@ mod tests {
     }
 
     #[test]
+    fn v1_sqlite_schema_migrates_owned_trains_to_stable_model_ids() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE trains (
+                     id INTEGER PRIMARY KEY,
+                     status_kind TEXT NOT NULL,
+                     status_ref_id INTEGER NOT NULL,
+                     model_name TEXT NOT NULL,
+                     original_purchase_price_cents INTEGER NOT NULL,
+                     passenger_capacity INTEGER NOT NULL,
+                     speed_metres_per_second INTEGER NOT NULL,
+                     fuel_cost_cents_per_km INTEGER NOT NULL
+                 );
+                 CREATE TABLE diesel_catalogue (
+                     sequence INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     purchase_price_cents INTEGER NOT NULL,
+                     passenger_capacity INTEGER NOT NULL,
+                     speed_metres_per_second INTEGER NOT NULL,
+                     fuel_cost_cents_per_km INTEGER NOT NULL
+                 );
+                 CREATE TABLE active_journeys (
+                     id INTEGER PRIMARY KEY,
+                     train_id INTEGER NOT NULL REFERENCES trains(id)
+                 );
+                 INSERT INTO trains VALUES(1, 'ready', 1, 'Local 70', 300000, 70, 25, 45);
+                 INSERT INTO diesel_catalogue VALUES(0, 'Local 70', 300000, 70, 25, 45);
+                 INSERT INTO active_journeys VALUES(1, 1);
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let model_id: String = connection
+            .query_row("SELECT model_id FROM trains WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        let old_catalogue_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='diesel_catalogue'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let journey_train_id: i64 = connection
+            .query_row("SELECT train_id FROM active_journeys WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        let foreign_key_violations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(model_id, "local-70");
+        assert_eq!(old_catalogue_exists, 0);
+        assert_eq!(journey_train_id, 1);
+        assert_eq!(foreign_key_violations, 0);
+    }
+
+    #[test]
     fn legacy_ron_decoder_accepts_the_previous_versioned_envelope() {
         let state = active_game();
+        let legacy_trains = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .map(|train| {
+                let model = model_for_train(train).unwrap();
+                LegacyTrainV1 {
+                    id: train.id,
+                    status: train.status,
+                    model_name: model.name().to_owned(),
+                    original_purchase_price: train.original_purchase_price,
+                    passenger_capacity: model.passenger_capacity(),
+                    speed: model.speed(),
+                    fuel_cost_per_kilometre: model.fuel_cost_per_kilometre(),
+                }
+            })
+            .collect();
+        let legacy_catalogue = train_catalogue()
+            .models()
+            .iter()
+            .map(|model| LegacyDieselTrainCatalogueRecordV1 {
+                name: model.name().to_owned(),
+                purchase_price: model.purchase_price(),
+                passenger_capacity: model.passenger_capacity(),
+                speed: model.speed(),
+                fuel_cost_per_kilometre: model.fuel_cost_per_kilometre(),
+            })
+            .collect();
+        let legacy = LegacyGameStateV1 {
+            world_seed: state.world_seed,
+            region: state.region.clone(),
+            player_company: LegacyPlayerCompanyV1 {
+                name: state.player_company.name.clone(),
+                funds: state.player_company.funds,
+                fleet: LegacyFleetV1 {
+                    trains: legacy_trains,
+                },
+                passenger_services: state.player_company.passenger_services.clone(),
+            },
+            origin_destination_demand: state.origin_destination_demand.clone(),
+            active_journeys: state.active_journeys.clone(),
+            financials: state.financials.clone(),
+            rules: LegacyGameRulesV1 {
+                balance: LegacyBalanceConfigV1 {
+                    fare_per_passenger_kilometre: state
+                        .rules
+                        .balance
+                        .fare_per_passenger_kilometre(),
+                    access_fee_per_train_kilometre: state
+                        .rules
+                        .balance
+                        .access_fee_per_train_kilometre(),
+                    starting_company_funds: state.rules.balance.starting_company_funds(),
+                    diesel_catalogue: legacy_catalogue,
+                },
+                demand: state.rules.demand.clone(),
+            },
+            last_processed_at: state.last_processed_at,
+        };
         let source = ron::ser::to_string(&LegacySaveEnvelope {
-            version: SAVE_VERSION,
-            state: &state,
+            version: 1,
+            state: legacy,
         })
         .unwrap();
 

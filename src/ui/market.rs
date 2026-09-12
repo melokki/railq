@@ -18,7 +18,7 @@ use ratatui::{
 };
 
 use crate::{
-    balance::DieselTrainCatalogueRecord,
+    catalog::{TrainModel, train_catalogue},
     model::{GameState, Money, RailLine, RailStationId},
     ui::theme,
 };
@@ -36,13 +36,13 @@ impl CatalogueSelection {
     /// Returns the currently focused catalogue record, if one remains available.
     pub fn selected_catalogue_index(&mut self, state: &GameState) -> Option<usize> {
         self.synchronize(state);
-        (!state.rules.balance.diesel_catalogue().is_empty()).then_some(self.selected)
+        (!train_catalogue().models().is_empty()).then_some(self.selected)
     }
 
     /// Moves the focused catalogue record without changing the game state.
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
         self.synchronize(state);
-        let catalogue_len = state.rules.balance.diesel_catalogue().len();
+        let catalogue_len = train_catalogue().models().len();
         if catalogue_len == 0 {
             return;
         }
@@ -62,8 +62,8 @@ impl CatalogueSelection {
         self.table_state.select(Some(self.selected));
     }
 
-    fn synchronize(&mut self, state: &GameState) {
-        let catalogue_len = state.rules.balance.diesel_catalogue().len();
+    fn synchronize(&mut self, _state: &GameState) {
+        let catalogue_len = train_catalogue().models().len();
         if catalogue_len == 0 {
             self.selected = 0;
             self.table_state.select(None);
@@ -127,13 +127,10 @@ impl MarketFlow {
     /// Starts delivery selection for a focused catalogue Train without changing
     /// the Fleet or Company Funds.
     pub fn start(state: &GameState, catalogue_index: usize) -> Result<Self, &'static str> {
-        if state.rules.balance.diesel_catalogue().is_empty() {
+        if train_catalogue().models().is_empty() {
             return Err("No diesel Train is available in the catalogue.");
         }
-        if state
-            .rules
-            .balance
-            .diesel_catalogue()
+        if train_catalogue().models()
             .get(catalogue_index)
             .is_none()
         {
@@ -178,10 +175,7 @@ impl MarketFlow {
                         Some("No connected Rail Station is available for delivery.".into());
                     return MarketFlowAction::Continue;
                 }
-                if state
-                    .rules
-                    .balance
-                    .diesel_catalogue()
+                if train_catalogue().models()
                     .get(*catalogue_index)
                     .is_none()
                 {
@@ -334,7 +328,7 @@ impl MarketFlow {
                 catalogue_index,
                 delivery_station_id,
             } => {
-                let train = state.rules.balance.diesel_catalogue().get(*catalogue_index);
+                let train = train_catalogue().models().get(*catalogue_index);
                 if let Some(train) = train {
                     render_purchase_review_text(&mut output, state, train, *delivery_station_id);
                 }
@@ -361,7 +355,7 @@ fn render_purchase_review(
     delivery_station_id: RailStationId,
     rejection: Option<&str>,
 ) {
-    let Some(train) = state.rules.balance.diesel_catalogue().get(catalogue_index) else {
+    let Some(train) = train_catalogue().models().get(catalogue_index) else {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(
@@ -474,7 +468,7 @@ fn render_purchase_review(
 
 fn purchase_review_lines(
     state: &GameState,
-    train: &DieselTrainCatalogueRecord,
+    train: &TrainModel,
     delivery_station_id: RailStationId,
 ) -> Vec<Line<'static>> {
     vec![
@@ -502,7 +496,7 @@ fn purchase_review_lines(
 
 fn sample_reserve_lines(
     state: &GameState,
-    train: &DieselTrainCatalogueRecord,
+    train: &TrainModel,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![Line::styled(
         "Sample Rail Line · reserve example only",
@@ -538,7 +532,7 @@ fn sample_reserve_lines(
 
 fn compact_purchase_review_lines(
     state: &GameState,
-    train: &DieselTrainCatalogueRecord,
+    train: &TrainModel,
     delivery_station_id: RailStationId,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
@@ -581,7 +575,7 @@ fn compact_purchase_review_lines(
     lines
 }
 
-fn funds_after_purchase(state: &GameState, train: &DieselTrainCatalogueRecord) -> String {
+fn funds_after_purchase(state: &GameState, train: &TrainModel) -> String {
     match state
         .player_company
         .funds
@@ -595,7 +589,7 @@ fn funds_after_purchase(state: &GameState, train: &DieselTrainCatalogueRecord) -
 fn render_purchase_review_text(
     output: &mut String,
     state: &GameState,
-    train: &DieselTrainCatalogueRecord,
+    train: &TrainModel,
     delivery_station_id: RailStationId,
 ) {
     writeln!(output, "Purchase review").expect("writing to a String cannot fail");
@@ -653,10 +647,10 @@ fn render_purchase_review_text(
 /// Renders the diesel Train catalogue before a purchase is started.
 pub fn render(state: &GameState) -> String {
     let mut output = String::from("Market\n");
-    for (index, train) in state.rules.balance.diesel_catalogue().iter().enumerate() {
+    for (index, train) in train_catalogue().models().iter().enumerate() {
         render_catalogue_train(&mut output, state, index, train);
     }
-    if let Some(train) = state.rules.balance.diesel_catalogue().first() {
+    if let Some(train) = train_catalogue().models().first() {
         writeln!(output, "Selected Train: {}", train.name())
             .expect("writing to a String cannot fail");
         render_purchase_implications(&mut output, state, train);
@@ -684,7 +678,7 @@ pub fn render_dashboard(
     selection: &mut CatalogueSelection,
 ) {
     selection.synchronize(state);
-    let catalogue = state.rules.balance.diesel_catalogue();
+    let catalogue = train_catalogue().models();
     if catalogue.is_empty() {
         frame.render_widget(
             Paragraph::new("No diesel Train is available in the catalogue.")
@@ -778,7 +772,7 @@ fn render_catalogue_inspector(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
-    train: Option<&DieselTrainCatalogueRecord>,
+    train: Option<&TrainModel>,
     wide: bool,
 ) {
     let Some(train) = train else {
@@ -864,7 +858,7 @@ fn labelled_value(label: &str, value: &str) -> Line<'static> {
 
 fn purchase_status(
     state: &GameState,
-    train: &DieselTrainCatalogueRecord,
+    train: &TrainModel,
 ) -> (&'static str, ratatui::style::Style) {
     if state.player_company.funds < train.purchase_price() {
         ("UNAFFORDABLE", theme::error())
@@ -877,7 +871,7 @@ fn purchase_status(
 
 fn funds_after_purchase_display(
     state: &GameState,
-    train: &DieselTrainCatalogueRecord,
+    train: &TrainModel,
 ) -> String {
     if state.player_company.funds < train.purchase_price() {
         return "insufficient".into();
@@ -887,7 +881,7 @@ fn funds_after_purchase_display(
 
 fn reserve_after_sample_display(
     state: &GameState,
-    train: &DieselTrainCatalogueRecord,
+    train: &TrainModel,
     sample: &SampleTrip,
 ) -> String {
     let Ok(after_purchase) = state
@@ -1032,14 +1026,12 @@ fn render_delivery_inspector(
     let selected_station = selected_delivery_station_id
         .map(|station_id| station_label(state, station_id))
         .unwrap_or("No Rail Station selected");
-    let selected_train = state
-        .rules
-        .balance
-        .diesel_catalogue()
+    let selected_train = train_catalogue()
+        .models()
         .get(catalogue_index)
         .map_or(
             "Selected catalogue Train unavailable",
-            DieselTrainCatalogueRecord::name,
+            TrainModel::name,
         );
     frame.render_widget(
         Paragraph::new(vec![
@@ -1078,13 +1070,11 @@ fn panel_block(title: &str, focused: bool) -> Block<'_> {
 
 fn render_selected(state: &GameState, selected_catalogue_index: usize) -> String {
     let mut output = String::from("Market\n");
-    for (index, train) in state.rules.balance.diesel_catalogue().iter().enumerate() {
+    for (index, train) in train_catalogue().models().iter().enumerate() {
         render_catalogue_train(&mut output, state, index, train);
     }
-    if let Some(train) = state
-        .rules
-        .balance
-        .diesel_catalogue()
+    if let Some(train) = train_catalogue()
+        .models()
         .get(selected_catalogue_index)
     {
         writeln!(output, "Selected Train: {}", train.name())
@@ -1098,7 +1088,7 @@ fn render_catalogue_train(
     output: &mut String,
     state: &GameState,
     index: usize,
-    train: &DieselTrainCatalogueRecord,
+    train: &TrainModel,
 ) {
     writeln!(output, "{}: {}", index + 1, train.name()).expect("writing to a String cannot fail");
     writeln!(
@@ -1132,7 +1122,7 @@ fn render_catalogue_train(
 fn render_purchase_implications(
     output: &mut String,
     state: &GameState,
-    train: &DieselTrainCatalogueRecord,
+    train: &TrainModel,
 ) {
     match state
         .player_company
@@ -1164,7 +1154,7 @@ struct SampleTrip {
     departure_cost: Money,
 }
 
-fn sample_trip(state: &GameState, train: &DieselTrainCatalogueRecord) -> Option<SampleTrip> {
+fn sample_trip(state: &GameState, train: &TrainModel) -> Option<SampleTrip> {
     let line = state
         .region
         .rail_authority
@@ -1196,7 +1186,7 @@ fn sample_trip(state: &GameState, train: &DieselTrainCatalogueRecord) -> Option<
     })
 }
 
-fn low_reserve(state: &GameState, train: &DieselTrainCatalogueRecord) -> bool {
+fn low_reserve(state: &GameState, train: &TrainModel) -> bool {
     let Ok(remaining) = state
         .player_company
         .funds
@@ -1314,7 +1304,7 @@ fn format_money_per_kilometre(cents: u64) -> String {
     format_money(Money::from_cents(i64::try_from(cents).unwrap_or(i64::MAX)))
 }
 
-fn format_speed_kmh(train: &DieselTrainCatalogueRecord) -> String {
+fn format_speed_kmh(train: &TrainModel) -> String {
     crate::ui::format::speed_kmh(train.speed().metres_per_second())
 }
 
@@ -1344,7 +1334,7 @@ mod tests {
         let state = create_new_game(42, "Alden Passenger", STARTED_AT);
         let rendered = render(&state);
 
-        for train in state.rules.balance.diesel_catalogue() {
+        for train in train_catalogue().models() {
             assert!(rendered.contains(train.name()));
             assert!(rendered.contains(&format!(
                 "Capacity: {} passengers",

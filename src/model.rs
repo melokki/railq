@@ -90,6 +90,20 @@ domain_id!(
 );
 domain_id!(JourneyId, "The identity of one physical Train movement.");
 
+/// Stable identity of one immutable Train model in the central catalogue.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct TrainModelId(String);
+
+impl TrainModelId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// A signed amount of money stored exactly as integer cents.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Money(i64);
@@ -428,20 +442,19 @@ pub struct Fleet {
 }
 
 /// Passenger rolling stock owned by the Player Company.
+///
+/// Immutable technical specifications live in the central Train catalogue. An
+/// owned Train persists only the stable catalogue model ID plus instance state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Train {
     pub id: TrainId,
     pub status: TrainStatus,
-    /// The catalogue name captured when this Train joined the Fleet.
-    pub model_name: String,
-    /// The amount paid when this Train was purchased.
+    pub model_id: TrainModelId,
+    /// The amount actually paid when this Train joined the Fleet.
     ///
-    /// Resale is calculated from this original price, not a later catalogue
-    /// price.
+    /// Resale is calculated from this historical purchase price, not the
+    /// current catalogue price.
     pub original_purchase_price: Money,
-    pub passenger_capacity: PassengerCapacity,
-    pub speed: SpeedMetresPerSecond,
-    pub fuel_cost_per_kilometre: MoneyPerKilometre,
 }
 
 /// The mutually exclusive operating status of a Train.
@@ -559,7 +572,8 @@ pub struct JourneyReceipt {
     pub completed_at: Option<UtcSeconds>,
 }
 
-/// Rules saved with a game so its economics do not change after a balance update.
+/// Per-save simulation rules. Static Train model definitions are build content
+/// from the central catalogue and are intentionally not duplicated here.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct GameRules {
     pub balance: BalanceConfig,
@@ -731,11 +745,8 @@ mod tests {
                     trains: vec![Train {
                         id: train_id,
                         status: TrainStatus::Ready { at: station_id },
-                        model_name: "Test diesel".into(),
+                        model_id: TrainModelId::new("local-70"),
                         original_purchase_price: Money::from_cents(5_000),
-                        passenger_capacity: PassengerCapacity::new(40).unwrap(),
-                        speed: SpeedMetresPerSecond::new(20).unwrap(),
-                        fuel_cost_per_kilometre: rate,
                     }],
                 },
                 passenger_services: vec![],
@@ -749,7 +760,7 @@ mod tests {
                 recent_journey_receipts: vec![],
             },
             rules: GameRules {
-                balance: BalanceConfig::new(rate, rate, Money::from_cents(10_000), vec![]),
+                balance: BalanceConfig::new(rate, rate, Money::from_cents(10_000)),
                 demand: DemandRules::provisional(),
             },
             last_processed_at: UtcSeconds::from_unix_seconds(0),

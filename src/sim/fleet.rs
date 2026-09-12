@@ -6,7 +6,7 @@
 use std::{error::Error, fmt};
 
 use crate::{
-    balance::DieselTrainCatalogueRecord,
+    catalog::{TrainModel, train_catalogue},
     model::{CalculationError, GameState, Money, RailStationId, Train, TrainId, TrainStatus},
 };
 
@@ -106,10 +106,7 @@ pub fn purchase_train(
     catalogue_index: usize,
     delivery_station_id: RailStationId,
 ) -> Result<TrainId, FleetError> {
-    let catalogue_train = state
-        .rules
-        .balance
-        .diesel_catalogue()
+    let catalogue_train = train_catalogue()
         .get(catalogue_index)
         .ok_or(FleetError::CatalogueTrainNotFound { catalogue_index })?;
     let purchase_price = catalogue_train.purchase_price();
@@ -175,18 +172,15 @@ pub fn sell_train(state: &mut GameState, train_id: TrainId) -> Result<Money, Fle
 fn purchased_train(
     train_id: TrainId,
     delivery_station_id: RailStationId,
-    catalogue_train: &DieselTrainCatalogueRecord,
+    catalogue_train: &TrainModel,
 ) -> Train {
     Train {
         id: train_id,
         status: TrainStatus::Ready {
             at: delivery_station_id,
         },
-        model_name: catalogue_train.name().to_owned(),
+        model_id: catalogue_train.id().clone(),
         original_purchase_price: catalogue_train.purchase_price(),
-        passenger_capacity: catalogue_train.passenger_capacity(),
-        speed: catalogue_train.speed(),
-        fuel_cost_per_kilometre: catalogue_train.fuel_cost_per_kilometre(),
     }
 }
 
@@ -219,10 +213,8 @@ fn resale_proceeds(train: &Train) -> Result<Money, FleetError> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        balance::{BalanceConfig, DieselTrainCatalogueRecord},
-        model::{
-            MoneyPerKilometre, PassengerCapacity, SpeedMetresPerSecond, TrainStatus, UtcSeconds,
-        },
+        catalog::train_catalogue,
+        model::{TrainModelId, TrainStatus, UtcSeconds},
         sim::world::create_new_game,
     };
 
@@ -235,7 +227,7 @@ mod tests {
     #[test]
     fn exact_cash_purchase_succeeds_and_delivers_a_ready_train() {
         let mut state = game();
-        let catalogue_train = state.rules.balance.diesel_catalogue()[0].clone();
+        let catalogue_train = train_catalogue().models()[0].clone();
         state.player_company.funds = catalogue_train.purchase_price();
 
         let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
@@ -249,11 +241,8 @@ mod tests {
                 status: TrainStatus::Ready {
                     at: RailStationId::new(1)
                 },
-                model_name: catalogue_train.name().to_owned(),
+                model_id: catalogue_train.id().clone(),
                 original_purchase_price: catalogue_train.purchase_price(),
-                passenger_capacity: catalogue_train.passenger_capacity(),
-                speed: catalogue_train.speed(),
-                fuel_cost_per_kilometre: catalogue_train.fuel_cost_per_kilometre(),
             }
         );
     }
@@ -261,7 +250,7 @@ mod tests {
     #[test]
     fn insufficient_cash_leaves_the_game_unchanged() {
         let mut state = game();
-        let purchase_price = state.rules.balance.diesel_catalogue()[0].purchase_price();
+        let purchase_price = train_catalogue().models()[0].purchase_price();
         state.player_company.funds = purchase_price.checked_sub(Money::from_cents(1)).unwrap();
         let unchanged = state.clone();
 
@@ -293,34 +282,16 @@ mod tests {
     #[test]
     fn resale_uses_the_original_price_and_rounds_down() {
         let mut state = game();
-        let rate = MoneyPerKilometre::new(1).unwrap();
-        state.rules.balance = BalanceConfig::new(
-            rate,
-            rate,
-            Money::from_cents(101),
-            vec![DieselTrainCatalogueRecord::new(
-                "Test diesel",
-                Money::from_cents(101),
-                PassengerCapacity::new(1).unwrap(),
-                SpeedMetresPerSecond::new(1).unwrap(),
-                rate,
-            )],
-        );
-        state.player_company.funds = Money::from_cents(101);
-        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
-
-        state.rules.balance = BalanceConfig::new(
-            rate,
-            rate,
-            Money::ZERO,
-            vec![DieselTrainCatalogueRecord::new(
-                "Retuned diesel",
-                Money::from_cents(1_000),
-                PassengerCapacity::new(2).unwrap(),
-                SpeedMetresPerSecond::new(2).unwrap(),
-                rate,
-            )],
-        );
+        let train_id = TrainId::new(1);
+        state.player_company.fleet.trains.push(Train {
+            id: train_id,
+            status: TrainStatus::Ready {
+                at: RailStationId::new(1),
+            },
+            model_id: TrainModelId::new("local-70"),
+            original_purchase_price: Money::from_cents(101),
+        });
+        state.player_company.funds = Money::ZERO;
 
         assert_eq!(sell_train(&mut state, train_id), Ok(Money::from_cents(70)));
         assert_eq!(state.player_company.funds, Money::from_cents(70));

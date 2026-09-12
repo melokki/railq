@@ -16,6 +16,7 @@ use ratatui::{
 };
 
 use crate::{
+    catalog::{model_for_train, train_catalogue},
     model::{GameState, Journey, Money, RailStationId, Train, TrainId, TrainStatus, UtcSeconds},
     ui::theme,
 };
@@ -182,7 +183,7 @@ impl FleetFlow {
                     output,
                     "\nResell Train {:02} — {}",
                     review.train.id.get(),
-                    review.train.model_name
+                    train_model_name(review.train)
                 )
                 .expect("writing to a String cannot fail");
                 writeln!(
@@ -266,7 +267,7 @@ fn render_resale_review(frame: &mut Frame, area: Rect, state: &GameState, flow: 
                 format!("Resell Train {:02}", review.train.id.get()),
                 theme::title(),
             ),
-            labelled_line("Model", &review.train.model_name),
+            labelled_line("Model", &train_model_name(review.train)),
             labelled_line("Status", "READY"),
             labelled_line(
                 "Proceeds",
@@ -447,10 +448,8 @@ fn empty_fleet_panel(state: &GameState) -> Paragraph<'static> {
         .rail_stations
         .is_empty();
     let affordable = has_delivery_station
-        && state
-            .rules
-            .balance
-            .diesel_catalogue()
+        && train_catalogue()
+            .models()
             .iter()
             .any(|train| state.player_company.funds >= train.purchase_price());
     lines.push(Line::from(""));
@@ -535,7 +534,7 @@ fn render_train_inspector(
         section_heading("SPECIFICATIONS"),
         labelled_line(
             "Capacity",
-            &format!("{} passengers", train.passenger_capacity.passengers()),
+            &format_capacity(train),
         ),
         labelled_line("Top speed", &format_speed(train)),
         labelled_line("Fuel", &format_fuel_rate(train)),
@@ -684,11 +683,7 @@ struct TrainFields {
 }
 
 fn train_fields(state: &GameState, train: &Train, now: UtcSeconds) -> TrainFields {
-    let model = if train.model_name.trim().is_empty() {
-        "Model unavailable".into()
-    } else {
-        train.model_name.clone()
-    };
+    let model = train_model_name(train);
     match &train.status {
         TrainStatus::Ready { at } => TrainFields {
             model,
@@ -743,12 +738,29 @@ fn station_label_or_missing(state: &GameState, station_id: RailStationId) -> Str
         .unwrap_or_else(|| format!("Missing Settlement {}", station.settlement_id.get()))
 }
 
+fn train_model_name(train: &Train) -> String {
+    model_for_train(train)
+        .map(|model| model.name().to_owned())
+        .unwrap_or_else(|| format!("Unknown model ({})", train.model_id.as_str()))
+}
+
+fn format_capacity(train: &Train) -> String {
+    model_for_train(train)
+        .map(|model| format!("{} passengers", model.passenger_capacity().passengers()))
+        .unwrap_or_else(|| "Unavailable".into())
+}
+
 fn format_speed(train: &Train) -> String {
-    crate::ui::format::speed_kmh(train.speed.metres_per_second())
+    model_for_train(train)
+        .map(|model| crate::ui::format::speed_kmh(model.speed().metres_per_second()))
+        .unwrap_or_else(|| "Unavailable".into())
 }
 
 fn format_fuel_rate(train: &Train) -> String {
-    let cents = i64::try_from(train.fuel_cost_per_kilometre.cents_per_kilometre())
+    let Some(model) = model_for_train(train) else {
+        return "Unavailable".into();
+    };
+    let cents = i64::try_from(model.fuel_cost_per_kilometre().cents_per_kilometre())
         .unwrap_or(i64::MAX);
     format!("{}/km", format_money(Money::from_cents(cents)))
 }
@@ -779,7 +791,7 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                     output,
                     "\nTrain {} — {}\n  READY at {}\n  Eligible sale proceeds: {} (70% of original purchase price)",
                     train.id.get(),
-                    train.model_name,
+                    train_model_name(train),
                     station_label(state, at),
                     resale_proceeds(train.original_purchase_price)
                         .map(format_money)
@@ -797,7 +809,7 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                         output,
                         "\nTrain {} — {}\n  TRAVELLING {} -> {} | progress: {}% | ETA: {}\n  Sale unavailable while this Journey is in transit.",
                         train.id.get(),
-                        train.model_name,
+                        train_model_name(train),
                         station_label(state, journey.origin_station_id),
                         station_label(state, journey.destination_station_id),
                         journey_progress_percent(journey, now),
@@ -808,7 +820,7 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
                         output,
                         "\nTrain {} — {}\n  TRAVELLING on Journey {} (details unavailable)\n  Sale unavailable while this Journey is in transit.",
                         train.id.get(),
-                        train.model_name,
+                        train_model_name(train),
                         journey_id.get(),
                     )
                     .expect("writing to a String cannot fail"),

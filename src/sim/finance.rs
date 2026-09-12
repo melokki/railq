@@ -8,6 +8,7 @@
 use std::{error::Error, fmt};
 
 use crate::{
+    catalog::train_catalogue,
     model::{CalculationError, GameState, Money, RailStationId, TrainId, TrainStatus},
     sim::{
         economy::{EconomyError, quote_journey},
@@ -249,14 +250,14 @@ fn sell_all_and_rebuy_options(state: &GameState) -> Result<Vec<RecoveryOption>, 
         .iter()
         .map(|station| station.id)
         .collect();
-    let catalogue_len = sold_candidate.rules.balance.diesel_catalogue().len();
+    let catalogue_len = train_catalogue().models().len();
     let mut options = Vec::new();
 
     for catalogue_index in 0..catalogue_len {
         for delivery_station_id in &delivery_station_ids {
             let mut candidate = sold_candidate.clone();
             let purchase_price =
-                candidate.rules.balance.diesel_catalogue()[catalogue_index].purchase_price();
+                train_catalogue().models()[catalogue_index].purchase_price();
             if purchase_price.cents() <= 0 || candidate.player_company.funds < purchase_price {
                 continue;
             }
@@ -356,8 +357,8 @@ fn affordable_journeys(
 #[cfg(test)]
 mod tests {
     use crate::{
-        balance::{BalanceConfig, DieselTrainCatalogueRecord},
-        model::{MoneyPerKilometre, PassengerCapacity, SpeedMetresPerSecond, UtcSeconds},
+        catalog::train_catalogue,
+        model::UtcSeconds,
         sim::{
             fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
             world::create_new_game,
@@ -369,30 +370,34 @@ mod tests {
     const ORIGIN: RailStationId = RailStationId::new(1);
     const DESTINATION: RailStationId = RailStationId::new(2);
 
-    fn configured_game(funds: Money, catalogue: Vec<DieselTrainCatalogueRecord>) -> GameState {
+    fn configured_game(funds: Money) -> GameState {
         let mut state = create_new_game(42, "Recovery Passenger", UtcSeconds::from_unix_seconds(0));
-        let rate = MoneyPerKilometre::new(10).unwrap();
-        state.rules.balance = BalanceConfig::new(rate, rate, funds, catalogue);
         state.player_company.funds = funds;
         state
     }
 
-    fn diesel(name: &str, price: Money) -> DieselTrainCatalogueRecord {
-        DieselTrainCatalogueRecord::new(
-            name,
-            price,
-            PassengerCapacity::new(10).unwrap(),
-            SpeedMetresPerSecond::new(100).unwrap(),
-            MoneyPerKilometre::new(5).unwrap(),
-        )
+    fn model_price(index: usize) -> Money {
+        train_catalogue().models()[index].purchase_price()
+    }
+
+    fn starter_operating_cost() -> Money {
+        let state = create_new_game(42, "Cost Fixture", UtcSeconds::from_unix_seconds(0));
+        let line = &state.region.rail_authority.rail_network.rail_lines[0];
+        let local = &train_catalogue().models()[0];
+        state
+            .rules
+            .balance
+            .access_fee_per_train_kilometre()
+            .checked_charge(line.distance)
+            .unwrap()
+            .checked_add(local.fuel_cost_per_kilometre().checked_charge(line.distance).unwrap())
+            .unwrap()
     }
 
     #[test]
     fn active_journey_defers_bankruptcy() {
-        let mut state = configured_game(
-            Money::from_cents(1_150),
-            vec![diesel("Local", Money::from_cents(1_000))],
-        );
+        let cost = starter_operating_cost();
+        let mut state = configured_game(model_price(0).checked_add(cost).unwrap());
         let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
         let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
         dispatch_journey(
@@ -413,9 +418,14 @@ mod tests {
 
     #[test]
     fn travelling_train_with_enough_existing_cash_remains_operating() {
+        let cost = starter_operating_cost();
+        let reserve = cost;
         let mut state = configured_game(
-            Money::from_cents(1_450),
-            vec![diesel("Local", Money::from_cents(1_000))],
+            model_price(0)
+                .checked_add(cost)
+                .unwrap()
+                .checked_add(reserve)
+                .unwrap(),
         );
         let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
         let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
@@ -426,7 +436,7 @@ mod tests {
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();
-        assert_eq!(state.player_company.funds, Money::from_cents(300));
+        assert_eq!(state.player_company.funds, reserve);
 
         let evaluation = evaluate_financial_recovery(&state).unwrap();
 
@@ -437,9 +447,13 @@ mod tests {
 
     #[test]
     fn active_journey_does_not_mask_an_affordable_ready_train() {
+        let cost = starter_operating_cost();
         let mut state = configured_game(
-            Money::from_cents(2_300),
-            vec![diesel("Local", Money::from_cents(1_000))],
+            model_price(0)
+                .checked_mul(2)
+                .unwrap()
+                .checked_add(cost.checked_mul(2).unwrap())
+                .unwrap(),
         );
         let travelling_train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
         let ready_train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
@@ -465,10 +479,8 @@ mod tests {
 
     #[test]
     fn current_company_funds_can_restart_without_an_existing_service() {
-        let mut state = configured_game(
-            Money::from_cents(1_150),
-            vec![diesel("Local", Money::from_cents(1_000))],
-        );
+        let cost = starter_operating_cost();
+        let mut state = configured_game(model_price(0).checked_add(cost).unwrap());
         let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
         let before = state.clone();
 
@@ -481,21 +493,19 @@ mod tests {
                 if journey.train_id == train_id
                     && journey.origin_station_id == ORIGIN
                     && journey.destination_station_id == DESTINATION
-                    && journey.operating_cost == Money::from_cents(150))
+                    && journey.operating_cost == cost)
         }));
     }
 
     #[test]
     fn selling_other_trains_can_recover_a_retained_train() {
-        let mut state = configured_game(
-            Money::from_cents(2_000),
-            vec![diesel("Local", Money::from_cents(1_000))],
-        );
+        let mut state = configured_game(model_price(0).checked_mul(2).unwrap());
         let retained_train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
         let sold_train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
         state.player_company.funds = Money::ZERO;
 
         let evaluation = evaluate_financial_recovery(&state).unwrap();
+        let expected_resale = Money::from_cents(model_price(0).cents() * 70 / 100);
 
         assert_eq!(evaluation.status, FinancialStatus::Insolvent);
         assert!(evaluation.recovery_options.iter().any(|option| {
@@ -506,22 +516,19 @@ mod tests {
                 journey,
             } if *option_retained_train_id == retained_train_id
                 && sold_train_ids == &vec![sold_train_id]
-                && *resale_proceeds == Money::from_cents(700)
-                && journey.operating_cost == Money::from_cents(150))
+                && *resale_proceeds == expected_resale
+                && journey.operating_cost == starter_operating_cost())
         }));
     }
 
     #[test]
     fn selling_all_trains_can_buy_and_dispatch_catalogue_stock() {
-        let catalogue = vec![
-            diesel("Local", Money::from_cents(500)),
-            diesel("Express", Money::from_cents(2_000)),
-        ];
-        let mut state = configured_game(Money::from_cents(2_000), catalogue);
+        let mut state = configured_game(model_price(1));
         let sold_train_id = purchase_train(&mut state, 1, ORIGIN).unwrap();
         state.player_company.funds = Money::ZERO;
 
         let evaluation = evaluate_financial_recovery(&state).unwrap();
+        let expected_resale = Money::from_cents(model_price(1).cents() * 70 / 100);
 
         assert_eq!(evaluation.status, FinancialStatus::Insolvent);
         assert!(evaluation.recovery_options.iter().any(|option| {
@@ -532,19 +539,16 @@ mod tests {
                 delivery_station_id: ORIGIN,
                 journey,
             } if sold_train_ids == &vec![sold_train_id]
-                && *resale_proceeds == Money::from_cents(1_400)
+                && *resale_proceeds == expected_resale
                 && journey.origin_station_id == ORIGIN
                 && journey.destination_station_id == DESTINATION
-                && journey.operating_cost == Money::from_cents(150))
+                && journey.operating_cost == starter_operating_cost())
         }));
     }
 
     #[test]
     fn declares_bankruptcy_only_when_no_recovery_option_exists() {
-        let mut state = configured_game(
-            Money::from_cents(500),
-            vec![diesel("Local", Money::from_cents(500))],
-        );
+        let mut state = configured_game(model_price(0));
         purchase_train(&mut state, 0, ORIGIN).unwrap();
         state.player_company.funds = Money::ZERO;
 

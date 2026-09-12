@@ -8,6 +8,7 @@
 use std::{error::Error, fmt};
 
 use crate::{
+    catalog::model_for_train,
     model::{
         CalculationError, GameState, Journey, JourneyId, JourneyReceipt, Money, RailStationId,
         TrainId, TrainStatus, UtcSeconds,
@@ -22,6 +23,8 @@ pub enum AdvanceTimeError {
     Calculation(CalculationError),
     /// A Journey refers to a Train no longer owned by the Player Company.
     TrainNotFound { train_id: TrainId },
+    /// A Journey Train references a model absent from the central catalogue.
+    TrainModelNotFound { train_id: TrainId },
     /// A Journey's Train is not travelling on that Journey.
     TrainNotTravelling {
         train_id: TrainId,
@@ -36,6 +39,11 @@ impl fmt::Display for AdvanceTimeError {
             Self::TrainNotFound { train_id } => write!(
                 formatter,
                 "Journey cannot settle because Train {} is not in the Fleet",
+                train_id.get()
+            ),
+            Self::TrainModelNotFound { train_id } => write!(
+                formatter,
+                "Journey cannot settle because Train {} references a missing catalogue model",
                 train_id.get()
             ),
             Self::TrainNotTravelling {
@@ -115,6 +123,11 @@ pub fn advance_time_with_arrivals(
             .ok_or(AdvanceTimeError::TrainNotFound {
                 train_id: journey.train_id,
             })?;
+        if model_for_train(train).is_none() {
+            return Err(AdvanceTimeError::TrainModelNotFound {
+                train_id: journey.train_id,
+            });
+        }
         if train.status
             != (TrainStatus::Travelling {
                 journey_id: journey.id,
@@ -142,17 +155,19 @@ pub fn advance_time_with_arrivals(
                 .iter()
                 .find(|train| train.id == journey.train_id)
                 .expect("due Journey Train was validated before state mutation");
+            let train_model = model_for_train(train)
+                .expect("due Journey Train model was validated before state mutation");
             JourneyReceipt {
                 journey_id: journey.id,
                 revenue: journey.operating_revenue,
                 infrastructure_access_fee: journey.infrastructure_access_fee,
                 fuel_cost: journey.fuel_cost,
                 train_id: Some(train.id),
-                train_model_name: Some(train.model_name.clone()),
+                train_model_name: Some(train_model.name().to_owned()),
                 origin_station_id: Some(journey.origin_station_id),
                 destination_station_id: Some(journey.destination_station_id),
                 passengers_carried: Some(journey.passengers_carried),
-                passenger_capacity: Some(train.passenger_capacity.passengers()),
+                passenger_capacity: Some(train_model.passenger_capacity().passengers()),
                 completed_at: Some(journey.arrives_at),
             }
         })
@@ -194,6 +209,7 @@ pub fn advance_time_with_arrivals(
 #[cfg(test)]
 mod tests {
     use crate::{
+        catalog::model_for_train,
         model::{Money, RailStationId, TrainStatus, UtcSeconds},
         sim::{
             economy::quote_journey, fleet::purchase_train, journeys::dispatch_journey,
@@ -262,16 +278,15 @@ mod tests {
         let receipt = &state.financials.recent_journey_receipts[0];
         assert_eq!(receipt.journey_id, journey_id);
         assert_eq!(receipt.train_id, Some(state.player_company.fleet.trains[0].id));
-        assert_eq!(
-            receipt.train_model_name.as_deref(),
-            Some(state.player_company.fleet.trains[0].model_name.as_str())
-        );
+        let train_model = model_for_train(&state.player_company.fleet.trains[0])
+            .expect("fixture Train model remains in the embedded catalogue");
+        assert_eq!(receipt.train_model_name.as_deref(), Some(train_model.name()));
         assert_eq!(receipt.origin_station_id, Some(ORIGIN));
         assert_eq!(receipt.destination_station_id, Some(DESTINATION));
         assert_eq!(receipt.passengers_carried, Some(quote.boarded_passengers));
         assert_eq!(
             receipt.passenger_capacity,
-            Some(state.player_company.fleet.trains[0].passenger_capacity.passengers())
+            Some(train_model.passenger_capacity().passengers())
         );
         assert_eq!(receipt.completed_at, Some(arrives_at));
 

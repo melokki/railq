@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod balance;
+pub mod catalog;
 pub mod model;
 pub mod sim;
 pub mod storage;

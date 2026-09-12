@@ -11,6 +11,7 @@ use std::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
     app::{App, GameStore},
+    catalog::train_catalogue,
     model::{
         GameState, Money, RailStation, RailStationId, Settlement, SettlementId, TrainStatus,
         UtcSeconds,
@@ -252,7 +253,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
 fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
 -> Result<(), Box<dyn Error>> {
     let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
-    let price = state.rules.balance.diesel_catalogue()[0].purchase_price();
+    let price = train_catalogue().models()[0].purchase_price();
     purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
     state.player_company.funds = price.checked_add(Money::from_cents(500)).unwrap();
     let store = RejectingStore::default();

@@ -6,9 +6,12 @@
 
 use std::{error::Error, fmt};
 
-use crate::model::{
+use crate::{
+    catalog::model_for_train,
+    model::{
     CalculationError, DistanceMetres, DurationSeconds, GameState, Money, RailLineId, RailStationId,
     ServiceId, TrainId, TrainStatus,
+    },
 };
 
 /// The current economic and operational terms for one possible Journey.
@@ -40,6 +43,8 @@ pub struct JourneyQuote {
 pub enum EconomyError {
     /// The selected Train is not owned by the Player Company.
     TrainNotFound { train_id: TrainId },
+    /// The selected Train references a model absent from the central catalogue.
+    TrainModelNotFound { train_id: TrainId },
     /// The selected Passenger Service is not owned by the Player Company.
     ServiceNotFound { service_id: ServiceId },
     /// A Train travelling on a Journey cannot make another Journey quote.
@@ -69,6 +74,11 @@ impl fmt::Display for EconomyError {
             Self::TrainNotFound { train_id } => {
                 write!(formatter, "Train {} is not in the Fleet", train_id.get())
             }
+            Self::TrainModelNotFound { train_id } => write!(
+                formatter,
+                "Train {} references a model absent from the Train catalogue",
+                train_id.get()
+            ),
             Self::ServiceNotFound { service_id } => write!(
                 formatter,
                 "Passenger Service {} is not owned by the Player Company",
@@ -140,6 +150,8 @@ pub fn quote_journey(
         .iter()
         .find(|train| train.id == train_id)
         .ok_or(EconomyError::TrainNotFound { train_id })?;
+    let train_model =
+        model_for_train(train).ok_or(EconomyError::TrainModelNotFound { train_id })?;
     let service = state
         .player_company
         .passenger_services
@@ -209,7 +221,7 @@ pub fn quote_journey(
         })?;
     let boarded_passengers = demand
         .waiting_passengers
-        .min(train.passenger_capacity.passengers());
+        .min(train_model.passenger_capacity().passengers());
     let fare = state
         .rules
         .balance
@@ -221,10 +233,10 @@ pub fn quote_journey(
         .balance
         .access_fee_per_train_kilometre()
         .checked_charge(distance)?;
-    let fuel_cost = train.fuel_cost_per_kilometre.checked_charge(distance)?;
+    let fuel_cost = train_model.fuel_cost_per_kilometre().checked_charge(distance)?;
     let operating_cost = infrastructure_access_fee.checked_add(fuel_cost)?;
     let journey_profitability = operating_revenue.checked_sub(operating_cost)?;
-    let duration = distance.journey_duration(train.speed)?;
+    let duration = distance.journey_duration(train_model.speed())?;
     let cash_after_cost = state.player_company.funds.checked_sub(operating_cost)?;
 
     Ok(JourneyQuote {
@@ -252,8 +264,8 @@ mod tests {
         balance::BalanceConfig,
         model::{
             DemandRules, Financials, Fleet, GameRules, OriginDestinationDemand,
-            PassengerArrivalRate, PassengerCapacity, PassengerService, PlayerCompany,
-            RailAuthority, RailLine, RailNetwork, RailStation, Settlement, SpeedMetresPerSecond,
+            PassengerArrivalRate, PassengerService, PlayerCompany, RailAuthority, RailLine,
+            RailNetwork, RailStation, Settlement,
             Train, UtcSeconds,
         },
     };
@@ -270,7 +282,6 @@ mod tests {
     fn fixture() -> GameState {
         let fare_rate = crate::model::MoneyPerKilometre::new(11).unwrap();
         let access_rate = crate::model::MoneyPerKilometre::new(5).unwrap();
-        let fuel_rate = crate::model::MoneyPerKilometre::new(7).unwrap();
         GameState {
             world_seed: 0,
             region: crate::model::Region {
@@ -334,11 +345,8 @@ mod tests {
                     trains: vec![Train {
                         id: TRAIN_ID,
                         status: TrainStatus::Ready { at: ORIGIN },
-                        model_name: "Fixture diesel".into(),
+                        model_id: crate::model::TrainModelId::new("local-70"),
                         original_purchase_price: Money::from_cents(5_000),
-                        passenger_capacity: PassengerCapacity::new(4).unwrap(),
-                        speed: SpeedMetresPerSecond::new(3).unwrap(),
-                        fuel_cost_per_kilometre: fuel_rate,
                     }],
                 },
                 passenger_services: vec![PassengerService {
@@ -376,7 +384,6 @@ mod tests {
                     fare_rate,
                     access_rate,
                     Money::from_cents(10_000),
-                    vec![],
                 ),
                 demand: DemandRules::provisional(),
             },
@@ -394,23 +401,23 @@ mod tests {
         assert_eq!(quote.fare, Money::from_cents(17));
         assert_eq!(quote.operating_revenue, Money::from_cents(51));
         assert_eq!(quote.infrastructure_access_fee, Money::from_cents(8));
-        assert_eq!(quote.fuel_cost, Money::from_cents(11));
-        assert_eq!(quote.operating_cost, Money::from_cents(19));
-        assert_eq!(quote.journey_profitability, Money::from_cents(32));
-        assert_eq!(quote.duration, DurationSeconds::from_seconds(501));
-        assert_eq!(quote.cash_after_cost, Money::from_cents(9_981));
+        assert_eq!(quote.fuel_cost, Money::from_cents(68));
+        assert_eq!(quote.operating_cost, Money::from_cents(76));
+        assert_eq!(quote.journey_profitability, Money::from_cents(-25));
+        assert_eq!(quote.duration, DurationSeconds::from_seconds(61));
+        assert_eq!(quote.cash_after_cost, Money::from_cents(9_924));
     }
 
     #[test]
     fn passenger_capacity_limits_boarding() {
         let mut state = fixture();
-        state.origin_destination_demand[0].waiting_passengers = 8;
+        state.origin_destination_demand[0].waiting_passengers = 80;
 
         assert_eq!(
             quote_journey(&state, TRAIN_ID, SERVICE_ID)
                 .unwrap()
                 .boarded_passengers,
-            4
+            70
         );
     }
 

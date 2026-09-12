@@ -29,6 +29,7 @@ use ratatui::{
 
 use crate::{
     APPLICATION_NAME,
+    catalog::{model_for_train, train_catalogue},
     model::{GameState, Money, RailStationId, TrainId, TrainStatus, UtcSeconds},
     sim::{
         finance::{FinancialStatus, evaluate_financial_recovery},
@@ -1858,7 +1859,14 @@ fn pending_dispatch(
         .trains
         .iter()
         .find(|train| train.id == train_id)
-        .map_or_else(|| "unknown model".into(), |train| train.model_name.clone());
+        .map_or_else(
+            || "unknown model".into(),
+            |train| {
+                model_for_train(train)
+                    .map(|model| model.name().to_owned())
+                    .unwrap_or_else(|| format!("unknown model ({})", train.model_id.as_str()))
+            },
+        );
     PendingAction {
         label: format!("Manual Dispatch · Train {:02} ({model})", train_id.get()),
         details: vec![format!(
@@ -1874,10 +1882,8 @@ fn pending_purchase(
     catalogue_index: usize,
     delivery_station_id: RailStationId,
 ) -> PendingAction {
-    let model: String = state
-        .rules
-        .balance
-        .diesel_catalogue()
+    let model: String = train_catalogue()
+        .models()
         .get(catalogue_index)
         .map_or_else(
             || "selected catalogue Train".into(),
@@ -1900,7 +1906,14 @@ fn pending_resale(state: &GameState, train_id: TrainId) -> PendingAction {
         .trains
         .iter()
         .find(|train| train.id == train_id)
-        .map_or_else(|| "unknown model".into(), |train| train.model_name.clone());
+        .map_or_else(
+            || "unknown model".into(),
+            |train| {
+                model_for_train(train)
+                    .map(|model| model.name().to_owned())
+                    .unwrap_or_else(|| format!("unknown model ({})", train.model_id.as_str()))
+            },
+        );
     PendingAction {
         label: format!("Train resale · Train {:02} ({model})", train_id.get()),
         details: vec!["Sale proceeds were credited only after the save succeeded.".into()],

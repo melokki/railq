@@ -4,7 +4,7 @@ use std::{error::Error, fs, path::Path};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
-    model::{Money, RailStationId, TrainStatus, UtcSeconds},
+    model::{Money, RailStationId, TrainModelId, TrainStatus, UtcSeconds},
     sim::{
         fleet::{purchase_train, sell_train},
         journeys::dispatch_journey,
@@ -115,14 +115,14 @@ fn fleet_browser_states_missing_details_explicitly_and_captures_task_evidence()
     let mut missing = create_new_game(42, "Missing-data Passenger", STARTED_AT);
     missing.player_company.funds = Money::from_cents(1_000_000);
     purchase_train(&mut missing, 0, RailStationId::new(1))?;
-    missing.player_company.fleet.trains[0].model_name.clear();
+    missing.player_company.fleet.trains[0].model_id = TrainModelId::new("missing-model");
     missing.player_company.fleet.trains[0].status = TrainStatus::Ready {
         at: RailStationId::new(99),
     };
     let mut missing_shell = Shell::new();
     press(&mut missing_shell, &missing, KeyCode::Char('t'));
     let missing_render = capture_rendered_buffer(&missing_shell, &missing, 120, 40);
-    assert!(missing_render.contains("Model unavailable"));
+    assert!(missing_render.contains("Unknown model (missing-model)"));
     assert!(missing_render.contains("Missing Rail Station 99"));
 
     let empty = create_new_game(42, "Empty Fleet Passenger", STARTED_AT);

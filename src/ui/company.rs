@@ -19,6 +19,7 @@ use ratatui::{
 };
 
 use crate::{
+    catalog::train_catalogue,
     model::{GameState, JourneyId, JourneyReceipt, Money, RailStationId},
     sim::finance::{
         FinancialEvaluation, FinancialStatus, RecoveryJourney, RecoveryOption,
@@ -368,10 +369,7 @@ fn recovery_route_label(state: &GameState, option: &RecoveryOption) -> String {
         RecoveryOption::SellAllAndRebuy {
             catalogue_index, ..
         } => {
-            let catalogue_name = state
-                .rules
-                .balance
-                .diesel_catalogue()
+            let catalogue_name = train_catalogue().models()
                 .get(*catalogue_index)
                 .map_or("catalogue Train", |train| train.name());
             format!("Sell Fleet; rebuy {catalogue_name}")
@@ -432,10 +430,7 @@ fn recovery_steps(state: &GameState, option: &RecoveryOption) -> Vec<Line<'stati
             delivery_station_id,
             journey,
         } => {
-            let catalogue_name = state
-                .rules
-                .balance
-                .diesel_catalogue()
+            let catalogue_name = train_catalogue().models()
                 .get(*catalogue_index)
                 .map_or("catalogue Train", |train| train.name());
             vec![
@@ -1112,10 +1107,7 @@ fn compact_recovery_description(state: &GameState, option: &RecoveryOption) -> S
             catalogue_index,
             ..
         } => {
-            let name = state
-                .rules
-                .balance
-                .diesel_catalogue()
+            let name = train_catalogue().models()
                 .get(*catalogue_index)
                 .map_or("catalogue Train", |train| train.name());
             format!(
@@ -1301,10 +1293,7 @@ fn recovery_option_description(state: &GameState, option: &RecoveryOption) -> St
             delivery_station_id,
             journey,
         } => {
-            let catalogue_name = state
-                .rules
-                .balance
-                .diesel_catalogue()
+            let catalogue_name = train_catalogue().models()
                 .get(*catalogue_index)
                 .map_or("catalogue Train", |train| train.name());
             format!(

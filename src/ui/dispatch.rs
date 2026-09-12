@@ -15,6 +15,7 @@ use ratatui::{
 };
 
 use crate::{
+    catalog::model_for_train,
     model::{GameState, Money, RailStationId, TrainId, TrainStatus},
     sim::{
         economy::{JourneyQuote, quote_journey},
@@ -371,7 +372,7 @@ impl DispatchFlow {
                     output.push_str(&format!(
                         " {marker} Train {} ({}) at {location}\n",
                         train.id.get(),
-                        train.model_name
+                        train_model_name(state, train.id)
                     ));
                 }
             }
@@ -716,14 +717,19 @@ fn dispatch_step_line(active: u8) -> Line<'static> {
     Line::from(spans)
 }
 
-fn train_model_name(state: &GameState, train_id: TrainId) -> &str {
-    state
+fn train_model_name(state: &GameState, train_id: TrainId) -> String {
+    let Some(train) = state
         .player_company
         .fleet
         .trains
         .iter()
         .find(|train| train.id == train_id)
-        .map_or("Unknown Train", |train| train.model_name.as_str())
+    else {
+        return "Unknown Train".into();
+    };
+    model_for_train(train)
+        .map(|model| model.name().to_owned())
+        .unwrap_or_else(|| format!("Unknown model ({})", train.model_id.as_str()))
 }
 
 fn format_signed_money(money: Money) -> String {
@@ -804,18 +810,16 @@ fn render_train_chooser(
                 Row::new([
                     Cell::from(format!("Train {:02}", train.id.get())),
                     Cell::from(station_label(state, at).to_owned()),
-                    Cell::from(train.model_name.clone()),
-                    Cell::from(format!("{} pax", train.passenger_capacity.passengers())),
-                    Cell::from(crate::ui::format::speed_kmh(train.speed.metres_per_second())),
-                    Cell::from(format_money_per_kilometre(
-                        train.fuel_cost_per_kilometre.cents_per_kilometre(),
-                    )),
+                    Cell::from(train_model_name(state, train.id)),
+                    Cell::from(format!("{} pax", train_capacity(state, train.id))),
+                    Cell::from(train_speed(state, train.id)),
+                    Cell::from(train_fuel_rate(state, train.id)),
                 ])
             } else {
                 Row::new([
                     Cell::from(format!("Train {:02}", train.id.get())),
-                    Cell::from(train.model_name.clone()),
-                    Cell::from(format!("{} pax", train.passenger_capacity.passengers())),
+                    Cell::from(train_model_name(state, train.id)),
+                    Cell::from(format!("{} pax", train_capacity(state, train.id))),
                     Cell::from(station_label(state, at).to_owned()),
                 ])
             }
@@ -1264,7 +1268,34 @@ fn train_capacity(state: &GameState, train_id: TrainId) -> u32 {
         .trains
         .iter()
         .find(|train| train.id == train_id)
-        .map_or(0, |train| train.passenger_capacity.passengers())
+        .and_then(model_for_train)
+        .map_or(0, |model| model.passenger_capacity().passengers())
+}
+
+fn train_speed(state: &GameState, train_id: TrainId) -> String {
+    state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .and_then(model_for_train)
+        .map(|model| crate::ui::format::speed_kmh(model.speed().metres_per_second()))
+        .unwrap_or_else(|| "Unavailable".into())
+}
+
+fn train_fuel_rate(state: &GameState, train_id: TrainId) -> String {
+    state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .and_then(model_for_train)
+        .map(|model| {
+            format_money_per_kilometre(model.fuel_cost_per_kilometre().cents_per_kilometre())
+        })
+        .unwrap_or_else(|| "Unavailable".into())
 }
 
 fn train_selection_step(
