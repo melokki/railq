@@ -191,6 +191,7 @@ enum MapInk {
     Connected,
     Unconnected,
     Selected,
+    Train,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -251,7 +252,7 @@ fn render_operational_network(
     state: &GameState,
     selection: &mut MapLocationSelection,
 ) {
-    let block = panel_block("Network · ● connected  ○ unconnected", true);
+    let block = panel_block("Network · ● connected  ○ unconnected  ▶ travelling", true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(layout) = operational_layout(state) else {
@@ -268,7 +269,7 @@ fn render_operational_network(
     }
 
     let selected = selection.selected_settlement_id(state);
-    let rows = render_map_rows(&layout, selected, inner.width, inner.height);
+    let rows = render_map_rows(&layout, selected, inner.width, inner.height, state);
     frame.render_widget(
         Paragraph::new(rows).style(theme::panel()).wrap(Wrap { trim: false }),
         inner,
@@ -624,6 +625,7 @@ fn render_map_rows(
     selected: Option<SettlementId>,
     width: u16,
     height: u16,
+    state: &GameState,
 ) -> Vec<Line<'static>> {
     let width = usize::from(width);
     let height = usize::from(height);
@@ -705,6 +707,22 @@ fn render_map_rows(
         }
     }
 
+    let station_positions = layout
+        .places
+        .iter()
+        .filter_map(|place| {
+            place
+                .station_id
+                .map(|station_id| (station_id, screen_position(place)))
+        })
+        .collect::<BTreeMap<_, _>>();
+    draw_active_train_markers(
+        &mut grid,
+        state,
+        &station_positions,
+        state.last_processed_at,
+    );
+
     // Markers are placed first so labels can avoid both stations and existing
     // rail geometry. Labels are then assigned above/below as space allows.
     for place in &layout.places {
@@ -744,6 +762,168 @@ fn render_map_rows(
             Line::from(spans)
         })
         .collect()
+}
+
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct JourneyRouteSegment {
+    from_station_id: RailStationId,
+    to_station_id: RailStationId,
+    distance_metres: u64,
+}
+
+fn draw_active_train_markers(
+    grid: &mut [Vec<MapCell>],
+    state: &GameState,
+    station_positions: &BTreeMap<RailStationId, (i32, i32)>,
+    now: UtcSeconds,
+) {
+    for journey in &state.active_journeys {
+        let Some((position, glyph)) =
+            journey_map_marker(state, journey, station_positions, now)
+        else {
+            continue;
+        };
+
+        let overlapping_train = usize::try_from(position.1)
+            .ok()
+            .and_then(|y| grid.get(y))
+            .and_then(|row| usize::try_from(position.0).ok().and_then(|x| row.get(x)))
+            .is_some_and(|cell| cell.ink == MapInk::Train);
+        put_cell(
+            grid,
+            position.0,
+            position.1,
+            if overlapping_train { '◆' } else { glyph },
+            MapInk::Train,
+        );
+    }
+}
+
+fn journey_map_marker(
+    state: &GameState,
+    journey: &Journey,
+    station_positions: &BTreeMap<RailStationId, (i32, i32)>,
+    now: UtcSeconds,
+) -> Option<((i32, i32), char)> {
+    let segments = journey_route_segments(state, journey)?;
+    let total_distance = segments.iter().try_fold(0_u64, |total, segment| {
+        total.checked_add(segment.distance_metres)
+    })?;
+    if total_distance == 0 {
+        return None;
+    }
+
+    let total_seconds = journey
+        .arrives_at
+        .unix_seconds()
+        .saturating_sub(journey.departed_at.unix_seconds())
+        .max(1);
+    let elapsed_seconds = now
+        .unix_seconds()
+        .saturating_sub(journey.departed_at.unix_seconds())
+        .clamp(0, total_seconds);
+    let travelled_metres =
+        total_distance as f64 * (elapsed_seconds as f64 / total_seconds as f64);
+
+    let mut distance_before = 0.0_f64;
+    for (index, segment) in segments.iter().enumerate() {
+        let segment_distance = segment.distance_metres as f64;
+        let distance_after = distance_before + segment_distance;
+        if travelled_metres <= distance_after || index + 1 == segments.len() {
+            let local_progress = if segment_distance <= f64::EPSILON {
+                0.0
+            } else {
+                ((travelled_metres - distance_before) / segment_distance).clamp(0.0, 1.0)
+            };
+            let start = station_positions.get(&segment.from_station_id).copied()?;
+            let end = station_positions.get(&segment.to_station_id).copied()?;
+            return Some(point_along_orthogonal_rail(start, end, local_progress));
+        }
+        distance_before = distance_after;
+    }
+
+    None
+}
+
+fn journey_route_segments(state: &GameState, journey: &Journey) -> Option<Vec<JourneyRouteSegment>> {
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)?;
+    let network = &state.region.rail_authority.rail_network;
+
+    let line_ids = if journey.origin_station_id == service.first_station_id {
+        service.rail_line_ids.iter().copied().collect::<Vec<_>>()
+    } else if journey.origin_station_id == service.second_station_id {
+        service.rail_line_ids.iter().rev().copied().collect::<Vec<_>>()
+    } else {
+        return None;
+    };
+
+    let mut current_station_id = journey.origin_station_id;
+    let mut segments = Vec::with_capacity(line_ids.len());
+    for rail_line_id in line_ids {
+        let line = network
+            .rail_lines
+            .iter()
+            .find(|line| line.id == rail_line_id)?;
+        let next_station_id = if line.first_station_id == current_station_id {
+            line.second_station_id
+        } else if line.second_station_id == current_station_id {
+            line.first_station_id
+        } else {
+            return None;
+        };
+        segments.push(JourneyRouteSegment {
+            from_station_id: current_station_id,
+            to_station_id: next_station_id,
+            distance_metres: line.distance.metres(),
+        });
+        current_station_id = next_station_id;
+    }
+
+    (current_station_id == journey.destination_station_id).then_some(segments)
+}
+
+fn point_along_orthogonal_rail(
+    start: (i32, i32),
+    end: (i32, i32),
+    progress: f64,
+) -> ((i32, i32), char) {
+    let horizontal_steps = (end.0 - start.0).unsigned_abs();
+    let vertical_steps = (end.1 - start.1).unsigned_abs();
+    let total_steps = horizontal_steps.saturating_add(vertical_steps);
+    if total_steps == 0 {
+        return (start, '▶');
+    }
+
+    let progress = progress.clamp(0.0, 1.0);
+    let mut travelled_steps = if progress <= 0.0 {
+        0
+    } else if progress >= 1.0 {
+        total_steps
+    } else {
+        ((progress * f64::from(total_steps)).floor() as u32)
+            .max(1)
+            .min(total_steps.saturating_sub(1).max(1))
+    };
+
+    if travelled_steps <= horizontal_steps && horizontal_steps > 0 {
+        let direction = (end.0 - start.0).signum();
+        let x = start.0.saturating_add(
+            direction.saturating_mul(i32::try_from(travelled_steps).unwrap_or(i32::MAX)),
+        );
+        return ((x, start.1), if direction >= 0 { '▶' } else { '◀' });
+    }
+
+    travelled_steps = travelled_steps.saturating_sub(horizontal_steps);
+    let direction = (end.1 - start.1).signum();
+    let y = start.1.saturating_add(
+        direction.saturating_mul(i32::try_from(travelled_steps).unwrap_or(i32::MAX)),
+    );
+    ((end.0, y), if direction >= 0 { '▼' } else { '▲' })
 }
 
 fn place_ink(place: &OperationalPlace, selected: Option<SettlementId>) -> MapInk {
@@ -932,6 +1112,7 @@ fn map_ink_style(ink: MapInk) -> Style {
         MapInk::Connected => theme::primary_value(),
         MapInk::Unconnected => theme::secondary(),
         MapInk::Selected => theme::focused_title(),
+        MapInk::Train => theme::warning(),
     }
 }
 
@@ -2330,7 +2511,8 @@ mod tests {
 
     use super::{
         MapDirection, TERMINAL_CELL_HEIGHT_TO_WIDTH, directional_line_length,
-        journey_progress_percent, render_at, schematic_layout,
+        journey_progress_percent, journey_route_segments, point_along_orthogonal_rail, render_at,
+        schematic_layout,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
@@ -2417,6 +2599,43 @@ mod tests {
             * TERMINAL_CELL_HEIGHT_TO_WIDTH;
         let longer_horizontal = directional_line_length(42_000, MapDirection::Right);
         assert!(longer_horizontal > shorter_vertical);
+    }
+
+    #[test]
+    fn train_marker_follows_horizontal_and_vertical_rail_direction() {
+        assert_eq!(
+            point_along_orthogonal_rail((0, 0), (10, 0), 0.5),
+            ((5, 0), '▶')
+        );
+        assert_eq!(
+            point_along_orthogonal_rail((10, 0), (0, 0), 0.5),
+            ((5, 0), '◀')
+        );
+        assert_eq!(
+            point_along_orthogonal_rail((0, 0), (0, 6), 0.5),
+            ((0, 3), '▼')
+        );
+        assert_eq!(
+            point_along_orthogonal_rail((0, 6), (0, 0), 0.5),
+            ((0, 3), '▲')
+        );
+    }
+
+    #[test]
+    fn active_journey_reuses_the_service_rail_line_path_for_map_movement() {
+        let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let origin = RailStationId::new(1);
+        let destination = RailStationId::new(3);
+        let train_id = purchase_train(&mut state, 0, origin).unwrap();
+        let service_id = find_or_create_service(&mut state, origin, destination).unwrap();
+        dispatch_journey(&mut state, train_id, service_id, STARTED_AT).unwrap();
+
+        let journey = &state.active_journeys[0];
+        let segments = journey_route_segments(&state, journey).expect("service path should render");
+
+        assert_eq!(segments.first().unwrap().from_station_id, origin);
+        assert_eq!(segments.last().unwrap().to_station_id, destination);
+        assert_eq!(segments.len(), state.player_company.passenger_services[0].rail_line_ids.len());
     }
 
     #[test]
