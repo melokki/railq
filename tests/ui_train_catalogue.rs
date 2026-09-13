@@ -269,7 +269,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("Express 120"));
     assert!(review.contains("Confirm Train Purchase"));
-    assert!(review.contains("[Enter] purchase"));
+    assert!(review.contains("[Enter] confirm"));
     fs::write(evidence_dir.join("delivery-review-120x40.txt"), review)?;
 
     assert_eq!(
@@ -363,17 +363,27 @@ fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
         "TRAIN ✓   DELIVERY ✓   REVIEW ●",
         "Confirm Train Purchase",
         "Local 70",
-        "Delivery Rail Station:",
-        "Price: $3,000.00",
-        "Company Funds before purchase: $3,005.00",
-        "Company Funds after purchase: $5.00",
-        "Sample Rail Line · reserve example only",
-        "Route:",
-        "Sample departure cost:",
-        "not a planned Passenger",
-        "Service or required Journey.",
+        "TRAIN",
+        "EVN type",
+        "Capacity",
+        "Top speed",
+        "Propulsion",
+        "DELIVERY",
+        "Station",
+        "Delivery fee",
+        "FINANCIAL",
+        "Purchase price",
+        "$3,000.00",
+        "Cash after",
+        "$5.00",
+        "RESERVE CHECK",
+        "Sample route",
+        "Departure cost",
+        "After sample",
         "LOW RESERVE",
-        "[Enter] purchase",
+        "[Enter] confirm",
+        "[←] delivery",
+        "[Esc] cancel",
     ] {
         assert!(review.contains(expected), "review should show {expected}");
     }
@@ -396,10 +406,14 @@ fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
     let compact = capture_rendered_buffer_mut(&mut shell, app.state(), 80, 24);
     for expected in [
         "Local 70",
-        "Company Funds after purchase: $5.00",
-        "Sample departure cost:",
+        "Delivery",
+        "Price",
+        "$3,000.00",
+        "Cash after",
+        "$5.00",
+        "Reserve sample",
         "LOW RESERVE",
-        "[Enter] purchase",
+        "[Enter] confirm",
     ] {
         assert!(
             compact.contains(expected),

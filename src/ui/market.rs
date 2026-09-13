@@ -275,7 +275,7 @@ impl MarketFlow {
                 delivery_station_id,
             } => render_purchase_review(
                 frame,
-                modal::centered_rect(area, 78, 24),
+                modal::confirmation_rect(area, 27),
                 state,
                 *catalogue_index,
                 *delivery_station_id,
@@ -373,8 +373,11 @@ fn render_purchase_review(
     delivery_station_id: RailStationId,
     rejection: Option<&str>,
 ) {
-    let footer =
-        modal::shortcut_line(&[("Enter", "purchase"), ("←", "delivery"), ("Esc", "cancel")]);
+    let footer = modal::shortcut_line(&[
+        ("Enter", "confirm"),
+        ("←", "delivery"),
+        ("Esc", "cancel"),
+    ]);
     let modal_areas = modal::render_shell(frame, area, "Confirm Train Purchase", footer);
 
     let Some(train) = train_catalogue().models().get(catalogue_index) else {
@@ -393,32 +396,36 @@ fn render_purchase_review(
         return;
     };
 
-    let compact = modal_areas.body.height < 17;
-    let mut lines = vec![Line::styled(
-        "TRAIN ✓   DELIVERY ✓   REVIEW ●",
-        theme::focused_title(),
-    )];
-    lines.push(Line::from(""));
+    let compact = modal_areas.body.height < 20;
+    let mut lines = vec![
+        Line::styled("TRAIN ✓   DELIVERY ✓   REVIEW ●", theme::focused_title()),
+        Line::from(""),
+        Line::styled(train.name().to_owned(), theme::focused_title()),
+    ];
+
     if compact {
-        lines.extend(compact_purchase_review_lines(
+        lines.extend(compact_purchase_confirmation_lines(
             state,
             train,
             delivery_station_id,
         ));
     } else {
-        lines.extend(purchase_review_lines(state, train, delivery_station_id));
-        lines.push(Line::from(""));
-        lines.extend(sample_reserve_lines(state, train));
+        lines.extend(purchase_confirmation_lines(
+            state,
+            train,
+            delivery_station_id,
+        ));
     }
+
     lines.push(Line::from(""));
     if low_reserve(state, train) {
         lines.push(Line::styled(
-            "LOW RESERVE · funds after purchase cannot cover the sample departure cost.",
+            "LOW RESERVE · the remaining cash does not cover the sample departure cost.",
             theme::warning(),
         ));
     } else {
         lines.push(Line::styled(
-            "Reserve check · funds after purchase cover the sample departure cost.",
+            "READY TO PURCHASE · sample reserve remains covered.",
             theme::success(),
         ));
     }
@@ -437,110 +444,90 @@ fn render_purchase_review(
     );
 }
 
-fn purchase_review_lines(
-    state: &GameState,
-    train: &TrainModel,
-    delivery_station_id: RailStationId,
-) -> Vec<Line<'static>> {
-    vec![
-        Line::styled(train.name().to_owned(), theme::focused_title()),
-        Line::from(format!(
-            "Delivery Rail Station: {}",
-            station_label(state, delivery_station_id)
-        )),
-        Line::from("Delivery fee: $0.00"),
-        Line::from(""),
-        Line::from(format!("Price: {}", format_money(train.purchase_price()))),
-        Line::from(format!(
-            "Company Funds before purchase: {}",
-            format_money(state.player_company.funds)
-        )),
-        Line::styled(
-            format!(
-                "Company Funds after purchase: {}",
-                funds_after_purchase(state, train)
-            ),
-            theme::primary_value(),
-        ),
-    ]
-}
-
-fn sample_reserve_lines(state: &GameState, train: &TrainModel) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::styled(
-        "Sample Rail Line · reserve example only",
-        theme::secondary(),
-    )];
-    if let Some(sample) = sample_trip(state, train) {
-        lines.extend([
-            Line::from(format!("Route: {} · {}", sample.route, sample.distance)),
-            Line::from(format!(
-                "Infrastructure Access Fee: {}",
-                format_money(sample.access_fee)
-            )),
-            Line::from(format!("Fuel Cost: {}", format_money(sample.fuel_cost))),
-            Line::styled(
-                format!(
-                    "Sample departure cost: {}",
-                    format_money(sample.departure_cost)
-                ),
-                theme::primary_value(),
-            ),
-        ]);
-    } else {
-        lines.push(Line::styled(
-            "Sample departure cost is unavailable for the current Rail Network.",
-            theme::error(),
-        ));
-    }
-    lines.push(Line::from(
-        "This is one Rail Line example, not a planned Passenger Service or required Journey.",
-    ));
-    lines
-}
-
-fn compact_purchase_review_lines(
+fn purchase_confirmation_lines(
     state: &GameState,
     train: &TrainModel,
     delivery_station_id: RailStationId,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
-        Line::styled(format!("Model: {}", train.name()), theme::focused_title()),
-        Line::from(format!(
-            "Delivery Rail Station: {}",
-            station_label(state, delivery_station_id)
-        )),
-        Line::from(format!("Price: {}", format_money(train.purchase_price()))),
-        Line::from(format!(
-            "Company Funds before purchase: {}",
-            format_money(state.player_company.funds)
-        )),
-        Line::styled(
-            format!(
-                "Company Funds after purchase: {}",
-                funds_after_purchase(state, train)
-            ),
-            theme::primary_value(),
+        Line::from(""),
+        Line::styled("TRAIN", theme::secondary()),
+        review_value("EVN type", &format!("{:02} · {}", train.evn_type_code(), train.evn_type_label())),
+        review_value(
+            "Capacity",
+            &format!("{} passengers", train.passenger_capacity().passengers()),
         ),
+        review_value("Top speed", &format_speed_kmh(train)),
+        review_value("Propulsion", train.propulsion_label()),
+        Line::from(""),
+        Line::styled("DELIVERY", theme::secondary()),
+        review_value("Station", &station_label(state, delivery_station_id)),
+        review_value("Delivery fee", "$0.00"),
+        Line::from(""),
+        Line::styled("FINANCIAL", theme::secondary()),
+        review_value("Purchase price", &format_money(train.purchase_price())),
+        review_value("Cash after", &funds_after_purchase(state, train)),
     ];
+
+    lines.push(Line::from(""));
+    lines.push(Line::styled("RESERVE CHECK", theme::secondary()));
     if let Some(sample) = sample_trip(state, train) {
-        lines.push(Line::from(format!("Sample Rail Line: {}", sample.route)));
-        lines.push(Line::styled(
-            format!(
-                "Sample departure cost: {}",
-                format_money(sample.departure_cost)
-            ),
-            theme::primary_value(),
+        lines.push(review_value(
+            "Sample route",
+            &format!("{} · {}", sample.route, sample.distance),
+        ));
+        lines.push(review_value(
+            "Departure cost",
+            &format_money(sample.departure_cost),
+        ));
+        lines.push(review_value(
+            "After sample",
+            &reserve_after_sample_display(state, train, &sample),
         ));
     } else {
         lines.push(Line::styled(
-            "Sample departure cost unavailable.",
-            theme::error(),
+            "Sample reserve is unavailable for the current Rail Network.",
+            theme::secondary(),
         ));
     }
-    lines.push(Line::from(
-        "Sample only; not a planned Passenger Service or required Journey.",
-    ));
     lines
+}
+
+fn compact_purchase_confirmation_lines(
+    state: &GameState,
+    train: &TrainModel,
+    delivery_station_id: RailStationId,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        review_value("Delivery", &station_label(state, delivery_station_id)),
+        review_value("Price", &format_money(train.purchase_price())),
+        review_value("Cash after", &funds_after_purchase(state, train)),
+        review_value(
+            "Train",
+            &format!(
+                "{} seats · {} · {}",
+                train.passenger_capacity().passengers(),
+                format_speed_kmh(train),
+                train.propulsion_label()
+            ),
+        ),
+    ];
+    if let Some(sample) = sample_trip(state, train) {
+        lines.push(review_value(
+            "Reserve sample",
+            &format!("{} · {}", sample.route, format_money(sample.departure_cost)),
+        ));
+    }
+    lines
+}
+
+fn review_value(label: &str, value: &str) -> Line<'static> {
+    const LABEL_WIDTH: usize = 17;
+    Line::from(vec![
+        Span::styled(format!("{label:<width$}", width = LABEL_WIDTH), theme::secondary()),
+        Span::styled(value.to_owned(), theme::primary_value()),
+    ])
 }
 
 fn funds_after_purchase(state: &GameState, train: &TrainModel) -> String {
