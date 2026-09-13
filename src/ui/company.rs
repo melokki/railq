@@ -616,7 +616,7 @@ fn render_wide_dashboard(
     frame.render_widget(shell, area);
 
     let [overview_area, performance_area, history_area] = Layout::vertical([
-        Constraint::Length(7),
+        Constraint::Length(8),
         Constraint::Length(5),
         Constraint::Fill(1),
     ])
@@ -663,14 +663,17 @@ fn render_company_overview(
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
 ) {
-    let [status_area, fleet_area, operations_area, identity_area] = Layout::horizontal([
-        Constraint::Fill(3),
-        Constraint::Fill(2),
-        Constraint::Fill(2),
-        Constraint::Fill(2),
-    ])
-    .spacing(2)
-    .areas(area);
+    // The Company overview is split into identity/status and a compact operating
+    // summary. Current cash plus READY/TRAVELLING counts already belong to the
+    // global shell header, so this dashboard concentrates on business health.
+    let [identity_band, operating_band] =
+        Layout::vertical([Constraint::Length(3), Constraint::Fill(1)])
+            .spacing(1)
+            .areas(area);
+    let [status_area, identity_area] =
+        Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
+            .spacing(2)
+            .areas(identity_band);
 
     let status_lines = match evaluation {
         Ok(evaluation) => vec![
@@ -688,6 +691,39 @@ fn render_company_overview(
         ],
     };
     render_dashboard_section(frame, status_area, status_lines);
+
+    let registration = &state.region.railway_registration;
+    render_dashboard_section(
+        frame,
+        identity_area,
+        vec![
+            section_heading("COMPANY IDENTITY"),
+            Line::from(vec![
+                Span::styled("VKM  ", theme::secondary()),
+                Span::styled(
+                    state.player_company.vehicle_keeper_mark.as_str().to_owned(),
+                    theme::primary_value(),
+                ),
+                Span::styled("   Rail  ", theme::secondary()),
+                Span::styled(
+                    format!("{} · {}", registration.display_code(), registration.mark),
+                    theme::primary_value(),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Region  ", theme::secondary()),
+                Span::styled(state.region.name.clone(), theme::primary_value()),
+            ]),
+        ],
+    );
+
+    let [fleet_area, services_area, network_area] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+    ])
+    .spacing(2)
+    .areas(operating_band);
 
     let trains = &state.player_company.fleet.trains;
     let model_count = trains
@@ -710,54 +746,111 @@ fn render_company_overview(
         ],
     );
 
+    let defined_services = state.player_company.passenger_services.len();
+    let active_services = active_service_count(state);
     render_dashboard_section(
         frame,
-        operations_area,
+        services_area,
         vec![
-            section_heading("OPERATIONS"),
+            section_heading("SERVICES"),
             dashboard_line(
-                "Services",
-                state.player_company.passenger_services.len().to_string(),
+                "Defined",
+                defined_services.to_string(),
                 theme::primary_value(),
             ),
             dashboard_line(
-                "Active journeys",
-                state.active_journeys.len().to_string(),
-                theme::primary_value(),
+                "Active",
+                active_services.to_string(),
+                if active_services > 0 {
+                    theme::success()
+                } else {
+                    theme::primary_value()
+                },
             ),
             dashboard_line(
-                "Rail stations",
-                state
-                    .region
-                    .rail_authority
-                    .rail_network
-                    .rail_stations
-                    .len()
-                    .to_string(),
+                "Idle",
+                defined_services.saturating_sub(active_services).to_string(),
                 theme::primary_value(),
             ),
         ],
     );
 
-    let registration = &state.region.railway_registration;
+    let served_settlements = served_settlement_count(state);
+    let connected_settlements = connected_settlement_count(state);
     render_dashboard_section(
         frame,
-        identity_area,
+        network_area,
         vec![
-            section_heading("COMPANY IDENTITY"),
+            section_heading("NETWORK FOOTPRINT"),
             dashboard_line(
-                "VKM",
-                state.player_company.vehicle_keeper_mark.as_str().to_owned(),
+                "Served",
+                format!("{served_settlements} settlements"),
                 theme::primary_value(),
             ),
-            dashboard_line("Region", state.region.name.clone(), theme::primary_value()),
             dashboard_line(
-                "Rail code",
-                format!("{} · {}", registration.display_code(), registration.mark),
+                "Connected",
+                format!("{connected_settlements} settlements"),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Coverage",
+                settlement_coverage_label(served_settlements, connected_settlements),
                 theme::primary_value(),
             ),
         ],
     );
+}
+
+fn active_service_count(state: &GameState) -> usize {
+    state
+        .player_company
+        .passenger_services
+        .iter()
+        .filter(|service| {
+            state
+                .active_journeys
+                .iter()
+                .any(|journey| journey.service_id == service.id)
+        })
+        .count()
+}
+
+fn connected_settlement_count(state: &GameState) -> usize {
+    state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .map(|station| station.settlement_id)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+fn served_settlement_count(state: &GameState) -> usize {
+    let network = &state.region.rail_authority.rail_network;
+    state
+        .player_company
+        .passenger_services
+        .iter()
+        .flat_map(|service| service.stop_station_ids.iter().copied())
+        .filter_map(|station_id| {
+            network
+                .rail_stations
+                .iter()
+                .find(|station| station.id == station_id)
+                .map(|station| station.settlement_id)
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+fn settlement_coverage_label(served: usize, connected: usize) -> String {
+    if connected == 0 {
+        return "—".into();
+    }
+    let percent = served.saturating_mul(100) / connected;
+    format!("{served} / {connected} · {percent}%")
 }
 
 fn render_dashboard_section(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
@@ -1079,12 +1172,22 @@ fn render_compact_summary(
         ),
         dashboard_line(
             "Services",
-            state.player_company.passenger_services.len().to_string(),
+            format!(
+                "{} · {} active",
+                state.player_company.passenger_services.len(),
+                active_service_count(state),
+            ),
             theme::primary_value(),
         ),
         dashboard_line(
-            "Active journeys",
-            state.active_journeys.len().to_string(),
+            "Coverage",
+            format!(
+                "{} places",
+                settlement_coverage_label(
+                    served_settlement_count(state),
+                    connected_settlement_count(state),
+                )
+            ),
             theme::primary_value(),
         ),
         Line::from(""),

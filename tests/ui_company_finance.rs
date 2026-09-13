@@ -101,9 +101,19 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
             if columns >= 100 {
                 assert!(rendered.contains("FLEET"), "{slug} should show Fleet section");
                 assert!(
-                    rendered.contains("OPERATIONS"),
-                    "{slug} should show Operations section"
+                    rendered.contains("SERVICES"),
+                    "{slug} should show Services summary"
                 );
+                assert!(
+                    rendered.contains("NETWORK FOOTPRINT"),
+                    "{slug} should show network footprint"
+                );
+                assert!(rendered.contains("Defined"), "{slug} should show defined services");
+                assert!(rendered.contains("Active"), "{slug} should show active services");
+                assert!(rendered.contains("Idle"), "{slug} should show idle services");
+                assert!(rendered.contains("Served"), "{slug} should show served settlements");
+                assert!(rendered.contains("Connected"), "{slug} should show connected settlements");
+                assert!(rendered.contains("Coverage"), "{slug} should show network coverage");
                 assert!(
                     rendered.contains("COMPANY IDENTITY"),
                     "{slug} should show Company identity section"
