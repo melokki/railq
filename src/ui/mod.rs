@@ -654,7 +654,7 @@ impl Shell {
             KeyCode::Char('d' | 'D') if self.active_view == View::Trains => {
                 match self.fleet_selection.selected_train_id(state) {
                     Some(train_id) => {
-                        match dispatch::DispatchFlow::start_for_train(state, train_id) {
+                        match dispatch::DispatchFlow::start_with_selected_train(state, train_id) {
                             Ok(flow) => {
                                 self.dispatch_flow = Some(flow);
                                 self.dispatch_returns_to_fleet = true;
@@ -1749,9 +1749,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
                 items.push(FooterShortcut::enabled("PgUp/PgDn", "Scroll"));
             }
             items.push(FooterShortcut::enabled("Enter", "Review"));
-            if flow.fixed_train_id().is_none() {
-                items.push(FooterShortcut::enabled("←", "Back"));
-            }
+            items.push(FooterShortcut::enabled("←", "Back"));
             items.push(FooterShortcut::enabled("Esc", "Cancel"));
             items
         } else {
@@ -2046,11 +2044,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                 "PgUp / PgDn Scroll longer route lists".into(),
                 "Enter Review Journey".into(),
             ]);
-            if flow.fixed_train_id().is_some() {
-                lines.push("Esc Cancel and return to Fleet".into());
-            } else {
-                lines.push("← / Backspace Previous step   Esc Cancel".into());
-            }
+            lines.push("← / Backspace Previous step   Esc Cancel".into());
         } else {
             lines.extend([
                 "Enter Confirm dispatch".into(),

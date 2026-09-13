@@ -129,7 +129,7 @@ fn dispatch_does_not_create_a_service_implicitly() {
 }
 
 #[test]
-fn fleet_dispatch_starts_directly_at_service_selection() {
+fn fleet_dispatch_opens_the_same_train_first_modal_with_the_fleet_train_selected() {
     let (state, _, _) = state_with_ready_trains_and_services();
     let mut shell = Shell::new();
 
@@ -142,8 +142,12 @@ fn fleet_dispatch_starts_directly_at_service_selection() {
         ShellAction::Continue
     );
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(rendered.contains("Choose Passenger Service"));
-    assert!(!rendered.contains("Choose Train"));
+    assert!(rendered.contains("Manual Dispatch"));
+    assert!(rendered.contains("1 TRAIN"));
+    assert!(rendered.contains("2 SERVICE"));
+    assert!(rendered.contains("3 REVIEW"));
+    assert!(rendered.contains("Choose Train"));
+    assert!(rendered.contains("› Train 01"));
 }
 
 #[test]

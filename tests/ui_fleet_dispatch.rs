@@ -52,7 +52,7 @@ fn ready_fleet() -> railq::model::GameState {
 }
 
 #[test]
-fn fleet_d_preselects_the_selected_train_and_returns_to_its_list_focus()
+fn fleet_d_opens_the_shared_dispatch_modal_with_the_selected_train_focused()
 -> Result<(), Box<dyn Error>> {
     let state = ready_fleet();
     let mut shell = Shell::new();
@@ -76,53 +76,42 @@ fn fleet_d_preselects_the_selected_train_and_returns_to_its_list_focus()
     );
 
     for (columns, rows, file_name) in [
-        (120, 40, "fleet-dispatch-service-120x40.txt"),
-        (80, 24, "fleet-dispatch-service-80x24.txt"),
+        (120, 40, "fleet-dispatch-train-120x40.txt"),
+        (80, 24, "fleet-dispatch-train-80x24.txt"),
     ] {
         let rendered = capture_rendered_buffer_mut(&mut shell, &state, columns, rows);
         assert_eq!(rendered.lines().count(), usize::from(rows));
-        assert!(rendered.contains("Dispatch Train 02"));
-        assert!(rendered.contains("1 SERVICE"));
-        assert!(rendered.contains("2 REVIEW"));
+        assert!(rendered.contains("Manual Dispatch"));
+        assert!(rendered.contains("1 TRAIN"));
+        assert!(rendered.contains("2 SERVICE"));
+        assert!(rendered.contains("3 REVIEW"));
+        assert!(rendered.contains("Choose Train"));
         assert!(rendered.contains("Train 02"));
-        assert!(rendered.contains("Choose Passenger Service"));
-        assert!(!rendered.contains("1 TRAIN"));
-        assert!(!rendered.contains("available Fleet"));
-        assert!(!rendered.contains("[←] train"));
         assert_eq!(
             capture_rendered_cell_colors(&shell, &state, columns, rows, 0, 0),
             Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
             "Fleet Dispatch should mute the complete application underneath it",
         );
-        if columns == 120 {
-            let (row, column) = rendered
-                .lines()
-                .enumerate()
-                .find_map(|(row, line)| line.find("R1").map(|column| (row, column)))
-                .expect("the available Service remains visible");
-            assert_eq!(
-                capture_rendered_cell_colors(
-                    &shell,
-                    &state,
-                    columns,
-                    rows,
-                    u16::try_from(column)?,
-                    u16::try_from(row)?,
-                ),
-                Some((theme::BACKGROUND, theme::ACCENT))
-            );
-        }
         fs::write(Path::new(EVIDENCE_DIR).join(file_name), rendered)?;
     }
+
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Enter), &state),
+        ShellAction::Continue
+    );
+    let service = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(service.contains("Manual Dispatch"));
+    assert!(service.contains("Choose Passenger Service"));
+    assert!(service.contains("Train 02"));
+    assert!(service.contains("R1"));
 
     assert_eq!(
         shell.handle_key(key(KeyCode::Left), &state),
         ShellAction::Continue
     );
-    let still_service = capture_rendered_buffer(&shell, &state, 120, 40);
-    assert!(still_service.contains("Dispatch Train 02"));
-    assert!(still_service.contains("Choose Passenger Service"));
-    assert!(!still_service.contains("Choose Train"));
+    let back_to_train = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(back_to_train.contains("Choose Train"));
+    assert!(back_to_train.contains("Train 02"));
 
     assert_eq!(
         shell.handle_key(key(KeyCode::Esc), &state),
@@ -152,6 +141,10 @@ fn fleet_d_explains_why_a_travelling_train_is_unavailable_and_refreshes_eligibil
     );
     assert_eq!(
         shell.handle_key(key(KeyCode::Char('d')), &state),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Enter), &state),
         ShellAction::Continue
     );
     assert_eq!(
@@ -209,6 +202,10 @@ fn fleet_dispatch_commits_through_the_existing_saved_manual_dispatch_transaction
     );
     assert_eq!(
         shell.handle_key(key(KeyCode::Char('d')), app.state()),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Enter), app.state()),
         ShellAction::Continue
     );
     assert_eq!(
