@@ -886,15 +886,9 @@ fn render_train_inspector(
 
             if !dense_detail {
                 inspector_section(&mut lines, "PERFORMANCE", false);
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{:<18}", "Technical"), theme::secondary()),
-                    Span::raw(format!(
-                        "{} · {} · {}",
-                        format_speed(train),
-                        format_propulsion(train),
-                        format_fuel_rate(train),
-                    )),
-                ]));
+                lines.push(labelled_line("Top speed", &format_speed(train)));
+                lines.push(labelled_line("Propulsion", &format_propulsion(train)));
+                lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
             }
         }
         (TrainStatus::Travelling { journey_id }, None) => {
