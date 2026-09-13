@@ -1483,23 +1483,13 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
                 .wrap(Wrap { trim: false }),
             content_area,
         );
-    } else if shell.active_view == View::Company
-        && shell.company_recovery_review_open
-        && !is_bankrupt(state)
-    {
-        company::render_recovery_review(
-            frame,
-            content_area,
-            state,
-            &mut shell.company_recovery_selection,
-        );
     } else if shell.active_view == View::Company && !is_bankrupt(state) {
         company::render_dashboard(
             frame,
             content_area,
             state,
             &mut shell.company_receipt_selection,
-            shell.company_receipt_details_open,
+            false,
         );
     } else if shell.active_view == View::BuyTrains && !is_bankrupt(state) {
         let delivery_flow_open = shell
@@ -1575,6 +1565,8 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
     shell.train_nickname_editor.is_some()
         || shell.company_vkm_editor.is_some()
+        || shell.company_recovery_review_open
+        || shell.company_receipt_details_open
         || (is_bankrupt(state) && shell.restart_confirmation)
         || shell.dispatch_flow.is_some()
         || shell.fleet_flow.is_some()
@@ -1597,6 +1589,24 @@ fn render_focused_modal(
     }
     if let Some(editor) = &shell.company_vkm_editor {
         company::render_vkm_editor(frame, content_area, editor, state);
+        return;
+    }
+    if shell.company_recovery_review_open {
+        company::render_recovery_review(
+            frame,
+            content_area,
+            state,
+            &mut shell.company_recovery_selection,
+        );
+        return;
+    }
+    if shell.company_receipt_details_open {
+        company::render_receipt_modal(
+            frame,
+            content_area,
+            state,
+            &mut shell.company_receipt_selection,
+        );
         return;
     }
     if is_bankrupt(state) && shell.restart_confirmation {
@@ -2838,6 +2848,17 @@ mod tests {
             ShellAction::Continue
         );
         assert!(shell.company_vkm_editor.is_some());
+        let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+        assert!(rendered.contains("Edit Vehicle Keeper Mark"));
+        assert!(rendered.contains("VEHICLE KEEPER MARK"));
+        assert!(rendered.contains("[Enter] save"));
+        assert!(rendered.contains("[Backspace] delete"));
+        assert!(rendered.contains("[Esc] cancel"));
+        assert_eq!(
+            capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
+            Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
+            "VKM editor should mute the Company dashboard underneath it",
+        );
 
         for _ in 0..3 {
             assert_eq!(

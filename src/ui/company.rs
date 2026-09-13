@@ -13,7 +13,7 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
     widgets::{
-        Block, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
+        Block, Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
         TableState, Wrap,
     },
 };
@@ -25,7 +25,7 @@ use crate::{
         FinancialEvaluation, FinancialStatus, RecoveryJourney, RecoveryOption,
         evaluate_financial_recovery,
     },
-    ui::theme,
+    ui::{modal, theme},
 };
 
 const MAXIMUM_RECOVERY_OPTIONS_SHOWN: usize = 3;
@@ -92,50 +92,43 @@ impl VkmEditor {
     }
 }
 
-/// Renders the VKM edit dialog above the Company workspace.
+/// Renders the VKM editor using the shared focused-modal treatment.
 pub fn render_vkm_editor(frame: &mut Frame, area: Rect, editor: &VkmEditor, state: &GameState) {
-    let width = area.width.min(68).max(36);
-    let height = area.height.min(11).max(8);
-    let card = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
+    let card = modal::editor_rect(area, 13);
+    let modal_areas = modal::render_shell(
+        frame,
+        card,
+        "Edit Vehicle Keeper Mark",
+        modal::shortcut_line(&[("Enter", "save"), ("Backspace", "delete"), ("Esc", "cancel")]),
     );
-    frame.render_widget(Clear, card);
-    let block = panel_block("Vehicle Keeper Mark", true);
-    let inner = block.inner(card);
-    frame.render_widget(block, card);
 
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("Company  ", theme::secondary()),
+            Span::styled("Company       ", theme::secondary()),
             Span::styled(state.player_company.name.clone(), theme::title()),
         ]),
         Line::from(""),
-        Line::from(Span::styled(
-            "VKM is the 2–5 letter keeper mark used to identify your company on rolling stock.",
-            theme::secondary(),
-        )),
-        Line::from(Span::styled(
-            "Changing it updates the displayed marking; the numeric EVN stays unchanged.",
-            theme::secondary(),
-        )),
-        Line::from(""),
+        section_heading("VEHICLE KEEPER MARK"),
         Line::from(vec![
-            Span::styled("VKM  ", theme::secondary()),
-            Span::styled(format!("{:<5}", editor.draft()), theme::focused_title()),
+            Span::styled("VKM           ", theme::secondary()),
+            Span::styled(editor.draft().to_owned(), theme::focused_title()),
+            Span::styled("▏", theme::focused_title()),
         ]),
+        Line::from(""),
+        Line::styled(
+            "2–5 letters A–Z. The keeper mark changes; the numeric EVN does not.",
+            theme::secondary(),
+        ),
     ];
     if let Some(error) = editor.error() {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(error.to_owned(), theme::error())));
+        lines.push(Line::styled(error.to_owned(), theme::error()));
     }
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        inner,
+        modal_areas.body,
     );
 }
 
@@ -325,15 +318,11 @@ pub fn render_dashboard(
     area: Rect,
     state: &GameState,
     selection: &mut ReceiptSelection,
-    receipt_details_open: bool,
+    _receipt_details_open: bool,
 ) {
     selection.synchronize(state);
-    if receipt_details_open && !(area.width >= 100 && area.height >= 20) {
-        render_compact_receipt_details(frame, area, state, selection);
-        return;
-    }
     if area.width >= 100 && area.height >= 20 {
-        render_wide_dashboard(frame, area, state, selection, receipt_details_open);
+        render_wide_dashboard(frame, area, state, selection);
     } else if area.width >= 76 && area.height >= 12 {
         render_compact_dashboard(frame, area, state, selection);
     } else {
@@ -341,44 +330,97 @@ pub fn render_dashboard(
     }
 }
 
-/// Renders the calculated recovery routes as an explicit, read-only review.
-/// Each route points to the workspace where its first action can be reviewed;
-/// no Train sale, purchase, or Manual Dispatch is authorised from this screen.
+/// Renders the calculated recovery routes as a focused review modal.
+/// The modal never performs a sale, purchase, or dispatch itself; Enter only
+/// moves the Player to the workspace where that action can be reviewed.
 pub fn render_recovery_review(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
     selection: &mut RecoverySelection,
 ) {
+    let card = modal::workflow_rect(area);
+    let compact = card.width < 76;
+    let footer = if compact {
+        modal::shortcut_line(&[("↑↓", "route"), ("Enter", "review"), ("Esc", "cancel")])
+    } else {
+        modal::shortcut_line(&[
+            ("↑↓/JK", "route"),
+            ("PgUp/PgDn", "page"),
+            ("Enter", "review"),
+            ("Esc", "cancel"),
+        ])
+    };
+    let modal_areas = modal::render_shell(frame, card, "Financial Recovery", footer);
+
     let Some(evaluation) = recovery_evaluation(state) else {
         frame.render_widget(
-            Paragraph::new(
-                "Recovery routes are available only while the Player Company is Insolvent.",
-            )
-            .block(panel_block("Recovery review", true))
+            Paragraph::new(vec![
+                section_heading("RECOVERY UNAVAILABLE"),
+                Line::from(""),
+                Line::styled(
+                    "Finite recovery routes are available only while the Player Company is Insolvent.",
+                    theme::secondary(),
+                ),
+            ])
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-            area,
+            modal_areas.body,
         );
         return;
     };
 
     selection.synchronize(evaluation.recovery_options.len());
-    if area.width >= 96 && area.height >= 16 {
-        let [routes_area, instructions_area] =
-            Layout::horizontal([Constraint::Length(36), Constraint::Fill(1)])
-                .spacing(1)
-                .areas(area);
+    if compact || modal_areas.body.height < 12 {
+        let [routes_area, separator_area, detail_area] = Layout::vertical([
+            Constraint::Length(6),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(modal_areas.body);
         render_recovery_routes(frame, routes_area, state, &evaluation, selection);
-        render_recovery_instructions(frame, instructions_area, state, &evaluation, selection);
+        modal::render_horizontal_separator(frame, separator_area);
+        render_recovery_instructions(frame, detail_area, state, &evaluation, selection);
     } else {
-        let [routes_area, instructions_area] =
-            Layout::vertical([Constraint::Length(4), Constraint::Fill(1)])
-                .spacing(1)
-                .areas(area);
+        let [routes_area, separator_area, detail_area] = Layout::horizontal([
+            Constraint::Length(34),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(modal_areas.body);
         render_recovery_routes(frame, routes_area, state, &evaluation, selection);
-        render_recovery_instructions(frame, instructions_area, state, &evaluation, selection);
+        modal::render_vertical_separator(frame, separator_area);
+        render_recovery_instructions(frame, detail_area, state, &evaluation, selection);
     }
+}
+
+/// Renders the selected retained Journey receipt as a focused modal over the
+/// Company dashboard. The receipt selection remains owned by the history list.
+pub fn render_receipt_modal(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut ReceiptSelection,
+) {
+    let receipt = selection.selected_receipt(state);
+    let title = receipt.map_or_else(
+        || "Journey Receipt".to_owned(),
+        |receipt| format!("Journey Receipt · J{:02}", receipt.journey_id.get()),
+    );
+    let card = modal::centered_rect(area, 76, 18);
+    let modal_areas = modal::render_shell(
+        frame,
+        card,
+        &title,
+        modal::shortcut_line(&[("Esc", "close")]),
+    );
+    let lines = receipt_detail_lines(state, receipt);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        modal_areas.body,
+    );
 }
 
 fn recovery_evaluation(state: &GameState) -> Option<FinancialEvaluation> {
@@ -397,7 +439,13 @@ fn render_recovery_routes(
     evaluation: &FinancialEvaluation,
     selection: &mut RecoverySelection,
 ) {
-    selection.set_page_size(usize::from(area.height.saturating_sub(3)).max(1));
+    let [heading_area, list_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(section_heading("FINITE RECOVERY ROUTES")).style(theme::panel()),
+        heading_area,
+    );
+    selection.set_page_size(usize::from(list_area.height).max(1));
     let routes = evaluation
         .recovery_options
         .iter()
@@ -410,11 +458,10 @@ fn render_recovery_routes(
         })
         .collect::<Vec<_>>();
     let list = List::new(routes)
-        .block(panel_block("Finite recovery routes", true))
         .highlight_style(theme::selected_row())
         .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
-    frame.render_stateful_widget(list, area, &mut selection.list_state);
+    frame.render_stateful_widget(list, list_area, &mut selection.list_state);
 }
 
 fn render_recovery_instructions(
@@ -434,27 +481,29 @@ fn render_recovery_instructions(
     let destination = selection
         .selected_destination(state)
         .expect("a selected recovery route has a destination");
-    let mut lines = vec![Line::styled(
-        format!(
-            "Route {} · {}",
-            selection.list_state.selected().unwrap_or(0) + 1,
-            recovery_route_label(state, option)
+    let mut lines = vec![
+        section_heading("ROUTE DETAILS"),
+        Line::styled(
+            format!(
+                "Route {} · {}",
+                selection.list_state.selected().unwrap_or(0) + 1,
+                recovery_route_label(state, option)
+            ),
+            theme::title(),
         ),
-        theme::title(),
-    )];
-    lines.push(Line::from(""));
+        Line::from(""),
+    ];
     lines.extend(recovery_steps(state, option));
     lines.push(Line::from(""));
     lines.push(Line::styled(
         format!(
-            "Next review: {}. Nothing is sold, bought, or dispatched from this screen.",
+            "Next review: {}. Nothing is sold, bought, or dispatched from this modal.",
             recovery_destination_label(destination)
         ),
         theme::secondary(),
     ));
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel_block("Ordered recovery instructions", true))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         area,
@@ -590,7 +639,6 @@ fn render_wide_dashboard(
     area: Rect,
     state: &GameState,
     selection: &mut ReceiptSelection,
-    receipt_details_open: bool,
 ) {
     let evaluation = evaluate_financial_recovery(state);
 
@@ -611,22 +659,6 @@ fn render_wide_dashboard(
 
     render_company_overview(frame, overview_area, state, &evaluation);
     render_financial_performance(frame, performance_area, state);
-
-    if receipt_details_open {
-        let [receipts_area, details_area] =
-            Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
-                .spacing(2)
-                .areas(history_area);
-        render_receipts_table(frame, receipts_area, state, selection, true);
-        render_receipt_details(
-            frame,
-            details_area,
-            state,
-            selection.selected_receipt(state),
-            false,
-        );
-        return;
-    }
 
     let recovery_relevant = evaluation.as_ref().map_or(true, |evaluation| {
         evaluation.status != FinancialStatus::Operating
@@ -1217,30 +1249,11 @@ fn render_compact_summary(
     );
 }
 
-fn render_receipt_details(
-    frame: &mut Frame,
-    area: Rect,
+fn receipt_detail_lines(
     state: &GameState,
     receipt: Option<&JourneyReceipt>,
-    compact: bool,
-) {
-    let (content_area, heading) = if compact {
-        let block = panel_block("Journey receipt", true);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        (inner, None)
-    } else {
-        let [heading_area, content_area] =
-            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-        (content_area, Some(heading_area))
-    };
-    if let Some(heading_area) = heading {
-        frame.render_widget(
-            Paragraph::new(section_heading("SELECTED JOURNEY RECEIPT")).style(theme::panel()),
-            heading_area,
-        );
-    }
-    let lines = match receipt {
+) -> Vec<Line<'static>> {
+    match receipt {
         Some(receipt) => {
             let result = receipt_result_cents(
                 receipt.revenue,
@@ -1259,6 +1272,7 @@ fn render_receipt_details(
                 Line::from(""),
             ];
             if receipt_has_operating_context(receipt) {
+                lines.push(section_heading("JOURNEY"));
                 lines.extend([
                     financial_line(
                         "Route",
@@ -1284,6 +1298,7 @@ fn render_receipt_details(
                 ));
                 lines.push(Line::from(""));
             }
+            lines.push(section_heading("FINANCIAL"));
             lines.extend([
                 financial_line(
                     "Revenue",
@@ -1308,23 +1323,7 @@ fn render_receipt_details(
             "The selected receipt is no longer retained.",
             theme::secondary(),
         )],
-    };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(theme::panel())
-            .wrap(Wrap { trim: true }),
-        content_area,
-    );
-}
-
-fn render_compact_receipt_details(
-    frame: &mut Frame,
-    area: Rect,
-    state: &GameState,
-    selection: &mut ReceiptSelection,
-) {
-    let receipt = selection.selected_receipt(state);
-    render_receipt_details(frame, area, state, receipt, true);
+    }
 }
 
 fn panel_block(title: &str, focused: bool) -> Block<'_> {

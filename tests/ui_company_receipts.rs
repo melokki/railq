@@ -94,12 +94,20 @@ fn retained_receipts_scroll_keep_the_selected_journey_across_arrivals_and_open_d
         ShellAction::Continue
     );
     let detail = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(detail.contains("Journey Receipt · J06"));
     assert!(detail.contains("Journey 6 · retained receipt"));
+    assert!(detail.contains("JOURNEY"));
+    assert!(detail.contains("FINANCIAL"));
     assert!(detail.contains("$600.00"));
     assert!(detail.contains("$60.00"));
     assert!(detail.contains("$15.00"));
     assert!(detail.contains("+$525.00"));
-    assert!(detail.contains("[Esc] Back"));
+    assert!(detail.contains("[Esc] close"));
+    assert_eq!(
+        capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
+        Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
+        "Journey Receipt should mute the Company dashboard underneath it",
+    );
     assert!(!detail.contains("Esc returns to Journey history."));
     fs::write(evidence_dir.join("detail-120x40.txt"), detail)?;
 
@@ -123,8 +131,10 @@ fn retained_receipts_scroll_keep_the_selected_journey_across_arrivals_and_open_d
         ShellAction::Continue
     );
     let compact_detail = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
+    assert!(compact_detail.contains("Journey Receipt · J06"));
     assert!(compact_detail.contains("Journey 6 · retained receipt"));
     assert!(compact_detail.contains("+$525.00"));
+    assert!(compact_detail.contains("[Esc] close"));
     fs::write(evidence_dir.join("detail-80x24.txt"), compact_detail)?;
     Ok(())
 }

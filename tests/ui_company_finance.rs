@@ -234,8 +234,16 @@ fn company_footer_owns_contextual_actions_without_repeating_navigation() {
         ShellAction::Continue
     );
     let recovery = capture_rendered_buffer(&recovery_shell, &insolvency, 120, 40);
-    assert!(recovery.contains("[Enter] Review"));
-    assert!(recovery.contains("[Esc] Back"));
+    assert!(recovery.contains("Financial Recovery"));
+    assert!(recovery.contains("FINITE RECOVERY ROUTES"));
+    assert!(recovery.contains("ROUTE DETAILS"));
+    assert!(recovery.contains("[Enter] review"));
+    assert!(recovery.contains("[Esc] cancel"));
+    assert_eq!(
+        capture_rendered_cell_colors(&recovery_shell, &insolvency, 120, 40, 0, 0),
+        Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
+        "Financial Recovery should mute the Company dashboard underneath it",
+    );
     assert!(!recovery.contains("Enter opens"));
     assert!(!recovery.contains("Esc returns to Company"));
 }
