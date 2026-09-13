@@ -69,7 +69,9 @@ fn map_header_separates_registration_from_the_marker_legend() {
         .name
         .as_str();
 
-    assert!(rendered.contains(&format!("◆ {selected_name}")));
+    // Selection identity belongs to the map marker/label and inspector; the
+    // border no longer repeats it as a second focus caption.
+    assert!(!rendered.contains(&format!("◆ {selected_name}")));
     assert!(rendered.contains("● station"));
     assert!(rendered.contains("○ settlement"));
     assert!(rendered.contains("▶ train"));
@@ -82,13 +84,25 @@ fn map_station_inspector_uses_operational_sections_without_embedded_shortcuts() 
     let shell = Shell::new();
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
-    assert!(rendered.contains("Connected"));
     assert!(rendered.contains("OPERATIONS"));
-    assert!(rendered.contains("Ready trains"));
+    assert!(rendered.contains("Ready here"));
     assert!(rendered.contains("Services"));
     assert!(rendered.contains("PASSENGERS"));
     assert!(rendered.contains("Waiting"));
     assert!(rendered.contains("Arrival rate"));
-    assert!(rendered.contains("DIRECT LINKS"));
+    assert!(!rendered.contains("DIRECT LINKS"));
+    assert!(!rendered.contains("Direct links"));
     assert!(!rendered.contains("d Dispatch · all READY Trains"));
+}
+
+#[test]
+fn map_footer_contains_actions_without_repeating_header_status() -> Result<(), Box<dyn Error>> {
+    let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    purchase_train(&mut state, 0, RailStationId::new(1))?;
+    let shell = Shell::new();
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+
+    assert!(rendered.contains("[D] Dispatch"));
+    assert!(!rendered.contains("Dispatch · 1 ready"));
+    Ok(())
 }

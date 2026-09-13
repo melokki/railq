@@ -2,7 +2,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
     model::{RailStationId, UtcSeconds},
     sim::{services::create_service, world::create_new_game},
-    ui::{Shell, ShellAction, capture_rendered_buffer_mut},
+    ui::{
+        Shell, ShellAction, capture_rendered_buffer_mut, capture_rendered_cell_colors, theme,
+    },
 };
 
 fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) -> ShellAction {
@@ -25,6 +27,11 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     assert!(create.contains("1 STOPS"));
     assert!(create.contains("Route Preview"));
     assert!(create.contains("Choose the next stop"));
+    assert_eq!(
+        capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
+        Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
+        "Create Service should mute the complete application underneath it",
+    );
 
     assert_eq!(press(&mut shell, &state, KeyCode::Enter), ShellAction::Continue);
     assert_eq!(press(&mut shell, &state, KeyCode::Down), ShellAction::Continue);

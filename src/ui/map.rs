@@ -261,7 +261,7 @@ fn render_operational_network(
     selection: &mut MapLocationSelection,
 ) {
     let selected = selection.selected_settlement_id(state);
-    let block = operational_network_block(state, selected, area.width);
+    let block = operational_network_block(state, area.width);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(layout) = operational_layout(state) else {
@@ -284,11 +284,7 @@ fn render_operational_network(
     );
 }
 
-fn operational_network_block(
-    state: &GameState,
-    selected: Option<SettlementId>,
-    width: u16,
-) -> Block<'static> {
+fn operational_network_block(state: &GameState, width: u16) -> Block<'static> {
     let registration = format!(
         "{} {}",
         state.region.railway_registration.display_code(),
@@ -314,38 +310,9 @@ fn operational_network_block(
         );
     }
 
-    // Keep the current keyboard focus visible even when the compact layout has
-    // no permanent inspector. This also makes selection changes obvious without
-    // adding another status row inside the map.
-    if width >= 34 {
-        if let Some(selected_name) = selected.and_then(|selected_id| {
-            state
-                .region
-                .settlements
-                .iter()
-                .find(|settlement| settlement.id == selected_id)
-                .map(|settlement| settlement.name.clone())
-        }) {
-            let focus_width = if width >= 82 {
-                width.saturating_sub(50)
-            } else {
-                width.saturating_sub(8)
-            };
-            let selected_name = truncate_label(&selected_name, usize::from(focus_width.max(8)));
-            block = block.title_bottom(
-                Line::from(vec![
-                    Span::styled(" ◆ ", theme::focused_title()),
-                    Span::styled(selected_name, theme::focused_title()),
-                    Span::styled(" ", theme::secondary()),
-                ])
-                .left_aligned(),
-            );
-        }
-    }
-
-    // Marker meanings remain available as quiet reference material. The focus
-    // label owns the left side of the lower border, so the legend only appears
-    // when there is enough room for both without visual crowding.
+    // Marker meanings are spatial information, so the map keeps only this
+    // compact legend. The selected location is already identified by its map
+    // marker/label and by the inspector when one is visible.
     if width >= 82 {
         block = block.title_bottom(
             Line::from(vec![
@@ -396,7 +363,9 @@ fn render_location_inspector(
         .find(|station| station.settlement_id == settlement.id);
     let compact = area.height < 18;
 
-    let (status_title, lines) = if let Some(station) = station {
+    // The inspector owns facts about the selected location. Connectivity and
+    // route geometry stay on the map; keyboard actions stay in the footer.
+    let lines = if let Some(station) = station {
         let ready_count = ready_trains(state, station.id).len();
         let service_count = state
             .player_company
@@ -425,39 +394,13 @@ fn render_location_inspector(
             total.saturating_add(*per_hour)
         });
 
-        let mut links = state
-            .region
-            .rail_authority
-            .rail_network
-            .rail_lines
-            .iter()
-            .filter(|line| {
-                line.first_station_id == station.id || line.second_station_id == station.id
-            })
-            .map(|line| {
-                let other = if line.first_station_id == station.id {
-                    line.second_station_id
-                } else {
-                    line.first_station_id
-                };
-                (station_name(state, other), line.distance.metres())
-            })
-            .collect::<Vec<_>>();
-        links.sort_by_key(|(_, metres)| *metres);
-
-        let status_title = Line::from(vec![
-            Span::styled(" ● ", theme::success()),
-            Span::styled("Connected ", theme::success()),
-        ])
-        .right_aligned();
-
         let mut lines = vec![
             inspector_metric("Station", &format!("{:02}", station.id.get())),
             inspector_metric("Population", &format_population(settlement.population)),
         ];
 
         if compact {
-            lines.push(inspector_metric("Ready trains", &ready_count.to_string()));
+            lines.push(inspector_metric("Ready here", &ready_count.to_string()));
             lines.push(inspector_metric("Services", &service_count.to_string()));
             lines.push(inspector_metric(
                 "Demand",
@@ -466,11 +409,10 @@ fn render_location_inspector(
                     format_population(u64::from(waiting_total))
                 ),
             ));
-            lines.push(inspector_metric("Direct links", &links.len().to_string()));
         } else {
             lines.push(Line::from(""));
             lines.push(inspector_section("OPERATIONS"));
-            lines.push(inspector_metric("Ready trains", &ready_count.to_string()));
+            lines.push(inspector_metric("Ready here", &ready_count.to_string()));
             lines.push(inspector_metric("Services", &service_count.to_string()));
 
             lines.push(Line::from(""));
@@ -491,27 +433,10 @@ fn render_location_inspector(
                     lines.push(inspector_destination_line(&name, waiting, per_hour));
                 }
             }
-
-            lines.push(Line::from(""));
-            lines.push(inspector_section("DIRECT LINKS"));
-            if links.is_empty() {
-                lines.push(Line::styled("No direct rail links.", theme::secondary()));
-            } else {
-                let visible_links = if area.height >= 28 { 4 } else { 2 };
-                for (name, metres) in links.into_iter().take(visible_links) {
-                    lines.push(inspector_link_line(&name, metres));
-                }
-            }
         }
 
-        (status_title, lines)
+        lines
     } else {
-        let status_title = Line::from(vec![
-            Span::styled(" ○ ", theme::warning()),
-            Span::styled("Unconnected ", theme::warning()),
-        ])
-        .right_aligned();
-
         let mut lines = vec![inspector_metric(
             "Population",
             &format_population(settlement.population),
@@ -528,18 +453,14 @@ fn render_location_inspector(
                 "Passenger services require a connection to the rail network.",
                 theme::secondary(),
             ));
-            lines.push(Line::from(""));
-            lines.push(inspector_section("NETWORK"));
-            lines.push(inspector_metric("Direct links", "0"));
         }
 
-        (status_title, lines)
+        lines
     };
 
-    let block = panel_block(&settlement.name, false).title_top(status_title);
     frame.render_widget(
         Paragraph::new(lines)
-            .block(block)
+            .block(panel_block(&settlement.name, false))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         area,
@@ -562,14 +483,6 @@ fn inspector_destination_line(name: &str, waiting: u32, per_hour: u32) -> Line<'
     Line::from(vec![
         Span::styled(format!("→ {name:<13}"), theme::secondary()),
         Span::styled(format!("{waiting} · +{per_hour}/h"), theme::primary_value()),
-    ])
-}
-
-fn inspector_link_line(name: &str, metres: u64) -> Line<'static> {
-    let name = truncate_label(name, 16);
-    Line::from(vec![
-        Span::styled(format!("{name:<17}"), theme::secondary()),
-        Span::styled(format_distance(metres), theme::primary_value()),
     ])
 }
 

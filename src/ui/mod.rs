@@ -1859,12 +1859,9 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         if train_count == 0 {
             items.push(FooterShortcut::enabled("3", "Market"));
         } else if ready == 0 {
-            items.push(FooterShortcut::disabled("D", "no: travelling"));
-        } else if wide {
-            items.push(FooterShortcut::enabled(
-                "D",
-                format!("Dispatch · {ready} ready"),
-            ));
+            // The header already owns Fleet status. Keep the footer purely
+            // action-oriented and let disabled styling communicate availability.
+            items.push(FooterShortcut::disabled("D", "Dispatch"));
         } else {
             items.push(FooterShortcut::enabled("D", "Dispatch"));
         }

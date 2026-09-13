@@ -8,7 +8,10 @@ use railq::{
         services::create_service,
         world::create_new_game,
     },
-    ui::{Shell, ShellAction, capture_rendered_buffer, capture_rendered_buffer_mut},
+    ui::{
+        Shell, ShellAction, capture_rendered_buffer, capture_rendered_buffer_mut,
+        capture_rendered_cell_colors, theme,
+    },
 };
 
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_700_000_000);
@@ -54,6 +57,11 @@ fn manual_dispatch_moves_from_train_to_service_to_review() {
     assert!(train_step.contains("Choose Train"));
     assert!(train_step.contains("Train 01"));
     assert!(train_step.contains("Train 02"));
+    assert_eq!(
+        capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
+        Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
+        "Manual Dispatch should mute the complete application underneath it",
+    );
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),
