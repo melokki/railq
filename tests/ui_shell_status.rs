@@ -58,3 +58,20 @@ fn map_header_separates_registration_from_the_marker_legend() {
     assert!(rendered.contains("▶ train"));
     assert!(!rendered.contains("● connected  ○ unconnected  ▶ travelling"));
 }
+
+#[test]
+fn map_station_inspector_uses_operational_sections_without_embedded_shortcuts() {
+    let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let shell = Shell::new();
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+
+    assert!(rendered.contains("Connected"));
+    assert!(rendered.contains("OPERATIONS"));
+    assert!(rendered.contains("Ready trains"));
+    assert!(rendered.contains("Services"));
+    assert!(rendered.contains("PASSENGERS"));
+    assert!(rendered.contains("Waiting"));
+    assert!(rendered.contains("Arrival rate"));
+    assert!(rendered.contains("DIRECT LINKS"));
+    assert!(!rendered.contains("d Dispatch · all READY Trains"));
+}

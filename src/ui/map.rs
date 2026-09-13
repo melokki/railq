@@ -228,10 +228,13 @@ pub fn render_operational_map(
 ) {
     selection.synchronize(state);
     if area.width >= 92 && area.height >= 14 {
-        let [map_area, inspector_area] =
-            Layout::horizontal([Constraint::Min(48), Constraint::Length(36)])
-                .spacing(1)
-                .areas(area);
+        let inspector_width = if area.width >= 120 { 40 } else { 36 };
+        let [map_area, inspector_area] = Layout::horizontal([
+            Constraint::Min(48),
+            Constraint::Length(inspector_width),
+        ])
+        .spacing(1)
+        .areas(area);
         render_operational_network(frame, map_area, state, selection);
         render_location_inspector(frame, inspector_area, state, selection);
     } else if area.height >= 17 {
@@ -356,19 +359,17 @@ fn render_location_inspector(
         .rail_stations
         .iter()
         .find(|station| station.settlement_id == settlement.id);
-    let mut lines = Vec::new();
+    let compact = area.height < 18;
 
-    if let Some(station) = station {
-        let ready = ready_trains(state, station.id);
-        lines.push(Line::styled("● CONNECTED", theme::success()));
-        lines.push(labelled_line("Ready trains", &ready.len().to_string()));
-        lines.push(labelled_line(
-            "Population",
-            &format_population(settlement.population),
-        ));
+    let (status_title, lines) = if let Some(station) = station {
+        let ready_count = ready_trains(state, station.id).len();
+        let service_count = state
+            .player_company
+            .passenger_services
+            .iter()
+            .filter(|service| service.stop_station_ids.contains(&station.id))
+            .count();
 
-        lines.push(Line::from(""));
-        lines.push(Line::styled("PASSENGER DEMAND", theme::title()));
         let mut demand = state
             .origin_destination_demand
             .iter()
@@ -382,19 +383,13 @@ fn render_location_inspector(
             })
             .collect::<Vec<_>>();
         demand.sort_by_key(|(_, waiting, _)| Reverse(*waiting));
-        if demand.is_empty() {
-            lines.push(Line::styled("No demand data available.", theme::secondary()));
-        } else {
-            for (name, waiting, per_hour) in demand.into_iter().take(4) {
-                lines.push(Line::from(vec![
-                    Span::styled(format!("→ {name:<12}"), theme::secondary()),
-                    Span::raw(format!("{waiting} · +{per_hour}/h")),
-                ]));
-            }
-        }
+        let waiting_total = demand.iter().fold(0_u32, |total, (_, waiting, _)| {
+            total.saturating_add(*waiting)
+        });
+        let arrival_rate_total = demand.iter().fold(0_u32, |total, (_, _, per_hour)| {
+            total.saturating_add(*per_hour)
+        });
 
-        lines.push(Line::from(""));
-        lines.push(Line::styled("RAIL LINKS", theme::title()));
         let mut links = state
             .region
             .rail_authority
@@ -414,49 +409,145 @@ fn render_location_inspector(
             })
             .collect::<Vec<_>>();
         links.sort_by_key(|(_, metres)| *metres);
-        if links.is_empty() {
-            lines.push(Line::styled("No direct Rail Links.", theme::secondary()));
+
+        let status_title = Line::from(vec![
+            Span::styled(" ● ", theme::success()),
+            Span::styled("Connected ", theme::success()),
+        ])
+        .right_aligned();
+
+        let mut lines = vec![
+            inspector_metric("Station", &format!("{:02}", station.id.get())),
+            inspector_metric("Population", &format_population(settlement.population)),
+        ];
+
+        if compact {
+            lines.push(inspector_metric("Ready trains", &ready_count.to_string()));
+            lines.push(inspector_metric("Services", &service_count.to_string()));
+            lines.push(inspector_metric(
+                "Demand",
+                &format!(
+                    "{} · +{arrival_rate_total}/h",
+                    format_population(u64::from(waiting_total))
+                ),
+            ));
+            lines.push(inspector_metric("Direct links", &links.len().to_string()));
         } else {
-            for (name, metres) in links.into_iter().take(4) {
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{name:<16}"), theme::secondary()),
-                    Span::raw(format_distance(metres)),
-                ]));
+            lines.push(Line::from(""));
+            lines.push(inspector_section("OPERATIONS"));
+            lines.push(inspector_metric("Ready trains", &ready_count.to_string()));
+            lines.push(inspector_metric("Services", &service_count.to_string()));
+
+            lines.push(Line::from(""));
+            lines.push(inspector_section("PASSENGERS"));
+            lines.push(inspector_metric(
+                "Waiting",
+                &format_population(u64::from(waiting_total)),
+            ));
+            lines.push(inspector_metric(
+                "Arrival rate",
+                &format!("+{arrival_rate_total}/h"),
+            ));
+
+            if !demand.is_empty() && area.height >= 24 {
+                lines.push(Line::from(""));
+                lines.push(inspector_section("TOP MARKETS"));
+                for (name, waiting, per_hour) in demand.into_iter().take(3) {
+                    lines.push(inspector_destination_line(&name, waiting, per_hour));
+                }
+            }
+
+            lines.push(Line::from(""));
+            lines.push(inspector_section("DIRECT LINKS"));
+            if links.is_empty() {
+                lines.push(Line::styled("No direct rail links.", theme::secondary()));
+            } else {
+                let visible_links = if area.height >= 28 { 4 } else { 2 };
+                for (name, metres) in links.into_iter().take(visible_links) {
+                    lines.push(inspector_link_line(&name, metres));
+                }
             }
         }
 
-        lines.push(Line::from(""));
-        lines.push(Line::styled(
-            "d Dispatch · all READY Trains",
-            theme::hint(),
-        ));
+        (status_title, lines)
     } else {
-        lines.push(Line::styled("○ UNCONNECTED", theme::warning()));
-        lines.push(labelled_line(
+        let status_title = Line::from(vec![
+            Span::styled(" ○ ", theme::warning()),
+            Span::styled("Unconnected ", theme::warning()),
+        ])
+        .right_aligned();
+
+        let mut lines = vec![inspector_metric(
             "Population",
             &format_population(settlement.population),
-        ));
-        lines.push(Line::from(""));
-        lines.push(Line::styled("RAIL ACCESS", theme::title()));
-        lines.push(Line::styled("No Rail Station", theme::secondary()));
-        lines.push(Line::styled(
-            "Passenger rail service is not currently available.",
-            theme::secondary(),
-        ));
-        lines.push(Line::from(""));
-        lines.push(Line::styled(
-            "d Dispatch · all READY Trains",
-            theme::hint(),
-        ));
-    }
+        )];
 
+        if compact {
+            lines.push(inspector_metric("Rail access", "No station"));
+            lines.push(inspector_metric("Passenger rail", "Unavailable"));
+        } else {
+            lines.push(Line::from(""));
+            lines.push(inspector_section("RAIL ACCESS"));
+            lines.push(Line::styled("No rail station", theme::primary_value()));
+            lines.push(Line::styled(
+                "Passenger services require a connection to the rail network.",
+                theme::secondary(),
+            ));
+            lines.push(Line::from(""));
+            lines.push(inspector_section("NETWORK"));
+            lines.push(inspector_metric("Direct links", "0"));
+        }
+
+        (status_title, lines)
+    };
+
+    let block = panel_block(&settlement.name, false).title_top(status_title);
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel_block(&settlement.name, false))
+            .block(block)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn inspector_section(label: &str) -> Line<'static> {
+    Line::styled(label.to_owned(), theme::secondary().bold())
+}
+
+fn inspector_metric(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<15}"), theme::secondary()),
+        Span::styled(value.to_owned(), theme::primary_value()),
+    ])
+}
+
+fn inspector_destination_line(name: &str, waiting: u32, per_hour: u32) -> Line<'static> {
+    let name = truncate_label(name, 13);
+    Line::from(vec![
+        Span::styled(format!("→ {name:<13}"), theme::secondary()),
+        Span::styled(format!("{waiting} · +{per_hour}/h"), theme::primary_value()),
+    ])
+}
+
+fn inspector_link_line(name: &str, metres: u64) -> Line<'static> {
+    let name = truncate_label(name, 16);
+    Line::from(vec![
+        Span::styled(format!("{name:<17}"), theme::secondary()),
+        Span::styled(format_distance(metres), theme::primary_value()),
+    ])
+}
+
+fn truncate_label(value: &str, max_chars: usize) -> String {
+    let mut characters = value.chars();
+    let prefix = characters.by_ref().take(max_chars).collect::<String>();
+    if characters.next().is_some() && max_chars > 1 {
+        let mut shortened = prefix.chars().take(max_chars - 1).collect::<String>();
+        shortened.push('…');
+        shortened
+    } else {
+        prefix
+    }
 }
 
 fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
