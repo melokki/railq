@@ -260,7 +260,8 @@ fn render_operational_network(
     state: &GameState,
     selection: &mut MapLocationSelection,
 ) {
-    let block = operational_network_block(state, area.width);
+    let selected = selection.selected_settlement_id(state);
+    let block = operational_network_block(state, selected, area.width);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(layout) = operational_layout(state) else {
@@ -276,7 +277,6 @@ fn render_operational_network(
         return;
     }
 
-    let selected = selection.selected_settlement_id(state);
     let rows = render_map_rows(&layout, selected, inner.width, inner.height, state);
     frame.render_widget(
         Paragraph::new(rows).style(theme::panel()).wrap(Wrap { trim: false }),
@@ -284,7 +284,11 @@ fn render_operational_network(
     );
 }
 
-fn operational_network_block(state: &GameState, width: u16) -> Block<'static> {
+fn operational_network_block(
+    state: &GameState,
+    selected: Option<SettlementId>,
+    width: u16,
+) -> Block<'static> {
     let registration = format!(
         "{} {}",
         state.region.railway_registration.display_code(),
@@ -310,15 +314,42 @@ fn operational_network_block(state: &GameState, width: u16) -> Block<'static> {
         );
     }
 
-    // Marker meanings remain available, but as quiet reference material on the
-    // lower border instead of competing with the panel title. On compact maps
-    // the legend disappears before it can crowd the usable map area.
-    if width >= 62 {
+    // Keep the current keyboard focus visible even when the compact layout has
+    // no permanent inspector. This also makes selection changes obvious without
+    // adding another status row inside the map.
+    if width >= 34 {
+        if let Some(selected_name) = selected.and_then(|selected_id| {
+            state
+                .region
+                .settlements
+                .iter()
+                .find(|settlement| settlement.id == selected_id)
+                .map(|settlement| settlement.name.clone())
+        }) {
+            let focus_width = if width >= 82 {
+                width.saturating_sub(50)
+            } else {
+                width.saturating_sub(8)
+            };
+            let selected_name = truncate_label(&selected_name, usize::from(focus_width.max(8)));
+            block = block.title_bottom(
+                Line::from(vec![
+                    Span::styled(" ◆ ", theme::focused_title()),
+                    Span::styled(selected_name, theme::focused_title()),
+                    Span::styled(" ", theme::secondary()),
+                ])
+                .left_aligned(),
+            );
+        }
+    }
+
+    // Marker meanings remain available as quiet reference material. The focus
+    // label owns the left side of the lower border, so the legend only appears
+    // when there is enough room for both without visual crowding.
+    if width >= 82 {
         block = block.title_bottom(
             Line::from(vec![
-                Span::styled(" ◆ ", theme::focused_title()),
-                Span::styled("selected", theme::secondary()),
-                Span::styled("   ● ", theme::primary_value()),
+                Span::styled(" ● ", theme::primary_value()),
                 Span::styled("station", theme::secondary()),
                 Span::styled("   ○ ", theme::secondary()),
                 Span::styled("settlement", theme::secondary()),
@@ -884,11 +915,14 @@ fn render_map_rows(
         state.last_processed_at,
     );
 
-    // Labels follow the same focus hierarchy as the markers: the selected
-    // location is strongest, its direct Rail neighbours stay readable, and
-    // the rest of the network recedes. Operational counts live in the inspector
-    // instead of being repeated beside every station name.
-    for place in &layout.places {
+    // Labels follow the same focus hierarchy as the markers. Place the current
+    // focus first, then its direct neighbours, so background labels cannot steal
+    // the best collision-free position from the context the player is operating.
+    // Operational counts live in the inspector instead of being repeated beside
+    // every station name.
+    let mut label_places = layout.places.iter().collect::<Vec<_>>();
+    label_places.sort_by_key(|place| focus_rank(place, selected, &adjacent));
+    for place in label_places {
         let (x, y) = screen_position(place);
         let label = map_place_label(place, selected);
         place_map_label(
@@ -1177,6 +1211,22 @@ fn place_ink(
     }
 }
 
+fn focus_rank(
+    place: &OperationalPlace,
+    selected: Option<SettlementId>,
+    adjacent: &BTreeSet<SettlementId>,
+) -> u8 {
+    if selected == Some(place.settlement_id) {
+        0
+    } else if adjacent.contains(&place.settlement_id) {
+        1
+    } else if place.station_id.is_some() {
+        2
+    } else {
+        3
+    }
+}
+
 fn map_place_label(place: &OperationalPlace, selected: Option<SettlementId>) -> String {
     if selected == Some(place.settlement_id) {
         place.name.to_uppercase()
@@ -1419,8 +1469,8 @@ fn map_ink_style(ink: MapInk) -> Style {
         MapInk::Rail => theme::secondary().add_modifier(Modifier::DIM),
         MapInk::RailAccent => theme::focused_title(),
         MapInk::RailLabel => theme::focused_border(),
-        MapInk::Connected => theme::secondary(),
-        MapInk::ConnectedAdjacent => theme::primary_value(),
+        MapInk::Connected => theme::secondary().add_modifier(Modifier::DIM),
+        MapInk::ConnectedAdjacent => theme::primary_value().add_modifier(Modifier::BOLD),
         MapInk::Unconnected => theme::secondary().add_modifier(Modifier::DIM),
         MapInk::Selected => theme::focused_title(),
         MapInk::Train => theme::warning().add_modifier(Modifier::BOLD),
@@ -2860,9 +2910,9 @@ mod tests {
 
     use super::{
         MapCell, MapDirection, RAIL_LEFT, RAIL_RIGHT, TERMINAL_CELL_HEIGHT_TO_WIDTH,
-        directional_line_length, journey_progress_percent, journey_route_segments, map_place_label,
-        operational_layout, place_link_distance_label, point_along_orthogonal_rail, rail_glyph,
-        render_at, schematic_layout,
+        directional_line_length, focus_rank, journey_progress_percent, journey_route_segments,
+        map_place_label, operational_layout, place_link_distance_label, point_along_orthogonal_rail,
+        rail_glyph, render_at, schematic_layout, selected_neighbours,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
@@ -2951,6 +3001,48 @@ mod tests {
 
         let selected = map_place_label(place, Some(place.settlement_id));
         assert_eq!(selected, place.name.to_uppercase());
+    }
+
+    #[test]
+    fn focus_priority_gives_selection_and_direct_neighbours_first_claim_on_labels() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let layout = operational_layout(&state).expect("starter map layout");
+        let selected = layout
+            .places
+            .iter()
+            .find(|place| place.station_id == Some(RailStationId::new(1)))
+            .expect("starter station 01 should be on map");
+        let adjacent = selected_neighbours(&layout, Some(selected.settlement_id));
+
+        assert_eq!(focus_rank(selected, Some(selected.settlement_id), &adjacent), 0);
+
+        let neighbour = layout
+            .places
+            .iter()
+            .find(|place| adjacent.contains(&place.settlement_id))
+            .expect("starter station 01 has a direct neighbour");
+        assert_eq!(focus_rank(neighbour, Some(selected.settlement_id), &adjacent), 1);
+
+        let background_station = layout
+            .places
+            .iter()
+            .find(|place| {
+                place.station_id.is_some()
+                    && place.settlement_id != selected.settlement_id
+                    && !adjacent.contains(&place.settlement_id)
+            })
+            .expect("starter network has a non-adjacent connected station");
+        assert_eq!(
+            focus_rank(background_station, Some(selected.settlement_id), &adjacent),
+            2
+        );
+
+        let unconnected = layout
+            .places
+            .iter()
+            .find(|place| place.station_id.is_none())
+            .expect("starter world has an unconnected settlement");
+        assert_eq!(focus_rank(unconnected, Some(selected.settlement_id), &adjacent), 3);
     }
 
     #[test]

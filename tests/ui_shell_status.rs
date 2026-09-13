@@ -53,7 +53,23 @@ fn map_header_separates_registration_from_the_marker_legend() {
     assert!(rendered.contains("Network"));
     assert!(rendered.contains("Registration ·"));
     assert!(rendered.contains(&registration));
-    assert!(rendered.contains("◆ selected"));
+    let selected_station = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .first()
+        .expect("starter world has a selected station");
+    let selected_name = state
+        .region
+        .settlements
+        .iter()
+        .find(|settlement| settlement.id == selected_station.settlement_id)
+        .expect("selected station belongs to a settlement")
+        .name
+        .as_str();
+
+    assert!(rendered.contains(&format!("◆ {selected_name}")));
     assert!(rendered.contains("● station"));
     assert!(rendered.contains("○ settlement"));
     assert!(rendered.contains("▶ train"));
