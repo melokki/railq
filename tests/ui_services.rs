@@ -146,6 +146,54 @@ fn active_service_inspector_surfaces_live_operating_context() {
 }
 
 #[test]
+fn compact_service_workspace_prioritizes_live_summary_without_clipping() {
+    let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
+    let mut state = create_new_game(42, "Alden Passenger", started_at);
+    state.player_company.funds = Money::from_cents(10_000_000);
+    let service_id = create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(2)],
+    )
+    .unwrap();
+    let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
+
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('s'));
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
+
+    assert!(rendered.contains("IN SERVICE"));
+    assert!(rendered.contains("Next arrival"));
+    assert!(rendered.contains("On board"));
+    assert!(rendered.contains("Expected result"));
+    assert!(
+        !rendered.contains("RUNNING TRAINS"),
+        "the tight inspector should preserve the summary instead of overflowing with train detail",
+    );
+}
+
+#[test]
+fn wide_service_picker_surfaces_live_state_without_repeating_full_stop_pattern() {
+    let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
+    let mut state = create_new_game(42, "Alden Passenger", started_at);
+    state.player_company.funds = Money::from_cents(10_000_000);
+    let service_id = create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(2)],
+    )
+    .unwrap();
+    let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
+
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('s'));
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+
+    assert!(rendered.contains("State"));
+    assert!(rendered.contains("LIVE · 1"));
+}
+
+#[test]
 fn service_footer_keeps_delete_visible_but_disabled_while_service_is_active() {
     let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
     let mut state = create_new_game(42, "Alden Passenger", started_at);
