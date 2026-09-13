@@ -17,11 +17,23 @@ pub const WARNING: Color = Color::Rgb(240, 189, 101);
 pub const SUCCESS: Color = Color::Rgb(139, 212, 156);
 pub const ERROR: Color = Color::Rgb(240, 128, 128);
 
+/// Muted foreground used for application content behind a focused modal.
+pub const MODAL_BACKDROP_TEXT: Color = Color::Rgb(84, 100, 112);
+/// Dark scrim-like background used while a focused modal owns input.
+pub const MODAL_BACKDROP: Color = Color::Rgb(12, 19, 25);
+
 pub const THIN_BORDERS: Borders = Borders::ALL;
 pub const SELECTION_MARKER: &str = "> ";
 
 pub fn terminal() -> Style {
     Style::default().bg(BACKGROUND).fg(PRIMARY)
+}
+
+/// Re-styles an already rendered application layer as a muted modal backdrop.
+/// `Style::reset` intentionally removes bold/selection treatment so bright
+/// rows and tabs cannot compete with the active dialog.
+pub fn modal_backdrop() -> Style {
+    Style::reset().fg(MODAL_BACKDROP_TEXT).bg(MODAL_BACKDROP)
 }
 
 pub fn panel() -> Style {

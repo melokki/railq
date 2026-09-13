@@ -36,6 +36,17 @@ pub fn centered_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
     }
 }
 
+/// Dims an already rendered application layer before drawing a focused modal.
+///
+/// Terminal UIs have no alpha channel, so the Bastion-style backdrop is
+/// achieved by re-styling the existing cells while preserving their symbols.
+/// The modal is rendered afterwards with the normal RailQ palette.
+pub fn dim_backdrop(frame: &mut Frame, area: Rect) {
+    frame
+        .buffer_mut()
+        .set_style(area, theme::modal_backdrop());
+}
+
 /// Draws the shared RailQ modal shell and returns the padded body/footer areas.
 pub fn render_shell(
     frame: &mut Frame,

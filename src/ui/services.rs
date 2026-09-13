@@ -273,17 +273,33 @@ impl ServiceWorkspace {
             .map(|service| service.id)
     }
 
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
-        // Keep the workspace visible behind focused workflows. This mirrors the
-        // modal grammar used by Manual Dispatch and makes Create Service feel
-        // like a temporary task rather than an entirely different screen.
-        render_service_list(frame, area, state, self.selected_service_index);
+    /// Returns whether Passenger Services currently owns a focused modal.
+    pub fn has_modal(&self) -> bool {
+        self.create_flow.is_some() || self.delete_confirmation.is_some()
+    }
 
+    /// Renders only the persistent Passenger Services workspace.  The shell
+    /// draws focused modals in a later layer so it can dim the entire
+    /// application underneath them, including the header and footer.
+    pub fn render_base(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        render_service_list(frame, area, state, self.selected_service_index);
+    }
+
+    /// Renders the currently focused Passenger Services modal, if any.
+    pub fn render_modal(&self, frame: &mut Frame, area: Rect, state: &GameState) {
         if let Some(flow) = &self.create_flow {
             render_create_flow(frame, create_service_modal_rect(area), state, flow);
         } else if let Some(service_id) = self.delete_confirmation {
             render_delete_confirmation(frame, area, state, service_id);
         }
+    }
+
+    /// Convenience renderer retained for callers outside the application
+    /// shell.  The live shell uses `render_base` + `render_modal` as separate
+    /// layers so the backdrop can be muted between them.
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        self.render_base(frame, area, state);
+        self.render_modal(frame, area, state);
     }
 }
 

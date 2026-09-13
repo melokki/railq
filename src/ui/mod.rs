@@ -1387,7 +1387,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
     );
 
     if !is_bankrupt(state) && shell.active_view == View::Map && shell.services_open {
-        shell.service_workspace.render(frame, content_area, state);
+        shell
+            .service_workspace
+            .render_base(frame, content_area, state);
     } else if !is_bankrupt(state) && shell.active_view == View::Map {
         map::render_operational_map(
             frame,
@@ -1395,10 +1397,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             state,
             &mut shell.map_location_selection,
         );
-    } else if !is_bankrupt(state)
-        && shell.active_view == View::Trains
-        && shell.dispatch_flow.is_none()
-    {
+    } else if !is_bankrupt(state) && shell.active_view == View::Trains {
         shell.fleet_split_visible = content_area.width >= 96 && content_area.height >= 18;
         if shell.fleet_split_visible {
             shell.fleet_details_open = false;
@@ -1411,13 +1410,6 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             &mut shell.fleet_selection,
             shell.fleet_details_open,
         );
-        if let Some(flow) = &shell.fleet_flow {
-            flow.render_review(frame, content_area, state);
-        }
-    } else if shell.active_view == View::Trains && shell.dispatch_flow.is_some() {
-        if let Some(flow) = &mut shell.dispatch_flow {
-            flow.render_panel(frame, content_area, state);
-        }
     } else if shell.active_view == View::Trains {
         frame.render_widget(
             Paragraph::new(fleet::render_at(state, now))
@@ -1452,15 +1444,16 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             shell.company_receipt_details_open,
         );
     } else if shell.active_view == View::BuyTrains && !is_bankrupt(state) {
-        let purchase_confirmation_open = shell
+        let delivery_flow_open = shell
             .market_flow
             .as_ref()
-            .is_some_and(market::MarketFlow::is_confirming);
-        if shell.market_flow.is_none() || purchase_confirmation_open {
+            .is_some_and(market::MarketFlow::is_selecting_delivery);
+        if delivery_flow_open {
+            if let Some(flow) = &mut shell.market_flow {
+                flow.render_panel(frame, content_area, state);
+            }
+        } else {
             market::render_dashboard(frame, content_area, state, &mut shell.market_selection);
-        }
-        if let Some(flow) = &mut shell.market_flow {
-            flow.render_panel(frame, content_area, state);
         }
     } else {
         let content = if is_bankrupt(state) {
@@ -1492,35 +1485,88 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         );
     }
 
-    if !is_bankrupt(state) && shell.active_view == View::Map {
-        if let Some(flow) = &mut shell.dispatch_flow {
-            let modal_area = dispatch_modal_rect(content_area);
-            frame.render_widget(Clear, modal_area);
-            flow.render_panel(frame, modal_area, state);
-        }
-    }
-    if is_bankrupt(state) && shell.restart_confirmation {
-        render_bankruptcy_restart_confirmation(frame, content_area);
-    }
-
     render_footer(frame, footer_area, shell, state);
 
+    // Focused workflows are a separate presentation layer.  The entire app is
+    // first muted, then the modal is painted with the normal palette so input
+    // ownership is obvious without making the dialog larger or brighter.
+    if focused_modal_visible(shell, state) {
+        modal::dim_backdrop(frame, area);
+        render_focused_modal(frame, content_area, shell, state);
+    }
+
+    // Informational overlays can stack above an active workflow (for example
+    // Help opened from Dispatch).  Each layer dims what is already underneath
+    // it, which keeps the topmost interaction visually unambiguous.
     if shell.world_details_visible {
+        modal::dim_backdrop(frame, area);
         render_world_details_overlay(frame, area, state);
     }
-    if let Some(editor) = &shell.train_nickname_editor {
-        fleet::render_nickname_editor(frame, content_area, editor, state);
-    }
-    if let Some(editor) = &shell.company_vkm_editor {
-        company::render_vkm_editor(frame, content_area, editor, state);
-    }
     if shell.help_visible {
+        modal::dim_backdrop(frame, area);
         render_help_overlay(frame, area, shell, state);
     }
     if shell.outcome_details_open {
         if let Some(outcome) = &shell.action_outcome {
+            modal::dim_backdrop(frame, area);
             render_outcome_overlay(frame, area, outcome);
         }
+    }
+}
+
+fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
+    shell.train_nickname_editor.is_some()
+        || shell.company_vkm_editor.is_some()
+        || (is_bankrupt(state) && shell.restart_confirmation)
+        || shell.dispatch_flow.is_some()
+        || shell.fleet_flow.is_some()
+        || shell
+            .market_flow
+            .as_ref()
+            .is_some_and(market::MarketFlow::is_confirming)
+        || (shell.services_open && shell.service_workspace.has_modal())
+}
+
+fn render_focused_modal(
+    frame: &mut ratatui::Frame,
+    content_area: Rect,
+    shell: &mut Shell,
+    state: &GameState,
+) {
+    if let Some(editor) = &shell.train_nickname_editor {
+        fleet::render_nickname_editor(frame, content_area, editor, state);
+        return;
+    }
+    if let Some(editor) = &shell.company_vkm_editor {
+        company::render_vkm_editor(frame, content_area, editor, state);
+        return;
+    }
+    if is_bankrupt(state) && shell.restart_confirmation {
+        render_bankruptcy_restart_confirmation(frame, content_area);
+        return;
+    }
+    if let Some(flow) = &mut shell.dispatch_flow {
+        flow.render_panel(frame, dispatch_modal_rect(content_area), state);
+        return;
+    }
+    if let Some(flow) = &shell.fleet_flow {
+        flow.render_review(frame, content_area, state);
+        return;
+    }
+    if shell
+        .market_flow
+        .as_ref()
+        .is_some_and(market::MarketFlow::is_confirming)
+    {
+        if let Some(flow) = &mut shell.market_flow {
+            flow.render_panel(frame, content_area, state);
+        }
+        return;
+    }
+    if shell.services_open && shell.service_workspace.has_modal() {
+        shell
+            .service_workspace
+            .render_modal(frame, content_area, state);
     }
 }
 
