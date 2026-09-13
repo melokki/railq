@@ -622,7 +622,7 @@ impl Shell {
             KeyCode::Esc if self.active_view == View::Trains && self.fleet_details_open => {
                 self.fleet_details_open = false;
             }
-            KeyCode::Char('n' | 'N') if self.active_view == View::Trains => {
+            KeyCode::Char('r' | 'R' | 'n' | 'N') if self.active_view == View::Trains => {
                 match self.fleet_selection.selected_train_id(state) {
                     Some(train_id) => match fleet::TrainNicknameEditor::start(state, train_id) {
                         Ok(editor) => {
@@ -1767,73 +1767,26 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             FooterShortcut::enabled("Esc", "Cancel"),
         ]
     } else if shell.active_view == View::Trains && shell.fleet_details_open {
-        let selected = shell
-            .fleet_selection
-            .selected_train_id(state)
-            .and_then(|id| {
-                state
-                    .player_company
-                    .fleet
-                    .trains
-                    .iter()
-                    .find(|train| train.id == id)
-            });
-        let mut items = vec![
-            FooterShortcut::enabled("Esc", "Back"),
-            FooterShortcut::enabled("N", "Rename"),
-        ];
-        match selected {
-            Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
-                items.push(FooterShortcut::enabled("D", "Dispatch"));
-                items.push(FooterShortcut::enabled("S", "Resale"));
-            }
-            Some(_) => {
-                items.push(FooterShortcut::disabled("D", "no: travel"));
-                items.push(FooterShortcut::disabled("S", "no: travel"));
-            }
-            None => {
-                items.push(FooterShortcut::disabled("D", "unavailable"));
-                items.push(FooterShortcut::disabled("S", "unavailable"));
-            }
-        }
+        let mut items = vec![FooterShortcut::enabled("Esc", "Back")];
+        items.extend(fleet_action_shortcuts(shell, state));
         items
     } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
         if state.player_company.fleet.trains.is_empty() {
-            vec![FooterShortcut::enabled("3", "Market")]
+            let mut items = vec![FooterShortcut::enabled("3", "Market")];
+            items.extend(fleet_action_shortcuts(shell, state));
+            items
         } else {
-            let selected = shell
-                .fleet_selection
-                .selected_train_id(state)
-                .and_then(|id| {
-                    state
-                        .player_company
-                        .fleet
-                        .trains
-                        .iter()
-                        .find(|train| train.id == id)
-                });
             let mut items = vec![FooterShortcut::enabled(
                 if compact { "↑↓" } else { "↑↓/JK" },
                 "Train",
             )];
+            if wide {
+                items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
+            }
             if !shell.fleet_split_visible {
                 items.push(FooterShortcut::enabled("Enter", "Details"));
             }
-            items.push(FooterShortcut::enabled("N", "Rename"));
-            match selected {
-                Some(train) if matches!(&train.status, TrainStatus::Ready { .. }) => {
-                    items.push(FooterShortcut::enabled("D", "Dispatch"));
-                    items.push(FooterShortcut::enabled("S", "Resale"));
-                }
-                Some(_) => {
-                    items.push(FooterShortcut::disabled("D", "no: travel"));
-                    items.push(FooterShortcut::disabled("S", "no: travel"));
-                }
-                None => {
-                    items.push(FooterShortcut::disabled("D", "unavailable"));
-                    items.push(FooterShortcut::disabled("S", "unavailable"));
-                }
-            }
+            items.extend(fleet_action_shortcuts(shell, state));
             items
         }
     } else if shell.active_view == View::Map && shell.services_open {
@@ -1934,6 +1887,41 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         width,
     );
     actions
+}
+
+fn fleet_action_shortcuts(shell: &mut Shell, state: &GameState) -> Vec<FooterShortcut> {
+    let selected = shell
+        .fleet_selection
+        .selected_train_id(state)
+        .and_then(|id| {
+            state
+                .player_company
+                .fleet
+                .trains
+                .iter()
+                .find(|train| train.id == id)
+        });
+    let has_selection = selected.is_some();
+    let is_ready = selected
+        .is_some_and(|train| matches!(&train.status, TrainStatus::Ready { .. }));
+
+    vec![
+        if has_selection {
+            FooterShortcut::enabled("R", "Rename")
+        } else {
+            FooterShortcut::disabled("R", "Rename")
+        },
+        if is_ready {
+            FooterShortcut::enabled("D", "Dispatch")
+        } else {
+            FooterShortcut::disabled("D", "Dispatch")
+        },
+        if is_ready {
+            FooterShortcut::enabled("S", "Sell")
+        } else {
+            FooterShortcut::disabled("S", "Sell")
+        },
+    ]
 }
 
 fn shell_status_line(state: &GameState, now: UtcSeconds, width: u16) -> String {
@@ -2187,7 +2175,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
             } else if shell.fleet_details_open {
                 lines.extend([
                     "Esc Back to Fleet".into(),
-                    "n Rename selected Train".into(),
+                    "r Rename selected Train".into(),
                     "d Dispatch selected READY Train".into(),
                     "s Review resale of selected READY Train".into(),
                 ]);
@@ -2196,7 +2184,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                     "↑↓ / jk Select Train".into(),
                     "PgUp / PgDn Scroll".into(),
                     "Enter Details".into(),
-                    "n Rename selected Train".into(),
+                    "r Rename selected Train".into(),
                     "d Dispatch selected READY Train".into(),
                     "s Review resale of selected READY Train".into(),
                 ]);
@@ -3067,6 +3055,7 @@ mod tests {
         let trains_help = super::help_lines(&shell, &state).join("\n");
         assert!(trains_help.contains("Current · Trains"));
         assert!(trains_help.contains("d Dispatch selected READY Train"));
+        assert!(trains_help.contains("r Rename selected Train"));
 
         shell.handle_key(
             KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE),

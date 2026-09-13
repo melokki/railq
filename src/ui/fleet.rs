@@ -1188,11 +1188,6 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
             }
         }
     }
-    writeln!(
-        output,
-        "\nPress N to rename the selected Train. Press S to review resale for a READY Train."
-    )
-    .expect("writing to a String cannot fail");
     if state
         .player_company
         .fleet
@@ -1201,15 +1196,9 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
         .all(|train| matches!(train.status, TrainStatus::Travelling { .. }))
     {
         if let Some(eta) = nearest_arrival(state, now) {
-            writeln!(
-                output,
-                "Next useful action: wait for the nearest Train arrival (ETA {eta})."
-            )
-            .expect("writing to a String cannot fail");
+            writeln!(output, "Next arrival: {eta}.")
+                .expect("writing to a String cannot fail");
         }
-    } else {
-        writeln!(output, "READY Trains can enter Manual Dispatch with D.")
-            .expect("writing to a String cannot fail");
     }
     output
 }

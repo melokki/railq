@@ -64,7 +64,7 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     assert!(wide.contains("TRAVELLING"));
     assert!(wide.contains("Remaining"));
     assert!(!wide.contains("ACTIONS"));
-    assert!(wide.contains("[N] Rename"));
+    assert!(wide.contains("[R] Rename"));
 
     let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     assert!(compact.contains("› Train 01  TRAVELLING"));
@@ -98,6 +98,56 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     state.player_company.fleet.trains.reverse();
     let after_reorder = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     assert!(after_reorder.contains("› Train 06  READY"));
+}
+
+#[test]
+fn fleet_footer_owns_actions_and_mutes_unavailable_train_actions() {
+    let state = operating_fleet();
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('t'));
+
+    let travelling = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(travelling.contains("[R] Rename"));
+    assert!(travelling.contains("[D] Dispatch"));
+    assert!(travelling.contains("[S] Sell"));
+    assert!(!travelling.contains("no: travel"));
+    assert!(!travelling.contains("ACTIONS"));
+
+    let (row, column) = travelling
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("[D] Dispatch").map(|column| (row, column)))
+        .expect("travelling Train keeps Dispatch visible in the footer");
+    assert_eq!(
+        capture_rendered_cell_colors(
+            &shell,
+            &state,
+            120,
+            40,
+            u16::try_from(column).unwrap(),
+            u16::try_from(row).unwrap(),
+        ),
+        Some((theme::SECONDARY, theme::PANEL)),
+    );
+
+    press(&mut shell, &state, KeyCode::Down);
+    let ready = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    let (row, column) = ready
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("[D] Dispatch").map(|column| (row, column)))
+        .expect("READY Train exposes Dispatch in the footer");
+    assert_eq!(
+        capture_rendered_cell_colors(
+            &shell,
+            &state,
+            120,
+            40,
+            u16::try_from(column).unwrap(),
+            u16::try_from(row).unwrap(),
+        ),
+        Some((theme::ACCENT, theme::PANEL)),
+    );
 }
 
 #[test]
