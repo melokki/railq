@@ -132,12 +132,17 @@ fn active_service_inspector_surfaces_live_operating_context() {
     assert!(rendered.contains("IN SERVICE"));
     assert!(rendered.contains("Active trains"));
     assert!(rendered.contains("Next arrival"));
+    assert!(rendered.contains("Train 01"));
+    assert!(rendered.contains("RUNNING TRAINS"));
+    assert!(rendered.contains("Oakridge → Fairford"));
+    assert!(rendered.contains("Load"));
     assert!(rendered.contains("On board"));
     assert!(rendered.contains("Carried"));
     assert!(rendered.contains("COMMERCIAL"));
-    assert!(rendered.contains("Booked revenue"));
+    assert!(rendered.contains("Expected revenue"));
     assert!(rendered.contains("Operating cost"));
-    assert!(rendered.contains("Current result"));
+    assert!(rendered.contains("Expected result"));
+    assert!(!rendered.contains("STOP PATTERN"));
 }
 
 #[test]
