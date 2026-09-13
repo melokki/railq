@@ -128,7 +128,7 @@ fn reconciliation_removes_an_arrived_journey_and_keeps_its_ready_train_selected_
     assert!(after_arrival.contains("No active Journeys"));
     press(&mut shell, &state, KeyCode::Char('t'));
     let fleet = capture_rendered_buffer(&shell, &state, 120, 40);
-    assert!(fleet.contains("> Train 01"));
+    assert!(fleet.contains("› Train 01"));
     assert!(fleet.contains("READY"));
     assert_eq!(train_id.get(), 1);
 }

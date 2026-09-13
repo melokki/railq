@@ -112,14 +112,14 @@ fn fleet_d_preselects_the_selected_train_and_returns_to_its_list_focus()
     );
     let train_step = capture_rendered_buffer(&shell, &state, 120, 40);
     assert!(train_step.contains("Manual Dispatch · available Fleet"));
-    assert!(train_step.contains("> Train 02"));
+    assert!(train_step.contains("› Train 02"));
 
     assert_eq!(
         shell.handle_key(key(KeyCode::Esc), &state),
         ShellAction::Continue
     );
     let returned = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(returned.contains("> Train 02"));
+    assert!(returned.contains("› Train 02"));
     assert!(returned.contains("[D] Dispatch"));
     assert!(!returned.contains("Train details"));
 

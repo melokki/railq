@@ -64,6 +64,16 @@ impl TrainModel {
         }
     }
 
+    /// Propulsion inferred from the EVN vehicle type instead of duplicated in
+    /// catalogue data. EVN type 95 is a diesel multiple unit, for example.
+    pub const fn propulsion_label(&self) -> &'static str {
+        match self.evn_type_code {
+            91 | 93 | 94 | 97 => "Electric",
+            92 | 95 | 98 => "Diesel",
+            _ => "Not specified",
+        }
+    }
+
     pub const fn purchase_price(&self) -> Money {
         self.purchase_price
     }
@@ -259,6 +269,8 @@ mod tests {
         assert_eq!(catalogue.models()[1].id().as_str(), "express-120");
         assert_eq!(catalogue.models()[0].evn_type_code(), 95);
         assert_eq!(catalogue.models()[1].evn_type_code(), 95);
+        assert_eq!(catalogue.models()[0].propulsion_label(), "Diesel");
+        assert_eq!(catalogue.models()[1].propulsion_label(), "Diesel");
         assert_eq!(catalogue.models()[0].evn_series_code(), 70);
         assert_eq!(catalogue.models()[1].evn_series_code(), 120);
     }

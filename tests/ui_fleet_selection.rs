@@ -50,44 +50,50 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     press(&mut shell, &state, KeyCode::Char('t'));
 
     let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(wide.contains("Fleet"));
     assert!(wide.contains("Train"));
-    assert!(wide.contains("Model"));
-    assert!(wide.contains("Station / destination"));
+    assert!(wide.contains("EVN"));
+    assert!(wide.contains("Local 70"));
+    assert!(wide.contains("Propulsion"));
+    assert!(wide.contains("Diesel"));
+    assert!(wide.contains("Position"));
     assert!(wide.contains("TRAVELLING"));
     assert!(wide.contains("in "));
+    assert!(!wide.contains("ACTIONS"));
+    assert!(wide.contains("[N] Rename"));
 
     let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(compact.contains("> Train 01  TRAVELLING"));
+    assert!(compact.contains("› Train 01  TRAVELLING"));
 
     press(&mut shell, &state, KeyCode::Down);
     let down = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(down.contains("> Train 02  READY"));
+    assert!(down.contains("› Train 02  READY"));
     press(&mut shell, &state, KeyCode::Char('j'));
     let j = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(j.contains("> Train 03  READY"));
+    assert!(j.contains("› Train 03  READY"));
     press(&mut shell, &state, KeyCode::Char('k'));
     let k = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(k.contains("> Train 02  READY"));
+    assert!(k.contains("› Train 02  READY"));
 
     press(&mut shell, &state, KeyCode::PageDown);
     let page_down = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(page_down.contains("> Train 06  READY"));
+    assert!(page_down.contains("› Train 06  READY"));
     press(&mut shell, &state, KeyCode::PageDown);
     let beyond_viewport = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(beyond_viewport.contains("> Train 10  READY"));
-    assert!(!beyond_viewport.contains("> Train 01"));
+    assert!(beyond_viewport.contains("› Train 10  READY"));
+    assert!(!beyond_viewport.contains("› Train 01"));
     press(&mut shell, &state, KeyCode::PageUp);
     let page_up = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(page_up.contains("> Train 06  READY"));
+    assert!(page_up.contains("› Train 06  READY"));
 
     let arrives_at = state.active_journeys[0].arrives_at;
     advance_time(&mut state, arrives_at).unwrap();
     let after_arrival = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(after_arrival.contains("> Train 06  READY"));
+    assert!(after_arrival.contains("› Train 06  READY"));
 
     state.player_company.fleet.trains.reverse();
     let after_reorder = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(after_reorder.contains("> Train 06  READY"));
+    assert!(after_reorder.contains("› Train 06  READY"));
 }
 
 #[test]
@@ -108,7 +114,7 @@ fn fleet_browser_states_missing_details_explicitly_and_captures_task_evidence()
     ] {
         let rendered = capture_rendered_buffer_mut(&mut shell, &state, columns, rows);
         assert_eq!(rendered.lines().count(), usize::from(rows));
-        assert!(rendered.contains("> Train 10"));
+        assert!(rendered.contains("› Train 10"));
         fs::write(evidence_dir.join(file_name), rendered)?;
     }
 
@@ -165,12 +171,12 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
     press(&mut shell, &state, KeyCode::Esc);
     advance_time(&mut state, journey.arrives_at)?;
     let list = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(list.contains("> Train 01"));
+    assert!(list.contains("› Train 01"));
     assert!(list.contains("READY"));
     let (selected_row, selected_column) = list
         .lines()
         .enumerate()
-        .find_map(|(row, line)| line.find("> Train 01").map(|column| (row, column)))
+        .find_map(|(row, line)| line.find("› Train 01").map(|column| (row, column)))
         .expect("selected Train must remain visible after closing details");
     let colors = capture_rendered_cell_colors(
         &shell,
@@ -188,7 +194,7 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
     state.player_company.fleet.trains.remove(1);
     let after_removal = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(!after_removal.contains(&format!("Train {:02}", removed_train.get())));
-    assert!(after_removal.contains("> Train 03"));
+    assert!(after_removal.contains("› Train 03"));
     Ok(())
 }
 
@@ -226,7 +232,7 @@ fn fleet_focus_respects_the_visible_workspace_and_s_reviews_the_selected_ready_t
     let proceeds = sell_train(&mut state, train_id).unwrap();
     shell.confirm_train_resale(proceeds);
     let after_resale = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(after_resale.contains("> Train 03"));
+    assert!(after_resale.contains("› Train 03"));
     assert!(after_resale.contains("Train resold and saved"));
 }
 
