@@ -177,7 +177,10 @@ fn two_trains_take_only_their_shared_finite_directional_demand() {
 
     advance_time(&mut state, FIRST_ARRIVAL).expect("both Journeys settle");
     assert_eq!(state.player_company.funds, Money::from_cents(108_900));
-    assert_eq!(state.financials.operating_revenue, Money::from_cents(10_000));
+    assert_eq!(
+        state.financials.operating_revenue,
+        Money::from_cents(10_000)
+    );
 }
 
 #[test]

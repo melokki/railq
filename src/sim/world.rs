@@ -9,8 +9,8 @@ use crate::{
     balance::BalanceConfig,
     model::{
         DemandRules, Financials, Fleet, GameRules, GameState, Money, PlayerCompany, RailAuthority,
-        RailLine, RailLineId, RailNetwork, RailStation, RailStationId, Region,
-        RailwayRegistration, Settlement, SettlementId, UtcSeconds, VehicleKeeperMark,
+        RailLine, RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
+        Settlement, SettlementId, UtcSeconds, VehicleKeeperMark,
     },
     sim::demand::seed_directional_demand,
 };
@@ -43,14 +43,46 @@ struct RegionIdentity {
 }
 
 const REGION_IDENTITIES: [RegionIdentity; 8] = [
-    RegionIdentity { name: "Varelia", registration_code: 67, registration_mark: "VA" },
-    RegionIdentity { name: "Ardinia", registration_code: 68, registration_mark: "AR" },
-    RegionIdentity { name: "Estara", registration_code: 69, registration_mark: "ES" },
-    RegionIdentity { name: "Norvia", registration_code: 70, registration_mark: "NV" },
-    RegionIdentity { name: "Caldria", registration_code: 71, registration_mark: "CA" },
-    RegionIdentity { name: "Meridia", registration_code: 72, registration_mark: "ME" },
-    RegionIdentity { name: "Solenne", registration_code: 73, registration_mark: "SO" },
-    RegionIdentity { name: "Tavora", registration_code: 74, registration_mark: "TA" },
+    RegionIdentity {
+        name: "Varelia",
+        registration_code: 67,
+        registration_mark: "VA",
+    },
+    RegionIdentity {
+        name: "Ardinia",
+        registration_code: 68,
+        registration_mark: "AR",
+    },
+    RegionIdentity {
+        name: "Estara",
+        registration_code: 69,
+        registration_mark: "ES",
+    },
+    RegionIdentity {
+        name: "Norvia",
+        registration_code: 70,
+        registration_mark: "NV",
+    },
+    RegionIdentity {
+        name: "Caldria",
+        registration_code: 71,
+        registration_mark: "CA",
+    },
+    RegionIdentity {
+        name: "Meridia",
+        registration_code: 72,
+        registration_mark: "ME",
+    },
+    RegionIdentity {
+        name: "Solenne",
+        registration_code: 73,
+        registration_mark: "SO",
+    },
+    RegionIdentity {
+        name: "Tavora",
+        registration_code: 74,
+        registration_mark: "TA",
+    },
 ];
 const CONNECTED_SETTLEMENT_COUNT: usize = 4;
 const SETTLEMENT_COUNT: usize = 10;
@@ -63,8 +95,7 @@ const SETTLEMENT_COUNT: usize = 10;
 pub fn generate_region(seed: u64) -> Region {
     let mut random = ChaCha8Rng::seed_from_u64(seed);
     let region_form = choose(&mut random, &REGION_FORMS);
-    let identity =
-        REGION_IDENTITIES[(random.next_u64() as usize) % REGION_IDENTITIES.len()];
+    let identity = REGION_IDENTITIES[(random.next_u64() as usize) % REGION_IDENTITIES.len()];
     let name = format!("{region_form} of {}", identity.name);
     let settlement_names = select_settlement_names(&mut random);
     let settlements = settlement_names
@@ -225,7 +256,12 @@ mod tests {
         assert!((10..=99).contains(&registration.numeric_code));
         assert_eq!(registration.display_code().len(), 2);
         assert_eq!(registration.mark.len(), 2);
-        assert!(registration.mark.chars().all(|character| character.is_ascii_uppercase()));
+        assert!(
+            registration
+                .mark
+                .chars()
+                .all(|character| character.is_ascii_uppercase())
+        );
         assert_eq!(
             railway_registration_for_existing_region(&region.name, 42),
             registration.clone()

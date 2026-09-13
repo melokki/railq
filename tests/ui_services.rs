@@ -2,9 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
     model::{RailStationId, UtcSeconds},
     sim::{services::create_service, world::create_new_game},
-    ui::{
-        Shell, ShellAction, capture_rendered_buffer_mut, capture_rendered_cell_colors, theme,
-    },
+    ui::{Shell, ShellAction, capture_rendered_buffer_mut, capture_rendered_cell_colors, theme},
 };
 
 fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) -> ShellAction {
@@ -16,12 +14,18 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
     let mut shell = Shell::new();
 
-    assert_eq!(press(&mut shell, &state, KeyCode::Char('s')), ShellAction::Continue);
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Char('s')),
+        ShellAction::Continue
+    );
     let workspace = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(workspace.contains("Passenger Services"));
     assert!(workspace.contains("No Passenger Services yet"));
 
-    assert_eq!(press(&mut shell, &state, KeyCode::Char('n')), ShellAction::Continue);
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Char('n')),
+        ShellAction::Continue
+    );
     let create = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(create.contains("Create Passenger Service"));
     assert!(create.contains("1 STOPS"));
@@ -33,10 +37,22 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
         "Create Service should mute the complete application underneath it",
     );
 
-    assert_eq!(press(&mut shell, &state, KeyCode::Enter), ShellAction::Continue);
-    assert_eq!(press(&mut shell, &state, KeyCode::Down), ShellAction::Continue);
-    assert_eq!(press(&mut shell, &state, KeyCode::Enter), ShellAction::Continue);
-    assert_eq!(press(&mut shell, &state, KeyCode::Char('f')), ShellAction::Continue);
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Down),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Continue
+    );
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Char('f')),
+        ShellAction::Continue
+    );
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("2 REVIEW"));
     assert!(review.contains("Review Passenger Service"));
@@ -65,7 +81,10 @@ fn existing_services_are_listed_and_can_request_deletion() {
     assert!(rendered.contains("R1"));
     assert!(rendered.contains("Ordered stops"));
 
-    assert_eq!(press(&mut shell, &state, KeyCode::Char('d')), ShellAction::Continue);
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Char('d')),
+        ShellAction::Continue
+    );
     let confirmation = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(confirmation.contains("Delete Passenger Service"));
     assert!(confirmation.contains("Delete this Service?"));

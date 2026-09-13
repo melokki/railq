@@ -45,10 +45,10 @@ pub mod dispatch;
 pub mod fleet;
 pub mod format;
 pub mod map;
-pub mod modal;
 pub mod market;
-pub mod start;
+pub mod modal;
 pub mod services;
+pub mod start;
 pub mod theme;
 
 /// How frequently the shell checks for elapsed arrivals while no key is pressed.
@@ -111,11 +111,15 @@ pub enum ShellAction {
     /// Confirmed player input requiring an application-boundary Train resale.
     SellTrain { train_id: TrainId },
     /// Confirmed player input creating one persistent directional Passenger Service.
-    CreatePassengerService { stop_station_ids: Vec<RailStationId> },
+    CreatePassengerService {
+        stop_station_ids: Vec<RailStationId>,
+    },
     /// Confirmed player input deleting one unused Passenger Service.
     DeletePassengerService { service_id: ServiceId },
     /// Confirmed player input updating the Player Company's Vehicle Keeper Mark.
-    UpdateCompanyVkm { vehicle_keeper_mark: VehicleKeeperMark },
+    UpdateCompanyVkm {
+        vehicle_keeper_mark: VehicleKeeperMark,
+    },
     /// Confirmed player input changing or clearing one Train nickname.
     UpdateTrainNickname {
         train_id: TrainId,
@@ -145,9 +149,15 @@ pub enum TerminalCommand {
     /// Revalidate and resell a selected READY Train.
     SellTrain { train_id: TrainId, now: UtcSeconds },
     /// Create one directional Passenger Service.
-    CreatePassengerService { stop_station_ids: Vec<RailStationId>, now: UtcSeconds },
+    CreatePassengerService {
+        stop_station_ids: Vec<RailStationId>,
+        now: UtcSeconds,
+    },
     /// Delete one unused Passenger Service.
-    DeletePassengerService { service_id: ServiceId, now: UtcSeconds },
+    DeletePassengerService {
+        service_id: ServiceId,
+        now: UtcSeconds,
+    },
     /// Persist a new Player Company Vehicle Keeper Mark.
     UpdateCompanyVkm {
         vehicle_keeper_mark: VehicleKeeperMark,
@@ -282,7 +292,9 @@ impl Shell {
                     ShellAction::Continue
                 }
                 company::VkmEditorAction::Confirm(vehicle_keeper_mark) => {
-                    ShellAction::UpdateCompanyVkm { vehicle_keeper_mark }
+                    ShellAction::UpdateCompanyVkm {
+                        vehicle_keeper_mark,
+                    }
                 }
             };
         }
@@ -472,7 +484,9 @@ impl Shell {
         if self.services_open {
             let navigation_key = matches!(
                 key.code,
-                KeyCode::Char('1' | '2' | '3' | '4' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C')
+                KeyCode::Char(
+                    '1' | '2' | '3' | '4' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
+                )
             );
             if navigation_key {
                 self.services_open = false;
@@ -547,7 +561,10 @@ impl Shell {
         }
 
         match key.code {
-            KeyCode::Char('1' | 'm' | 'M') => { self.active_view = View::Map; self.services_open = false; },
+            KeyCode::Char('1' | 'm' | 'M') => {
+                self.active_view = View::Map;
+                self.services_open = false;
+            }
             KeyCode::Char('2' | 't' | 'T') => {
                 self.active_view = View::Trains;
                 self.services_open = false;
@@ -583,7 +600,10 @@ impl Shell {
                     );
                 }
             }
-            KeyCode::Char('3' | 'b' | 'B') => { self.active_view = View::BuyTrains; self.services_open = false; },
+            KeyCode::Char('3' | 'b' | 'B') => {
+                self.active_view = View::BuyTrains;
+                self.services_open = false;
+            }
             KeyCode::Enter if self.active_view == View::Company => {
                 if self.company_receipt_selection.has_selection(state) {
                     self.company_receipt_details_open = true;
@@ -611,9 +631,7 @@ impl Shell {
                     }
                 }
             }
-            KeyCode::Enter
-                if self.active_view == View::Trains && !self.fleet_split_visible =>
-            {
+            KeyCode::Enter if self.active_view == View::Trains && !self.fleet_split_visible => {
                 if self.fleet_selection.selected_train_id(state).is_some() {
                     self.fleet_details_open = true;
                     self.notice = None;
@@ -1262,7 +1280,9 @@ where
                             Err(error) => shell.reject_passenger_service_action(error.to_string()),
                         }
                     }
-                    ShellAction::UpdateCompanyVkm { vehicle_keeper_mark } => {
+                    ShellAction::UpdateCompanyVkm {
+                        vehicle_keeper_mark,
+                    } => {
                         match command(TerminalCommand::UpdateCompanyVkm {
                             vehicle_keeper_mark,
                             now: current_utc_seconds(),
@@ -1598,7 +1618,10 @@ impl FooterShortcut {
 fn render_footer(frame: &mut ratatui::Frame, area: Rect, shell: &mut Shell, state: &GameState) {
     let mut lines = Vec::new();
     if let Some(outcome) = &shell.action_outcome {
-        lines.push(Line::styled(format!("✓ {}", outcome.summary), theme::success()));
+        lines.push(Line::styled(
+            format!("✓ {}", outcome.summary),
+            theme::success(),
+        ));
     } else if let Some(notice) = &shell.notice {
         lines.push(Line::styled(notice.clone(), theme::warning()));
     }
@@ -1742,9 +1765,10 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
                 FooterShortcut::enabled("Esc", "Cancel"),
             ]
         } else if flow.is_selecting_service() {
-            let mut items = vec![
-                FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Service"),
-            ];
+            let mut items = vec![FooterShortcut::enabled(
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Service",
+            )];
             if wide {
                 items.push(FooterShortcut::enabled("PgUp/PgDn", "Scroll"));
             }
@@ -1804,7 +1828,11 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
             .count();
         let mut items = vec![FooterShortcut::enabled(
-            if compact { "↑↓←→" } else { "↑↓←→/HJKL" },
+            if compact {
+                "↑↓←→"
+            } else {
+                "↑↓←→/HJKL"
+            },
             "Station",
         )];
         if train_count == 0 {
@@ -1874,16 +1902,8 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
     // Keep utility actions predictable without forcing the task-specific
     // controls to wrap. At narrow widths they disappear only when they do not
     // fit; every shortcut continues to work even when omitted from the hint.
-    push_shortcut_if_fits(
-        &mut actions,
-        FooterShortcut::enabled("?", "Help"),
-        width,
-    );
-    push_shortcut_if_fits(
-        &mut actions,
-        FooterShortcut::enabled("Q", "Quit"),
-        width,
-    );
+    push_shortcut_if_fits(&mut actions, FooterShortcut::enabled("?", "Help"), width);
+    push_shortcut_if_fits(&mut actions, FooterShortcut::enabled("Q", "Quit"), width);
     actions
 }
 
@@ -1900,8 +1920,7 @@ fn fleet_action_shortcuts(shell: &mut Shell, state: &GameState) -> Vec<FooterSho
                 .find(|train| train.id == id)
         });
     let has_selection = selected.is_some();
-    let is_ready = selected
-        .is_some_and(|train| matches!(&train.status, TrainStatus::Ready { .. }));
+    let is_ready = selected.is_some_and(|train| matches!(&train.status, TrainStatus::Ready { .. }));
 
     vec![
         if has_selection {
@@ -2025,7 +2044,8 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         lines.extend([
             "Current · World Details".into(),
             "w / Esc Return to Map".into(),
-            "The railway registration belongs to the Region and remains stable for this save.".into(),
+            "The railway registration belongs to the Region and remains stable for this save."
+                .into(),
         ]);
         return lines;
     }
@@ -2122,7 +2142,8 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         }
         lines.extend([
             String::new(),
-            "During creation: Enter adds a stop, Backspace removes the last stop, f reviews.".into(),
+            "During creation: Enter adds a stop, Backspace removes the last stop, f reviews."
+                .into(),
         ]);
         return lines;
     }
@@ -2194,7 +2215,8 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                 "↑↓ / jk Select Train model".into(),
                 "Enter Choose delivery station".into(),
                 String::new(),
-                "Purchase price is not the whole decision: keep enough cash for access and fuel.".into(),
+                "Purchase price is not the whole decision: keep enough cash for access and fuel."
+                    .into(),
             ]);
         }
         View::Company => {
@@ -2330,12 +2352,7 @@ fn grouped_u64(value: u64) -> String {
     result
 }
 
-fn render_help_overlay(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    shell: &Shell,
-    state: &GameState,
-) {
+fn render_help_overlay(frame: &mut ratatui::Frame, area: Rect, shell: &Shell, state: &GameState) {
     let card = modal::centered_rect(area, 96, 30);
     let footer = if card.width < 76 {
         modal::shortcut_line(&[("↑↓", "scroll"), ("Esc/?", "close")])
@@ -2396,10 +2413,7 @@ fn render_outcome_overlay(frame: &mut ratatui::Frame, area: Rect, outcome: &Acti
     ];
     lines.extend(outcome.details.iter().cloned().map(Line::from));
     lines.push(Line::from(""));
-    lines.push(Line::styled(
-        "i / Esc · close details",
-        theme::hint(),
-    ));
+    lines.push(Line::styled("i / Esc · close details", theme::hint()));
     frame.render_widget(Clear, overlay_area);
     frame.render_widget(
         Paragraph::new(lines)
@@ -2500,11 +2514,7 @@ fn arrival_station_label(state: &GameState, station_id: RailStationId) -> String
         .unwrap_or_else(|| format!("Rail Station {}", station_id.get()))
 }
 
-fn pending_dispatch(
-    state: &GameState,
-    train_id: TrainId,
-    service_id: ServiceId,
-) -> PendingAction {
+fn pending_dispatch(state: &GameState, train_id: TrainId, service_id: ServiceId) -> PendingAction {
     let model: String = state
         .player_company
         .fleet
@@ -2552,13 +2562,10 @@ fn pending_purchase(
     catalogue_index: usize,
     delivery_station_id: RailStationId,
 ) -> PendingAction {
-    let model: String = train_catalogue()
-        .models()
-        .get(catalogue_index)
-        .map_or_else(
-            || "selected catalogue Train".into(),
-            |train| train.name().into(),
-        );
+    let model: String = train_catalogue().models().get(catalogue_index).map_or_else(
+        || "selected catalogue Train".into(),
+        |train| train.name().into(),
+    );
     PendingAction {
         label: format!("Train purchase · {model}"),
         details: vec![format!(
@@ -2777,12 +2784,11 @@ mod tests {
             );
         }
 
-        let action = shell.handle_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &state,
-        );
+        let action = shell.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state);
         match action {
-            ShellAction::UpdateCompanyVkm { vehicle_keeper_mark } => {
+            ShellAction::UpdateCompanyVkm {
+                vehicle_keeper_mark,
+            } => {
                 assert_eq!(vehicle_keeper_mark.as_str(), "OMP");
             }
             other => panic!("unexpected action: {other:?}"),

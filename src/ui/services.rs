@@ -22,8 +22,12 @@ use super::{format, modal, theme};
 pub enum ServiceWorkspaceAction {
     Continue,
     Close,
-    Create { stop_station_ids: Vec<RailStationId> },
-    Delete { service_id: ServiceId },
+    Create {
+        stop_station_ids: Vec<RailStationId>,
+    },
+    Delete {
+        service_id: ServiceId,
+    },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -87,8 +91,8 @@ impl ServiceWorkspace {
                 }
                 KeyCode::Down | KeyCode::Char('j' | 'J') => {
                     if station_count > 0 {
-                        flow.selected_station_index = (flow.selected_station_index + 1)
-                            .min(station_count.saturating_sub(1));
+                        flow.selected_station_index =
+                            (flow.selected_station_index + 1).min(station_count.saturating_sub(1));
                     }
                 }
                 KeyCode::Backspace | KeyCode::Left => {
@@ -126,7 +130,8 @@ impl ServiceWorkspace {
                 }
                 KeyCode::Char('f' | 'F') => {
                     if flow.stop_station_ids.len() < 2 {
-                        flow.error = Some("Add at least two stops before reviewing the Service.".into());
+                        flow.error =
+                            Some("Add at least two stops before reviewing the Service.".into());
                     } else {
                         match service_path_for_stops(
                             &state.region.rail_authority.rail_network,
@@ -185,9 +190,13 @@ impl ServiceWorkspace {
 
     pub fn confirm_deleted(&mut self, state: &GameState) {
         self.delete_confirmation = None;
-        self.selected_service_index = self
-            .selected_service_index
-            .min(state.player_company.passenger_services.len().saturating_sub(1));
+        self.selected_service_index = self.selected_service_index.min(
+            state
+                .player_company
+                .passenger_services
+                .len()
+                .saturating_sub(1),
+        );
     }
 
     pub fn reject_action(&mut self, message: impl Into<String>) {
@@ -303,17 +312,9 @@ impl ServiceWorkspace {
     }
 }
 
-fn render_service_list(
-    frame: &mut Frame,
-    area: Rect,
-    state: &GameState,
-    selected_index: usize,
-) {
-    let [list_area, details_area] = Layout::horizontal([
-        Constraint::Percentage(42),
-        Constraint::Percentage(58),
-    ])
-    .areas(area);
+fn render_service_list(frame: &mut Frame, area: Rect, state: &GameState, selected_index: usize) {
+    let [list_area, details_area] =
+        Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(area);
 
     let services = &state.player_company.passenger_services;
     let lines = if services.is_empty() {
@@ -329,7 +330,14 @@ fn render_service_list(
                 let marker = if index == selected_index { "> " } else { "  " };
                 let route = route_label(state, &service.stop_station_ids);
                 Line::from(vec![
-                    Span::styled(marker, if index == selected_index { theme::focused_title() } else { theme::secondary() }),
+                    Span::styled(
+                        marker,
+                        if index == selected_index {
+                            theme::focused_title()
+                        } else {
+                            theme::secondary()
+                        },
+                    ),
                     Span::styled(format!("{}  ", service.name), theme::primary_value()),
                     Span::styled(route, theme::secondary()),
                 ])
@@ -362,10 +370,7 @@ fn render_service_list(
     );
 }
 
-fn service_details(
-    state: &GameState,
-    service_id: ServiceId,
-) -> Vec<Line<'static>> {
+fn service_details(state: &GameState, service_id: ServiceId) -> Vec<Line<'static>> {
     let Some(service) = state
         .player_company
         .passenger_services
@@ -397,16 +402,29 @@ fn service_details(
 
     let mut lines = vec![
         Line::from(Span::styled(service.name.clone(), theme::focused_title())),
-        Line::from(format!("Direction  {}", route_label(state, &service.stop_station_ids))),
+        Line::from(format!(
+            "Direction  {}",
+            route_label(state, &service.stop_station_ids)
+        )),
         Line::from(format!("Distance   {}", format::distance(distance))),
         Line::from(format!("Stops      {}", service.stop_station_ids.len())),
         Line::from(format!("Active     {active} Journey(s)")),
         Line::from(""),
         Line::from(Span::styled("Ordered stops", theme::table_header())),
     ];
-    lines.extend(service.stop_station_ids.iter().enumerate().map(|(index, station_id)| {
-        Line::from(format!("{}. {}", index + 1, station_label(state, *station_id)))
-    }));
+    lines.extend(
+        service
+            .stop_station_ids
+            .iter()
+            .enumerate()
+            .map(|(index, station_id)| {
+                Line::from(format!(
+                    "{}. {}",
+                    index + 1,
+                    station_label(state, *station_id)
+                ))
+            }),
+    );
 
     lines
 }
@@ -493,11 +511,7 @@ fn render_create_flow(frame: &mut Frame, area: Rect, state: &GameState, flow: &C
 
 fn create_service_footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'static> {
     if flow.review {
-        return modal::shortcut_line(&[
-            ("Enter", "create"),
-            ("←", "edit"),
-            ("Esc", "cancel"),
-        ]);
+        return modal::shortcut_line(&[("Enter", "create"), ("←", "edit"), ("Esc", "cancel")]);
     }
 
     if width >= 76 {
@@ -511,11 +525,7 @@ fn create_service_footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'sta
     } else {
         // On narrow terminals keep the primary progression controls readable;
         // navigation and undo remain available and are also exposed globally.
-        modal::shortcut_line(&[
-            ("Enter", "add"),
-            ("F", "review"),
-            ("Esc", "cancel"),
-        ])
+        modal::shortcut_line(&[("Enter", "add"), ("F", "review"), ("Esc", "cancel")])
     }
 }
 
@@ -567,8 +577,7 @@ fn render_create_service_picker(
     let [picker_title_area, table_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).areas(picker_area);
     frame.render_widget(
-        Paragraph::new(Line::styled("Choose the next stop", theme::title()))
-            .style(theme::panel()),
+        Paragraph::new(Line::styled("Choose the next stop", theme::title())).style(theme::panel()),
         picker_title_area,
     );
 
@@ -582,7 +591,10 @@ fn render_create_service_picker(
         .collect::<Vec<_>>();
     let mut table_state = TableState::default();
     table_state.select(
-        (!rows.is_empty()).then_some(flow.selected_station_index.min(rows.len().saturating_sub(1))),
+        (!rows.is_empty()).then_some(
+            flow.selected_station_index
+                .min(rows.len().saturating_sub(1)),
+        ),
     );
     let table = Table::new(rows, [Constraint::Min(1)])
         .row_highlight_style(theme::selected_row())
@@ -643,7 +655,10 @@ fn render_create_service_preview(
     lines.push(Line::from(""));
     lines.push(Line::styled("SELECTED", theme::table_header()));
     let Some(station_id) = selected_station_id else {
-        lines.push(Line::styled("No Rail Station available.", theme::secondary()));
+        lines.push(Line::styled(
+            "No Rail Station available.",
+            theme::secondary(),
+        ));
         frame.render_widget(
             Paragraph::new(lines)
                 .style(theme::panel())
@@ -716,7 +731,10 @@ fn render_create_service_review(
         Paragraph::new(vec![
             Line::from(vec![
                 Span::styled("DIRECTION  ", theme::secondary()),
-                Span::styled(route_label(state, &flow.stop_station_ids), theme::focused_title()),
+                Span::styled(
+                    route_label(state, &flow.stop_station_ids),
+                    theme::focused_title(),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("DISTANCE   ", theme::secondary()),
@@ -724,7 +742,10 @@ fn render_create_service_review(
             ]),
             Line::from(vec![
                 Span::styled("STOPS      ", theme::secondary()),
-                Span::styled(flow.stop_station_ids.len().to_string(), theme::primary_value()),
+                Span::styled(
+                    flow.stop_station_ids.len().to_string(),
+                    theme::primary_value(),
+                ),
             ]),
             Line::styled(
                 "Directional Service · dispatchable from its first stop.",
@@ -805,7 +826,9 @@ fn create_service_modal_rect(area: Rect) -> Rect {
     let height = area.height.saturating_sub(2).min(24).max(16);
     Rect {
         x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
-        y: area.y.saturating_add(area.height.saturating_sub(height) / 2),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2),
         width: width.min(area.width),
         height: height.min(area.height),
     }

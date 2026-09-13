@@ -256,8 +256,7 @@ fn sell_all_and_rebuy_options(state: &GameState) -> Result<Vec<RecoveryOption>, 
     for catalogue_index in 0..catalogue_len {
         for delivery_station_id in &delivery_station_ids {
             let mut candidate = sold_candidate.clone();
-            let purchase_price =
-                train_catalogue().models()[catalogue_index].purchase_price();
+            let purchase_price = train_catalogue().models()[catalogue_index].purchase_price();
             if purchase_price.cents() <= 0 || candidate.player_company.funds < purchase_price {
                 continue;
             }
@@ -390,7 +389,12 @@ mod tests {
             .access_fee_per_train_kilometre()
             .checked_charge(line.distance)
             .unwrap()
-            .checked_add(local.fuel_cost_per_kilometre().checked_charge(line.distance).unwrap())
+            .checked_add(
+                local
+                    .fuel_cost_per_kilometre()
+                    .checked_charge(line.distance)
+                    .unwrap(),
+            )
             .unwrap()
     }
 

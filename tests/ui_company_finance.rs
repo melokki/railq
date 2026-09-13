@@ -5,9 +5,7 @@ use std::{error::Error, fs, path::Path};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
     balance::BalanceConfig,
-    model::{
-        GameState, Money, MoneyPerKilometre, PassengerArrivalRate, RailStationId, UtcSeconds,
-    },
+    model::{GameState, Money, MoneyPerKilometre, PassengerArrivalRate, RailStationId, UtcSeconds},
     sim::{
         fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
         time::advance_time, world::create_new_game,
@@ -24,11 +22,7 @@ fn finance_fixture(waiting_passengers: u32) -> GameState {
     let fare_rate = MoneyPerKilometre::new(10).expect("fixture fare rate is positive");
     let access_rate = MoneyPerKilometre::new(10).expect("fixture access rate is positive");
     let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
-    state.rules.balance = BalanceConfig::new(
-        fare_rate,
-        access_rate,
-        Money::from_cents(400_000),
-    );
+    state.rules.balance = BalanceConfig::new(fare_rate, access_rate, Money::from_cents(400_000));
     state.player_company.funds = Money::from_cents(400_000);
     for pool in &mut state.origin_destination_demand {
         pool.waiting_passengers = 0;

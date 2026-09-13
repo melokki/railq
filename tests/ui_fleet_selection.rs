@@ -161,8 +161,17 @@ fn fleet_inspector_surfaces_state_specific_information() {
     assert!(travelling.contains("TRAVELLING"));
     assert!(travelling.contains("JOURNEY"));
     assert!(travelling.contains("SERVICE"));
+    assert!(travelling.contains("PASSENGERS"));
     assert!(travelling.contains("On board"));
     assert!(travelling.contains("Load"));
+    assert!(travelling.contains("Carried"));
+    assert!(travelling.contains("Departed"));
+    assert!(travelling.contains("ETA"));
+    assert!(travelling.contains("Leg progress"));
+    assert!(travelling.contains("COMMERCIAL"));
+    assert!(travelling.contains("Expected revenue"));
+    assert!(travelling.contains("Operating cost"));
+    assert!(travelling.contains("Expected result"));
     assert!(!travelling.contains("VALUE"));
 
     press(&mut shell, &state, KeyCode::Down);
@@ -243,9 +252,10 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
         let rendered = capture_rendered_buffer_mut(&mut shell, &state, columns, rows);
         assert_eq!(rendered.lines().count(), usize::from(rows));
         assert!(rendered.contains("Train details"));
-        assert!(rendered.contains("CAPACITY"));
-        assert!(rendered.contains("Journey progress"));
-        assert!(rendered.contains("Remaining"));
+        assert!(rendered.contains("PASSENGERS"));
+        assert!(rendered.contains("Leg progress"));
+        assert!(rendered.contains("ETA"));
+        assert!(rendered.contains("Expected result"));
         fs::write(evidence_dir.join(file_name), rendered)?;
     }
 
@@ -278,7 +288,6 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
     assert!(after_removal.contains("› Train 03"));
     Ok(())
 }
-
 
 #[test]
 fn fleet_rename_uses_the_shared_focused_modal_treatment() {
@@ -375,10 +384,7 @@ fn resale_review_has_complete_themed_evidence_at_normal_and_compact_sizes()
         let (row, column) = rendered
             .lines()
             .enumerate()
-            .find_map(|(row, line)| {
-                line.find("[Enter] resell")
-                    .map(|column| (row, column))
-            })
+            .find_map(|(row, line)| line.find("[Enter] resell").map(|column| (row, column)))
             .expect("confirmation instruction must be visible");
         assert_eq!(
             capture_rendered_cell_colors(

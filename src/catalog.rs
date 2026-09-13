@@ -149,15 +149,19 @@ impl TrainCatalogue {
                     field: "purchase_price_cents",
                 });
             }
-            let passenger_capacity = PassengerCapacity::new(record.passenger_capacity)
-                .map_err(|_| CatalogueError::InvalidField {
-                    model_id: id.as_str().to_owned(),
-                    field: "passenger_capacity",
+            let passenger_capacity =
+                PassengerCapacity::new(record.passenger_capacity).map_err(|_| {
+                    CatalogueError::InvalidField {
+                        model_id: id.as_str().to_owned(),
+                        field: "passenger_capacity",
+                    }
                 })?;
-            let speed = SpeedMetresPerSecond::new(record.speed_metres_per_second)
-                .map_err(|_| CatalogueError::InvalidField {
-                    model_id: id.as_str().to_owned(),
-                    field: "speed_metres_per_second",
+            let speed =
+                SpeedMetresPerSecond::new(record.speed_metres_per_second).map_err(|_| {
+                    CatalogueError::InvalidField {
+                        model_id: id.as_str().to_owned(),
+                        field: "speed_metres_per_second",
+                    }
                 })?;
             let fuel_cost_per_kilometre =
                 MoneyPerKilometre::new(record.fuel_cost_cents_per_kilometre).map_err(|_| {
@@ -216,7 +220,10 @@ pub enum CatalogueError {
     Decode(String),
     Empty,
     DuplicateId(String),
-    DuplicateEvnSeries { vehicle_type_code: u8, series_code: u16 },
+    DuplicateEvnSeries {
+        vehicle_type_code: u8,
+        series_code: u16,
+    },
     InvalidField {
         model_id: String,
         field: &'static str,
@@ -229,11 +236,13 @@ impl fmt::Display for CatalogueError {
             Self::Decode(error) => write!(formatter, "could not decode Train catalogue: {error}"),
             Self::Empty => write!(formatter, "Train catalogue must contain at least one model"),
             Self::DuplicateId(id) => write!(formatter, "duplicate Train model ID {id}"),
-            Self::DuplicateEvnSeries { vehicle_type_code, series_code } => write!(
+            Self::DuplicateEvnSeries {
+                vehicle_type_code,
+                series_code,
+            } => write!(
                 formatter,
                 "duplicate EVN series {:02} {:04}",
-                vehicle_type_code,
-                series_code
+                vehicle_type_code, series_code
             ),
             Self::InvalidField { model_id, field } => {
                 write!(formatter, "Train model {model_id} has invalid {field}")
@@ -301,5 +310,4 @@ mod tests {
             })
         );
     }
-
 }

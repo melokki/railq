@@ -58,18 +58,32 @@ pub struct JourneyQuote {
 /// Why a Journey cannot be quoted from the current state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EconomyError {
-    TrainNotFound { train_id: TrainId },
-    TrainModelNotFound { train_id: TrainId },
-    ServiceNotFound { service_id: ServiceId },
-    TrainTravelling { train_id: TrainId },
+    TrainNotFound {
+        train_id: TrainId,
+    },
+    TrainModelNotFound {
+        train_id: TrainId,
+    },
+    ServiceNotFound {
+        service_id: ServiceId,
+    },
+    TrainTravelling {
+        train_id: TrainId,
+    },
     TrainNotAtServiceOrigin {
         train_id: TrainId,
         station_id: RailStationId,
         service_id: ServiceId,
     },
-    EmptyServicePath { service_id: ServiceId },
-    RailLineNotFound { rail_line_id: RailLineId },
-    InvalidServiceStops { service_id: ServiceId },
+    EmptyServicePath {
+        service_id: ServiceId,
+    },
+    RailLineNotFound {
+        rail_line_id: RailLineId,
+    },
+    InvalidServiceStops {
+        service_id: ServiceId,
+    },
     DirectionalDemandNotFound {
         origin_station_id: RailStationId,
         destination_station_id: RailStationId,
@@ -208,9 +222,11 @@ pub fn quote_journey(
             })
             .map_err(EconomyError::from)
     })?;
-    let operating_revenue = boarding_groups.iter().try_fold(Money::ZERO, |total, group| {
-        total.checked_add(group.revenue).map_err(EconomyError::from)
-    })?;
+    let operating_revenue = boarding_groups
+        .iter()
+        .try_fold(Money::ZERO, |total, group| {
+            total.checked_add(group.revenue).map_err(EconomyError::from)
+        })?;
     let fare = state
         .rules
         .balance
@@ -221,7 +237,9 @@ pub fn quote_journey(
         .balance
         .access_fee_per_train_kilometre()
         .checked_charge(distance)?;
-    let fuel_cost = train_model.fuel_cost_per_kilometre().checked_charge(distance)?;
+    let fuel_cost = train_model
+        .fuel_cost_per_kilometre()
+        .checked_charge(distance)?;
     let operating_cost = infrastructure_access_fee.checked_add(fuel_cost)?;
     let journey_profitability = operating_revenue.checked_sub(operating_cost)?;
     let duration = service_duration(state, service, train_model.speed())?;
@@ -287,12 +305,8 @@ pub(crate) fn quote_boarding_at_stop(
         if passengers == 0 {
             continue;
         }
-        let distance = distance_between_service_stops(
-            state,
-            service,
-            stop_index,
-            destination_index,
-        )?;
+        let distance =
+            distance_between_service_stops(state, service, stop_index, destination_index)?;
         let fare = state
             .rules
             .balance
@@ -399,8 +413,7 @@ mod tests {
         model::{
             DemandRules, Financials, Fleet, GameRules, OriginDestinationDemand,
             PassengerArrivalRate, PassengerService, PlayerCompany, RailAuthority, RailLine,
-            RailNetwork, RailStation, Settlement,
-            Train, UtcSeconds,
+            RailNetwork, RailStation, Settlement, Train, UtcSeconds,
         },
     };
 
@@ -485,25 +498,16 @@ mod tests {
                 fleet: Fleet {
                     trains: vec![Train {
                         id: TRAIN_ID,
-                        evn: crate::model::EuropeanVehicleNumber::generate(
-                            95,
-                            67,
-                            70,
-                            1,
-                        )
-                        .unwrap(),
+                        evn: crate::model::EuropeanVehicleNumber::generate(95, 67, 70, 1).unwrap(),
                         nickname: None,
                         status: TrainStatus::Ready { at: ORIGIN },
                         model_id: crate::model::TrainModelId::new("local-70"),
                         original_purchase_price: Money::from_cents(5_000),
                     }],
                     next_train_id: TRAIN_ID.get() + 1,
-                    next_evn_unit_by_model: [(
-                        crate::model::TrainModelId::new("local-70"),
-                        2,
-                    )]
-                    .into_iter()
-                    .collect(),
+                    next_evn_unit_by_model: [(crate::model::TrainModelId::new("local-70"), 2)]
+                        .into_iter()
+                        .collect(),
                 },
                 passenger_services: vec![PassengerService {
                     id: SERVICE_ID,
@@ -536,11 +540,7 @@ mod tests {
                 recent_journey_receipts: vec![],
             },
             rules: GameRules {
-                balance: BalanceConfig::new(
-                    fare_rate,
-                    access_rate,
-                    Money::from_cents(10_000),
-                ),
+                balance: BalanceConfig::new(fare_rate, access_rate, Money::from_cents(10_000)),
                 demand: DemandRules::provisional(),
             },
             last_processed_at: UtcSeconds::from_unix_seconds(0),

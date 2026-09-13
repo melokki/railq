@@ -327,7 +327,8 @@ fn failed_resale_save_keeps_the_review_open_without_a_success_notice() {
 }
 
 #[test]
-fn saved_purchase_feedback_is_non_blocking_and_details_are_optional() -> Result<(), Box<dyn Error>> {
+fn saved_purchase_feedback_is_non_blocking_and_details_are_optional() -> Result<(), Box<dyn Error>>
+{
     let (_, mut app) = dashboard_from_fresh_launch();
     let mut shell = Shell::new();
 

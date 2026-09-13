@@ -126,7 +126,6 @@ impl FleetSelection {
     }
 }
 
-
 /// Presentation-only editor for one Train's optional player nickname.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrainNicknameEditor {
@@ -239,7 +238,11 @@ pub fn render_nickname_editor(
     let card_height = if editor.error().is_some() { 15 } else { 14 };
     let card = modal::editor_rect(area, card_height);
     let footer = if card.width >= 56 {
-        modal::shortcut_line(&[("Enter", "save"), ("Backspace", "delete"), ("Esc", "cancel")])
+        modal::shortcut_line(&[
+            ("Enter", "save"),
+            ("Backspace", "delete"),
+            ("Esc", "cancel"),
+        ])
     } else {
         modal::shortcut_line(&[("Enter", "save"), ("Esc", "cancel")])
     };
@@ -529,11 +532,8 @@ fn render_wide_dashboard(
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
-    let [list_area, inspector_area] = Layout::horizontal([
-        Constraint::Min(48),
-        Constraint::Length(44),
-    ])
-    .areas(shell_inner);
+    let [list_area, inspector_area] =
+        Layout::horizontal([Constraint::Min(48), Constraint::Length(44)]).areas(shell_inner);
     let list_area = horizontal_inset(list_area, 1);
     let visible_items = usize::from(list_area.height.saturating_sub(2)).max(1);
     selection.set_page_size(visible_items);
@@ -554,15 +554,12 @@ fn render_wide_dashboard(
     let header = Row::new(["Train", "State"])
         .style(theme::table_header())
         .bottom_margin(1);
-    let table = Table::new(
-        rows,
-        [Constraint::Min(24), Constraint::Length(11)],
-    )
-    .header(header)
-    .style(theme::panel())
-    .row_highlight_style(theme::selected_row())
-    .highlight_symbol(FLEET_SELECTION_MARKER)
-    .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
+    let table = Table::new(rows, [Constraint::Min(24), Constraint::Length(11)])
+        .header(header)
+        .style(theme::panel())
+        .row_highlight_style(theme::selected_row())
+        .highlight_symbol(FLEET_SELECTION_MARKER)
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
     frame.render_stateful_widget(table, list_area, &mut selection.table_state);
 
     let selected = selected_train(state, selection);
@@ -704,6 +701,9 @@ fn render_train_inspector(
     let gauge_height = if journey.is_some() { 1 } else { 0 };
     let [details_area, progress_area] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(gauge_height)]).areas(inner);
+    // A short-but-wide terminal still needs the operational facts to fit. In
+    // that case use the same dense hierarchy as the compact detail page.
+    let dense_detail = compact_detail || details_area.height < 30;
 
     let mut lines = Vec::new();
     if embedded {
@@ -718,7 +718,10 @@ fn render_train_inspector(
         ]));
     }
 
-    if !compact_detail {
+    // READY Trains are primarily assets, so identity remains useful. A
+    // travelling Train is an active operation: spend the same space on the
+    // Journey instead of repeating static ownership facts.
+    if !dense_detail && matches!(&train.status, TrainStatus::Ready { .. }) {
         lines.extend([
             section_heading("IDENTITY"),
             labelled_line("EVN", &train.evn.formatted()),
@@ -740,42 +743,76 @@ fn render_train_inspector(
         train_status_label(train),
         train_status_style(train),
     ));
-    match (&train.status, journey) {
-        (TrainStatus::Ready { .. }, _) => {
-            lines.push(labelled_line("Availability", "Ready for dispatch"));
-        }
-        (TrainStatus::Travelling { .. }, Some(_)) => {
-            lines.push(labelled_line("Availability", "In service"));
-        }
-        (TrainStatus::Travelling { .. }, None) => {
-            lines.push(labelled_line("Availability", "Journey data unavailable"));
-        }
-    }
 
     match (&train.status, journey) {
         (TrainStatus::Ready { at }, _) => {
-            inspector_section(&mut lines, "LOCATION", compact_detail);
+            lines.push(labelled_line("Availability", "Ready for dispatch"));
+            inspector_section(&mut lines, "LOCATION", dense_detail);
             lines.push(labelled_line(
                 "Station",
                 &station_label_or_missing(state, *at),
             ));
+
+            inspector_section(&mut lines, "CAPACITY", dense_detail);
+            lines.push(labelled_line("Seats", &format_capacity(train)));
+
+            inspector_section(&mut lines, "PERFORMANCE", dense_detail);
+            if dense_detail {
+                lines.push(Line::from(vec![
+                    Span::styled("Technical    ", theme::secondary()),
+                    Span::raw(format!(
+                        "{} · {} · {}",
+                        format_speed(train),
+                        format_propulsion(train),
+                        format_fuel_rate(train),
+                    )),
+                ]));
+            } else {
+                lines.push(labelled_line("Top speed", &format_speed(train)));
+                lines.push(labelled_line("Propulsion", &format_propulsion(train)));
+                lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
+            }
+
+            inspector_section(&mut lines, "VALUE", dense_detail);
+            if !dense_detail {
+                lines.push(labelled_line(
+                    "Paid",
+                    &format_money(train.original_purchase_price),
+                ));
+            }
+            lines.push(labelled_line(
+                "Resale",
+                &resale_proceeds(train.original_purchase_price)
+                    .map(format_money)
+                    .unwrap_or_else(|| "Unavailable".into()),
+            ));
         }
         (TrainStatus::Travelling { .. }, Some(journey)) => {
-            inspector_section(&mut lines, "JOURNEY", compact_detail);
+            inspector_section(&mut lines, "JOURNEY", dense_detail);
             lines.push(labelled_line(
                 "Current leg",
                 &journey_leg_label(state, journey),
             ));
+            if !dense_detail {
+                lines.push(labelled_line(
+                    "Departed",
+                    &format!("{} ago", format_duration(elapsed_seconds(journey, now))),
+                ));
+            }
             lines.push(labelled_line(
-                "Remaining",
-                &format_duration(remaining_seconds(journey, now)),
+                "ETA",
+                &format!("in {}", format_duration(remaining_seconds(journey, now))),
             ));
             lines.push(labelled_line(
-                "Journey progress",
-                &format!("{}%", journey_progress_percent(journey, now)),
+                "Leg progress",
+                &format!(
+                    "{}% · {} elapsed",
+                    journey_progress_percent(journey, now),
+                    format_duration(elapsed_seconds(journey, now)),
+                ),
             ));
 
-            inspector_section(&mut lines, "SERVICE", compact_detail);
+            inspector_section(&mut lines, "SERVICE", dense_detail);
             if let Some(service) = state
                 .player_company
                 .passenger_services
@@ -783,16 +820,15 @@ fn render_train_inspector(
                 .find(|service| service.id == journey.service_id)
             {
                 lines.push(labelled_line("Service", &service.name));
-                lines.push(labelled_line(
-                    "Route",
-                    &format!(
-                        "{} → {}",
-                        station_label_or_missing(state, journey.origin_station_id),
-                        station_label_or_missing(state, journey.destination_station_id),
-                    ),
-                ));
-                if !compact_detail {
-                    lines.push(labelled_line("Calls", &service.stop_station_ids.len().to_string()));
+                if !dense_detail {
+                    lines.push(labelled_line(
+                        "Route",
+                        &format!(
+                            "{} → {}",
+                            station_label_or_missing(state, journey.origin_station_id),
+                            station_label_or_missing(state, journey.destination_station_id),
+                        ),
+                    ));
                 }
             } else {
                 lines.push(labelled_line(
@@ -800,53 +836,89 @@ fn render_train_inspector(
                     &format!("Missing service {}", journey.service_id.get()),
                 ));
             }
+
+            inspector_section(&mut lines, "PASSENGERS", dense_detail);
+            let onboard = journey.onboard_passengers();
+            lines.push(labelled_line(
+                "On board",
+                &format!("{} / {}", onboard, train_capacity(train)),
+            ));
+            lines.push(labelled_line("Load", &format_load(train, onboard)));
+            if !dense_detail {
+                lines.push(labelled_line(
+                    "Carried",
+                    &format!("{} total", journey.passengers_carried),
+                ));
+            }
+
+            inspector_section(&mut lines, "COMMERCIAL", dense_detail);
+            if dense_detail {
+                match journey_expected_result(journey) {
+                    Some(result) => lines.push(labelled_line_styled(
+                        "Expected result",
+                        &format_signed_money(result),
+                        journey_result_style(result),
+                    )),
+                    None => lines.push(labelled_line("Expected result", "Unavailable")),
+                }
+            } else {
+                lines.push(labelled_line(
+                    "Expected revenue",
+                    &format_money(journey.operating_revenue),
+                ));
+                lines.push(labelled_line(
+                    "Credited",
+                    &format_money(journey.credited_revenue),
+                ));
+                match journey_operating_cost(journey) {
+                    Some(cost) => lines.push(labelled_line("Operating cost", &format_money(cost))),
+                    None => lines.push(labelled_line("Operating cost", "Unavailable")),
+                }
+                match journey_expected_result(journey) {
+                    Some(result) => lines.push(labelled_line_styled(
+                        "Expected result",
+                        &format_signed_money(result),
+                        journey_result_style(result),
+                    )),
+                    None => lines.push(labelled_line("Expected result", "Unavailable")),
+                }
+            }
+
+            if !dense_detail {
+                inspector_section(&mut lines, "PERFORMANCE", false);
+                lines.push(Line::from(vec![
+                    Span::styled("Technical    ", theme::secondary()),
+                    Span::raw(format!(
+                        "{} · {} · {}",
+                        format_speed(train),
+                        format_propulsion(train),
+                        format_fuel_rate(train),
+                    )),
+                ]));
+            }
         }
         (TrainStatus::Travelling { journey_id }, None) => {
-            inspector_section(&mut lines, "JOURNEY", compact_detail);
+            lines.push(labelled_line("Availability", "Journey data unavailable"));
+            inspector_section(&mut lines, "JOURNEY", dense_detail);
             lines.push(labelled_line("Journey", &journey_id.get().to_string()));
             lines.push(labelled_line("Details", "Unavailable"));
+
+            inspector_section(&mut lines, "PERFORMANCE", dense_detail);
+            if dense_detail {
+                lines.push(Line::from(vec![
+                    Span::styled("Technical    ", theme::secondary()),
+                    Span::raw(format!(
+                        "{} · {}",
+                        format_speed(train),
+                        format_propulsion(train),
+                    )),
+                ]));
+            } else {
+                lines.push(labelled_line("Top speed", &format_speed(train)));
+                lines.push(labelled_line("Propulsion", &format_propulsion(train)));
+                lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
+            }
         }
-    }
-
-    inspector_section(&mut lines, "CAPACITY", compact_detail);
-    lines.push(labelled_line("Seats", &format_capacity(train)));
-    if let Some(journey) = journey {
-        let onboard = journey.onboard_passengers();
-        lines.push(labelled_line("On board", &onboard.to_string()));
-        lines.push(labelled_line("Load", &format_load(train, onboard)));
-    }
-
-    inspector_section(&mut lines, "PERFORMANCE", compact_detail);
-    if compact_detail {
-        lines.push(Line::from(vec![
-            Span::styled("Technical    ", theme::secondary()),
-            Span::raw(format!(
-                "{} · {} · {}",
-                format_speed(train),
-                format_propulsion(train),
-                format_fuel_rate(train),
-            )),
-        ]));
-    } else {
-        lines.push(labelled_line("Top speed", &format_speed(train)));
-        lines.push(labelled_line("Propulsion", &format_propulsion(train)));
-        lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
-    }
-
-    if matches!(&train.status, TrainStatus::Ready { .. }) {
-        inspector_section(&mut lines, "VALUE", compact_detail);
-        if !compact_detail {
-            lines.push(labelled_line(
-                "Paid",
-                &format_money(train.original_purchase_price),
-            ));
-        }
-        lines.push(labelled_line(
-            "Resale",
-            &resale_proceeds(train.original_purchase_price)
-                .map(format_money)
-                .unwrap_or_else(|| "Unavailable".into()),
-        ));
     }
 
     frame.render_widget(
@@ -861,7 +933,7 @@ fn render_train_inspector(
         frame.render_widget(
             LineGauge::default()
                 .ratio(percent as f64 / 100.0)
-                .label(format!("{percent}%"))
+                .label(format!("Leg {percent}%"))
                 .filled_style(Style::default().fg(theme::ACCENT).bg(theme::PANEL))
                 .unfilled_style(Style::default().fg(theme::SECONDARY).bg(theme::PANEL)),
             progress_area,
@@ -1036,7 +1108,9 @@ fn train_fields(state: &GameState, train: &Train, now: UtcSeconds) -> TrainField
                 model,
                 status: "TRAVELLING".into(),
                 place: journey_next_stop_station_id(state, journey)
-                    .map(|station_id| format!("Next {}", station_label_or_missing(state, station_id)))
+                    .map(|station_id| {
+                        format!("Next {}", station_label_or_missing(state, station_id))
+                    })
                     .unwrap_or_else(|| {
                         format!(
                             "{} → {}",
@@ -1094,6 +1168,12 @@ fn format_capacity(train: &Train) -> String {
         .unwrap_or_else(|| "Unavailable".into())
 }
 
+fn train_capacity(train: &Train) -> String {
+    model_for_train(train)
+        .map(|model| model.passenger_capacity().passengers().to_string())
+        .unwrap_or_else(|| "?".into())
+}
+
 fn format_speed(train: &Train) -> String {
     model_for_train(train)
         .map(|model| crate::ui::format::speed_kmh(model.speed().metres_per_second()))
@@ -1110,8 +1190,8 @@ fn format_fuel_rate(train: &Train) -> String {
     let Some(model) = model_for_train(train) else {
         return "Unavailable".into();
     };
-    let cents = i64::try_from(model.fuel_cost_per_kilometre().cents_per_kilometre())
-        .unwrap_or(i64::MAX);
+    let cents =
+        i64::try_from(model.fuel_cost_per_kilometre().cents_per_kilometre()).unwrap_or(i64::MAX);
     format!("{}/km", format_money(Money::from_cents(cents)))
 }
 
@@ -1126,11 +1206,8 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
     .expect("writing to a String cannot fail");
 
     if state.player_company.fleet.trains.is_empty() {
-        writeln!(
-            output,
-            "\nNo Trains yet. Next useful action: 3 · Market."
-        )
-        .expect("writing to a String cannot fail");
+        writeln!(output, "\nNo Trains yet. Next useful action: 3 · Market.")
+            .expect("writing to a String cannot fail");
         return output;
     }
 
@@ -1196,8 +1273,7 @@ pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
         .all(|train| matches!(train.status, TrainStatus::Travelling { .. }))
     {
         if let Some(eta) = nearest_arrival(state, now) {
-            writeln!(output, "Next arrival: {eta}.")
-                .expect("writing to a String cannot fail");
+            writeln!(output, "Next arrival: {eta}.").expect("writing to a String cannot fail");
         }
     }
     output
@@ -1241,7 +1317,8 @@ fn journey_next_stop_station_id(state: &GameState, journey: &Journey) -> Option<
         .find(|service| service.id == journey.service_id)?;
     let first = service.stop_station_ids.first().copied()?;
     let last = service.stop_station_ids.last().copied()?;
-    let direction = if journey.origin_station_id == first && journey.destination_station_id == last {
+    let direction = if journey.origin_station_id == first && journey.destination_station_id == last
+    {
         1_i32
     } else if journey.origin_station_id == last && journey.destination_station_id == first {
         -1_i32
@@ -1257,18 +1334,59 @@ fn journey_next_stop_station_id(state: &GameState, journey: &Journey) -> Option<
 }
 
 fn journey_progress_percent(journey: &Journey, now: UtcSeconds) -> u64 {
-    let duration = journey
-        .arrives_at
-        .unix_seconds()
-        .saturating_sub(journey.departed_at.unix_seconds());
-    if duration <= 0 {
+    let duration = leg_duration_seconds(journey);
+    if duration == 0 {
         return 100;
     }
-    let elapsed = now
-        .unix_seconds()
-        .saturating_sub(journey.departed_at.unix_seconds())
-        .clamp(0, duration);
-    u64::try_from(elapsed.saturating_mul(100) / duration).unwrap_or(100)
+    elapsed_seconds(journey, now).saturating_mul(100) / duration
+}
+
+fn leg_duration_seconds(journey: &Journey) -> u64 {
+    u64::try_from(
+        journey
+            .arrives_at
+            .unix_seconds()
+            .saturating_sub(journey.departed_at.unix_seconds())
+            .max(0),
+    )
+    .unwrap_or(u64::MAX)
+}
+
+fn elapsed_seconds(journey: &Journey, now: UtcSeconds) -> u64 {
+    let duration = leg_duration_seconds(journey);
+    u64::try_from(
+        now.unix_seconds()
+            .saturating_sub(journey.departed_at.unix_seconds())
+            .max(0),
+    )
+    .unwrap_or(u64::MAX)
+    .min(duration)
+}
+
+fn journey_operating_cost(journey: &Journey) -> Option<Money> {
+    journey
+        .infrastructure_access_fee
+        .checked_add(journey.fuel_cost)
+        .ok()
+}
+
+fn journey_expected_result(journey: &Journey) -> Option<Money> {
+    journey_operating_cost(journey)
+        .and_then(|cost| journey.operating_revenue.checked_sub(cost).ok())
+}
+
+fn format_signed_money(money: Money) -> String {
+    crate::ui::format::signed_cents(i128::from(money.cents()))
+}
+
+fn journey_result_style(result: Money) -> Style {
+    if result.cents() > 0 {
+        theme::success()
+    } else if result.cents() < 0 {
+        theme::warning()
+    } else {
+        theme::secondary()
+    }
 }
 
 fn remaining_seconds(journey: &Journey, now: UtcSeconds) -> u64 {

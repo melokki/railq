@@ -27,12 +27,11 @@ use crate::{
     model::{
         CalculationError, DemandRules, DistanceMetres, DurationSeconds, EuropeanVehicleNumber,
         Financials, Fleet, GameRules, GameState, Journey, JourneyId, JourneyPassengerGroup,
-        JourneyReceipt, Money, MoneyPerKilometre,
-        OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
-        PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork, RailStation,
-        RailStationId, Region, RailwayRegistration, ServiceId, Settlement, SettlementId,
-        SpeedMetresPerSecond, Train, TrainId, TrainModelId, TrainNickname, TrainStatus,
-        UtcSeconds, VehicleKeeperMark,
+        JourneyReceipt, Money, MoneyPerKilometre, OriginDestinationDemand, PassengerArrivalRate,
+        PassengerCapacity, PassengerService, PlayerCompany, RailAuthority, RailLine, RailLineId,
+        RailNetwork, RailStation, RailStationId, RailwayRegistration, Region, ServiceId,
+        Settlement, SettlementId, SpeedMetresPerSecond, Train, TrainId, TrainModelId,
+        TrainNickname, TrainStatus, UtcSeconds, VehicleKeeperMark,
     },
     sim::{
         services::{path_between_stations, service_path_for_stops},
@@ -64,8 +63,12 @@ pub struct SaveSlot {
 
 #[derive(Debug)]
 pub enum SaveSlotError {
-    InvalidPath { path: PathBuf },
-    AlreadyOwned { path: PathBuf },
+    InvalidPath {
+        path: PathBuf,
+    },
+    AlreadyOwned {
+        path: PathBuf,
+    },
     Io {
         action: &'static str,
         path: PathBuf,
@@ -91,14 +94,30 @@ impl fmt::Display for SaveSlotError {
             Self::AlreadyOwned { path } => {
                 write!(formatter, "save slot {} is already owned", path.display())
             }
-            Self::Io { action, path, source } => {
+            Self::Io {
+                action,
+                path,
+                source,
+            } => {
                 write!(formatter, "could not {action} {}: {source}", path.display())
             }
-            Self::Database { action, path, source } => {
-                write!(formatter, "could not {action} SQLite save {}: {source}", path.display())
+            Self::Database {
+                action,
+                path,
+                source,
+            } => {
+                write!(
+                    formatter,
+                    "could not {action} SQLite save {}: {source}",
+                    path.display()
+                )
             }
             Self::InvalidSave { path, source } => {
-                write!(formatter, "save {} is invalid and was preserved: {source}", path.display())
+                write!(
+                    formatter,
+                    "save {} is invalid and was preserved: {source}",
+                    path.display()
+                )
             }
         }
     }
@@ -136,7 +155,9 @@ impl fmt::Display for SaveCodecError {
                 formatter,
                 "saved Train model {model_name:?} does not exist in the central catalogue"
             ),
-            Self::LegacyDecode(error) => write!(formatter, "could not decode legacy RON save: {error}"),
+            Self::LegacyDecode(error) => {
+                write!(formatter, "could not decode legacy RON save: {error}")
+            }
         }
     }
 }
@@ -148,15 +169,17 @@ impl SaveSlot {
         let database_existed = Path::new(DEFAULT_SAVE_PATH).exists();
         let slot = Self::open(DEFAULT_SAVE_PATH)?;
         if !database_existed && Path::new(LEGACY_SAVE_PATH).exists() {
-            let source = fs::read_to_string(LEGACY_SAVE_PATH).map_err(|source| SaveSlotError::Io {
-                action: "read legacy RON save",
-                path: PathBuf::from(LEGACY_SAVE_PATH),
-                source,
-            })?;
-            let state = decode_legacy_game_state(&source).map_err(|source| SaveSlotError::InvalidSave {
-                path: PathBuf::from(LEGACY_SAVE_PATH),
-                source: Box::new(source),
-            })?;
+            let source =
+                fs::read_to_string(LEGACY_SAVE_PATH).map_err(|source| SaveSlotError::Io {
+                    action: "read legacy RON save",
+                    path: PathBuf::from(LEGACY_SAVE_PATH),
+                    source,
+                })?;
+            let state =
+                decode_legacy_game_state(&source).map_err(|source| SaveSlotError::InvalidSave {
+                    path: PathBuf::from(LEGACY_SAVE_PATH),
+                    source: Box::new(source),
+                })?;
             slot.save(&state)?;
         }
         Ok(slot)
@@ -177,7 +200,10 @@ impl SaveSlot {
                 source,
             })?;
         match FileExt::try_lock(&lock_file) {
-            Ok(()) => Ok(Self { path, _lock_file: lock_file }),
+            Ok(()) => Ok(Self {
+                path,
+                _lock_file: lock_file,
+            }),
             Err(TryLockError::WouldBlock) => Err(SaveSlotError::AlreadyOwned { path }),
             Err(TryLockError::Error(source)) => Err(SaveSlotError::Io {
                 action: "lock save slot",
@@ -250,32 +276,39 @@ impl SaveSlot {
             })?;
         let current_world_seed = state.world_seed.to_string();
         let preserve_history = existing_world_seed.as_deref() == Some(current_world_seed.as_str());
-        let transaction = connection.transaction().map_err(|source| SaveSlotError::Database {
-            action: "begin transaction for",
-            path: self.path.clone(),
-            source,
-        })?;
+        let transaction = connection
+            .transaction()
+            .map_err(|source| SaveSlotError::Database {
+                action: "begin transaction for",
+                path: self.path.clone(),
+                source,
+            })?;
         clear_state(&transaction, &self.path, preserve_history)?;
         insert_state(&transaction, state, &self.path)?;
-        transaction.commit().map_err(|source| SaveSlotError::Database {
-            action: "commit transaction for",
-            path: self.path.clone(),
-            source,
-        })?;
-        connection.execute_batch("PRAGMA optimize;").map_err(|source| SaveSlotError::Database {
-            action: "optimize",
-            path: self.path.clone(),
-            source,
-        })?;
+        transaction
+            .commit()
+            .map_err(|source| SaveSlotError::Database {
+                action: "commit transaction for",
+                path: self.path.clone(),
+                source,
+            })?;
+        connection
+            .execute_batch("PRAGMA optimize;")
+            .map_err(|source| SaveSlotError::Database {
+                action: "optimize",
+                path: self.path.clone(),
+                source,
+            })?;
         Ok(())
     }
 
     fn open_connection(&self, action: &'static str) -> Result<Connection, SaveSlotError> {
-        let connection = Connection::open(&self.path).map_err(|source| SaveSlotError::Database {
-            action,
-            path: self.path.clone(),
-            source,
-        })?;
+        let connection =
+            Connection::open(&self.path).map_err(|source| SaveSlotError::Database {
+                action,
+                path: self.path.clone(),
+                source,
+            })?;
         connection
             .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(|source| SaveSlotError::Database {
@@ -289,7 +322,9 @@ impl SaveSlot {
 
 fn sidecar_lock_path(path: &Path) -> Result<PathBuf, SaveSlotError> {
     let Some(file_name) = path.file_name() else {
-        return Err(SaveSlotError::InvalidPath { path: path.to_path_buf() });
+        return Err(SaveSlotError::InvalidPath {
+            path: path.to_path_buf(),
+        });
     };
     let mut lock_name = file_name.to_os_string();
     lock_name.push(".lock");
@@ -298,9 +333,9 @@ fn sidecar_lock_path(path: &Path) -> Result<PathBuf, SaveSlotError> {
 
 fn archive_save(path: &Path) -> io::Result<PathBuf> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "save path has no file name")
-    })?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "save path has no file name"))?;
     for _ in 0..128 {
         let sequence = NEXT_ARCHIVE_ID.fetch_add(1, Ordering::Relaxed);
         let archive_path = parent.join(format!(
@@ -309,7 +344,11 @@ fn archive_save(path: &Path) -> io::Result<PathBuf> {
             std::process::id(),
             sequence
         ));
-        match OpenOptions::new().write(true).create_new(true).open(&archive_path) {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&archive_path)
+        {
             Ok(_) => {
                 fs::copy(path, &archive_path)?;
                 return Ok(archive_path);
@@ -318,7 +357,10 @@ fn archive_save(path: &Path) -> io::Result<PathBuf> {
             Err(error) => return Err(error),
         }
     }
-    Err(io::Error::new(io::ErrorKind::AlreadyExists, "could not allocate a unique restart backup save"))
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique restart backup save",
+    ))
 }
 
 const SCHEMA: &str = r#"
@@ -460,11 +502,13 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
 
     match version {
         0 => {
-            connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
-                action: "initialize schema for",
-                path: path.to_path_buf(),
-                source,
-            })?;
+            connection
+                .execute_batch(SCHEMA)
+                .map_err(|source| SaveSlotError::Database {
+                    action: "initialize schema for",
+                    path: path.to_path_buf(),
+                    source,
+                })?;
             connection
                 .pragma_update(None, "user_version", SAVE_VERSION)
                 .map_err(|source| SaveSlotError::Database {
@@ -524,11 +568,13 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
         }
         8 => migrate_v8_to_v9(connection, path)?,
         SAVE_VERSION => {
-            connection.execute_batch(SCHEMA).map_err(|source| SaveSlotError::Database {
-                action: "verify schema for",
-                path: path.to_path_buf(),
-                source,
-            })?;
+            connection
+                .execute_batch(SCHEMA)
+                .map_err(|source| SaveSlotError::Database {
+                    action: "verify schema for",
+                    path: path.to_path_buf(),
+                    source,
+                })?;
         }
         found => {
             return Err(SaveSlotError::InvalidSave {
@@ -591,8 +637,7 @@ fn migrate_v1_to_v2(connection: &Connection, path: &Path) -> Result<(), SaveSlot
                     model.name() == model_name
                         && i64::from(model.passenger_capacity().passengers()) == passenger_capacity
                         && i64::try_from(model.speed().metres_per_second()).ok() == Some(speed)
-                        && i64::try_from(model.fuel_cost_per_kilometre().cents_per_kilometre())
-                            .ok()
+                        && i64::try_from(model.fuel_cost_per_kilometre().cents_per_kilometre()).ok()
                             == Some(fuel_rate)
                 })
                 .ok_or_else(|| SaveSlotError::InvalidSave {
@@ -628,7 +673,11 @@ fn migrate_v1_to_v2(connection: &Connection, path: &Path) -> Result<(), SaveSlot
             .pragma_update(None, "user_version", 2_u32)
             .map_err(|source| db_error("write v2 schema version to", path, source))?;
         let foreign_key_violation: Option<i64> = connection
-            .query_row("SELECT 1 FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT 1 FROM pragma_foreign_key_check LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(|source| db_error("verify v1 to v2 migration for", path, source))?;
         if foreign_key_violation.is_some() {
@@ -732,7 +781,11 @@ fn migrate_v2_to_v3(connection: &Connection, path: &Path) -> Result<(), SaveSlot
             .pragma_update(None, "user_version", 3_u32)
             .map_err(|source| db_error("write v3 schema version to", path, source))?;
         let foreign_key_violation: Option<i64> = connection
-            .query_row("SELECT 1 FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT 1 FROM pragma_foreign_key_check LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(|source| db_error("verify v2 to v3 migration for", path, source))?;
         if foreign_key_violation.is_some() {
@@ -767,7 +820,6 @@ fn migrate_v2_to_v3(connection: &Connection, path: &Path) -> Result<(), SaveSlot
         }
     }
 }
-
 
 fn migrate_v3_to_v4(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
     connection
@@ -819,7 +871,11 @@ fn migrate_v3_to_v4(connection: &Connection, path: &Path) -> Result<(), SaveSlot
             .pragma_update(None, "user_version", 4_u32)
             .map_err(|source| db_error("write v4 schema version to", path, source))?;
         let foreign_key_violation: Option<i64> = connection
-            .query_row("SELECT 1 FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT 1 FROM pragma_foreign_key_check LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(|source| db_error("verify v3 to v4 migration for", path, source))?;
         if foreign_key_violation.is_some() {
@@ -875,28 +931,20 @@ fn migrate_v4_to_v5(connection: &Connection, path: &Path) -> Result<(), SaveSlot
             )
             .optional()
             .map_err(|source| {
-                db_error(
-                    "read Region registration migration data from",
-                    path,
-                    source,
-                )
+                db_error("read Region registration migration data from", path, source)
             })?;
 
         if let Some((region_name, world_seed_text)) = existing {
             let world_seed = world_seed_text
                 .parse::<u64>()
                 .map_err(|_| invalid_value(path, "world seed"))?;
-            let registration =
-                railway_registration_for_existing_region(&region_name, world_seed);
+            let registration = railway_registration_for_existing_region(&region_name, world_seed);
             connection
                 .execute(
                     "UPDATE region
                      SET registration_code = ?1, registration_mark = ?2
                      WHERE singleton = 1",
-                    params![
-                        i64::from(registration.numeric_code),
-                        registration.mark
-                    ],
+                    params![i64::from(registration.numeric_code), registration.mark],
                 )
                 .map_err(|source| {
                     db_error("write Region registration identity to", path, source)
@@ -920,7 +968,6 @@ fn migrate_v4_to_v5(connection: &Connection, path: &Path) -> Result<(), SaveSlot
     }
 }
 
-
 fn migrate_v5_to_v6(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
     connection
         .execute_batch(
@@ -933,11 +980,9 @@ fn migrate_v5_to_v6(connection: &Connection, path: &Path) -> Result<(), SaveSlot
 
     let migration = (|| -> Result<(), SaveSlotError> {
         let company_name: Option<String> = connection
-            .query_row(
-                "SELECT name FROM company WHERE singleton = 1",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT name FROM company WHERE singleton = 1", [], |row| {
+                row.get(0)
+            })
             .optional()
             .map_err(|source| db_error("read Company VKM migration data from", path, source))?;
 
@@ -968,7 +1013,6 @@ fn migrate_v5_to_v6(connection: &Connection, path: &Path) -> Result<(), SaveSlot
     }
 }
 
-
 fn migrate_v6_to_v7(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
     connection
         .execute_batch(
@@ -990,12 +1034,16 @@ fn migrate_v6_to_v7(connection: &Connection, path: &Path) -> Result<(), SaveSlot
             .map_err(|source| db_error("read EVN Region registration from", path, source))?;
 
         let next_train_id: i64 = connection
-            .query_row(
-                "SELECT COALESCE(MAX(id), 0) + 1 FROM trains",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|source| db_error("calculate next Train ID for v7 migration from", path, source))?;
+            .query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM trains", [], |row| {
+                row.get(0)
+            })
+            .map_err(|source| {
+                db_error(
+                    "calculate next Train ID for v7 migration from",
+                    path,
+                    source,
+                )
+            })?;
         connection
             .execute(
                 "UPDATE company SET next_train_id = ?1 WHERE singleton = 1",
@@ -1008,17 +1056,18 @@ fn migrate_v6_to_v7(connection: &Connection, path: &Path) -> Result<(), SaveSlot
                 .map_err(|_| invalid_value(path, "Region registration code"))?;
             let mut statement = connection
                 .prepare("SELECT id, model_id FROM trains ORDER BY model_id, id")
-                .map_err(|source| db_error("read v6 Trains for EVN migration from", path, source))?;
-            let mut rows = statement
-                .query([])
-                .map_err(|source| db_error("read v6 Trains for EVN migration from", path, source))?;
+                .map_err(|source| {
+                    db_error("read v6 Trains for EVN migration from", path, source)
+                })?;
+            let mut rows = statement.query([]).map_err(|source| {
+                db_error("read v6 Trains for EVN migration from", path, source)
+            })?;
 
             let mut migrated = Vec::new();
             let mut next_units: HashMap<String, u16> = HashMap::new();
-            while let Some(row) = rows
-                .next()
-                .map_err(|source| db_error("read v6 Train row for EVN migration from", path, source))?
-            {
+            while let Some(row) = rows.next().map_err(|source| {
+                db_error("read v6 Train row for EVN migration from", path, source)
+            })? {
                 let train_id = from_db_u64(
                     row.get::<_, i64>(0)
                         .map_err(|source| db_error("decode v6 Train ID from", path, source))?,
@@ -1057,17 +1106,16 @@ fn migrate_v6_to_v7(connection: &Connection, path: &Path) -> Result<(), SaveSlot
                 connection
                     .execute(
                         "UPDATE trains SET evn = ?1 WHERE id = ?2",
-                        params![
-                            evn.as_str(),
-                            to_db_u64(train_id, "Train ID", path)?
-                        ],
+                        params![evn.as_str(), to_db_u64(train_id, "Train ID", path)?],
                     )
                     .map_err(|source| db_error("write migrated Train EVN to", path, source))?;
             }
         }
 
         let missing_evn: i64 = connection
-            .query_row("SELECT COUNT(*) FROM trains WHERE evn IS NULL", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM trains WHERE evn IS NULL", [], |row| {
+                row.get(0)
+            })
             .map_err(|source| db_error("verify migrated Train EVNs in", path, source))?;
         if missing_evn != 0 {
             return Err(invalid_value(path, "European Vehicle Number"));
@@ -1096,7 +1144,6 @@ fn migrate_v6_to_v7(connection: &Connection, path: &Path) -> Result<(), SaveSlot
     }
 }
 
-
 fn migrate_v7_to_v8(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
     connection
         .execute_batch(
@@ -1115,7 +1162,9 @@ fn migrate_v7_to_v8(connection: &Connection, path: &Path) -> Result<(), SaveSlot
                 [],
                 |row| row.get(0),
             )
-            .map_err(|source| db_error("read Region registration for v8 EVNs from", path, source))?;
+            .map_err(|source| {
+                db_error("read Region registration for v8 EVNs from", path, source)
+            })?;
         let registration_code = u8::try_from(registration_code)
             .map_err(|_| invalid_value(path, "Region registration code"))?;
 
@@ -1202,7 +1251,6 @@ fn migrate_v7_to_v8(connection: &Connection, path: &Path) -> Result<(), SaveSlot
     }
 }
 
-
 fn migrate_v8_to_v9(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
     connection
         .execute_batch(
@@ -1241,8 +1289,9 @@ fn clear_state(
                 source,
             })?;
     }
-    transaction.execute_batch(
-        "DELETE FROM journey_passenger_groups;
+    transaction
+        .execute_batch(
+            "DELETE FROM journey_passenger_groups;
          DELETE FROM active_journeys;
          DELETE FROM origin_destination_demand;
          DELETE FROM service_lines;
@@ -1258,21 +1307,31 @@ fn clear_state(
          DELETE FROM settlements;
          DELETE FROM region;
          DELETE FROM game_meta;",
-    ).map_err(|source| SaveSlotError::Database {
-        action: "clear previous state from",
-        path: path.to_path_buf(),
-        source,
-    })?;
+        )
+        .map_err(|source| SaveSlotError::Database {
+            action: "clear previous state from",
+            path: path.to_path_buf(),
+            source,
+        })?;
     Ok(())
 }
 
-fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -> Result<(), SaveSlotError> {
+fn insert_state(
+    transaction: &Transaction<'_>,
+    state: &GameState,
+    path: &Path,
+) -> Result<(), SaveSlotError> {
     let db = |value: u64, field| to_db_u64(value, field, path);
 
-    transaction.execute(
-        "INSERT INTO game_meta(singleton, world_seed, last_processed_at) VALUES(1, ?1, ?2)",
-        params![state.world_seed.to_string(), state.last_processed_at.unix_seconds()],
-    ).map_err(|source| db_error("write game metadata to", path, source))?;
+    transaction
+        .execute(
+            "INSERT INTO game_meta(singleton, world_seed, last_processed_at) VALUES(1, ?1, ?2)",
+            params![
+                state.world_seed.to_string(),
+                state.last_processed_at.unix_seconds()
+            ],
+        )
+        .map_err(|source| db_error("write game metadata to", path, source))?;
     transaction.execute(
         "INSERT INTO region(singleton, name, registration_code, registration_mark, population, rail_authority_name)
          VALUES(1, ?1, ?2, ?3, ?4, ?5)",
@@ -1286,17 +1345,28 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
     ).map_err(|source| db_error("write Region to", path, source))?;
 
     for settlement in &state.region.settlements {
-        transaction.execute(
-            "INSERT INTO settlements(id, name, population) VALUES(?1, ?2, ?3)",
-            params![db(settlement.id.get(), "Settlement ID")?, &settlement.name, db(settlement.population, "Settlement Population")?],
-        ).map_err(|source| db_error("write Settlements to", path, source))?;
+        transaction
+            .execute(
+                "INSERT INTO settlements(id, name, population) VALUES(?1, ?2, ?3)",
+                params![
+                    db(settlement.id.get(), "Settlement ID")?,
+                    &settlement.name,
+                    db(settlement.population, "Settlement Population")?
+                ],
+            )
+            .map_err(|source| db_error("write Settlements to", path, source))?;
     }
     let network = &state.region.rail_authority.rail_network;
     for station in &network.rail_stations {
-        transaction.execute(
-            "INSERT INTO rail_stations(id, settlement_id) VALUES(?1, ?2)",
-            params![db(station.id.get(), "Rail Station ID")?, db(station.settlement_id.get(), "Settlement ID")?],
-        ).map_err(|source| db_error("write Rail Stations to", path, source))?;
+        transaction
+            .execute(
+                "INSERT INTO rail_stations(id, settlement_id) VALUES(?1, ?2)",
+                params![
+                    db(station.id.get(), "Rail Station ID")?,
+                    db(station.settlement_id.get(), "Settlement ID")?
+                ],
+            )
+            .map_err(|source| db_error("write Rail Stations to", path, source))?;
     }
     for line in &network.rail_lines {
         transaction.execute(
@@ -1305,22 +1375,26 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
         ).map_err(|source| db_error("write Rail Lines to", path, source))?;
     }
 
-    transaction.execute(
-        "INSERT INTO company(singleton, name, vkm, funds_cents, next_train_id)
+    transaction
+        .execute(
+            "INSERT INTO company(singleton, name, vkm, funds_cents, next_train_id)
          VALUES(1, ?1, ?2, ?3, ?4)",
-        params![
-            &state.player_company.name,
-            state.player_company.vehicle_keeper_mark.as_str(),
-            state.player_company.funds.cents(),
-            db(state.player_company.fleet.next_train_id, "next Train ID")?
-        ],
-    ).map_err(|source| db_error("write Player Company to", path, source))?;
+            params![
+                &state.player_company.name,
+                state.player_company.vehicle_keeper_mark.as_str(),
+                state.player_company.funds.cents(),
+                db(state.player_company.fleet.next_train_id, "next Train ID")?
+            ],
+        )
+        .map_err(|source| db_error("write Player Company to", path, source))?;
 
     for (model_id, next_unit_number) in &state.player_company.fleet.next_evn_unit_by_model {
-        transaction.execute(
-            "INSERT INTO train_model_sequences(model_id, next_unit_number) VALUES(?1, ?2)",
-            params![model_id.as_str(), i64::from(*next_unit_number)],
-        ).map_err(|source| db_error("write EVN model sequences to", path, source))?;
+        transaction
+            .execute(
+                "INSERT INTO train_model_sequences(model_id, next_unit_number) VALUES(?1, ?2)",
+                params![model_id.as_str(), i64::from(*next_unit_number)],
+            )
+            .map_err(|source| db_error("write EVN model sequences to", path, source))?;
     }
 
     for train in &state.player_company.fleet.trains {
@@ -1341,10 +1415,12 @@ fn insert_state(transaction: &Transaction<'_>, state: &GameState, path: &Path) -
     }
 
     for service in &state.player_company.passenger_services {
-        transaction.execute(
-            "INSERT INTO passenger_services(id, name) VALUES(?1, ?2)",
-            params![db(service.id.get(), "Passenger Service ID")?, &service.name],
-        ).map_err(|source| db_error("write Passenger Services to", path, source))?;
+        transaction
+            .execute(
+                "INSERT INTO passenger_services(id, name) VALUES(?1, ?2)",
+                params![db(service.id.get(), "Passenger Service ID")?, &service.name],
+            )
+            .map_err(|source| db_error("write Passenger Services to", path, source))?;
         for (sequence, station_id) in service.stop_station_ids.iter().enumerate() {
             transaction.execute(
                 "INSERT INTO service_stops(service_id, sequence, station_id) VALUES(?1, ?2, ?3)",
@@ -1447,47 +1523,70 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
     let Some((world_seed_text, last_processed_at)) = meta else {
         return Ok(None);
     };
-    let world_seed = world_seed_text.parse::<u64>().map_err(|_| invalid_value(path, "world seed"))?;
+    let world_seed = world_seed_text
+        .parse::<u64>()
+        .map_err(|_| invalid_value(path, "world seed"))?;
 
-    let (region_name, registration_code, registration_mark, region_population, authority_name):
-        (String, i64, String, i64, String) = connection
-            .query_row(
-                "SELECT name, registration_code, registration_mark, population, rail_authority_name
+    let (region_name, registration_code, registration_mark, region_population, authority_name): (
+        String,
+        i64,
+        String,
+        i64,
+        String,
+    ) = connection
+        .query_row(
+            "SELECT name, registration_code, registration_mark, population, rail_authority_name
                  FROM region WHERE singleton = 1",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .map_err(|source| db_error("read Region from", path, source))?;
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .map_err(|source| db_error("read Region from", path, source))?;
 
-    let settlements = query_all(connection, "SELECT id, name, population FROM settlements ORDER BY id", path, |row| {
-        Ok(Settlement {
-            id: SettlementId::new(row_u64(row, 0, "Settlement ID")?),
-            name: row.get(1)?,
-            population: row_u64(row, 2, "Settlement Population")?,
-        })
-    })?;
-    let rail_stations = query_all(connection, "SELECT id, settlement_id FROM rail_stations ORDER BY id", path, |row| {
-        Ok(RailStation {
-            id: RailStationId::new(row_u64(row, 0, "Rail Station ID")?),
-            settlement_id: SettlementId::new(row_u64(row, 1, "Settlement ID")?),
-        })
-    })?;
-    let rail_lines = query_all(connection, "SELECT id, first_station_id, second_station_id, distance_metres FROM rail_lines ORDER BY id", path, |row| {
-        Ok(RailLine {
-            id: RailLineId::new(row_u64(row, 0, "Rail Line ID")?),
-            first_station_id: RailStationId::new(row_u64(row, 1, "Rail Station ID")?),
-            second_station_id: RailStationId::new(row_u64(row, 2, "Rail Station ID")?),
-            distance: DistanceMetres::new(row.get(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-        })
-    })?;
+    let settlements = query_all(
+        connection,
+        "SELECT id, name, population FROM settlements ORDER BY id",
+        path,
+        |row| {
+            Ok(Settlement {
+                id: SettlementId::new(row_u64(row, 0, "Settlement ID")?),
+                name: row.get(1)?,
+                population: row_u64(row, 2, "Settlement Population")?,
+            })
+        },
+    )?;
+    let rail_stations = query_all(
+        connection,
+        "SELECT id, settlement_id FROM rail_stations ORDER BY id",
+        path,
+        |row| {
+            Ok(RailStation {
+                id: RailStationId::new(row_u64(row, 0, "Rail Station ID")?),
+                settlement_id: SettlementId::new(row_u64(row, 1, "Settlement ID")?),
+            })
+        },
+    )?;
+    let rail_lines = query_all(
+        connection,
+        "SELECT id, first_station_id, second_station_id, distance_metres FROM rail_lines ORDER BY id",
+        path,
+        |row| {
+            Ok(RailLine {
+                id: RailLineId::new(row_u64(row, 0, "Rail Line ID")?),
+                first_station_id: RailStationId::new(row_u64(row, 1, "Rail Station ID")?),
+                second_station_id: RailStationId::new(row_u64(row, 2, "Rail Station ID")?),
+                distance: DistanceMetres::new(row.get(3)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            })
+        },
+    )?;
 
     let (company_name, company_vkm, company_funds, next_train_id): (String, String, i64, i64) =
         connection
@@ -1496,7 +1595,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
-        .map_err(|source| db_error("read Player Company from", path, source))?;
+            .map_err(|source| db_error("read Player Company from", path, source))?;
     let company_vkm = VehicleKeeperMark::parse(&company_vkm)
         .map_err(|_| invalid_value(path, "Player Company VKM"))?;
 
@@ -1514,109 +1613,177 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
     .into_iter()
     .collect();
 
-    let trains = query_all(connection, "SELECT id, evn, nickname, status_kind, status_ref_id, model_id, original_purchase_price_cents FROM trains ORDER BY id", path, |row| {
-        let evn_text: String = row.get(1)?;
-        let evn = EuropeanVehicleNumber::parse(&evn_text)
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let nickname = row
-            .get::<_, Option<String>>(2)?
-            .map(|value| TrainNickname::parse(&value).map_err(|_| rusqlite::Error::InvalidQuery))
-            .transpose()?;
-        let status_kind: String = row.get(3)?;
-        let status_ref = row_u64(row, 4, "Train status reference")?;
-        let status = match status_kind.as_str() {
-            "ready" => TrainStatus::Ready { at: RailStationId::new(status_ref) },
-            "travelling" => TrainStatus::Travelling { journey_id: JourneyId::new(status_ref) },
-            _ => return Err(rusqlite::Error::InvalidQuery),
-        };
-        Ok(Train {
-            id: TrainId::new(row_u64(row, 0, "Train ID")?),
-            evn,
-            nickname,
-            status,
-            model_id: TrainModelId::new(row.get::<_, String>(5)?),
-            original_purchase_price: Money::from_cents(row.get(6)?),
-        })
-    })?;
+    let trains = query_all(
+        connection,
+        "SELECT id, evn, nickname, status_kind, status_ref_id, model_id, original_purchase_price_cents FROM trains ORDER BY id",
+        path,
+        |row| {
+            let evn_text: String = row.get(1)?;
+            let evn = EuropeanVehicleNumber::parse(&evn_text)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+            let nickname = row
+                .get::<_, Option<String>>(2)?
+                .map(|value| {
+                    TrainNickname::parse(&value).map_err(|_| rusqlite::Error::InvalidQuery)
+                })
+                .transpose()?;
+            let status_kind: String = row.get(3)?;
+            let status_ref = row_u64(row, 4, "Train status reference")?;
+            let status = match status_kind.as_str() {
+                "ready" => TrainStatus::Ready {
+                    at: RailStationId::new(status_ref),
+                },
+                "travelling" => TrainStatus::Travelling {
+                    journey_id: JourneyId::new(status_ref),
+                },
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            Ok(Train {
+                id: TrainId::new(row_u64(row, 0, "Train ID")?),
+                evn,
+                nickname,
+                status,
+                model_id: TrainModelId::new(row.get::<_, String>(5)?),
+                original_purchase_price: Money::from_cents(row.get(6)?),
+            })
+        },
+    )?;
 
-    let mut services = query_all(connection, "SELECT id, name FROM passenger_services ORDER BY id", path, |row| {
-        Ok(PassengerService {
-            id: ServiceId::new(row_u64(row, 0, "Passenger Service ID")?),
-            name: row.get(1)?,
-            stop_station_ids: Vec::new(),
-            rail_line_ids: Vec::new(),
-        })
-    })?;
+    let mut services = query_all(
+        connection,
+        "SELECT id, name FROM passenger_services ORDER BY id",
+        path,
+        |row| {
+            Ok(PassengerService {
+                id: ServiceId::new(row_u64(row, 0, "Passenger Service ID")?),
+                name: row.get(1)?,
+                stop_station_ids: Vec::new(),
+                rail_line_ids: Vec::new(),
+            })
+        },
+    )?;
     for service in &mut services {
-        let mut stop_statement = connection.prepare("SELECT station_id FROM service_stops WHERE service_id = ?1 ORDER BY sequence")
+        let mut stop_statement = connection
+            .prepare("SELECT station_id FROM service_stops WHERE service_id = ?1 ORDER BY sequence")
             .map_err(|source| db_error("prepare Passenger Service stop query for", path, source))?;
-        let stop_rows = stop_statement.query_map(params![to_db_u64(service.id.get(), "Passenger Service ID", path)?], |row| row.get::<_, i64>(0))
+        let stop_rows = stop_statement
+            .query_map(
+                params![to_db_u64(service.id.get(), "Passenger Service ID", path)?],
+                |row| row.get::<_, i64>(0),
+            )
             .map_err(|source| db_error("read Passenger Service stops from", path, source))?;
         for row in stop_rows {
-            let station = row.map_err(|source| db_error("read Passenger Service stop from", path, source))?;
-            service.stop_station_ids.push(RailStationId::new(from_db_u64(station, "Rail Station ID").map_err(|field| invalid_value(path, field))?));
+            let station =
+                row.map_err(|source| db_error("read Passenger Service stop from", path, source))?;
+            service.stop_station_ids.push(RailStationId::new(
+                from_db_u64(station, "Rail Station ID")
+                    .map_err(|field| invalid_value(path, field))?,
+            ));
         }
 
-        let mut statement = connection.prepare("SELECT rail_line_id FROM service_lines WHERE service_id = ?1 ORDER BY sequence")
+        let mut statement = connection
+            .prepare(
+                "SELECT rail_line_id FROM service_lines WHERE service_id = ?1 ORDER BY sequence",
+            )
             .map_err(|source| db_error("prepare Passenger Service path query for", path, source))?;
-        let rows = statement.query_map(params![to_db_u64(service.id.get(), "Passenger Service ID", path)?], |row| row.get::<_, i64>(0))
+        let rows = statement
+            .query_map(
+                params![to_db_u64(service.id.get(), "Passenger Service ID", path)?],
+                |row| row.get::<_, i64>(0),
+            )
             .map_err(|source| db_error("read Passenger Service path from", path, source))?;
         for row in rows {
-            let line = row.map_err(|source| db_error("read Passenger Service path from", path, source))?;
-            service.rail_line_ids.push(RailLineId::new(from_db_u64(line, "Rail Line ID").map_err(|field| invalid_value(path, field))?));
+            let line =
+                row.map_err(|source| db_error("read Passenger Service path from", path, source))?;
+            service.rail_line_ids.push(RailLineId::new(
+                from_db_u64(line, "Rail Line ID").map_err(|field| invalid_value(path, field))?,
+            ));
         }
     }
 
-    let demand = query_all(connection, "SELECT origin_station_id, destination_station_id, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds FROM origin_destination_demand ORDER BY origin_station_id, destination_station_id", path, |row| {
-        Ok(OriginDestinationDemand {
-            origin_station_id: RailStationId::new(row_u64(row, 0, "Demand origin")?),
-            destination_station_id: RailStationId::new(row_u64(row, 1, "Demand destination")?),
-            waiting_passengers: u32::try_from(row.get::<_, i64>(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-            passenger_arrival_rate_per_hour: PassengerArrivalRate::new(row.get(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-            fractional_passenger_seconds: row_u64(row, 4, "Demand fractional passenger seconds")?,
-        })
-    })?;
+    let demand = query_all(
+        connection,
+        "SELECT origin_station_id, destination_station_id, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds FROM origin_destination_demand ORDER BY origin_station_id, destination_station_id",
+        path,
+        |row| {
+            Ok(OriginDestinationDemand {
+                origin_station_id: RailStationId::new(row_u64(row, 0, "Demand origin")?),
+                destination_station_id: RailStationId::new(row_u64(row, 1, "Demand destination")?),
+                waiting_passengers: u32::try_from(row.get::<_, i64>(2)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                passenger_arrival_rate_per_hour: PassengerArrivalRate::new(row.get(3)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                fractional_passenger_seconds: row_u64(
+                    row,
+                    4,
+                    "Demand fractional passenger seconds",
+                )?,
+            })
+        },
+    )?;
 
-    let mut active_journeys = query_all(connection, "SELECT id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at FROM active_journeys ORDER BY id", path, |row| {
-        Ok(Journey {
-            id: JourneyId::new(row_u64(row, 0, "Journey ID")?),
-            service_id: ServiceId::new(row_u64(row, 1, "Passenger Service ID")?),
-            train_id: TrainId::new(row_u64(row, 2, "Train ID")?),
-            origin_station_id: RailStationId::new(row_u64(row, 3, "Journey origin")?),
-            destination_station_id: RailStationId::new(row_u64(row, 4, "Journey destination")?),
-            passengers_carried: u32::try_from(row.get::<_, i64>(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-            fare: Money::from_cents(row.get(6)?),
-            operating_revenue: Money::from_cents(row.get(7)?),
-            credited_revenue: Money::from_cents(row.get(8)?),
-            infrastructure_access_fee: Money::from_cents(row.get(9)?),
-            fuel_cost: Money::from_cents(row.get(10)?),
-            current_stop_index: usize::try_from(row.get::<_, i64>(11)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-            passenger_groups: Vec::new(),
-            departed_at: UtcSeconds::from_unix_seconds(row.get(12)?),
-            arrives_at: UtcSeconds::from_unix_seconds(row.get(13)?),
-        })
-    })?;
+    let mut active_journeys = query_all(
+        connection,
+        "SELECT id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at FROM active_journeys ORDER BY id",
+        path,
+        |row| {
+            Ok(Journey {
+                id: JourneyId::new(row_u64(row, 0, "Journey ID")?),
+                service_id: ServiceId::new(row_u64(row, 1, "Passenger Service ID")?),
+                train_id: TrainId::new(row_u64(row, 2, "Train ID")?),
+                origin_station_id: RailStationId::new(row_u64(row, 3, "Journey origin")?),
+                destination_station_id: RailStationId::new(row_u64(row, 4, "Journey destination")?),
+                passengers_carried: u32::try_from(row.get::<_, i64>(5)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                fare: Money::from_cents(row.get(6)?),
+                operating_revenue: Money::from_cents(row.get(7)?),
+                credited_revenue: Money::from_cents(row.get(8)?),
+                infrastructure_access_fee: Money::from_cents(row.get(9)?),
+                fuel_cost: Money::from_cents(row.get(10)?),
+                current_stop_index: usize::try_from(row.get::<_, i64>(11)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                passenger_groups: Vec::new(),
+                departed_at: UtcSeconds::from_unix_seconds(row.get(12)?),
+                arrives_at: UtcSeconds::from_unix_seconds(row.get(13)?),
+            })
+        },
+    )?;
     for journey in &mut active_journeys {
-        let mut statement = connection.prepare(
-            "SELECT origin_station_id, destination_station_id, passengers, fare_cents
+        let mut statement = connection
+            .prepare(
+                "SELECT origin_station_id, destination_station_id, passengers, fare_cents
              FROM journey_passenger_groups
              WHERE journey_id = ?1
-             ORDER BY sequence"
-        ).map_err(|source| db_error("prepare Journey passenger group query for", path, source))?;
-        let rows = statement.query_map(
-            params![to_db_u64(journey.id.get(), "Journey ID", path)?],
-            |row| {
-                Ok(JourneyPassengerGroup {
-                    origin_station_id: RailStationId::new(row_u64(row, 0, "Journey passenger origin")?),
-                    destination_station_id: RailStationId::new(row_u64(row, 1, "Journey passenger destination")?),
-                    passengers: u32::try_from(row.get::<_, i64>(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    fare: Money::from_cents(row.get(3)?),
-                })
-            },
-        ).map_err(|source| db_error("read Journey passenger groups from", path, source))?;
+             ORDER BY sequence",
+            )
+            .map_err(|source| {
+                db_error("prepare Journey passenger group query for", path, source)
+            })?;
+        let rows = statement
+            .query_map(
+                params![to_db_u64(journey.id.get(), "Journey ID", path)?],
+                |row| {
+                    Ok(JourneyPassengerGroup {
+                        origin_station_id: RailStationId::new(row_u64(
+                            row,
+                            0,
+                            "Journey passenger origin",
+                        )?),
+                        destination_station_id: RailStationId::new(row_u64(
+                            row,
+                            1,
+                            "Journey passenger destination",
+                        )?),
+                        passengers: u32::try_from(row.get::<_, i64>(2)?)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        fare: Money::from_cents(row.get(3)?),
+                    })
+                },
+            )
+            .map_err(|source| db_error("read Journey passenger groups from", path, source))?;
         for row in rows {
             journey.passenger_groups.push(
-                row.map_err(|source| db_error("read Journey passenger group from", path, source))?
+                row.map_err(|source| db_error("read Journey passenger group from", path, source))?,
             );
         }
     }
@@ -1642,11 +1809,15 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
             fuel_cost: Money::from_cents(row.get(3)?),
             train_id: optional_row_u64(row, 4, "Journey receipt Train ID")?.map(TrainId::new),
             train_model_name: row.get(5)?,
-            origin_station_id: optional_row_u64(row, 6, "Journey receipt origin")?.map(RailStationId::new),
-            destination_station_id: optional_row_u64(row, 7, "Journey receipt destination")?.map(RailStationId::new),
+            origin_station_id: optional_row_u64(row, 6, "Journey receipt origin")?
+                .map(RailStationId::new),
+            destination_station_id: optional_row_u64(row, 7, "Journey receipt destination")?
+                .map(RailStationId::new),
             passengers_carried: optional_row_u32(row, 8, "Journey receipt passengers")?,
             passenger_capacity: optional_row_u32(row, 9, "Journey receipt passenger capacity")?,
-            completed_at: row.get::<_, Option<i64>>(10)?.map(UtcSeconds::from_unix_seconds),
+            completed_at: row
+                .get::<_, Option<i64>>(10)?
+                .map(UtcSeconds::from_unix_seconds),
         })
     })?;
 
@@ -1663,11 +1834,15 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                     .map_err(|_| invalid_value(path, "Region railway registration code"))?,
                 mark: registration_mark,
             },
-            population: from_db_u64(region_population, "Region Population").map_err(|field| invalid_value(path, field))?,
+            population: from_db_u64(region_population, "Region Population")
+                .map_err(|field| invalid_value(path, field))?,
             settlements,
             rail_authority: RailAuthority {
                 name: authority_name,
-                rail_network: RailNetwork { rail_stations, rail_lines },
+                rail_network: RailNetwork {
+                    rail_stations,
+                    rail_lines,
+                },
             },
         },
         player_company: PlayerCompany {
@@ -1693,11 +1868,15 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         rules: GameRules {
             balance: BalanceConfig::new(
                 MoneyPerKilometre::new(fare_rate).map_err(|_| invalid_value(path, "fare rate"))?,
-                MoneyPerKilometre::new(access_rate).map_err(|_| invalid_value(path, "access fee rate"))?,
+                MoneyPerKilometre::new(access_rate)
+                    .map_err(|_| invalid_value(path, "access fee rate"))?,
                 Money::from_cents(starting_funds),
             ),
             demand: DemandRules {
-                cap_duration: DurationSeconds::from_seconds(from_db_u64(demand_cap, "demand cap duration").map_err(|field| invalid_value(path, field))?),
+                cap_duration: DurationSeconds::from_seconds(
+                    from_db_u64(demand_cap, "demand cap duration")
+                        .map_err(|field| invalid_value(path, field))?,
+                ),
             },
         },
         last_processed_at: UtcSeconds::from_unix_seconds(last_processed_at),
@@ -1711,9 +1890,14 @@ fn query_all<T>(
     path: &Path,
     mut map: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Vec<T>, SaveSlotError> {
-    let mut statement = connection.prepare(sql).map_err(|source| db_error("prepare query for", path, source))?;
-    let rows = statement.query_map([], |row| map(row)).map_err(|source| db_error("query", path, source))?;
-    rows.map(|row| row.map_err(|source| db_error("decode row from", path, source))).collect()
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|source| db_error("prepare query for", path, source))?;
+    let rows = statement
+        .query_map([], |row| map(row))
+        .map_err(|source| db_error("query", path, source))?;
+    rows.map(|row| row.map_err(|source| db_error("decode row from", path, source)))
+        .collect()
 }
 
 fn to_db_u64(value: u64, field: &'static str, path: &Path) -> Result<i64, SaveSlotError> {
@@ -1757,12 +1941,20 @@ fn from_db_u64(value: i64, field: &'static str) -> Result<u64, &'static str> {
     u64::try_from(value).map_err(|_| field)
 }
 
-fn optional_id(value: Option<u64>, field: &'static str, path: &Path) -> Result<Option<i64>, SaveSlotError> {
+fn optional_id(
+    value: Option<u64>,
+    field: &'static str,
+    path: &Path,
+) -> Result<Option<i64>, SaveSlotError> {
     value.map(|value| to_db_u64(value, field, path)).transpose()
 }
 
 fn db_error(action: &'static str, path: &Path, source: rusqlite::Error) -> SaveSlotError {
-    SaveSlotError::Database { action, path: path.to_path_buf(), source }
+    SaveSlotError::Database {
+        action,
+        path: path.to_path_buf(),
+        source,
+    }
 }
 
 fn invalid_value(path: &Path, field: &'static str) -> SaveSlotError {
@@ -1848,8 +2040,8 @@ struct LegacyDieselTrainCatalogueRecordV1 {
 
 fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
     const LEGACY_RON_VERSION: u32 = 1;
-    let envelope: LegacySaveEnvelope<LegacyGameStateV1> = ron::from_str(source)
-        .map_err(|error| SaveCodecError::LegacyDecode(error.to_string()))?;
+    let envelope: LegacySaveEnvelope<LegacyGameStateV1> =
+        ron::from_str(source).map_err(|error| SaveCodecError::LegacyDecode(error.to_string()))?;
     if envelope.version != LEGACY_RON_VERSION {
         return Err(SaveCodecError::UnsupportedVersion {
             found: envelope.version,
@@ -1892,11 +2084,12 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
             .map_err(|_| SaveCodecError::InvalidValue {
                 field: "European Vehicle Number",
             })?;
-            let next_unit_number = (*unit_number)
-                .checked_add(1)
-                .ok_or(SaveCodecError::InvalidValue {
-                    field: "EVN unit number",
-                })?;
+            let next_unit_number =
+                (*unit_number)
+                    .checked_add(1)
+                    .ok_or(SaveCodecError::InvalidValue {
+                        field: "EVN unit number",
+                    })?;
             *unit_number = next_unit_number;
             Ok(Train {
                 id: train.id,
@@ -1926,8 +2119,14 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
             .iter()
             .find(|service| service.id == journey.service_id)
         {
-            if journey.origin_station_id == service.destination_station_id().unwrap_or(journey.origin_station_id)
-                && journey.destination_station_id == service.origin_station_id().unwrap_or(journey.destination_station_id)
+            if journey.origin_station_id
+                == service
+                    .destination_station_id()
+                    .unwrap_or(journey.origin_station_id)
+                && journey.destination_station_id
+                    == service
+                        .origin_station_id()
+                        .unwrap_or(journey.destination_station_id)
             {
                 journey.current_stop_index = service.stop_station_ids.len().saturating_sub(1);
             }
@@ -2463,7 +2662,9 @@ fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
             });
         }
         if metadata_fields_present == 7 {
-            let train_id = receipt.train_id.expect("complete receipt context has Train ID");
+            let train_id = receipt
+                .train_id
+                .expect("complete receipt context has Train ID");
             let train_model_name = receipt
                 .train_model_name
                 .as_deref()
@@ -2510,9 +2711,7 @@ fn validate_train_statuses(
                 field: "Train catalogue model reference",
             });
         };
-        if train.model_id.as_str().trim().is_empty()
-            || train.original_purchase_price.cents() <= 0
-        {
+        if train.model_id.as_str().trim().is_empty() || train.original_purchase_price.cents() <= 0 {
             return Err(SaveValidationError::InvalidValue {
                 field: "Train catalogue model reference",
             });
@@ -2739,16 +2938,13 @@ fn validate_journey(
             });
         }
 
-        onboard_passengers = onboard_passengers
-            .checked_add(group.passengers)
-            .ok_or(SaveValidationError::Calculation(
-                CalculationError::Overflow {
-                    operation: "Journey onboard passenger count",
-                },
-            ))?;
-        onboard_revenue = onboard_revenue.checked_add(
-            group.fare.checked_mul(u64::from(group.passengers))?,
+        onboard_passengers = onboard_passengers.checked_add(group.passengers).ok_or(
+            SaveValidationError::Calculation(CalculationError::Overflow {
+                operation: "Journey onboard passenger count",
+            }),
         )?;
+        onboard_revenue =
+            onboard_revenue.checked_add(group.fare.checked_mul(u64::from(group.passengers))?)?;
     }
 
     if onboard_passengers > train_model.passenger_capacity().passengers()
@@ -2788,23 +2984,22 @@ fn distance_between_service_stops(
     first_stop_index: usize,
     second_stop_index: usize,
 ) -> Result<DistanceMetres, SaveValidationError> {
-    let first_station_id = *service
-        .stop_station_ids
-        .get(first_stop_index)
-        .ok_or(SaveValidationError::ImpossibleState {
-            reason: "Passenger Service stop index is outside the stop pattern",
-        })?;
-    let second_station_id = *service
-        .stop_station_ids
-        .get(second_stop_index)
-        .ok_or(SaveValidationError::ImpossibleState {
-            reason: "Passenger Service stop index is outside the stop pattern",
-        })?;
-    let line_ids = path_between_stations(network, first_station_id, second_station_id).map_err(|_| {
+    let first_station_id = *service.stop_station_ids.get(first_stop_index).ok_or(
         SaveValidationError::ImpossibleState {
-            reason: "Passenger Service stops are not connected by the Rail Network",
-        }
-    })?;
+            reason: "Passenger Service stop index is outside the stop pattern",
+        },
+    )?;
+    let second_station_id = *service.stop_station_ids.get(second_stop_index).ok_or(
+        SaveValidationError::ImpossibleState {
+            reason: "Passenger Service stop index is outside the stop pattern",
+        },
+    )?;
+    let line_ids =
+        path_between_stations(network, first_station_id, second_station_id).map_err(|_| {
+            SaveValidationError::ImpossibleState {
+                reason: "Passenger Service stops are not connected by the Rail Network",
+            }
+        })?;
     let total_metres = line_ids.iter().try_fold(0_u64, |total, rail_line_id| {
         let line = network
             .rail_lines
@@ -2831,7 +3026,6 @@ fn distance_between_service_stops(
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -2843,9 +3037,7 @@ mod tests {
     use crate::{
         model::{RailStationId, UtcSeconds},
         sim::{
-            fleet::purchase_train,
-            journeys::dispatch_journey,
-            services::find_or_create_service,
+            fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
             world::create_new_game,
         },
     };
@@ -2948,11 +3140,9 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM service_stops", [], |row| row.get(0))
             .unwrap();
         let passenger_group_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM journey_passenger_groups",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM journey_passenger_groups", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let state_blob_table: i64 = connection
             .query_row(
@@ -2975,7 +3165,11 @@ mod tests {
             .query_row("SELECT evn FROM trains LIMIT 1", [], |row| row.get(0))
             .unwrap();
         let next_train_id: i64 = connection
-            .query_row("SELECT next_train_id FROM company WHERE singleton = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT next_train_id FROM company WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let next_unit_number: i64 = connection
             .query_row(
@@ -3146,13 +3340,19 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         let model_id: String = connection
-            .query_row("SELECT model_id FROM trains WHERE id = 1", [], |row| row.get(0))
+            .query_row("SELECT model_id FROM trains WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let evn: String = connection
             .query_row("SELECT evn FROM trains WHERE id = 1", [], |row| row.get(0))
             .unwrap();
         let next_train_id: i64 = connection
-            .query_row("SELECT next_train_id FROM company WHERE singleton = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT next_train_id FROM company WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let next_unit_number: i64 = connection
             .query_row(
@@ -3170,16 +3370,30 @@ mod tests {
             .unwrap();
 
         let journey_train_id: i64 = connection
-            .query_row("SELECT train_id FROM active_journeys WHERE id = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT train_id FROM active_journeys WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let service_name: String = connection
-            .query_row("SELECT name FROM passenger_services WHERE id = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT name FROM passenger_services WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let service_stop_count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM service_stops WHERE service_id = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM service_stops WHERE service_id = 1",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let foreign_key_violations: i64 = connection
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let (registration_code, registration_mark): (i64, String) = connection
             .query_row(
@@ -3189,7 +3403,9 @@ mod tests {
             )
             .unwrap();
         let company_vkm: String = connection
-            .query_row("SELECT vkm FROM company WHERE singleton = 1", [], |row| row.get(0))
+            .query_row("SELECT vkm FROM company WHERE singleton = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
 
         assert_eq!(version, SAVE_VERSION);

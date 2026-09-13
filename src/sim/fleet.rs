@@ -487,7 +487,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn each_model_allocates_its_own_evn_unit_sequence() {
         let mut state = game();
@@ -516,5 +515,4 @@ mod tests {
         assert_eq!(second.evn.series_code(), 120);
         assert_eq!(second.evn.unit_number(), 1);
     }
-
 }

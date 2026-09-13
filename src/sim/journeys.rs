@@ -9,8 +9,8 @@ use std::{error::Error, fmt};
 
 use crate::{
     model::{
-        CalculationError, GameState, Journey, JourneyId, JourneyPassengerGroup, Money, RailStationId,
-        ServiceId, TrainId, TrainStatus, UtcSeconds,
+        CalculationError, GameState, Journey, JourneyId, JourneyPassengerGroup, Money,
+        RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
     },
     sim::economy::{EconomyError, quote_journey},
 };

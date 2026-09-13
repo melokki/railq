@@ -168,7 +168,9 @@ impl DispatchFlow {
                 let trains = dispatchable_train_ids_for_station(state, self.preferred_station_id);
                 if trains.is_empty() {
                     self.rejection = Some(match self.preferred_station_id {
-                        Some(_) => "No READY Train is available at the selected Rail Station.".into(),
+                        Some(_) => {
+                            "No READY Train is available at the selected Rail Station.".into()
+                        }
                         None => no_ready_train_reason(state).into(),
                     });
                     return DispatchFlowAction::Continue;
@@ -272,7 +274,8 @@ impl DispatchFlow {
                         self.rejection = None;
                     } else {
                         self.rejection = Some(
-                            "The selected Passenger Service changed; choose a Service again.".into(),
+                            "The selected Passenger Service changed; choose a Service again."
+                                .into(),
                         );
                     }
                 }
@@ -452,13 +455,11 @@ impl DispatchFlow {
                 selected_train_id,
                 table_state,
                 ..
-            } => {
-                synchronize_train_selection(
-                    selected_train_id,
-                    table_state,
-                    &dispatchable_train_ids_for_station(state, self.preferred_station_id),
-                )
-            }
+            } => synchronize_train_selection(
+                selected_train_id,
+                table_state,
+                &dispatchable_train_ids_for_station(state, self.preferred_station_id),
+            ),
             DispatchStep::SelectService { .. } | DispatchStep::Confirm { .. } => false,
         };
         if selection_changed {
@@ -537,11 +538,9 @@ fn dispatch_footer_line(step: &DispatchStep, width: u16) -> Line<'static> {
             ("Enter", "service"),
             ("Esc", "cancel"),
         ]),
-        DispatchStep::SelectTrain { .. } => modal::shortcut_line(&[
-            ("↑/↓", "choose"),
-            ("Enter", "service"),
-            ("Esc", "cancel"),
-        ]),
+        DispatchStep::SelectTrain { .. } => {
+            modal::shortcut_line(&[("↑/↓", "choose"), ("Enter", "service"), ("Esc", "cancel")])
+        }
         DispatchStep::SelectService { .. } if width >= 82 => modal::shortcut_line(&[
             ("↑/↓", "choose"),
             ("PgUp/PgDn", "scroll"),
@@ -555,11 +554,9 @@ fn dispatch_footer_line(step: &DispatchStep, width: u16) -> Line<'static> {
             ("←", "train"),
             ("Esc", "cancel"),
         ]),
-        DispatchStep::Confirm { .. } => modal::shortcut_line(&[
-            ("Enter", "dispatch"),
-            ("←", "service"),
-            ("Esc", "cancel"),
-        ]),
+        DispatchStep::Confirm { .. } => {
+            modal::shortcut_line(&[("Enter", "dispatch"), ("←", "service"), ("Esc", "cancel")])
+        }
     }
 }
 
@@ -573,7 +570,13 @@ fn render_quote_review(
 ) {
     let insufficient_funds = quote.cash_after_cost < Money::ZERO;
     let status_rows = u16::from(insufficient_funds) + u16::from(rejection.is_some());
-    let [context_area, route_area, occupancy_area, terms_area, status_area] = Layout::vertical([
+    let [
+        context_area,
+        route_area,
+        occupancy_area,
+        terms_area,
+        status_area,
+    ] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(2),
         Constraint::Length(3),
@@ -596,7 +599,11 @@ fn render_quote_review(
             Line::from(vec![
                 Span::styled("TRAIN  ", theme::secondary()),
                 Span::styled(
-                    format!("{:02} · {}", quote.train_id.get(), train_model_name(state, quote.train_id)),
+                    format!(
+                        "{:02} · {}",
+                        quote.train_id.get(),
+                        train_model_name(state, quote.train_id)
+                    ),
                     theme::primary_value(),
                 ),
                 Span::styled("   SERVICE  ", theme::secondary()),
@@ -818,7 +825,11 @@ fn render_train_chooser(
             dispatch_step_line(1),
             Line::from(vec![
                 Span::styled(
-                    if origin.is_some() { "FROM  " } else { "READY TRAINS  " },
+                    if origin.is_some() {
+                        "FROM  "
+                    } else {
+                        "READY TRAINS  "
+                    },
                     theme::secondary(),
                 ),
                 Span::styled(
@@ -957,11 +968,17 @@ fn render_train_inspector(
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled("Train Preview", theme::title()),
-            Line::styled(format!("Train {:02}", train.id.get()), theme::focused_title()),
+            Line::styled(
+                format!("Train {:02}", train.id.get()),
+                theme::focused_title(),
+            ),
             Line::styled(train_model_name(state, train_id), theme::primary_value()),
             Line::from(""),
             detail_line("Location", location),
-            detail_line("Capacity", &format!("{} pax", train_capacity(state, train_id))),
+            detail_line(
+                "Capacity",
+                &format!("{} pax", train_capacity(state, train_id)),
+            ),
             detail_line("Speed", &train_speed(state, train_id)),
             detail_line("Fuel", &train_fuel_rate(state, train_id)),
             detail_line("Services", &service_count.to_string()),
@@ -1026,9 +1043,15 @@ fn render_service_chooser(
             dispatch_step_line(2),
             Line::from(vec![
                 Span::styled("FROM  ", theme::secondary()),
-                Span::styled(station_label(state, origin_station_id), theme::primary_value()),
+                Span::styled(
+                    station_label(state, origin_station_id),
+                    theme::primary_value(),
+                ),
                 Span::styled("   TRAIN  ", theme::secondary()),
-                Span::styled(format!("{:02} · {model}", train_id.get()), theme::primary_value()),
+                Span::styled(
+                    format!("{:02} · {model}", train_id.get()),
+                    theme::primary_value(),
+                ),
             ]),
         ])
         .style(theme::panel())
@@ -1181,7 +1204,10 @@ fn render_service_inspector(
             Line::styled("Service Preview", theme::title()),
             Line::styled(format!("{name} · {route}"), theme::focused_title()),
             Line::styled(
-                format!("{demand} waiting · {}", format_duration(quote.duration.seconds())),
+                format!(
+                    "{demand} waiting · {}",
+                    format_duration(quote.duration.seconds())
+                ),
                 theme::secondary(),
             ),
             Line::styled(format_distance(quote.distance.metres()), theme::secondary()),
@@ -1228,11 +1254,9 @@ fn ready_train_ids_for_station(
 ) -> Vec<TrainId> {
     ready_train_ids(state)
         .into_iter()
-        .filter(|train_id| {
-            match station_id {
-                Some(station_id) => ready_train_station(state, *train_id) == Some(station_id),
-                None => true,
-            }
+        .filter(|train_id| match station_id {
+            Some(station_id) => ready_train_station(state, *train_id) == Some(station_id),
+            None => true,
         })
         .collect()
 }
@@ -1574,7 +1598,9 @@ fn waiting_passengers_for_service(state: &GameState, service_id: ServiceId) -> u
                     && demand.destination_station_id == *destination_station_id
             })
         })
-        .fold(0_u32, |total, demand| total.saturating_add(demand.waiting_passengers))
+        .fold(0_u32, |total, demand| {
+            total.saturating_add(demand.waiting_passengers)
+        })
 }
 
 fn format_path(state: &GameState, quote: &JourneyQuote) -> String {
@@ -1734,11 +1760,8 @@ mod tests {
             &mut state,
             vec![RailStationId::new(3), RailStationId::new(1)],
         );
-        let mut flow = DispatchFlow::start_with_selected_train(
-            &state,
-            crate::model::TrainId::new(1),
-        )
-        .unwrap();
+        let mut flow =
+            DispatchFlow::start_with_selected_train(&state, crate::model::TrainId::new(1)).unwrap();
         assert!(flow.is_selecting_train());
         assert_eq!(
             flow.handle_key(key(KeyCode::Enter), &state),

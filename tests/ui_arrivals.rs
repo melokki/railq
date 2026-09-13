@@ -43,8 +43,7 @@ fn travelling_state() -> GameState {
 }
 
 #[test]
-fn committed_multiple_arrivals_are_non_blocking_with_current_funds()
--> Result<(), Box<dyn Error>> {
+fn committed_multiple_arrivals_are_non_blocking_with_current_funds() -> Result<(), Box<dyn Error>> {
     let before = travelling_state();
     let arrives_at = before.active_journeys[0].arrives_at;
     let mut after = before.clone();
@@ -129,8 +128,8 @@ fn rejected_reconciliation_publishes_no_arrival_or_revenue_notice() {
 }
 
 #[test]
-fn startup_arrivals_use_a_non_blocking_live_summary_once_after_the_save_succeeds() -> Result<(), Box<dyn Error>>
-{
+fn startup_arrivals_use_a_non_blocking_live_summary_once_after_the_save_succeeds()
+-> Result<(), Box<dyn Error>> {
     let store = RejectingStore::default();
     let state = travelling_state();
     let arrives_at = state.active_journeys[0].arrives_at;

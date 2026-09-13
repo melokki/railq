@@ -161,8 +161,10 @@ impl CompanyNameForm {
         self.reveal_cursor(content_width);
         frame.render_widget(
             Paragraph::new(
-                Line::from("A passenger operating concession is available in a newly generated region.")
-                    .style(theme::primary_value()),
+                Line::from(
+                    "A passenger operating concession is available in a newly generated region.",
+                )
+                .style(theme::primary_value()),
             )
             .wrap(Wrap { trim: true }),
             Rect::new(inner.x, inner.y, inner.width, 2),
@@ -298,10 +300,7 @@ pub fn capture_company_name() -> io::Result<Option<CompanyName>> {
 /// The Region seed and start timestamp remain fixed while the player moves
 /// between company-name editing and concession review, so editing the name
 /// never rerolls the generated world.
-pub fn capture_new_game(
-    world_seed: u64,
-    started_at: UtcSeconds,
-) -> io::Result<Option<GameState>> {
+pub fn capture_new_game(world_seed: u64, started_at: UtcSeconds) -> io::Result<Option<GameState>> {
     let mut terminal = TerminalSession::enter()?;
     let mut form = CompanyNameForm::default();
     let mut prepared: Option<GameState> = None;
@@ -442,7 +441,10 @@ fn render_concession_review(frame: &mut Frame, state: &GameState) {
             theme::secondary(),
         )),
         metric_line("Starting funds", format::money(state.player_company.funds)),
-        metric_line("Fleet", format!("{} trains", state.player_company.fleet.trains.len())),
+        metric_line(
+            "Fleet",
+            format!("{} trains", state.player_company.fleet.trains.len()),
+        ),
         Line::from(""),
         Line::from(Span::styled("First objective", theme::title())),
         Line::from(Span::styled(

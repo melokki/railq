@@ -15,9 +15,7 @@ use crate::{
     },
     sim::{
         demand::replenish_directional_demand,
-        economy::{
-            EconomyError, distance_between_service_stops, quote_boarding_at_stop,
-        },
+        economy::{EconomyError, distance_between_service_stops, quote_boarding_at_stop},
     },
 };
 
@@ -26,14 +24,22 @@ use crate::{
 pub enum AdvanceTimeError {
     Calculation(CalculationError),
     Economy(EconomyError),
-    TrainNotFound { train_id: TrainId },
-    TrainModelNotFound { train_id: TrainId },
-    ServiceNotFound { service_id: ServiceId },
+    TrainNotFound {
+        train_id: TrainId,
+    },
+    TrainModelNotFound {
+        train_id: TrainId,
+    },
+    ServiceNotFound {
+        service_id: ServiceId,
+    },
     TrainNotTravelling {
         train_id: TrainId,
         journey_id: JourneyId,
     },
-    InvalidServiceProgress { journey_id: JourneyId },
+    InvalidServiceProgress {
+        journey_id: JourneyId,
+    },
     WaitingPassengersUnavailable {
         origin_station_id: RailStationId,
         destination_station_id: RailStationId,
@@ -200,10 +206,11 @@ fn process_stop_arrival(
         .ok_or(AdvanceTimeError::TrainNotFound {
             train_id: journey_snapshot.train_id,
         })?;
-    let train_model = model_for_train(&state.player_company.fleet.trains[train_index])
-        .ok_or(AdvanceTimeError::TrainModelNotFound {
+    let train_model = model_for_train(&state.player_company.fleet.trains[train_index]).ok_or(
+        AdvanceTimeError::TrainModelNotFound {
             train_id: journey_snapshot.train_id,
-        })?;
+        },
+    )?;
     if state.player_company.fleet.trains[train_index].status
         != (TrainStatus::Travelling {
             journey_id: journey_snapshot.id,
@@ -215,10 +222,11 @@ fn process_stop_arrival(
         });
     }
 
-    let direction = service_direction(&service, &journey_snapshot)
-        .ok_or(AdvanceTimeError::InvalidServiceProgress {
+    let direction = service_direction(&service, &journey_snapshot).ok_or(
+        AdvanceTimeError::InvalidServiceProgress {
             journey_id: journey_snapshot.id,
-        })?;
+        },
+    )?;
     let arrival_stop_index = next_stop_index(
         journey_snapshot.current_stop_index,
         direction,
@@ -234,23 +242,20 @@ fn process_stop_arrival(
     let mut credited_now = Money::ZERO;
     for group in &journey_snapshot.passenger_groups {
         if group.destination_station_id == arrival_station_id {
-            credited_now = credited_now.checked_add(
-                group.fare.checked_mul(u64::from(group.passengers))?,
-            )?;
+            credited_now =
+                credited_now.checked_add(group.fare.checked_mul(u64::from(group.passengers))?)?;
         } else {
             remaining_groups.push(group.clone());
         }
     }
 
-    let onboard_after_alighting = remaining_groups
-        .iter()
-        .try_fold(0_u32, |total, group| {
-            total
-                .checked_add(group.passengers)
-                .ok_or(CalculationError::Overflow {
-                    operation: "onboard passenger count",
-                })
-        })?;
+    let onboard_after_alighting = remaining_groups.iter().try_fold(0_u32, |total, group| {
+        total
+            .checked_add(group.passengers)
+            .ok_or(CalculationError::Overflow {
+                operation: "onboard passenger count",
+            })
+    })?;
     let capacity = train_model.passenger_capacity().passengers();
 
     if final_arrival {
@@ -347,12 +352,11 @@ fn process_stop_arrival(
                 operation: "Journey passenger boardings",
             })
     })?;
-    let newly_booked_revenue =
-        boarding_quotes
-            .iter()
-            .try_fold(Money::ZERO, |total, boarding| {
-                total.checked_add(boarding.revenue)
-            })?;
+    let newly_booked_revenue = boarding_quotes
+        .iter()
+        .try_fold(Money::ZERO, |total, boarding| {
+            total.checked_add(boarding.revenue)
+        })?;
     let passengers_carried = journey_snapshot
         .passengers_carried
         .checked_add(newly_boarded)
@@ -374,12 +378,8 @@ fn process_stop_arrival(
     .ok_or(AdvanceTimeError::InvalidServiceProgress {
         journey_id: journey_snapshot.id,
     })?;
-    let next_leg_distance = distance_between_service_stops(
-        state,
-        &service,
-        arrival_stop_index,
-        next_leg_stop_index,
-    )?;
+    let next_leg_distance =
+        distance_between_service_stops(state, &service, arrival_stop_index, next_leg_stop_index)?;
     let next_leg_duration = next_leg_distance.journey_duration(train_model.speed())?;
     let next_arrival = journey_snapshot.arrives_at.checked_add(next_leg_duration)?;
 
@@ -403,12 +403,16 @@ fn process_stop_arrival(
     journey.passenger_groups = remaining_groups;
     journey
         .passenger_groups
-        .extend(boarding_quotes.into_iter().map(|boarding| JourneyPassengerGroup {
-            origin_station_id: boarding.origin_station_id,
-            destination_station_id: boarding.destination_station_id,
-            passengers: boarding.passengers,
-            fare: boarding.fare,
-        }));
+        .extend(
+            boarding_quotes
+                .into_iter()
+                .map(|boarding| JourneyPassengerGroup {
+                    origin_station_id: boarding.origin_station_id,
+                    destination_station_id: boarding.destination_station_id,
+                    passengers: boarding.passengers,
+                    fare: boarding.fare,
+                }),
+        );
     journey.departed_at = journey_snapshot.arrives_at;
     journey.arrives_at = next_arrival;
 
@@ -444,8 +448,11 @@ mod tests {
         catalog::model_for_train,
         model::{Money, RailStationId, TrainStatus, UtcSeconds},
         sim::{
-            economy::quote_journey, fleet::purchase_train, journeys::dispatch_journey,
-            services::{create_service, find_or_create_service}, world::create_new_game,
+            economy::quote_journey,
+            fleet::purchase_train,
+            journeys::dispatch_journey,
+            services::{create_service, find_or_create_service},
+            world::create_new_game,
         },
     };
 
@@ -509,10 +516,16 @@ mod tests {
         assert_eq!(state.financials.recent_journey_receipts.len(), 1);
         let receipt = &state.financials.recent_journey_receipts[0];
         assert_eq!(receipt.journey_id, journey_id);
-        assert_eq!(receipt.train_id, Some(state.player_company.fleet.trains[0].id));
+        assert_eq!(
+            receipt.train_id,
+            Some(state.player_company.fleet.trains[0].id)
+        );
         let train_model = model_for_train(&state.player_company.fleet.trains[0])
             .expect("fixture Train model remains in the embedded catalogue");
-        assert_eq!(receipt.train_model_name.as_deref(), Some(train_model.name()));
+        assert_eq!(
+            receipt.train_model_name.as_deref(),
+            Some(train_model.name())
+        );
         assert_eq!(receipt.origin_station_id, Some(ORIGIN));
         assert_eq!(receipt.destination_station_id, Some(DESTINATION));
         assert_eq!(receipt.passengers_carried, Some(quote.boarded_passengers));
@@ -616,15 +629,13 @@ mod tests {
                 .origin_destination_demand
                 .iter_mut()
                 .find(|pool| {
-                    pool.origin_station_id == origin
-                        && pool.destination_station_id == destination
+                    pool.origin_station_id == origin && pool.destination_station_id == destination
                 })
                 .unwrap()
                 .waiting_passengers = passengers;
         }
 
-        let journey_id =
-            dispatch_journey(&mut state, train_id, service_id, DEPARTED_AT).unwrap();
+        let journey_id = dispatch_journey(&mut state, train_id, service_id, DEPARTED_AT).unwrap();
         assert_eq!(state.active_journeys[0].onboard_passengers(), 30);
         assert_eq!(state.active_journeys[0].passengers_carried, 30);
 
@@ -661,7 +672,6 @@ mod tests {
         assert!(receipt.revenue > Money::ZERO);
     }
 
-
     #[test]
     fn offline_reconciliation_reports_revenue_credited_across_all_service_stops() {
         let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
@@ -677,8 +687,7 @@ mod tests {
         )
         .unwrap();
 
-        let journey_id =
-            dispatch_journey(&mut state, train_id, service_id, DEPARTED_AT).unwrap();
+        let journey_id = dispatch_journey(&mut state, train_id, service_id, DEPARTED_AT).unwrap();
         let far_future = UtcSeconds::from_unix_seconds(DEPARTED_AT.unix_seconds() + 86_400);
 
         let settled = advance_time_with_arrivals(&mut state, far_future).unwrap();
@@ -693,6 +702,4 @@ mod tests {
             .unwrap();
         assert_eq!(settled[0].credited_revenue, receipt.revenue);
     }
-
-
 }

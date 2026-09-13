@@ -3,11 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
     model::{Money, RailStationId, ServiceId, TrainStatus, UtcSeconds},
-    sim::{
-        fleet::purchase_train,
-        services::create_service,
-        world::create_new_game,
-    },
+    sim::{fleet::purchase_train, services::create_service, world::create_new_game},
     ui::{
         Shell, ShellAction, capture_rendered_buffer, capture_rendered_buffer_mut,
         capture_rendered_cell_colors, theme,

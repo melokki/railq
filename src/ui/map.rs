@@ -45,7 +45,6 @@ pub struct StationSelection {
     page_size: usize,
 }
 
-
 /// One keyboard selection across every Settlement shown by the operational map.
 ///
 /// Connected Settlements resolve to a Rail Station and can start Manual Dispatch;
@@ -120,7 +119,10 @@ impl MapLocationSelection {
                 };
                 // Prefer the nearest place in the requested direction while
                 // strongly penalising a large perpendicular jump.
-                Some((primary.saturating_mul(10) + secondary, candidate.settlement_id))
+                Some((
+                    primary.saturating_mul(10) + secondary,
+                    candidate.settlement_id,
+                ))
             })
             .min_by_key(|(score, settlement_id)| (*score, *settlement_id));
 
@@ -147,7 +149,13 @@ impl MapLocationSelection {
             .rail_stations
             .first()
             .map(|station| station.settlement_id)
-            .or_else(|| state.region.settlements.first().map(|settlement| settlement.id));
+            .or_else(|| {
+                state
+                    .region
+                    .settlements
+                    .first()
+                    .map(|settlement| settlement.id)
+            });
     }
 }
 
@@ -231,22 +239,18 @@ pub fn render_operational_map(
     selection.synchronize(state);
     if area.width >= 92 && area.height >= 14 {
         let inspector_width = if area.width >= 120 { 40 } else { 36 };
-        let [map_area, inspector_area] = Layout::horizontal([
-            Constraint::Min(48),
-            Constraint::Length(inspector_width),
-        ])
-        .spacing(1)
-        .areas(area);
+        let [map_area, inspector_area] =
+            Layout::horizontal([Constraint::Min(48), Constraint::Length(inspector_width)])
+                .spacing(1)
+                .areas(area);
         render_operational_network(frame, map_area, state, selection);
         render_location_inspector(frame, inspector_area, state, selection);
     } else if area.height >= 17 {
         let inspector_height = area.height.min(10);
-        let [map_area, inspector_area] = Layout::vertical([
-            Constraint::Min(7),
-            Constraint::Length(inspector_height),
-        ])
-        .spacing(1)
-        .areas(area);
+        let [map_area, inspector_area] =
+            Layout::vertical([Constraint::Min(7), Constraint::Length(inspector_height)])
+                .spacing(1)
+                .areas(area);
         render_operational_network(frame, map_area, state, selection);
         render_location_inspector(frame, inspector_area, state, selection);
     } else {
@@ -279,7 +283,9 @@ fn render_operational_network(
 
     let rows = render_map_rows(&layout, selected, inner.width, inner.height, state);
     frame.render_widget(
-        Paragraph::new(rows).style(theme::panel()).wrap(Wrap { trim: false }),
+        Paragraph::new(rows)
+            .style(theme::panel())
+            .wrap(Wrap { trim: false }),
         inner,
     );
 }
@@ -543,11 +549,8 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
             MapDirection::Up,
         ];
         let mut queue = VecDeque::new();
-        for (index, (neighbour, metres)) in adjacency
-            .get(&root.id)
-            .into_iter()
-            .flatten()
-            .enumerate()
+        for (index, (neighbour, metres)) in
+            adjacency.get(&root.id).into_iter().flatten().enumerate()
         {
             let direction = directions[index % directions.len()];
             let length = directional_line_length(*metres, direction);
@@ -557,7 +560,10 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
         }
 
         while let Some((station_id, parent_id, direction)) = queue.pop_front() {
-            let origin = station_positions.get(&station_id).copied().unwrap_or((0, 0));
+            let origin = station_positions
+                .get(&station_id)
+                .copied()
+                .unwrap_or((0, 0));
             let children = adjacency
                 .get(&station_id)
                 .into_iter()
@@ -596,7 +602,10 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
                 .settlements
                 .iter()
                 .find(|settlement| settlement.id == station.settlement_id)?;
-            let (x, y) = station_positions.get(&station.id).copied().unwrap_or((0, 0));
+            let (x, y) = station_positions
+                .get(&station.id)
+                .copied()
+                .unwrap_or((0, 0));
             Some(OperationalPlace {
                 settlement_id: settlement.id,
                 station_id: Some(station.id),
@@ -772,13 +781,7 @@ fn render_map_rows(
         let accent = selected.is_some_and(|selected_id| {
             selected_id == line.first_settlement_id || selected_id == line.second_settlement_id
         });
-        draw_orthogonal_rail(
-            &mut rail_mask,
-            &mut rail_accent,
-            start,
-            end,
-            accent,
-        );
+        draw_orthogonal_rail(&mut rail_mask, &mut rail_accent, start, end, accent);
     }
 
     for y in 0..height {
@@ -891,7 +894,6 @@ fn render_map_rows(
         .collect()
 }
 
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct JourneyRouteSegment {
     from_station_id: RailStationId,
@@ -907,8 +909,7 @@ fn draw_active_train_markers(
 ) {
     let mut markers = BTreeMap::<(i32, i32), (char, usize)>::new();
     for journey in &state.active_journeys {
-        let Some((position, glyph)) =
-            journey_map_marker(state, journey, station_positions, now)
+        let Some((position, glyph)) = journey_map_marker(state, journey, station_positions, now)
         else {
             continue;
         };
@@ -951,8 +952,7 @@ fn journey_map_marker(
         .unix_seconds()
         .saturating_sub(journey.departed_at.unix_seconds())
         .clamp(0, total_seconds);
-    let travelled_metres =
-        total_distance as f64 * (elapsed_seconds as f64 / total_seconds as f64);
+    let travelled_metres = total_distance as f64 * (elapsed_seconds as f64 / total_seconds as f64);
 
     let mut distance_before = 0.0_f64;
     for (index, segment) in segments.iter().enumerate() {
@@ -974,7 +974,10 @@ fn journey_map_marker(
     None
 }
 
-fn journey_route_segments(state: &GameState, journey: &Journey) -> Option<Vec<JourneyRouteSegment>> {
+fn journey_route_segments(
+    state: &GameState,
+    journey: &Journey,
+) -> Option<Vec<JourneyRouteSegment>> {
     let service = state
         .player_company
         .passenger_services
@@ -1890,7 +1893,10 @@ fn render_journey_inspector(
         labelled_line("On board", &journey.onboard_passengers().to_string()),
         labelled_line("Leg progress", &format!("{percent}%")),
         Line::from(""),
-        Line::styled("Map marker follows the current Service leg.", theme::secondary()),
+        Line::styled(
+            "Map marker follows the current Service leg.",
+            theme::secondary(),
+        ),
         Line::styled("Real-time Journeys continue", theme::hint()),
         Line::styled("after exit.", theme::hint()),
         Line::from(""),
@@ -2824,8 +2830,8 @@ mod tests {
     use super::{
         MapCell, MapDirection, RAIL_LEFT, RAIL_RIGHT, TERMINAL_CELL_HEIGHT_TO_WIDTH,
         directional_line_length, focus_rank, journey_progress_percent, journey_route_segments,
-        map_place_label, operational_layout, place_link_distance_label, point_along_orthogonal_rail,
-        rail_glyph, render_at, schematic_layout, selected_neighbours,
+        map_place_label, operational_layout, place_link_distance_label,
+        point_along_orthogonal_rail, rail_glyph, render_at, schematic_layout, selected_neighbours,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
@@ -2927,14 +2933,20 @@ mod tests {
             .expect("starter station 01 should be on map");
         let adjacent = selected_neighbours(&layout, Some(selected.settlement_id));
 
-        assert_eq!(focus_rank(selected, Some(selected.settlement_id), &adjacent), 0);
+        assert_eq!(
+            focus_rank(selected, Some(selected.settlement_id), &adjacent),
+            0
+        );
 
         let neighbour = layout
             .places
             .iter()
             .find(|place| adjacent.contains(&place.settlement_id))
             .expect("starter station 01 has a direct neighbour");
-        assert_eq!(focus_rank(neighbour, Some(selected.settlement_id), &adjacent), 1);
+        assert_eq!(
+            focus_rank(neighbour, Some(selected.settlement_id), &adjacent),
+            1
+        );
 
         let background_station = layout
             .places
@@ -2955,7 +2967,10 @@ mod tests {
             .iter()
             .find(|place| place.station_id.is_none())
             .expect("starter world has an unconnected settlement");
-        assert_eq!(focus_rank(unconnected, Some(selected.settlement_id), &adjacent), 3);
+        assert_eq!(
+            focus_rank(unconnected, Some(selected.settlement_id), &adjacent),
+            3
+        );
     }
 
     #[test]
@@ -2983,14 +2998,13 @@ mod tests {
         let same_distance_horizontal = directional_line_length(42_000, MapDirection::Right);
         let same_distance_vertical = directional_line_length(42_000, MapDirection::Down);
         assert!(
-            (same_distance_horizontal
-                - same_distance_vertical * TERMINAL_CELL_HEIGHT_TO_WIDTH)
+            (same_distance_horizontal - same_distance_vertical * TERMINAL_CELL_HEIGHT_TO_WIDTH)
                 .abs()
                 <= 1
         );
 
-        let shorter_vertical = directional_line_length(31_000, MapDirection::Down)
-            * TERMINAL_CELL_HEIGHT_TO_WIDTH;
+        let shorter_vertical =
+            directional_line_length(31_000, MapDirection::Down) * TERMINAL_CELL_HEIGHT_TO_WIDTH;
         let longer_horizontal = directional_line_length(42_000, MapDirection::Right);
         assert!(longer_horizontal > shorter_vertical);
     }
@@ -3029,7 +3043,12 @@ mod tests {
 
         assert_eq!(segments.first().unwrap().from_station_id, origin);
         assert_eq!(segments.last().unwrap().to_station_id, destination);
-        assert_eq!(segments.len(), state.player_company.passenger_services[0].rail_line_ids.len());
+        assert_eq!(
+            segments.len(),
+            state.player_company.passenger_services[0]
+                .rail_line_ids
+                .len()
+        );
     }
 
     #[test]

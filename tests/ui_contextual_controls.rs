@@ -22,12 +22,8 @@ fn press(shell: &mut Shell, state: &GameState, code: KeyCode) {
 fn ready_state() -> GameState {
     let mut state = create_new_game(42, "Context Passenger", NOW);
     purchase_train(&mut state, 0, RailStationId::new(1)).expect("fixed purchase");
-    find_or_create_service(
-        &mut state,
-        RailStationId::new(1),
-        RailStationId::new(2),
-    )
-    .expect("fixed service");
+    find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))
+        .expect("fixed service");
     state
 }
 

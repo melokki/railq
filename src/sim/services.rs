@@ -49,7 +49,9 @@ pub enum ServiceError {
 impl fmt::Display for ServiceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TooFewStops => write!(formatter, "a Passenger Service requires at least two stops"),
+            Self::TooFewStops => {
+                write!(formatter, "a Passenger Service requires at least two stops")
+            }
             Self::DuplicateStop { station_id } => write!(
                 formatter,
                 "Rail Station {} is already a stop on this Passenger Service",
@@ -95,7 +97,11 @@ impl fmt::Display for ServiceError {
                 service_id.get()
             ),
             Self::ServiceNotFound { service_id } => {
-                write!(formatter, "Passenger Service {} does not exist", service_id.get())
+                write!(
+                    formatter,
+                    "Passenger Service {} does not exist",
+                    service_id.get()
+                )
             }
             Self::ServiceInUse { service_id } => write!(
                 formatter,
@@ -236,10 +242,8 @@ pub fn create_service(
     state: &mut GameState,
     stop_station_ids: Vec<RailStationId>,
 ) -> Result<ServiceId, ServiceError> {
-    let rail_line_ids = service_path_for_stops(
-        &state.region.rail_authority.rail_network,
-        &stop_station_ids,
-    )?;
+    let rail_line_ids =
+        service_path_for_stops(&state.region.rail_authority.rail_network, &stop_station_ids)?;
 
     if let Some(existing) = state
         .player_company
@@ -287,10 +291,7 @@ pub fn find_or_create_service(
 }
 
 /// Removes an unused Passenger Service.
-pub fn delete_service(
-    state: &mut GameState,
-    service_id: ServiceId,
-) -> Result<(), ServiceError> {
+pub fn delete_service(state: &mut GameState, service_id: ServiceId) -> Result<(), ServiceError> {
     if state
         .active_journeys
         .iter()
@@ -378,8 +379,7 @@ mod tests {
 
     use super::{
         ServiceError, create_service, delete_service, find_or_create_service,
-        find_or_create_service_between_settlements, path_between_stations,
-        service_path_for_stops,
+        find_or_create_service_between_settlements, path_between_stations, service_path_for_stops,
     };
 
     fn game() -> crate::model::GameState {

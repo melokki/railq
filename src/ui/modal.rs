@@ -30,7 +30,9 @@ pub fn centered_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
     let height = area.height.min(max_height);
     Rect {
         x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
-        y: area.y.saturating_add(area.height.saturating_sub(height) / 2),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2),
         width,
         height,
     }
@@ -50,7 +52,9 @@ pub fn workflow_rect(area: Rect) -> Rect {
         .min(area.height);
     Rect {
         x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
-        y: area.y.saturating_add(area.height.saturating_sub(height) / 2),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2),
         width,
         height,
     }
@@ -72,9 +76,7 @@ pub fn confirmation_rect(area: Rect, height: u16) -> Rect {
 /// achieved by re-styling the existing cells while preserving their symbols.
 /// The modal is rendered afterwards with the normal RailQ palette.
 pub fn dim_backdrop(frame: &mut Frame, area: Rect) {
-    frame
-        .buffer_mut()
-        .set_style(area, theme::modal_backdrop());
+    frame.buffer_mut().set_style(area, theme::modal_backdrop());
 }
 
 /// Draws the shared RailQ modal shell and returns the padded body/footer areas.

@@ -135,10 +135,7 @@ impl MarketFlow {
         if train_catalogue().models().is_empty() {
             return Err("No diesel Train is available in the catalogue.");
         }
-        if train_catalogue().models()
-            .get(catalogue_index)
-            .is_none()
-        {
+        if train_catalogue().models().get(catalogue_index).is_none() {
             return Err("The selected catalogue Train is no longer available.");
         }
         if delivery_station_ids(state).is_empty() {
@@ -180,10 +177,7 @@ impl MarketFlow {
                         Some("No connected Rail Station is available for delivery.".into());
                     return MarketFlowAction::Continue;
                 }
-                if train_catalogue().models()
-                    .get(*catalogue_index)
-                    .is_none()
-                {
+                if train_catalogue().models().get(*catalogue_index).is_none() {
                     self.rejection = Some(
                         "The selected catalogue Train is no longer available; return to the catalogue and choose a current model."
                             .into(),
@@ -360,11 +354,8 @@ fn render_purchase_review(
     delivery_station_id: RailStationId,
     rejection: Option<&str>,
 ) {
-    let footer = modal::shortcut_line(&[
-        ("Enter", "purchase"),
-        ("←", "delivery"),
-        ("Esc", "cancel"),
-    ]);
+    let footer =
+        modal::shortcut_line(&[("Enter", "purchase"), ("←", "delivery"), ("Esc", "cancel")]);
     let modal_areas = modal::render_shell(frame, area, "Confirm Train Purchase", footer);
 
     let Some(train) = train_catalogue().models().get(catalogue_index) else {
@@ -455,10 +446,7 @@ fn purchase_review_lines(
     ]
 }
 
-fn sample_reserve_lines(
-    state: &GameState,
-    train: &TrainModel,
-) -> Vec<Line<'static>> {
+fn sample_reserve_lines(state: &GameState, train: &TrainModel) -> Vec<Line<'static>> {
     let mut lines = vec![Line::styled(
         "Sample Rail Line · reserve example only",
         theme::secondary(),
@@ -759,10 +747,7 @@ fn render_catalogue_inspector(
             "EVN type",
             &format!("{:02} · {}", train.evn_type_code(), train.evn_type_label()),
         ),
-        labelled_value(
-            "EVN series",
-            &format!("{:04}", train.evn_series_code()),
-        ),
+        labelled_value("EVN series", &format!("{:04}", train.evn_series_code())),
         labelled_value(
             "Registration",
             &format!(
@@ -783,9 +768,7 @@ fn render_catalogue_inspector(
             "Fuel",
             &format!(
                 "{}/km",
-                format_money_per_kilometre(
-                    train.fuel_cost_per_kilometre().cents_per_kilometre()
-                )
+                format_money_per_kilometre(train.fuel_cost_per_kilometre().cents_per_kilometre())
             ),
         ),
     ];
@@ -836,10 +819,7 @@ fn labelled_value(label: &str, value: &str) -> Line<'static> {
     ])
 }
 
-fn purchase_status(
-    state: &GameState,
-    train: &TrainModel,
-) -> (&'static str, ratatui::style::Style) {
+fn purchase_status(state: &GameState, train: &TrainModel) -> (&'static str, ratatui::style::Style) {
     if state.player_company.funds < train.purchase_price() {
         ("UNAFFORDABLE", theme::error())
     } else if low_reserve(state, train) {
@@ -849,10 +829,7 @@ fn purchase_status(
     }
 }
 
-fn funds_after_purchase_display(
-    state: &GameState,
-    train: &TrainModel,
-) -> String {
+fn funds_after_purchase_display(state: &GameState, train: &TrainModel) -> String {
     if state.player_company.funds < train.purchase_price() {
         return "insufficient".into();
     }
@@ -1009,10 +986,7 @@ fn render_delivery_inspector(
     let selected_train = train_catalogue()
         .models()
         .get(catalogue_index)
-        .map_or(
-            "Selected catalogue Train unavailable",
-            TrainModel::name,
-        );
+        .map_or("Selected catalogue Train unavailable", TrainModel::name);
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled("Delivering", theme::secondary()),
@@ -1053,10 +1027,7 @@ fn render_selected(state: &GameState, selected_catalogue_index: usize) -> String
     for (index, train) in train_catalogue().models().iter().enumerate() {
         render_catalogue_train(&mut output, state, index, train);
     }
-    if let Some(train) = train_catalogue()
-        .models()
-        .get(selected_catalogue_index)
-    {
+    if let Some(train) = train_catalogue().models().get(selected_catalogue_index) {
         writeln!(output, "Selected Train: {}", train.name())
             .expect("writing to a String cannot fail");
         render_purchase_implications(&mut output, state, train);
@@ -1099,11 +1070,7 @@ fn render_catalogue_train(
     }
 }
 
-fn render_purchase_implications(
-    output: &mut String,
-    state: &GameState,
-    train: &TrainModel,
-) {
+fn render_purchase_implications(output: &mut String, state: &GameState, train: &TrainModel) {
     match state
         .player_company
         .funds

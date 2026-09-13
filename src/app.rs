@@ -328,8 +328,7 @@ impl<S: GameStore> App<S> {
         now: UtcSeconds,
     ) -> Result<(), AppError<S::Error>> {
         self.transact(now, |state, _| {
-            crate::sim::fleet::rename_train(state, train_id, nickname)
-                .map_err(AppError::Rename)?;
+            crate::sim::fleet::rename_train(state, train_id, nickname).map_err(AppError::Rename)?;
             Ok(())
         })
     }
@@ -598,7 +597,9 @@ mod tests {
             RailStationId::new(3)
         );
         assert_eq!(
-            app.state().player_company.passenger_services[0].origin_station_id().unwrap(),
+            app.state().player_company.passenger_services[0]
+                .origin_station_id()
+                .unwrap(),
             RailStationId::new(3)
         );
     }
@@ -732,7 +733,8 @@ mod tests {
         assert_eq!(service.stop_station_ids.len(), 3);
         assert_eq!(store.load().unwrap(), Some(app.state().clone()));
 
-        app.delete_passenger_service(service_id, STARTED_AT).unwrap();
+        app.delete_passenger_service(service_id, STARTED_AT)
+            .unwrap();
 
         assert!(app.state().player_company.passenger_services.is_empty());
         assert_eq!(store.load().unwrap(), Some(app.state().clone()));

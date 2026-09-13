@@ -213,7 +213,10 @@ fn fleet_dispatch_commits_through_the_existing_saved_manual_dispatch_transaction
         ShellAction::Continue
     );
     let action = shell.handle_key(key(KeyCode::Enter), app.state());
-    let ShellAction::ManualDispatch { train_id, service_id } = action
+    let ShellAction::ManualDispatch {
+        train_id,
+        service_id,
+    } = action
     else {
         panic!("Fleet review should request the existing Manual Dispatch transaction");
     };

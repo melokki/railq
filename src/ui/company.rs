@@ -20,9 +20,7 @@ use ratatui::{
 
 use crate::{
     catalog::train_catalogue,
-    model::{
-        GameState, JourneyId, JourneyReceipt, Money, RailStationId, VehicleKeeperMark,
-    },
+    model::{GameState, JourneyId, JourneyReceipt, Money, RailStationId, VehicleKeeperMark},
     sim::finance::{
         FinancialEvaluation, FinancialStatus, RecoveryJourney, RecoveryOption,
         evaluate_financial_recovery,
@@ -72,9 +70,7 @@ impl VkmEditor {
                 self.error = None;
                 VkmEditorAction::Continue
             }
-            KeyCode::Char(character)
-                if character.is_ascii_alphabetic() && self.draft.len() < 5 =>
-            {
+            KeyCode::Char(character) if character.is_ascii_alphabetic() && self.draft.len() < 5 => {
                 self.draft.push(character.to_ascii_uppercase());
                 self.error = None;
                 VkmEditorAction::Continue
@@ -97,12 +93,7 @@ impl VkmEditor {
 }
 
 /// Renders the VKM edit dialog above the Company workspace.
-pub fn render_vkm_editor(
-    frame: &mut Frame,
-    area: Rect,
-    editor: &VkmEditor,
-    state: &GameState,
-) {
+pub fn render_vkm_editor(frame: &mut Frame, area: Rect, editor: &VkmEditor, state: &GameState) {
     let width = area.width.min(68).max(36);
     let height = area.height.min(11).max(8);
     let card = Rect::new(
@@ -157,7 +148,6 @@ pub fn render_vkm_editor(
         inner,
     );
 }
-
 
 /// A workspace that can present the next review in a financial recovery route.
 /// Opening one never performs the suggested action.
@@ -498,7 +488,8 @@ fn recovery_route_label(state: &GameState, option: &RecoveryOption) -> String {
         RecoveryOption::SellAllAndRebuy {
             catalogue_index, ..
         } => {
-            let catalogue_name = train_catalogue().models()
+            let catalogue_name = train_catalogue()
+                .models()
                 .get(*catalogue_index)
                 .map_or("catalogue Train", |train| train.name());
             format!("Sell Fleet; rebuy {catalogue_name}")
@@ -559,7 +550,8 @@ fn recovery_steps(state: &GameState, option: &RecoveryOption) -> Vec<Line<'stati
             delivery_station_id,
             journey,
         } => {
-            let catalogue_name = train_catalogue().models()
+            let catalogue_name = train_catalogue()
+                .models()
                 .get(*catalogue_index)
                 .map_or("catalogue Train", |train| train.name());
             vec![
@@ -642,9 +634,9 @@ fn render_wide_dashboard(
         return;
     }
 
-    let recovery_relevant = evaluation
-        .as_ref()
-        .map_or(true, |evaluation| evaluation.status != FinancialStatus::Operating);
+    let recovery_relevant = evaluation.as_ref().map_or(true, |evaluation| {
+        evaluation.status != FinancialStatus::Operating
+    });
     if recovery_relevant {
         let [receipts_area, recovery_area] =
             Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
@@ -675,10 +667,7 @@ fn render_company_summary(
                 status_style(Some(evaluation.status)),
             ),
             Span::styled("  ", theme::secondary()),
-            Span::styled(
-                status_explanation(evaluation.status),
-                theme::secondary(),
-            ),
+            Span::styled(status_explanation(evaluation.status), theme::secondary()),
         ]),
         Err(error) => Line::from(vec![
             Span::styled("[?] STATUS UNAVAILABLE", theme::error().bold()),
@@ -700,7 +689,10 @@ fn render_company_summary(
         Span::styled("   Operating result ", theme::secondary()),
         Span::styled(format_signed_cents(result), result_style(result)),
         Span::styled("   Fleet value ", theme::secondary()),
-        Span::styled(format_cents(fleet_value_cents(state)), theme::primary_value()),
+        Span::styled(
+            format_cents(fleet_value_cents(state)),
+            theme::primary_value(),
+        ),
     ]);
 
     frame.render_widget(
@@ -1110,11 +1102,7 @@ fn render_receipt_details(
                     format_money(receipt.fuel_cost),
                     theme::primary_value(),
                 ),
-                financial_line(
-                    "Result",
-                    format_signed_cents(result),
-                    result_style(result),
-                ),
+                financial_line("Result", format_signed_cents(result), result_style(result)),
                 Line::from(""),
                 Line::styled("Esc returns to Journey history.", theme::secondary()),
             ]);
@@ -1185,10 +1173,10 @@ fn status_label(status: FinancialStatus) -> &'static str {
 
 fn status_explanation(status: FinancialStatus) -> &'static str {
     match status {
-        FinancialStatus::Operating => "Working capital is sufficient to continue normal operations.",
-        FinancialStatus::Insolvent => {
-            "No Journey can be funded without a recovery action."
+        FinancialStatus::Operating => {
+            "Working capital is sufficient to continue normal operations."
         }
+        FinancialStatus::Insolvent => "No Journey can be funded without a recovery action.",
         FinancialStatus::BankruptcyDeferred => {
             "No Journey can be funded now; active Journey revenue is still unsettled."
         }
@@ -1252,7 +1240,8 @@ fn compact_recovery_description(_state: &GameState, option: &RecoveryOption) -> 
             catalogue_index,
             ..
         } => {
-            let name = train_catalogue().models()
+            let name = train_catalogue()
+                .models()
                 .get(*catalogue_index)
                 .map_or("catalogue Train", |train| train.name());
             format!(
@@ -1444,7 +1433,8 @@ fn recovery_option_description(state: &GameState, option: &RecoveryOption) -> St
             delivery_station_id,
             journey,
         } => {
-            let catalogue_name = train_catalogue().models()
+            let catalogue_name = train_catalogue()
+                .models()
                 .get(*catalogue_index)
                 .map_or("catalogue Train", |train| train.name());
             format!(

@@ -104,7 +104,6 @@ impl TrainModelId {
     }
 }
 
-
 /// A 12-digit European Vehicle Number (EVN)-style identity.
 ///
 /// RailQ follows the real EVN structure for tractive stock:
@@ -143,9 +142,8 @@ impl EuropeanVehicleNumber {
             return Err(EuropeanVehicleNumberError::InvalidUnitNumber);
         }
 
-        let base = format!(
-            "{vehicle_type_code:02}{registration_code:02}{series_code:04}{unit_number:03}"
-        );
+        let base =
+            format!("{vehicle_type_code:02}{registration_code:02}{series_code:04}{unit_number:03}");
         let check_digit =
             evn_check_digit(&base).ok_or(EuropeanVehicleNumberError::InvalidFormat)?;
         Ok(Self(format!("{base}{check_digit}")))
@@ -174,8 +172,8 @@ impl EuropeanVehicleNumber {
         if unit_number == 0 {
             return Err(EuropeanVehicleNumberError::InvalidUnitNumber);
         }
-        let expected = evn_check_digit(&value[..11])
-            .ok_or(EuropeanVehicleNumberError::InvalidFormat)?;
+        let expected =
+            evn_check_digit(&value[..11]).ok_or(EuropeanVehicleNumberError::InvalidFormat)?;
         let actual = value.as_bytes()[11] - b'0';
         if expected != actual {
             return Err(EuropeanVehicleNumberError::InvalidCheckDigit);
@@ -231,7 +229,9 @@ impl EuropeanVehicleNumber {
 
 fn evn_check_digit(first_eleven_digits: &str) -> Option<u8> {
     if first_eleven_digits.len() != 11
-        || !first_eleven_digits.bytes().all(|byte| byte.is_ascii_digit())
+        || !first_eleven_digits
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
     {
         return None;
     }
@@ -644,7 +644,6 @@ pub struct RailLine {
     pub distance: DistanceMetres,
 }
 
-
 /// A 2–5 letter Vehicle Keeper Mark (VKM) used to identify the Player Company.
 ///
 /// RailQ treats the mark as a stable company identity that can later appear
@@ -693,7 +692,10 @@ impl VehicleKeeperMark {
         }
 
         if mark.len() < 2 {
-            for character in name.chars().filter(|character| character.is_ascii_alphabetic()) {
+            for character in name
+                .chars()
+                .filter(|character| character.is_ascii_alphabetic())
+            {
                 if mark.len() >= 2 {
                     break;
                 }
@@ -800,7 +802,10 @@ impl fmt::Display for TrainNicknameError {
                 TrainNickname::MAX_CHARACTERS
             ),
             Self::InvalidCharacter => {
-                write!(formatter, "Train nickname cannot contain control characters")
+                write!(
+                    formatter,
+                    "Train nickname cannot contain control characters"
+                )
             }
         }
     }
@@ -1274,7 +1279,9 @@ mod tests {
             },
             player_company: PlayerCompany {
                 name: "Alden Passenger".into(),
-                vehicle_keeper_mark: VehicleKeeperMark::generated_from_company_name("Alden Passenger"),
+                vehicle_keeper_mark: VehicleKeeperMark::generated_from_company_name(
+                    "Alden Passenger",
+                ),
                 funds: Money::from_cents(10_000),
                 fleet: Fleet {
                     trains: vec![Train {
@@ -1286,12 +1293,9 @@ mod tests {
                         original_purchase_price: Money::from_cents(5_000),
                     }],
                     next_train_id: train_id.get() + 1,
-                    next_evn_unit_by_model: [(
-                        TrainModelId::new("local-70"),
-                        2,
-                    )]
-                    .into_iter()
-                    .collect(),
+                    next_evn_unit_by_model: [(TrainModelId::new("local-70"), 2)]
+                        .into_iter()
+                        .collect(),
                 },
                 passenger_services: vec![],
             },
