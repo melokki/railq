@@ -132,14 +132,8 @@ impl MarketFlow {
     /// Starts delivery selection for a focused catalogue Train without changing
     /// the Fleet or Company Funds.
     pub fn start(state: &GameState, catalogue_index: usize) -> Result<Self, &'static str> {
-        if train_catalogue().models().is_empty() {
-            return Err("No diesel Train is available in the catalogue.");
-        }
-        if train_catalogue().models().get(catalogue_index).is_none() {
-            return Err("The selected catalogue Train is no longer available.");
-        }
-        if delivery_station_ids(state).is_empty() {
-            return Err("No connected Rail Station is available for delivery.");
+        if let Some(error) = purchase_start_error(state, catalogue_index) {
+            return Err(error);
         }
         let mut list_state = ListState::default();
         let selected_delivery_station_id = delivery_station_ids(state).first().copied();
@@ -344,6 +338,31 @@ impl MarketFlow {
         }
         output
     }
+}
+
+/// Returns whether the selected catalogue model can enter the purchase flow.
+///
+/// The footer uses this to keep the Buy action visible while muting it when the
+/// current model cannot be purchased. `MarketFlow::start` uses the same rules so
+/// keyboard behaviour never disagrees with the action bar.
+pub fn purchase_action_available(state: &GameState, catalogue_index: usize) -> bool {
+    purchase_start_error(state, catalogue_index).is_none()
+}
+
+fn purchase_start_error(state: &GameState, catalogue_index: usize) -> Option<&'static str> {
+    if train_catalogue().models().is_empty() {
+        return Some("No diesel Train is available in the catalogue.");
+    }
+    let Some(train) = train_catalogue().models().get(catalogue_index) else {
+        return Some("The selected catalogue Train is no longer available.");
+    };
+    if state.player_company.funds < train.purchase_price() {
+        return Some("Insufficient Company Funds for the selected Train.");
+    }
+    if delivery_station_ids(state).is_empty() {
+        return Some("No connected Rail Station is available for delivery.");
+    }
+    None
 }
 
 fn render_purchase_review(
@@ -948,6 +967,8 @@ fn labelled_value(label: &str, value: &str) -> Line<'static> {
 fn purchase_status(state: &GameState, train: &TrainModel) -> (&'static str, ratatui::style::Style) {
     if state.player_company.funds < train.purchase_price() {
         ("UNAFFORDABLE", theme::error())
+    } else if delivery_station_ids(state).is_empty() {
+        ("NO DELIVERY", theme::warning())
     } else if low_reserve(state, train) {
         ("LOW RESERVE", theme::warning())
     } else {
@@ -1010,11 +1031,11 @@ fn render_delivery_chooser(
     }
     let _ = synchronize_delivery_selection(selected_delivery_station_id, list_state, &stations);
 
-    let footer_rows = u16::from(chooser.rejection.is_some()).saturating_add(1);
-    let [step_area, body_area, footer_area] = Layout::vertical([
+    let rejection_rows = u16::from(chooser.rejection.is_some());
+    let [step_area, body_area, rejection_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
-        Constraint::Length(footer_rows),
+        Constraint::Length(rejection_rows),
     ])
     .areas(area);
     frame.render_widget(
@@ -1062,24 +1083,17 @@ fn render_delivery_chooser(
         );
     }
 
-    let controls = if area.width <= 80 {
-        "↑↓/J K · station  Enter · review  Left · model  Esc · cancel"
-    } else {
-        "↑↓ / J K · select station   PageUp / PageDown · scroll   Enter · review   Left / Backspace · model   Esc · cancel"
-    };
-    let mut footer = vec![Line::styled(controls, theme::hint())];
     if let Some(rejection) = chooser.rejection {
-        footer.insert(
-            0,
-            Line::styled(format!("Delivery unavailable: {rejection}"), theme::error()),
-        );
-    }
-    frame.render_widget(
-        Paragraph::new(footer)
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!("Delivery unavailable: {rejection}"),
+                theme::error(),
+            ))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        footer_area,
-    );
+            rejection_area,
+        );
+    }
 }
 
 fn render_delivery_unavailable(frame: &mut Frame, area: Rect, reason: &str) {
@@ -1090,7 +1104,6 @@ fn render_delivery_unavailable(frame: &mut Frame, area: Rect, reason: &str) {
                 theme::focused_title(),
             ),
             Line::styled(reason, theme::error()),
-            Line::styled("Left / Backspace · model   Esc · cancel", theme::hint()),
         ])
         .block(panel_block("Train Market · delivery unavailable", true))
         .style(theme::panel())
@@ -1122,7 +1135,6 @@ fn render_delivery_inspector(
             Line::styled(selected_station, theme::focused_title()),
             Line::from(""),
             Line::styled("Delivery has no fee.", theme::secondary()),
-            Line::styled("Enter · continue to review", theme::hint()),
         ])
         .block(panel_block("Selected delivery", false))
         .style(theme::panel())

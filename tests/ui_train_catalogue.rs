@@ -112,6 +112,24 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         !wide.contains("Enter · choose delivery Rail Station"),
         "purchase actions belong in the global footer"
     );
+    assert!(wide.contains("[Enter] Buy"));
+    assert!(!wide.contains("Choose delivery"));
+    let (buy_row, buy_column) = wide
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("[Enter] Buy").map(|column| (row, column)))
+        .expect("affordable Market model exposes Buy in the footer");
+    assert_eq!(
+        capture_rendered_cell_colors(
+            &shell,
+            &state,
+            120,
+            40,
+            u16::try_from(buy_column)?,
+            u16::try_from(buy_row)?,
+        ),
+        Some((theme::ACCENT, theme::PANEL)),
+    );
 
     let comparison = capture_rendered_buffer_mut(&mut shell, &state, 160, 40);
     for expected in ["Seats", "Top speed", "Propulsion", "Fuel/km", "Owned"] {
@@ -228,14 +246,16 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     for expected in [
         "Delivery Rail Stations",
         "1 Train → 2 Delivery Rail Station → 3 Review",
-        "Enter · review",
-        "Left · model",
+        "[Enter] Review",
+        "[←] Model",
     ] {
         assert!(
             compact.contains(expected),
             "compact delivery view should show {expected}"
         );
     }
+    assert!(!compact.contains("Enter · review"));
+    assert!(!compact.contains("Left · model"));
     fs::write(evidence_dir.join("delivery-stations-80x24.txt"), compact)?;
 
     assert_eq!(
@@ -272,6 +292,43 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "delivery selection, review, and cancellation are presentation-only"
     );
     Ok(())
+}
+
+#[test]
+fn market_footer_keeps_unaffordable_buy_visible_but_disabled() {
+    let mut state = create_new_game(42, "Budget Passenger", STARTED_AT);
+    state.player_company.funds = Money::ZERO;
+    let mut shell = Shell::new();
+
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Char('b')),
+        ShellAction::Continue
+    );
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(rendered.contains("UNAFFORDABLE"));
+    assert!(rendered.contains("Shortfall"));
+    assert!(rendered.contains("[Enter] Buy"));
+    let (row, column) = rendered
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("[Enter] Buy").map(|column| (row, column)))
+        .expect("unaffordable model keeps Buy visible in the footer");
+    assert_eq!(
+        capture_rendered_cell_colors(
+            &shell,
+            &state,
+            120,
+            40,
+            u16::try_from(column).unwrap(),
+            u16::try_from(row).unwrap(),
+        ),
+        Some((theme::SECONDARY, theme::PANEL)),
+    );
+
+    assert_eq!(press(&mut shell, &state, KeyCode::Enter), ShellAction::Continue);
+    let rejected = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(rejected.contains("Insufficient Company Funds for the selected Train."));
+    assert!(!rejected.contains("Delivery Rail Stations"));
 }
 
 #[test]

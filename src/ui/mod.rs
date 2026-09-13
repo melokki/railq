@@ -1876,12 +1876,17 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
     } else if shell.active_view == View::BuyTrains {
         if let Some(flow) = &shell.market_flow {
             if flow.is_selecting_delivery() {
-                vec![
-                    FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Station"),
-                    FooterShortcut::enabled("Enter", "Review"),
-                    FooterShortcut::enabled("←", "Back"),
-                    FooterShortcut::enabled("Esc", "Cancel"),
-                ]
+                let mut items = vec![FooterShortcut::enabled(
+                    if compact { "↑↓" } else { "↑↓/JK" },
+                    "Station",
+                )];
+                if wide {
+                    items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
+                }
+                items.push(FooterShortcut::enabled("Enter", "Review"));
+                items.push(FooterShortcut::enabled("←", "Model"));
+                items.push(FooterShortcut::enabled("Esc", "Cancel"));
+                items
             } else {
                 vec![
                     FooterShortcut::enabled("Enter", "Purchase"),
@@ -1890,10 +1895,25 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
                 ]
             }
         } else {
-            vec![
-                FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Model"),
-                FooterShortcut::enabled("Enter", if compact { "Buy" } else { "Choose delivery" }),
-            ]
+            let mut items = vec![FooterShortcut::enabled(
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Model",
+            )];
+            if wide {
+                items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
+            }
+            let can_buy = shell
+                .market_selection
+                .selected_catalogue_index(state)
+                .is_some_and(|catalogue_index| {
+                    market::purchase_action_available(state, catalogue_index)
+                });
+            items.push(if can_buy {
+                FooterShortcut::enabled("Enter", "Buy")
+            } else {
+                FooterShortcut::disabled("Enter", "Buy")
+            });
+            items
         }
     } else {
         vec![FooterShortcut::enabled("Enter", "Details")]
@@ -2213,7 +2233,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
             lines.extend([
                 "Current · Market".into(),
                 "↑↓ / jk Select Train model".into(),
-                "Enter Choose delivery station".into(),
+                "Enter Buy selected Train".into(),
                 String::new(),
                 "Purchase price is not the whole decision: keep enough cash for access and fuel."
                     .into(),
@@ -3056,7 +3076,7 @@ mod tests {
         );
         let market_help = super::help_lines(&shell, &state).join("\n");
         assert!(market_help.contains("Current · Market"));
-        assert!(market_help.contains("Enter Choose delivery station"));
+        assert!(market_help.contains("Enter Buy selected Train"));
 
         shell.handle_key(
             KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
