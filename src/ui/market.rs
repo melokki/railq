@@ -666,19 +666,98 @@ pub fn render_dashboard(
     selection.set_page_size(usize::from(catalogue_area.height.saturating_sub(2)).max(1));
     selection.synchronize(state);
 
-    let rows = catalogue
-        .iter()
-        .map(|train| {
-            Row::new([
-                Cell::from(train.name().to_owned()),
-                Cell::from(format_money(train.purchase_price())),
-            ])
-        })
-        .collect::<Vec<_>>();
+    let owned_count = |train: &TrainModel| {
+        state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .filter(|owned| &owned.model_id == train.id())
+            .count()
+    };
 
-    let table = Table::new(rows, [Constraint::Min(18), Constraint::Length(13)])
+    // Use the catalogue width for comparison data rather than stretching only
+    // Model and Price across a large pane. The inspector still owns the full
+    // details; the list surfaces only the fields useful when comparing models.
+    let (rows, widths, headers) = if catalogue_area.width >= 82 {
+        (
+            catalogue
+                .iter()
+                .map(|train| {
+                    Row::new(vec![
+                        Cell::from(train.name().to_owned()),
+                        Cell::from(train.passenger_capacity().passengers().to_string()),
+                        Cell::from(format_speed_kmh(train)),
+                        Cell::from(train.propulsion_label()),
+                        Cell::from(format!(
+                            "{}/km",
+                            format_money_per_kilometre(
+                                train.fuel_cost_per_kilometre().cents_per_kilometre()
+                            )
+                        )),
+                        Cell::from(owned_count(train).to_string()),
+                        Cell::from(format_money(train.purchase_price())),
+                    ])
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                Constraint::Min(18),
+                Constraint::Length(7),
+                Constraint::Length(11),
+                Constraint::Length(11),
+                Constraint::Length(10),
+                Constraint::Length(7),
+                Constraint::Length(13),
+            ],
+            vec!["Model", "Seats", "Top speed", "Propulsion", "Fuel/km", "Owned", "Price"],
+        )
+    } else if catalogue_area.width >= 58 {
+        (
+            catalogue
+                .iter()
+                .map(|train| {
+                    Row::new(vec![
+                        Cell::from(train.name().to_owned()),
+                        Cell::from(train.passenger_capacity().passengers().to_string()),
+                        Cell::from(format_speed_kmh(train)),
+                        Cell::from(format!(
+                            "{}/km",
+                            format_money_per_kilometre(
+                                train.fuel_cost_per_kilometre().cents_per_kilometre()
+                            )
+                        )),
+                        Cell::from(format_money(train.purchase_price())),
+                    ])
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                Constraint::Min(16),
+                Constraint::Length(7),
+                Constraint::Length(11),
+                Constraint::Length(10),
+                Constraint::Length(13),
+            ],
+            vec!["Model", "Seats", "Top speed", "Fuel/km", "Price"],
+        )
+    } else {
+        (
+            catalogue
+                .iter()
+                .map(|train| {
+                    Row::new(vec![
+                        Cell::from(train.name().to_owned()),
+                        Cell::from(format_money(train.purchase_price())),
+                    ])
+                })
+                .collect::<Vec<_>>(),
+            vec![Constraint::Min(18), Constraint::Length(13)],
+            vec!["Model", "Price"],
+        )
+    };
+
+    let table = Table::new(rows, widths)
         .header(
-            Row::new(["Model", "Price"])
+            Row::new(headers)
                 .style(theme::table_header())
                 .bottom_margin(1),
         )

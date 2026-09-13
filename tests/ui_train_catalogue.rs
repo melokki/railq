@@ -109,6 +109,15 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "purchase actions belong in the global footer"
     );
 
+    let comparison = capture_rendered_buffer_mut(&mut shell, &state, 160, 40);
+    for expected in ["Seats", "Top speed", "Propulsion", "Fuel/km", "Owned"] {
+        assert!(
+            comparison.contains(expected),
+            "wide catalogue should expose comparison column {expected}"
+        );
+    }
+    assert!(comparison.contains("Diesel"));
+
     let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     for expected in [
         "Market",
