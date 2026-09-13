@@ -327,9 +327,9 @@ impl ReceiptSelection {
     }
 }
 
-/// Renders the Company workspace as aligned Ratatui panels. Compact layouts
-/// keep the financial totals beside a scrollable receipt table; full receipt
-/// detail opens as a focused page when the inspector cannot fit.
+/// Renders the Company workspace as one operational dashboard. Wide layouts
+/// group status, Fleet, operations, identity, financial performance, and Journey
+/// history inside one focused shell; compact layouts preserve the same hierarchy.
 pub fn render_dashboard(
     frame: &mut Frame,
     area: Rect,
@@ -607,21 +607,29 @@ fn render_wide_dashboard(
     receipt_details_open: bool,
 ) {
     let evaluation = evaluate_financial_recovery(state);
-    let [summary_area, totals_area, history_area] = Layout::vertical([
-        Constraint::Length(5),
+
+    // Company is a dashboard rather than a collection of neighbouring windows.
+    // One focused shell owns the workspace; section headings create hierarchy
+    // without surrounding every group of values with another border.
+    let shell = panel_block("Company", true);
+    let shell_inner = shell.inner(area);
+    frame.render_widget(shell, area);
+
+    let [overview_area, performance_area, history_area] = Layout::vertical([
         Constraint::Length(7),
+        Constraint::Length(5),
         Constraint::Fill(1),
     ])
     .spacing(1)
-    .areas(area);
+    .areas(shell_inner);
 
-    render_company_summary(frame, summary_area, state, &evaluation);
-    render_totals_table(frame, totals_area, state);
+    render_company_overview(frame, overview_area, state, &evaluation);
+    render_financial_performance(frame, performance_area, state);
 
     if receipt_details_open {
         let [receipts_area, details_area] =
             Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
-                .spacing(1)
+                .spacing(2)
                 .areas(history_area);
         render_receipts_table(frame, receipts_area, state, selection, true);
         render_receipt_details(
@@ -640,7 +648,7 @@ fn render_wide_dashboard(
     if recovery_relevant {
         let [receipts_area, recovery_area] =
             Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
-                .spacing(1)
+                .spacing(2)
                 .areas(history_area);
         render_receipts_table(frame, receipts_area, state, selection, true);
         render_recovery_panel(frame, recovery_area, state, &evaluation);
@@ -649,57 +657,156 @@ fn render_wide_dashboard(
     }
 }
 
-fn render_company_summary(
+fn render_company_overview(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
 ) {
-    let block = panel_block("Company overview", false);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let [status_area, fleet_area, operations_area, identity_area] = Layout::horizontal([
+        Constraint::Fill(3),
+        Constraint::Fill(2),
+        Constraint::Fill(2),
+        Constraint::Fill(2),
+    ])
+    .spacing(2)
+    .areas(area);
 
-    let result = operating_result_cents(state);
-    let status_line = match evaluation {
-        Ok(evaluation) => Line::from(vec![
-            Span::styled(
+    let status_lines = match evaluation {
+        Ok(evaluation) => vec![
+            section_heading("STATUS"),
+            Line::styled(
                 status_label(evaluation.status),
                 status_style(Some(evaluation.status)),
             ),
-            Span::styled("  ", theme::secondary()),
-            Span::styled(status_explanation(evaluation.status), theme::secondary()),
-        ]),
-        Err(error) => Line::from(vec![
-            Span::styled("[?] STATUS UNAVAILABLE", theme::error().bold()),
-            Span::styled(
-                format!("  Financial evaluation unavailable: {error}"),
-                theme::error(),
-            ),
-        ]),
+            Line::styled(status_explanation(evaluation.status), theme::secondary()),
+        ],
+        Err(error) => vec![
+            section_heading("STATUS"),
+            Line::styled("[?] STATUS UNAVAILABLE", theme::error().bold()),
+            Line::styled(format!("Financial evaluation unavailable: {error}"), theme::error()),
+        ],
     };
+    render_dashboard_section(frame, status_area, status_lines);
 
-    let metrics = Line::from(vec![
-        Span::styled("VKM ", theme::secondary()),
-        Span::styled(
-            state.player_company.vehicle_keeper_mark.as_str().to_owned(),
-            theme::primary_value(),
-        ),
-        Span::styled("   Cash ", theme::secondary()),
-        Span::styled(format_money(state.player_company.funds), theme::title()),
-        Span::styled("   Operating result ", theme::secondary()),
-        Span::styled(format_signed_cents(result), result_style(result)),
-        Span::styled("   Fleet value ", theme::secondary()),
-        Span::styled(
-            format_cents(fleet_value_cents(state)),
-            theme::primary_value(),
-        ),
-    ]);
+    let trains = &state.player_company.fleet.trains;
+    let model_count = trains
+        .iter()
+        .map(|train| train.model_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    render_dashboard_section(
+        frame,
+        fleet_area,
+        vec![
+            section_heading("FLEET"),
+            dashboard_line("Owned trains", trains.len().to_string(), theme::primary_value()),
+            dashboard_line("Models", model_count.to_string(), theme::primary_value()),
+            dashboard_line(
+                "Fleet value",
+                format_cents(fleet_value_cents(state)),
+                theme::primary_value(),
+            ),
+        ],
+    );
 
+    render_dashboard_section(
+        frame,
+        operations_area,
+        vec![
+            section_heading("OPERATIONS"),
+            dashboard_line(
+                "Services",
+                state.player_company.passenger_services.len().to_string(),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Active journeys",
+                state.active_journeys.len().to_string(),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Rail stations",
+                state
+                    .region
+                    .rail_authority
+                    .rail_network
+                    .rail_stations
+                    .len()
+                    .to_string(),
+                theme::primary_value(),
+            ),
+        ],
+    );
+
+    let registration = &state.region.railway_registration;
+    render_dashboard_section(
+        frame,
+        identity_area,
+        vec![
+            section_heading("COMPANY IDENTITY"),
+            dashboard_line(
+                "VKM",
+                state.player_company.vehicle_keeper_mark.as_str().to_owned(),
+                theme::primary_value(),
+            ),
+            dashboard_line("Region", state.region.name.clone(), theme::primary_value()),
+            dashboard_line(
+                "Rail code",
+                format!("{} · {}", registration.display_code(), registration.mark),
+                theme::primary_value(),
+            ),
+        ],
+    );
+}
+
+fn render_dashboard_section(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
     frame.render_widget(
-        Paragraph::new(vec![status_line, metrics])
+        Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        inner,
+        area,
+    );
+}
+
+fn render_financial_performance(frame: &mut Frame, area: Rect, state: &GameState) {
+    let [heading_area, table_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(section_heading("FINANCIAL PERFORMANCE · LIFETIME")).style(theme::panel()),
+        heading_area,
+    );
+
+    let result = operating_result_cents(state);
+    let rows = vec![
+        Row::new([
+            Cell::from("Revenue").style(theme::secondary()),
+            Cell::from(format_money(state.financials.operating_revenue))
+                .style(theme::primary_value()),
+            Cell::from("Access fees").style(theme::secondary()),
+            Cell::from(format_money(state.financials.infrastructure_access_fees))
+                .style(theme::primary_value()),
+        ]),
+        Row::new([
+            Cell::from("Fuel").style(theme::secondary()),
+            Cell::from(format_money(state.financials.fuel_costs)).style(theme::primary_value()),
+            Cell::from("Operating result").style(theme::secondary()),
+            Cell::from(format_signed_cents(result)).style(result_style(result)),
+        ]),
+    ];
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(18),
+                Constraint::Length(18),
+                Constraint::Length(20),
+                Constraint::Length(18),
+            ],
+        )
+        .column_spacing(1)
+        .style(theme::panel()),
+        table_area,
     );
 }
 
@@ -710,69 +817,52 @@ fn render_compact_dashboard(
     selection: &mut ReceiptSelection,
 ) {
     let evaluation = evaluate_financial_recovery(state);
-    let block = panel_block("Financial overview", true);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let shell = panel_block("Company", true);
+    let shell_inner = shell.inner(area);
+    frame.render_widget(shell, area);
 
-    let [summary_area, status_area] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Fill(1)])
-            .spacing(1)
-            .areas(inner);
+    let [summary_area, history_area] =
+        Layout::horizontal([Constraint::Percentage(48), Constraint::Fill(1)])
+            .spacing(2)
+            .areas(shell_inner);
     render_compact_summary(frame, summary_area, state, &evaluation);
-    render_receipts_table(frame, status_area, state, selection, false);
+    render_receipts_table(frame, history_area, state, selection, false);
 }
 
 fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
     let evaluation = evaluate_financial_recovery(state);
-    let block = panel_block("Financial overview", true);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let shell = panel_block("Company", true);
+    let inner = shell.inner(area);
+    frame.render_widget(shell, area);
 
     let status = evaluation
         .as_ref()
         .map_or("[?] STATUS UNAVAILABLE".to_owned(), |evaluation| {
             status_label(evaluation.status).to_owned()
         });
+    let result = operating_result_cents(state);
     let lines = vec![
-        Line::from(vec![
-            Span::styled("VKM ", theme::secondary()),
-            Span::styled(
-                state.player_company.vehicle_keeper_mark.as_str().to_owned(),
-                theme::primary_value(),
-            ),
-            Span::raw("  "),
-            Span::styled("Funds ", theme::secondary()),
-            Span::styled(format_money(state.player_company.funds), theme::title()),
-            Span::raw("  "),
-            Span::styled(
-                status,
-                status_style(evaluation.as_ref().ok().map(|e| e.status)),
-            ),
-        ]),
-        financial_line(
+        section_heading("STATUS"),
+        Line::styled(
+            status,
+            status_style(evaluation.as_ref().ok().map(|evaluation| evaluation.status)),
+        ),
+        Line::from(""),
+        section_heading("COMPANY"),
+        dashboard_line(
+            "VKM",
+            state.player_company.vehicle_keeper_mark.as_str().to_owned(),
+            theme::primary_value(),
+        ),
+        dashboard_line(
             "Fleet value",
             format_cents(fleet_value_cents(state)),
-            theme::title(),
-        ),
-        financial_line(
-            "Revenue",
-            format_money(state.financials.operating_revenue),
             theme::primary_value(),
         ),
-        financial_line(
-            "Access fees",
-            format_money(state.financials.infrastructure_access_fees),
-            theme::primary_value(),
-        ),
-        financial_line(
-            "Fuel",
-            format_money(state.financials.fuel_costs),
-            theme::primary_value(),
-        ),
-        financial_line(
-            "Operating result",
-            format_signed_cents(operating_result_cents(state)),
-            result_style(operating_result_cents(state)),
+        dashboard_line(
+            "Result",
+            format_signed_cents(result),
+            result_style(result),
         ),
     ];
     frame.render_widget(
@@ -783,36 +873,6 @@ fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
     );
 }
 
-fn render_totals_table(frame: &mut Frame, area: Rect, state: &GameState) {
-    let result = operating_result_cents(state);
-    let rows = vec![
-        money_row(
-            "Revenue",
-            format_money(state.financials.operating_revenue),
-            theme::primary_value(),
-        ),
-        money_row(
-            "Access fees",
-            format_money(state.financials.infrastructure_access_fees),
-            theme::primary_value(),
-        ),
-        money_row(
-            "Fuel",
-            format_money(state.financials.fuel_costs),
-            theme::primary_value(),
-        ),
-        money_row(
-            "Operating result",
-            format_signed_cents(result),
-            result_style(result),
-        ),
-    ];
-    let table = Table::new(rows, [Constraint::Fill(1), Constraint::Length(18)])
-        .block(panel_block("Financial performance · lifetime", false))
-        .column_spacing(1);
-    frame.render_widget(table, area);
-}
-
 fn render_receipts_table(
     frame: &mut Frame,
     area: Rect,
@@ -821,21 +881,30 @@ fn render_receipts_table(
     wide: bool,
 ) {
     let receipts = &state.financials.recent_journey_receipts;
-    let title = format!("Journey history · {} receipts", receipts.len());
+    let [heading_area, content_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(section_heading(&format!(
+            "JOURNEY HISTORY · {} RECEIPTS",
+            receipts.len()
+        )))
+        .style(theme::panel()),
+        heading_area,
+    );
+
     if receipts.is_empty() {
         frame.render_widget(
             Paragraph::new("No retained Journey receipts yet. Operating Revenue is credited as passengers reach their stops; a Journey receipt is retained at the Service terminus.")
-                .block(panel_block(&title, true))
                 .style(theme::panel())
                 .wrap(Wrap { trim: true }),
-            area,
+            content_area,
         );
         return;
     }
 
-    let visible_items = usize::from(area.height.saturating_sub(5)).max(1);
+    let visible_items = usize::from(content_area.height.saturating_sub(2)).max(1);
     selection.set_page_size(visible_items);
-    let detailed = wide && area.width >= 86;
+    let detailed = wide && content_area.width >= 86;
     let rows = receipts.iter().rev().map(|receipt| {
         let result = receipt_result_cents(
             receipt.revenue,
@@ -883,11 +952,11 @@ fn render_receipts_table(
     };
     let table = Table::new(rows, widths)
         .header(header.style(theme::table_header()).bottom_margin(1))
-        .block(panel_block(&title, true))
+        .style(theme::panel())
         .row_highlight_style(theme::selected_row())
         .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
-    frame.render_stateful_widget(table, area, &mut selection.table_state);
+    frame.render_stateful_widget(table, content_area, &mut selection.table_state);
 }
 
 fn render_recovery_panel(
@@ -896,9 +965,12 @@ fn render_recovery_panel(
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
 ) {
-    let block = panel_block("Financial warning", false);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let [heading_area, content_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(section_heading("FINANCIAL WARNING")).style(theme::panel()),
+        heading_area,
+    );
     let lines = match evaluation {
         Ok(evaluation) => {
             let mut lines = vec![Line::styled(
@@ -952,7 +1024,7 @@ fn render_recovery_panel(
         Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        inner,
+        content_area,
     );
 }
 
@@ -962,10 +1034,9 @@ fn render_compact_summary(
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
 ) {
-    let block = panel_block("At a glance", false);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let result = operating_result_cents(state);
     let mut lines = vec![
+        section_heading("STATUS"),
         match evaluation {
             Ok(evaluation) => Line::styled(
                 status_label(evaluation.status),
@@ -973,47 +1044,56 @@ fn render_compact_summary(
             ),
             Err(error) => Line::styled(format!("[?] STATUS UNAVAILABLE: {error}"), theme::error()),
         },
-        financial_line(
+        Line::from(""),
+        section_heading("COMPANY"),
+        dashboard_line(
             "VKM",
             state.player_company.vehicle_keeper_mark.as_str().to_owned(),
             theme::primary_value(),
         ),
-        financial_line(
-            "Cash",
-            format_money(state.player_company.funds),
-            theme::title(),
-        ),
-        financial_line(
+        dashboard_line(
             "Fleet value",
             format_cents(fleet_value_cents(state)),
             theme::primary_value(),
         ),
+        dashboard_line(
+            "Services",
+            state.player_company.passenger_services.len().to_string(),
+            theme::primary_value(),
+        ),
+        dashboard_line(
+            "Active journeys",
+            state.active_journeys.len().to_string(),
+            theme::primary_value(),
+        ),
         Line::from(""),
-        financial_line(
+        section_heading("FINANCIAL"),
+        dashboard_line(
             "Revenue",
             format_money(state.financials.operating_revenue),
             theme::primary_value(),
         ),
-        financial_line(
+        dashboard_line(
             "Access fees",
             format_money(state.financials.infrastructure_access_fees),
             theme::primary_value(),
         ),
-        financial_line(
+        dashboard_line(
             "Fuel",
             format_money(state.financials.fuel_costs),
             theme::primary_value(),
         ),
-        financial_line(
-            "Operating result",
-            format_signed_cents(operating_result_cents(state)),
-            result_style(operating_result_cents(state)),
+        dashboard_line(
+            "Result",
+            format_signed_cents(result),
+            result_style(result),
         ),
     ];
     if let Ok(evaluation) = evaluation
         && let Some(option) = evaluation.recovery_options.first()
     {
-        lines.push(Line::styled("Recovery", theme::secondary()));
+        lines.push(Line::from(""));
+        lines.push(section_heading("RECOVERY"));
         lines.push(Line::styled(
             compact_recovery_description(state, option),
             theme::primary_value(),
@@ -1023,7 +1103,7 @@ fn render_compact_summary(
         Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        inner,
+        area,
     );
 }
 
@@ -1034,14 +1114,22 @@ fn render_receipt_details(
     receipt: Option<&JourneyReceipt>,
     compact: bool,
 ) {
-    let title = if compact {
-        "Journey receipt · retained history"
+    let (content_area, heading) = if compact {
+        let block = panel_block("Journey receipt", true);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        (inner, None)
     } else {
-        "Selected Journey receipt"
+        let [heading_area, content_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+        (content_area, Some(heading_area))
     };
-    let block = panel_block(title, true);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    if let Some(heading_area) = heading {
+        frame.render_widget(
+            Paragraph::new(section_heading("SELECTED JOURNEY RECEIPT")).style(theme::panel()),
+            heading_area,
+        );
+    }
     let lines = match receipt {
         Some(receipt) => {
             let result = receipt_result_cents(
@@ -1117,7 +1205,7 @@ fn render_receipt_details(
         Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        inner,
+        content_area,
     );
 }
 
@@ -1148,17 +1236,21 @@ fn panel_block(title: &str, focused: bool) -> Block<'_> {
         .style(theme::panel())
 }
 
-fn financial_line(label: &str, value: String, value_style: Style) -> Line<'static> {
+fn section_heading(title: &str) -> Line<'static> {
+    Line::styled(title.to_owned(), theme::secondary().bold())
+}
+
+fn dashboard_line(label: &str, value: String, value_style: Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label:<20}"), theme::secondary()),
+        Span::styled(format!("{label:<14}"), theme::secondary()),
         Span::styled(value, value_style),
     ])
 }
 
-fn money_row(label: &str, value: String, style: Style) -> Row<'static> {
-    Row::new([
-        Cell::from(label.to_owned()),
-        Cell::from(format!("{value:>18}")).style(style),
+fn financial_line(label: &str, value: String, value_style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<20}"), theme::secondary()),
+        Span::styled(value, value_style),
     ])
 }
 

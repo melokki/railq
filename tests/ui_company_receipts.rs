@@ -50,14 +50,23 @@ fn retained_receipts_scroll_keep_the_selected_journey_across_arrivals_and_open_d
     let mut shell = company_shell(&state);
 
     let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(wide.contains("Journey receipts · 18 retained history"));
+    assert!(wide.contains("JOURNEY HISTORY · 18 RECEIPTS"));
     assert!(wide.contains("J18"));
     assert!(wide.contains("Revenue"));
     assert!(wide.contains("Access fees"));
     assert!(wide.contains("Fuel"));
-    assert!(wide.contains("Signed result"));
-    let selected_colors = capture_rendered_cell_colors(&shell, &state, 120, 40, 3, 24)
-        .expect("selected receipt should paint its Journey cell");
+    assert!(wide.contains("Result"));
+    let (selected_x, selected_y) = text_position(&wide, "J18")
+        .expect("selected receipt should be visible in Journey history");
+    let selected_colors = capture_rendered_cell_colors(
+        &shell,
+        &state,
+        120,
+        40,
+        selected_x,
+        selected_y,
+    )
+    .expect("selected receipt should paint its Journey cell");
     assert_eq!(selected_colors, (theme::BACKGROUND, theme::ACCENT));
     fs::write(evidence_dir.join("retained-120x40.txt"), wide)?;
 
@@ -103,7 +112,7 @@ fn retained_receipts_scroll_keep_the_selected_journey_across_arrivals_and_open_d
     );
 
     let compact = capture_rendered_buffer(&shell, &state, 80, 24);
-    assert!(compact.contains("19 retained"));
+    assert!(compact.contains("JOURNEY HISTORY · 19 RECEIPTS"));
     assert!(compact.contains("[↑↓] Receipt [Enter] Inspect"));
     fs::write(evidence_dir.join("retained-80x24.txt"), compact)?;
 
@@ -124,9 +133,18 @@ fn empty_retained_history_explains_when_a_receipt_is_created() {
     let shell = company_shell(&state);
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
-    assert!(rendered.contains("0 retained history"));
+    assert!(rendered.contains("JOURNEY HISTORY · 0 RECEIPTS"));
     assert!(rendered.contains("No retained Journey receipts yet."));
     assert!(rendered.contains("Operating Revenue"));
     assert!(rendered.contains("arrives."));
     assert!(!rendered.to_lowercase().contains("chart"));
+}
+
+fn text_position(rendered: &str, needle: &str) -> Option<(u16, u16)> {
+    rendered.lines().enumerate().find_map(|(row, line)| {
+        line.find(needle).map(|byte_index| {
+            let column = line[..byte_index].chars().count();
+            (column as u16, row as u16)
+        })
+    })
 }

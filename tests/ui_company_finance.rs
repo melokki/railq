@@ -86,14 +86,29 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
             let rendered = capture_rendered_buffer(&shell, &state, columns, rows);
             assert_eq!(rendered.lines().count(), rows as usize);
             assert!(rendered.contains(funds), "{slug} should show funds {funds}");
-            assert!(
-                rendered.contains("Company Funds"),
-                "{slug} should show funds"
-            );
+            if columns >= 100 {
+                assert!(
+                    rendered.contains("Company Funds"),
+                    "{slug} should show Company Funds in the wide shell header"
+                );
+            } else {
+                assert!(rendered.contains("Funds"), "{slug} should show funds in the shell header");
+            }
             assert!(
                 rendered.contains("Fleet value"),
                 "{slug} should show Fleet value"
             );
+            if columns >= 100 {
+                assert!(rendered.contains("FLEET"), "{slug} should show Fleet section");
+                assert!(
+                    rendered.contains("OPERATIONS"),
+                    "{slug} should show Operations section"
+                );
+                assert!(
+                    rendered.contains("COMPANY IDENTITY"),
+                    "{slug} should show Company identity section"
+                );
+            }
             assert!(
                 rendered.contains("$3,000.00"),
                 "{slug} should show Fleet value amount"
@@ -127,7 +142,7 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
 
     let wide = company_shell(&fixtures_state_for_insolvency());
     let insolvency = capture_rendered_buffer(&wide, &fixtures_state_for_insolvency(), 120, 40);
-    assert!(insolvency.contains("[!] INSOLVENCY"));
+    assert!(insolvency.contains("[!] INSOLVENT"));
     assert!(insolvency.contains("Concrete recovery options"));
     fs::write(evidence_dir.join("insolvency-120x40.txt"), insolvency)?;
 
@@ -138,15 +153,20 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
     assert!(bankruptcy.contains("BANKRUPTCY"));
     fs::write(evidence_dir.join("bankruptcy-120x40.txt"), bankruptcy)?;
 
+    let insolvency_state = fixtures_state_for_insolvency();
+    let insolvency_shell = company_shell(&insolvency_state);
+    let insolvency_rendered = capture_rendered_buffer(&insolvency_shell, &insolvency_state, 120, 40);
+    let (status_x, status_y) = text_position(&insolvency_rendered, "[!] INSOLVENT")
+        .expect("insolvency status should be rendered");
     let colors = capture_rendered_cell_colors(
-        &company_shell(&fixtures_state_for_insolvency()),
-        &fixtures_state_for_insolvency(),
+        &insolvency_shell,
+        &insolvency_state,
         120,
         40,
-        44,
-        7,
+        status_x,
+        status_y,
     )
-    .expect("status panel should paint a cell");
+    .expect("status section should paint a cell");
     assert_eq!(colors.1, theme::PANEL);
     assert_eq!(colors.0, theme::WARNING);
     Ok(())
@@ -159,4 +179,13 @@ fn fixtures_state_for_insolvency() -> GameState {
     purchase_train(&mut state, 0, ORIGIN).expect("fixture purchase succeeds");
     state.player_company.funds = Money::ZERO;
     state
+}
+
+fn text_position(rendered: &str, needle: &str) -> Option<(u16, u16)> {
+    rendered.lines().enumerate().find_map(|(row, line)| {
+        line.find(needle).map(|byte_index| {
+            let column = line[..byte_index].chars().count();
+            (column as u16, row as u16)
+        })
+    })
 }
