@@ -710,72 +710,144 @@ fn render_train_inspector(
         lines.push(Line::styled(title.clone(), theme::focused_title()));
         lines.push(Line::styled(fields.model.clone(), theme::secondary()));
         lines.push(Line::from(""));
-    }
-    lines.extend([
-        Line::from(vec![
-            Span::styled("STATE         ", theme::secondary()),
-            Span::styled(train_status_label(train), train_status_style(train)),
-        ]),
-        Line::from(""),
-        section_heading("IDENTITY"),
-    ]);
-    if !embedded {
-        lines.push(labelled_line(
-            "Nickname",
-            train.nickname.as_ref().map(TrainNickname::as_str).unwrap_or("—"),
-        ));
-        lines.push(labelled_line("Model", &fields.model));
-    }
-    lines.extend([
-        labelled_line("EVN", &train.evn.formatted()),
-        labelled_line(
-            "Keeper mark",
-            &format!(
-                "{}-{}",
-                state.region.railway_registration.mark,
-                state.player_company.vehicle_keeper_mark.as_str(),
-            ),
-        ),
-        Line::from(""),
-        section_heading("OPERATIONS"),
-        labelled_line("Position", &fields.place),
-    ]);
-
-    if let Some(journey) = journey {
-        lines.push(labelled_line(
-            "ETA",
-            &format_duration(remaining_seconds(journey, now)),
-        ));
-        lines.push(labelled_line(
-            "Leg progress",
-            &format!("{}%", journey_progress_percent(journey, now)),
-        ));
-        lines.push(labelled_line(
-            "On board",
-            &journey.onboard_passengers().to_string(),
-        ));
     } else {
-        lines.push(labelled_line("Availability", "Ready for dispatch"));
+        lines.push(Line::from(vec![
+            Span::styled(fields.model.clone(), theme::primary_value()),
+            Span::styled(" · ", theme::secondary()),
+            Span::styled(train.evn.formatted(), theme::secondary()),
+        ]));
     }
 
-    lines.extend([
-        Line::from(""),
-        section_heading("SPECIFICATIONS"),
-        labelled_line(
-            "Capacity",
-            &format_capacity(train),
-        ),
-        labelled_line("Top speed", &format_speed(train)),
-        labelled_line("Propulsion", &format_propulsion(train)),
-        labelled_line("Fuel", &format_fuel_rate(train)),
-        labelled_line("Paid", &format_money(train.original_purchase_price)),
-        labelled_line(
+    if !compact_detail {
+        lines.extend([
+            section_heading("IDENTITY"),
+            labelled_line("EVN", &train.evn.formatted()),
+            labelled_line(
+                "Keeper mark",
+                &format!(
+                    "{}-{}",
+                    state.region.railway_registration.mark,
+                    state.player_company.vehicle_keeper_mark.as_str(),
+                ),
+            ),
+            Line::from(""),
+        ]);
+    }
+
+    lines.push(section_heading("STATUS"));
+    lines.push(labelled_line_styled(
+        "State",
+        train_status_label(train),
+        train_status_style(train),
+    ));
+    match (&train.status, journey) {
+        (TrainStatus::Ready { .. }, _) => {
+            lines.push(labelled_line("Availability", "Ready for dispatch"));
+        }
+        (TrainStatus::Travelling { .. }, Some(_)) => {
+            lines.push(labelled_line("Availability", "In service"));
+        }
+        (TrainStatus::Travelling { .. }, None) => {
+            lines.push(labelled_line("Availability", "Journey data unavailable"));
+        }
+    }
+
+    match (&train.status, journey) {
+        (TrainStatus::Ready { at }, _) => {
+            inspector_section(&mut lines, "LOCATION", compact_detail);
+            lines.push(labelled_line(
+                "Station",
+                &station_label_or_missing(state, *at),
+            ));
+        }
+        (TrainStatus::Travelling { .. }, Some(journey)) => {
+            inspector_section(&mut lines, "JOURNEY", compact_detail);
+            lines.push(labelled_line(
+                "Current leg",
+                &journey_leg_label(state, journey),
+            ));
+            lines.push(labelled_line(
+                "Remaining",
+                &format_duration(remaining_seconds(journey, now)),
+            ));
+            lines.push(labelled_line(
+                "Journey progress",
+                &format!("{}%", journey_progress_percent(journey, now)),
+            ));
+
+            inspector_section(&mut lines, "SERVICE", compact_detail);
+            if let Some(service) = state
+                .player_company
+                .passenger_services
+                .iter()
+                .find(|service| service.id == journey.service_id)
+            {
+                lines.push(labelled_line("Service", &service.name));
+                lines.push(labelled_line(
+                    "Route",
+                    &format!(
+                        "{} → {}",
+                        station_label_or_missing(state, journey.origin_station_id),
+                        station_label_or_missing(state, journey.destination_station_id),
+                    ),
+                ));
+                if !compact_detail {
+                    lines.push(labelled_line("Calls", &service.stop_station_ids.len().to_string()));
+                }
+            } else {
+                lines.push(labelled_line(
+                    "Service",
+                    &format!("Missing service {}", journey.service_id.get()),
+                ));
+            }
+        }
+        (TrainStatus::Travelling { journey_id }, None) => {
+            inspector_section(&mut lines, "JOURNEY", compact_detail);
+            lines.push(labelled_line("Journey", &journey_id.get().to_string()));
+            lines.push(labelled_line("Details", "Unavailable"));
+        }
+    }
+
+    inspector_section(&mut lines, "CAPACITY", compact_detail);
+    lines.push(labelled_line("Seats", &format_capacity(train)));
+    if let Some(journey) = journey {
+        let onboard = journey.onboard_passengers();
+        lines.push(labelled_line("On board", &onboard.to_string()));
+        lines.push(labelled_line("Load", &format_load(train, onboard)));
+    }
+
+    inspector_section(&mut lines, "PERFORMANCE", compact_detail);
+    if compact_detail {
+        lines.push(Line::from(vec![
+            Span::styled("Technical    ", theme::secondary()),
+            Span::raw(format!(
+                "{} · {} · {}",
+                format_speed(train),
+                format_propulsion(train),
+                format_fuel_rate(train),
+            )),
+        ]));
+    } else {
+        lines.push(labelled_line("Top speed", &format_speed(train)));
+        lines.push(labelled_line("Propulsion", &format_propulsion(train)));
+        lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
+    }
+
+    if matches!(&train.status, TrainStatus::Ready { .. }) {
+        inspector_section(&mut lines, "VALUE", compact_detail);
+        if !compact_detail {
+            lines.push(labelled_line(
+                "Paid",
+                &format_money(train.original_purchase_price),
+            ));
+        }
+        lines.push(labelled_line(
             "Resale",
             &resale_proceeds(train.original_purchase_price)
                 .map(format_money)
                 .unwrap_or_else(|| "Unavailable".into()),
-        ),
-    ]);
+        ));
+    }
 
     frame.render_widget(
         Paragraph::new(lines)
@@ -795,6 +867,30 @@ fn render_train_inspector(
             progress_area,
         );
     }
+}
+
+fn inspector_section(lines: &mut Vec<Line<'static>>, title: &str, compact: bool) {
+    if !compact {
+        lines.push(Line::from(""));
+    }
+    lines.push(section_heading(title));
+}
+
+fn journey_leg_label(state: &GameState, journey: &Journey) -> String {
+    let from = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)
+        .and_then(|service| service.stop_station_ids.get(journey.current_stop_index))
+        .copied()
+        .unwrap_or(journey.origin_station_id);
+    let to = journey_next_stop_station_id(state, journey).unwrap_or(journey.destination_station_id);
+    format!(
+        "{} → {}",
+        station_label_or_missing(state, from),
+        station_label_or_missing(state, to),
+    )
 }
 
 fn train_status_label(train: &Train) -> &'static str {
@@ -876,6 +972,13 @@ fn labelled_line(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label:<13}"), theme::secondary()),
         Span::raw(value.to_owned()),
+    ])
+}
+
+fn labelled_line_styled(label: &str, value: &str, style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<13}"), theme::secondary()),
+        Span::styled(value.to_owned(), style),
     ])
 }
 
@@ -971,6 +1074,18 @@ fn train_model_name(train: &Train) -> String {
     model_for_train(train)
         .map(|model| model.name().to_owned())
         .unwrap_or_else(|| format!("Unknown model ({})", train.model_id.as_str()))
+}
+
+fn format_load(train: &Train, onboard: u32) -> String {
+    let Some(capacity) =
+        model_for_train(train).map(|model| model.passenger_capacity().passengers())
+    else {
+        return "Unavailable".into();
+    };
+    if capacity == 0 {
+        return "—".into();
+    }
+    format!("{}%", onboard.saturating_mul(100) / capacity)
 }
 
 fn format_capacity(train: &Train) -> String {

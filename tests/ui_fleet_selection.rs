@@ -56,9 +56,13 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     assert!(wide.contains("Local 70"));
     assert!(wide.contains("Propulsion"));
     assert!(wide.contains("Diesel"));
-    assert!(wide.contains("Position"));
+    assert!(wide.contains("JOURNEY"));
+    assert!(wide.contains("Current leg"));
+    assert!(wide.contains("SERVICE"));
+    assert!(wide.contains("CAPACITY"));
+    assert!(wide.contains("PERFORMANCE"));
     assert!(wide.contains("TRAVELLING"));
-    assert!(wide.contains("in "));
+    assert!(wide.contains("Remaining"));
     assert!(!wide.contains("ACTIONS"));
     assert!(wide.contains("[N] Rename"));
 
@@ -94,6 +98,33 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     state.player_company.fleet.trains.reverse();
     let after_reorder = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     assert!(after_reorder.contains("› Train 06  READY"));
+}
+
+#[test]
+fn fleet_inspector_surfaces_state_specific_information() {
+    let state = operating_fleet();
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('t'));
+
+    let travelling = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(travelling.contains("STATUS"));
+    assert!(travelling.contains("TRAVELLING"));
+    assert!(travelling.contains("JOURNEY"));
+    assert!(travelling.contains("SERVICE"));
+    assert!(travelling.contains("On board"));
+    assert!(travelling.contains("Load"));
+    assert!(!travelling.contains("VALUE"));
+
+    press(&mut shell, &state, KeyCode::Down);
+    let ready = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(ready.contains("READY"));
+    assert!(ready.contains("LOCATION"));
+    assert!(ready.contains("Ready for dispatch"));
+    assert!(ready.contains("CAPACITY"));
+    assert!(ready.contains("PERFORMANCE"));
+    assert!(ready.contains("VALUE"));
+    assert!(!ready.contains("JOURNEY"));
+    assert!(!ready.contains("SERVICE"));
 }
 
 #[test]
@@ -162,7 +193,7 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
         let rendered = capture_rendered_buffer_mut(&mut shell, &state, columns, rows);
         assert_eq!(rendered.lines().count(), usize::from(rows));
         assert!(rendered.contains("Train details"));
-        assert!(rendered.contains("Capacity"));
+        assert!(rendered.contains("CAPACITY"));
         assert!(rendered.contains("Journey progress"));
         assert!(rendered.contains("Remaining"));
         fs::write(evidence_dir.join(file_name), rendered)?;
