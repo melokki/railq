@@ -759,7 +759,7 @@ fn render_train_inspector(
             inspector_section(&mut lines, "PERFORMANCE", dense_detail);
             if dense_detail {
                 lines.push(Line::from(vec![
-                    Span::styled("Technical    ", theme::secondary()),
+                    Span::styled(format!("{:<18}", "Technical"), theme::secondary()),
                     Span::raw(format!(
                         "{} · {} · {}",
                         format_speed(train),
@@ -887,7 +887,7 @@ fn render_train_inspector(
             if !dense_detail {
                 inspector_section(&mut lines, "PERFORMANCE", false);
                 lines.push(Line::from(vec![
-                    Span::styled("Technical    ", theme::secondary()),
+                    Span::styled(format!("{:<18}", "Technical"), theme::secondary()),
                     Span::raw(format!(
                         "{} · {} · {}",
                         format_speed(train),
@@ -906,7 +906,7 @@ fn render_train_inspector(
             inspector_section(&mut lines, "PERFORMANCE", dense_detail);
             if dense_detail {
                 lines.push(Line::from(vec![
-                    Span::styled("Technical    ", theme::secondary()),
+                    Span::styled(format!("{:<18}", "Technical"), theme::secondary()),
                     Span::raw(format!(
                         "{} · {}",
                         format_speed(train),
@@ -1042,14 +1042,14 @@ fn horizontal_inset(area: Rect, amount: u16) -> Rect {
 
 fn labelled_line(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label:<13}"), theme::secondary()),
+        Span::styled(format!("{label:<18}"), theme::secondary()),
         Span::raw(value.to_owned()),
     ])
 }
 
 fn labelled_line_styled(label: &str, value: &str, style: Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label:<13}"), theme::secondary()),
+        Span::styled(format!("{label:<18}"), theme::secondary()),
         Span::styled(value.to_owned(), style),
     ])
 }
