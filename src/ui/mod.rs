@@ -2022,7 +2022,6 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         "Navigation".into(),
         "1 Map   2 Trains   3 Market   4 Company".into(),
         "m / t / b / c also switch workspaces".into(),
-        "? / Esc Close help   q Quit".into(),
         String::new(),
     ];
 
@@ -2255,19 +2254,13 @@ fn dispatch_modal_rect(area: Rect) -> Rect {
 }
 
 fn render_world_details_overlay(frame: &mut ratatui::Frame, area: Rect, state: &GameState) {
-    let compact = area.width < 84 || area.height < 24;
-    let overlay_area = if compact {
-        area
-    } else {
-        let width = area.width.saturating_sub(8).min(86).max(64);
-        let height = area.height.saturating_sub(4).min(23).max(18);
-        Rect::new(
-            area.x.saturating_add((area.width.saturating_sub(width)) / 2),
-            area.y.saturating_add((area.height.saturating_sub(height)) / 2),
-            width,
-            height,
-        )
-    };
+    let card = modal::centered_rect(area, 86, 24);
+    let modal_areas = modal::render_shell(
+        frame,
+        card,
+        "World Details",
+        modal::shortcut_line(&[("Esc/W", "close")]),
+    );
 
     let region = &state.region;
     let registration = &region.railway_registration;
@@ -2329,24 +2322,13 @@ fn render_world_details_overlay(frame: &mut ratatui::Frame, area: Rect, state: &
         world_field("Rail stations", &format!("{}", network.rail_stations.len())),
         world_field("Rail lines", &format!("{}", network.rail_lines.len())),
         world_field("Rail network", &format::distance(network_metres)),
-        Line::from(""),
-        Line::styled("w / Esc · return to Map", theme::hint()),
     ];
 
-    frame.render_widget(Clear, overlay_area);
     frame.render_widget(
         Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(theme::THIN_BORDERS)
-                    .border_style(theme::focused_border())
-                    .title("World Details")
-                    .title_style(theme::focused_title())
-                    .style(theme::panel()),
-            )
             .style(theme::panel())
             .wrap(Wrap { trim: false }),
-        overlay_area,
+        modal_areas.body,
     );
 }
 
@@ -2379,23 +2361,21 @@ fn render_help_overlay(
     shell: &Shell,
     state: &GameState,
 ) {
-    let compact = area.width < 96 || area.height < 26;
-    let overlay_area = if compact {
-        area
+    let card = modal::centered_rect(area, 96, 30);
+    let footer = if card.width < 76 {
+        modal::shortcut_line(&[("↑↓", "scroll"), ("Esc/?", "close")])
     } else {
-        let width = area.width.saturating_mul(3) / 4;
-        let height = area.height.saturating_mul(3) / 4;
-        Rect::new(
-            area.x
-                .saturating_add((area.width.saturating_sub(width)) / 2),
-            area.y
-                .saturating_add((area.height.saturating_sub(height)) / 2),
-            width,
-            height,
-        )
+        modal::shortcut_line(&[
+            ("↑↓", "scroll"),
+            ("PgUp/PgDn", "page"),
+            ("Esc/?", "close"),
+            ("Q", "quit"),
+        ])
     };
+    let modal_areas = modal::render_shell(frame, card, "Keyboard Help", footer);
+
     let lines = help_lines(shell, state);
-    let visible_lines = usize::from(overlay_area.height.saturating_sub(2));
+    let visible_lines = usize::from(modal_areas.body.height);
     let max_offset = lines.len().saturating_sub(visible_lines.max(1));
     let offset = shell.help_offset.min(max_offset);
     let content = lines
@@ -2414,26 +2394,12 @@ fn render_help_overlay(
             }
         })
         .collect::<Vec<_>>();
-    let title = if compact {
-        "Keyboard · focused page"
-    } else {
-        "Keyboard"
-    };
 
-    frame.render_widget(Clear, overlay_area);
     frame.render_widget(
         Paragraph::new(content)
-            .block(
-                Block::default()
-                    .borders(theme::THIN_BORDERS)
-                    .border_style(theme::focused_border())
-                    .title(title)
-                    .title_style(theme::focused_title())
-                    .style(theme::panel()),
-            )
             .style(theme::panel())
             .wrap(Wrap { trim: false }),
-        overlay_area,
+        modal_areas.body,
     );
 }
 
@@ -2718,7 +2684,9 @@ mod tests {
         },
     };
 
-    use super::{Shell, ShellAction, View, capture_rendered_buffer, theme};
+    use super::{
+        Shell, ShellAction, View, capture_rendered_buffer, capture_rendered_cell_colors, theme,
+    };
 
     #[test]
     fn routes_the_four_primary_views_by_number_and_keeps_letter_aliases() {
@@ -2774,6 +2742,18 @@ mod tests {
         assert!(rendered.contains("fictional two-letter railway mark"));
         assert!(rendered.contains("Connected"));
         assert!(rendered.contains("Rail network"));
+        assert!(rendered.contains("[Esc/W] close"));
+        assert!(!rendered.contains("w / Esc · return to Map"));
+        assert_eq!(
+            capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
+            Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
+            "World Details should mute the application underneath it",
+        );
+        assert_eq!(
+            capture_rendered_cell_colors(&shell, &state, 120, 40, 17, 8),
+            Some((theme::ACCENT, theme::PANEL)),
+            "World Details should use the shared focused-modal border",
+        );
 
         assert_eq!(
             shell.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),

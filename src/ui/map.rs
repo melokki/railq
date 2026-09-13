@@ -498,135 +498,6 @@ fn truncate_label(value: &str, max_chars: usize) -> String {
     }
 }
 
-/// Returns the logical bounding box used to keep map composition deterministic.
-fn layout_bounds(places: &[OperationalPlace]) -> Option<(i32, i32, i32, i32)> {
-    Some((
-        places.iter().map(|place| place.x).min()?,
-        places.iter().map(|place| place.x).max()?,
-        places.iter().map(|place| place.y).min()?,
-        places.iter().map(|place| place.y).max()?,
-    ))
-}
-
-/// Finds a readable position for a child station without changing topology.
-/// The preferred direction wins when it is clear; denser future networks may
-/// rotate a branch rather than stack two stations into the same visual area.
-fn station_child_position(
-    origin: (i32, i32),
-    preferred_direction: MapDirection,
-    distance_metres: u64,
-    occupied: &BTreeMap<RailStationId, (i32, i32)>,
-) -> (MapDirection, (i32, i32)) {
-    let candidates = [
-        preferred_direction,
-        turn_clockwise(preferred_direction),
-        turn_counter_clockwise(preferred_direction),
-        opposite_direction(preferred_direction),
-    ];
-    for direction in candidates {
-        let position = offset_point(
-            origin,
-            direction,
-            directional_line_length(distance_metres, direction),
-        );
-        if station_position_is_clear(position, occupied) {
-            return (direction, position);
-        }
-    }
-
-    let position = offset_point(
-        origin,
-        preferred_direction,
-        directional_line_length(distance_metres, preferred_direction),
-    );
-    (preferred_direction, position)
-}
-
-fn station_position_is_clear(
-    candidate: (i32, i32),
-    occupied: &BTreeMap<RailStationId, (i32, i32)>,
-) -> bool {
-    occupied.values().all(|existing| {
-        let horizontal = (candidate.0 - existing.0).abs();
-        let vertical = (candidate.1 - existing.1).abs();
-        horizontal >= 6 || vertical >= 3
-    })
-}
-
-/// Places settlements around the operating railway instead of in artificial
-/// rows. The perimeter order deliberately jumps between opposite sides, while
-/// a tiny world-seeded jitter prevents repeated worlds from sharing the same
-/// silhouette. The same saved world always gets exactly the same positions.
-fn unconnected_settlement_position(
-    connected_bounds: (i32, i32, i32, i32),
-    connected_count: usize,
-    index: usize,
-    settlement_id: SettlementId,
-    world_seed: u64,
-) -> (i32, i32) {
-    const PERIMETER_SLOTS: [(i32, i32); 16] = [
-        (-35, -100),
-        (35, -100),
-        (85, -100),
-        (100, -65),
-        (100, -20),
-        (100, 20),
-        (100, 65),
-        (85, 100),
-        (35, 100),
-        (-35, 100),
-        (-85, 100),
-        (-100, 65),
-        (-100, 20),
-        (-100, -20),
-        (-100, -65),
-        (-85, -100),
-    ];
-    const SPREAD_ORDER: [usize; 16] = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15];
-
-    let (min_x, max_x, min_y, max_y) = connected_bounds;
-    let centre_x = min_x + (max_x - min_x) / 2;
-    let centre_y = min_y + (max_y - min_y) / 2;
-    let half_width = ((max_x - min_x).abs() + 1) / 2;
-    let half_height = ((max_y - min_y).abs() + 1) / 2;
-    let ring = i32::try_from(index / PERIMETER_SLOTS.len()).unwrap_or(i32::MAX / 8);
-
-    // Keep early expansion targets close enough to the starter railway to feel
-    // like plausible next destinations rather than unrelated towns at the edge
-    // of the world. As the operating network grows, its expansion belt grows
-    // with it and leaves more breathing room around the larger core.
-    let (gap_x, gap_y, min_radius_x, min_radius_y) = match connected_count {
-        0..=4 => (5, 3, 12, 5),
-        5..=8 => (6, 4, 14, 6),
-        9..=16 => (8, 5, 16, 7),
-        _ => (10, 6, 18, 8),
-    };
-    let radius_x = (half_width + gap_x + ring.saturating_mul(7)).max(min_radius_x);
-    let radius_y = (half_height + gap_y + ring.saturating_mul(4)).max(min_radius_y);
-
-    let rotation = usize::try_from(world_seed % 4).unwrap_or(0);
-    let order_index = (index + rotation) % SPREAD_ORDER.len();
-    let slot_index = SPREAD_ORDER[order_index];
-    let (factor_x, factor_y) = PERIMETER_SLOTS[slot_index];
-
-    let mixed = mix_layout_seed(world_seed ^ settlement_id.get().wrapping_mul(0x9E37_79B9));
-    let jitter_x = i32::try_from(mixed % 5).unwrap_or(2) - 2;
-    let jitter_y = i32::try_from((mixed / 5) % 3).unwrap_or(1) - 1;
-
-    (
-        centre_x + factor_x.saturating_mul(radius_x) / 100 + jitter_x,
-        centre_y + factor_y.saturating_mul(radius_y) / 100 + jitter_y,
-    )
-}
-
-fn mix_layout_seed(mut value: u64) -> u64 {
-    value ^= value >> 30;
-    value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    value ^= value >> 27;
-    value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
-    value ^ (value >> 31)
-}
-
 fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
     let network = &state.region.rail_authority.rail_network;
     if state.region.settlements.is_empty() {
@@ -658,14 +529,16 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
     }
 
     let mut station_positions = BTreeMap::<RailStationId, (i32, i32)>::new();
-    // Anchor the operational map to the oldest Station rather than whichever
-    // node currently has the highest degree. Expanding the railway can then add
-    // branches without suddenly re-rooting and reshuffling the whole map.
-    if let Some(root) = network.rail_stations.iter().min_by_key(|station| station.id) {
+    if let Some(root) = network.rail_stations.iter().max_by_key(|station| {
+        (
+            adjacency.get(&station.id).map_or(0, Vec::len),
+            Reverse(station.id),
+        )
+    }) {
         station_positions.insert(root.id, (0, 0));
         let directions = [
-            MapDirection::Right,
             MapDirection::Left,
+            MapDirection::Right,
             MapDirection::Down,
             MapDirection::Up,
         ];
@@ -696,18 +569,17 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
                 if station_positions.contains_key(&child) {
                     continue;
                 }
-                let preferred_direction = if index == 0 {
+                let child_direction = if index == 0 {
                     direction
                 } else if index % 2 == 1 {
                     turn_clockwise(direction)
                 } else {
                     turn_counter_clockwise(direction)
                 };
-                let (child_direction, position) = station_child_position(
+                let position = offset_point(
                     origin,
-                    preferred_direction,
-                    metres,
-                    &station_positions,
+                    child_direction,
+                    directional_line_length(metres, child_direction),
                 );
                 station_positions.insert(child, position);
                 queue.push_back((child, station_id, child_direction));
@@ -747,20 +619,27 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
         .filter(|settlement| !connected.contains(&settlement.id))
         .collect::<Vec<_>>();
 
-    let connected_bounds = layout_bounds(&places).unwrap_or((-8, 8, -3, 3));
+    let min_connected_x = places.iter().map(|place| place.x).min().unwrap_or(-8);
+    let max_connected_x = places.iter().map(|place| place.x).max().unwrap_or(8);
+    let min_connected_y = places.iter().map(|place| place.y).min().unwrap_or(0);
+    let max_connected_y = places.iter().map(|place| place.y).max().unwrap_or(0);
+    let row_width = (max_connected_x - min_connected_x).max(34);
+    let columns = 3_i32;
+    let spacing = (row_width / (columns - 1)).max(13);
+    let left = -spacing;
     for (index, settlement) in unconnected.into_iter().enumerate() {
-        let (x, y) = unconnected_settlement_position(
-            connected_bounds,
-            network.rail_stations.len(),
-            index,
-            settlement.id,
-            state.world_seed,
-        );
+        let row = i32::try_from(index / usize::try_from(columns).unwrap_or(3)).unwrap_or(0);
+        let column = i32::try_from(index % usize::try_from(columns).unwrap_or(3)).unwrap_or(0);
+        let y = if row % 2 == 0 {
+            min_connected_y - 5 - (row / 2) * 4
+        } else {
+            max_connected_y + 5 + (row / 2) * 4
+        };
         places.push(OperationalPlace {
             settlement_id: settlement.id,
             station_id: None,
             name: settlement.name.clone(),
-            x,
+            x: left + column * spacing,
             y,
         });
     }
@@ -829,15 +708,6 @@ const fn turn_counter_clockwise(direction: MapDirection) -> MapDirection {
     }
 }
 
-const fn opposite_direction(direction: MapDirection) -> MapDirection {
-    match direction {
-        MapDirection::Left => MapDirection::Right,
-        MapDirection::Right => MapDirection::Left,
-        MapDirection::Up => MapDirection::Down,
-        MapDirection::Down => MapDirection::Up,
-    }
-}
-
 fn render_map_rows(
     layout: &OperationalLayout,
     selected: Option<SettlementId>,
@@ -869,24 +739,8 @@ fn render_map_rows(
     };
     // Use one scale for both axes. The logical layout has already compensated
     // for terminal-cell aspect ratio, so stretching X and Y independently
-    // would make the same route distance look different by orientation. Sparse
-    // starter worlds are allowed to grow on large terminals instead of floating
-    // as a tiny graph in the middle of an otherwise empty canvas.
-    let connected_count = layout
-        .places
-        .iter()
-        .filter(|place| place.station_id.is_some())
-        .count();
-    let scale_limit = if connected_count <= 4 && layout.places.len() <= 12 {
-        3.10
-    } else if layout.places.len() <= 12 {
-        2.90
-    } else if layout.places.len() <= 20 {
-        2.35
-    } else {
-        1.75
-    };
-    let map_scale = width_scale.min(height_scale).min(scale_limit);
+    // would make the same route distance look different by orientation.
+    let map_scale = width_scale.min(height_scale).min(1.30);
     let x_scale = map_scale;
     let y_scale = map_scale;
     let scaled_width = (logical_width * x_scale).round() as i32;
@@ -990,7 +844,6 @@ fn render_map_rows(
             y,
             &label,
             place_ink(place, selected, &adjacent),
-            place.station_id.is_none(),
         );
     }
 
@@ -1066,60 +919,13 @@ fn draw_active_train_markers(
     }
 
     for (position, (direction, count)) in markers {
-        draw_train_stack_marker(grid, position, direction, count);
+        let glyph = match count {
+            1 => direction,
+            2..=9 => char::from_digit(u32::try_from(count).unwrap_or(9), 10).unwrap_or('+'),
+            _ => '+',
+        };
+        put_cell(grid, position.0, position.1, glyph, MapInk::Train);
     }
-}
-
-fn draw_train_stack_marker(
-    grid: &mut [Vec<MapCell>],
-    position: (i32, i32),
-    direction: char,
-    count: usize,
-) {
-    put_cell(grid, position.0, position.1, direction, MapInk::Train);
-    if count <= 1 {
-        return;
-    }
-
-    let count_glyph = match count {
-        2..=9 => char::from_digit(u32::try_from(count).unwrap_or(9), 10).unwrap_or('+'),
-        _ => '+',
-    };
-    let preferred_offset = match direction {
-        '◀' => (-1, 0),
-        _ => (1, 0),
-    };
-    let fallback_offset = (-preferred_offset.0, 0);
-
-    for offset in [preferred_offset, fallback_offset] {
-        let candidate = (
-            position.0.saturating_add(offset.0),
-            position.1.saturating_add(offset.1),
-        );
-        if train_count_cell_is_available(grid, candidate) {
-            put_cell(grid, candidate.0, candidate.1, count_glyph, MapInk::Train);
-            return;
-        }
-    }
-
-    // A station or another high-priority map marker may occupy both adjacent
-    // cells. Preserve the train count in that rare case, even though the arrow
-    // cannot be shown as a separate cell.
-    put_cell(grid, position.0, position.1, count_glyph, MapInk::Train);
-}
-
-fn train_count_cell_is_available(grid: &[Vec<MapCell>], position: (i32, i32)) -> bool {
-    let (Ok(x), Ok(y)) = (usize::try_from(position.0), usize::try_from(position.1)) else {
-        return false;
-    };
-    grid.get(y)
-        .and_then(|row| row.get(x))
-        .is_some_and(|cell| {
-            matches!(
-                cell.ink,
-                MapInk::Empty | MapInk::Rail | MapInk::RailAccent | MapInk::RailLabel
-            )
-        })
 }
 
 fn journey_map_marker(
@@ -1380,41 +1186,15 @@ fn place_map_label(
     marker_y: i32,
     text: &str,
     ink: MapInk,
-    prefer_inline: bool,
 ) {
     let label_width = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
     let centered_x = marker_x - label_width / 2;
-    let above = (centered_x, marker_y - 1);
-    let below = (centered_x, marker_y + 1);
-    let right = (marker_x + 2, marker_y);
-    let left = (marker_x - label_width - 2, marker_y);
-    let upper_right = (marker_x + 2, marker_y - 1);
-    let upper_left = (marker_x - label_width - 2, marker_y - 1);
-    let lower_right = (marker_x + 2, marker_y + 1);
-    let lower_left = (marker_x - label_width - 2, marker_y + 1);
-    let candidates = if prefer_inline {
-        [
-            right,
-            left,
-            above,
-            below,
-            upper_right,
-            upper_left,
-            lower_right,
-            lower_left,
-        ]
-    } else {
-        [
-            above,
-            below,
-            right,
-            left,
-            upper_right,
-            upper_left,
-            lower_right,
-            lower_left,
-        ]
-    };
+    let candidates = [
+        (centered_x, marker_y - 1),
+        (centered_x, marker_y + 1),
+        (marker_x + 2, marker_y),
+        (marker_x - label_width - 2, marker_y),
+    ];
 
     if let Some((x, y)) = candidates
         .into_iter()
@@ -1424,11 +1204,9 @@ fn place_map_label(
         return;
     }
 
-    // Very small terminals may leave no collision-free candidate. Preserve the
-    // semantic distinction even in fallback mode: settlements read naturally
-    // as "○ Name", while connected station names stay centred above the node.
-    let fallback = if prefer_inline { right } else { above };
-    put_text(grid, fallback.0, fallback.1, text, ink);
+    // Very small terminals may leave no collision-free row. In that case,
+    // prefer the normal centred-above placement and let put_text clip safely.
+    put_text(grid, centered_x, marker_y - 1, text, ink);
 }
 
 fn can_place_text(grid: &[Vec<MapCell>], x: i32, y: i32, text: &str) -> bool {
@@ -3036,7 +2814,7 @@ fn format_duration(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use crate::{
-        model::{RailStationId, SettlementId, UtcSeconds},
+        model::{RailStationId, UtcSeconds},
         sim::{
             fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
             world::create_new_game,
@@ -3044,11 +2822,10 @@ mod tests {
     };
 
     use super::{
-        MapCell, MapDirection, MapInk, RAIL_LEFT, RAIL_RIGHT, TERMINAL_CELL_HEIGHT_TO_WIDTH,
-        directional_line_length, draw_train_stack_marker, focus_rank, journey_progress_percent,
-        journey_route_segments, layout_bounds, map_place_label, operational_layout,
-        place_link_distance_label, point_along_orthogonal_rail, rail_glyph, render_at,
-        schematic_layout, selected_neighbours, unconnected_settlement_position,
+        MapCell, MapDirection, RAIL_LEFT, RAIL_RIGHT, TERMINAL_CELL_HEIGHT_TO_WIDTH,
+        directional_line_length, focus_rank, journey_progress_percent, journey_route_segments,
+        map_place_label, operational_layout, place_link_distance_label, point_along_orthogonal_rail,
+        rail_glyph, render_at, schematic_layout, selected_neighbours,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
@@ -3118,94 +2895,6 @@ mod tests {
         assert!(travelling_map.contains("progress: 50%"));
         assert!(travelling_map.contains("ETA:"));
         assert!(travelling_map.contains("Alden") || travelling_map.contains("Bellhaven"));
-    }
-
-    #[test]
-    fn starter_world_expansion_belt_stays_closer_than_a_mature_network_belt() {
-        let bounds = (-10, 10, -4, 4);
-        let settlement_id = SettlementId::new(99);
-        let starter = unconnected_settlement_position(bounds, 4, 0, settlement_id, 42);
-        let mature = unconnected_settlement_position(bounds, 12, 0, settlement_id, 42);
-
-        let starter_distance = starter.0.abs() + starter.1.abs();
-        let mature_distance = mature.0.abs() + mature.1.abs();
-        assert!(starter_distance < mature_distance);
-        assert!(starter.0 < bounds.0 || starter.0 > bounds.1 || starter.1 < bounds.2 || starter.1 > bounds.3);
-    }
-
-    #[test]
-    fn unconnected_settlements_form_a_seeded_perimeter_instead_of_grid_rows() {
-        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
-        let first = operational_layout(&state).expect("starter map layout");
-        let second = operational_layout(&state).expect("starter map layout");
-
-        let connected = first
-            .places
-            .iter()
-            .filter(|place| place.station_id.is_some())
-            .cloned()
-            .collect::<Vec<_>>();
-        let unconnected = first
-            .places
-            .iter()
-            .filter(|place| place.station_id.is_none())
-            .collect::<Vec<_>>();
-        let (min_x, max_x, min_y, max_y) = layout_bounds(&connected).expect("connected bounds");
-
-        assert_eq!(unconnected.len(), 6);
-        assert!(unconnected.iter().all(|place| {
-            place.x < min_x || place.x > max_x || place.y < min_y || place.y > max_y
-        }));
-        assert!(
-            unconnected
-                .iter()
-                .map(|place| place.x)
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                >= 4
-        );
-        assert!(
-            unconnected
-                .iter()
-                .map(|place| place.y)
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                >= 4
-        );
-
-        let first_positions = first
-            .places
-            .iter()
-            .map(|place| (place.settlement_id, place.x, place.y))
-            .collect::<Vec<_>>();
-        let second_positions = second
-            .places
-            .iter()
-            .map(|place| (place.settlement_id, place.x, place.y))
-            .collect::<Vec<_>>();
-        assert_eq!(first_positions, second_positions, "same world must keep its map");
-    }
-
-    #[test]
-    fn different_world_seeds_change_the_settlement_silhouette() {
-        let first = create_new_game(41, "First Passenger", STARTED_AT);
-        let second = create_new_game(42, "Second Passenger", STARTED_AT);
-        let first_layout = operational_layout(&first).expect("first layout");
-        let second_layout = operational_layout(&second).expect("second layout");
-        let first_positions = first_layout
-            .places
-            .iter()
-            .filter(|place| place.station_id.is_none())
-            .map(|place| (place.x, place.y))
-            .collect::<Vec<_>>();
-        let second_positions = second_layout
-            .places
-            .iter()
-            .filter(|place| place.station_id.is_none())
-            .map(|place| (place.x, place.y))
-            .collect::<Vec<_>>();
-
-        assert_ne!(first_positions, second_positions);
     }
 
     #[test]
@@ -3304,17 +2993,6 @@ mod tests {
             * TERMINAL_CELL_HEIGHT_TO_WIDTH;
         let longer_horizontal = directional_line_length(42_000, MapDirection::Right);
         assert!(longer_horizontal > shorter_vertical);
-    }
-
-    #[test]
-    fn stacked_train_marker_keeps_direction_and_shows_count() {
-        let mut grid = vec![vec![MapCell::default(); 8]; 3];
-        draw_train_stack_marker(&mut grid, (2, 1), '▶', 2);
-
-        assert_eq!(grid[1][2].ch, '▶');
-        assert_eq!(grid[1][2].ink, MapInk::Train);
-        assert_eq!(grid[1][3].ch, '2');
-        assert_eq!(grid[1][3].ink, MapInk::Train);
     }
 
     #[test]

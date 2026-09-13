@@ -32,23 +32,31 @@ fn help_is_scrollable_and_uses_a_focused_page_when_compact() {
     );
 
     let wide = capture_rendered_buffer(&shell, &state, 120, 40);
-    assert!(wide.contains("Keyboard help"));
-    assert!(wide.contains("Global controls"));
+    assert!(wide.contains("Keyboard Help"));
+    assert!(wide.contains("Navigation"));
+    assert!(wide.contains("[PgUp/PgDn] page"));
+    assert!(wide.contains("[Esc/?] close"));
     assert_eq!(
-        capture_rendered_cell_colors(&shell, &state, 120, 40, 12, 4),
-        Some((theme::ACCENT, theme::PANEL))
+        capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
+        Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
+        "Help should mute the application underneath it",
+    );
+    assert_eq!(
+        capture_rendered_cell_colors(&shell, &state, 120, 40, 12, 5),
+        Some((theme::ACCENT, theme::PANEL)),
+        "Help should use the shared focused-modal border",
     );
     fs::write(evidence.join("help-overlay-120x40.txt"), &wide).expect("wide capture");
 
     let compact_before = capture_rendered_buffer_mut(&mut shell, &state, 64, 16);
-    assert!(compact_before.contains("Help · focused page"));
-    assert!(compact_before.contains("Global controls"));
+    assert!(compact_before.contains("Keyboard Help"));
+    assert!(compact_before.contains("Navigation"));
     assert_eq!(
         press(&mut shell, &state, KeyCode::PageDown),
         ShellAction::Continue
     );
     let compact_after = capture_rendered_buffer_mut(&mut shell, &state, 64, 16);
-    assert!(compact_after.contains("Panels and lists"));
+    assert!(compact_after.contains("Tip"));
     assert_ne!(compact_before, compact_after);
     fs::write(evidence.join("help-focused-page-64x16.txt"), &compact_after)
         .expect("compact capture");
