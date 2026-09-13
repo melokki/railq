@@ -19,7 +19,7 @@ use ratatui::{
 
 use crate::{
     catalog::{TrainModel, train_catalogue},
-    model::{GameState, Money, RailLine, RailStationId},
+    model::{GameState, Money, RailLine, RailStationId, TrainStatus},
     ui::{modal, theme},
 };
 
@@ -638,7 +638,12 @@ pub fn render_dashboard(
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled("No Train models available", theme::title()),
-                Line::from("The rolling-stock catalogue is currently empty."),
+                Line::from(""),
+                Line::from("The rolling-stock catalogue is empty in this build."),
+                Line::styled(
+                    "There is nothing to purchase right now.",
+                    theme::secondary(),
+                ),
             ])
             .block(panel_block("Market", true))
             .style(theme::panel()),
@@ -672,15 +677,7 @@ pub fn render_dashboard(
     selection.set_page_size(usize::from(catalogue_area.height.saturating_sub(2)).max(1));
     selection.synchronize(state);
 
-    let owned_count = |train: &TrainModel| {
-        state
-            .player_company
-            .fleet
-            .trains
-            .iter()
-            .filter(|owned| &owned.model_id == train.id())
-            .count()
-    };
+    let owned_count = |train: &TrainModel| catalogue_ownership(state, train).owned;
 
     // Use the catalogue width for comparison data rather than stretching only
     // Model and Price across a large pane. The inspector still owns the full
@@ -717,7 +714,7 @@ pub fn render_dashboard(
             ],
             vec!["Model", "Seats", "Top speed", "Propulsion", "Fuel/km", "Owned", "Price"],
         )
-    } else if catalogue_area.width >= 58 {
+    } else if catalogue_area.width >= 66 {
         (
             catalogue
                 .iter()
@@ -732,6 +729,7 @@ pub fn render_dashboard(
                                 train.fuel_cost_per_kilometre().cents_per_kilometre()
                             )
                         )),
+                        Cell::from(owned_count(train).to_string()),
                         Cell::from(format_money(train.purchase_price())),
                     ])
                 })
@@ -741,9 +739,31 @@ pub fn render_dashboard(
                 Constraint::Length(7),
                 Constraint::Length(11),
                 Constraint::Length(10),
+                Constraint::Length(7),
                 Constraint::Length(13),
             ],
-            vec!["Model", "Seats", "Top speed", "Fuel/km", "Price"],
+            vec!["Model", "Seats", "Top speed", "Fuel/km", "Owned", "Price"],
+        )
+    } else if catalogue_area.width >= 58 {
+        (
+            catalogue
+                .iter()
+                .map(|train| {
+                    Row::new(vec![
+                        Cell::from(train.name().to_owned()),
+                        Cell::from(train.passenger_capacity().passengers().to_string()),
+                        Cell::from(format_speed_kmh(train)),
+                        Cell::from(format_money(train.purchase_price())),
+                    ])
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                Constraint::Min(16),
+                Constraint::Length(7),
+                Constraint::Length(11),
+                Constraint::Length(13),
+            ],
+            vec!["Model", "Seats", "Top speed", "Price"],
         )
     } else {
         (
@@ -815,12 +835,17 @@ fn render_catalogue_inspector(
     };
 
     let (status, status_style) = purchase_status(state, train);
+    let ownership = catalogue_ownership(state, train);
     let mut lines = vec![
         Line::styled(train.name().to_owned(), theme::focused_title()),
         Line::styled(status, status_style),
     ];
+    if let Some(hint) = purchase_status_hint(state, train) {
+        lines.push(hint);
+    }
 
-    if wide {
+    let detailed = wide && inner.height >= 33;
+    if detailed {
         lines.extend([
             Line::from(""),
             Line::styled("IDENTITY", theme::secondary()),
@@ -836,6 +861,11 @@ fn render_catalogue_inspector(
                 ),
             ),
             labelled_value("Official EVN", "assigned on purchase"),
+            Line::from(""),
+            Line::styled("OWNERSHIP", theme::secondary()),
+            labelled_value("Owned", &ownership.owned.to_string()),
+            labelled_value("Ready", &ownership.ready.to_string()),
+            labelled_value("Travelling", &ownership.travelling.to_string()),
             Line::from(""),
             Line::styled("CAPACITY", theme::secondary()),
             labelled_value(
@@ -888,6 +918,8 @@ fn render_catalogue_inspector(
             Line::styled("ECONOMICS", theme::secondary()),
             labelled_value("Price", &format_money(train.purchase_price())),
             purchase_balance_line(state, train),
+            labelled_value("Owned", &ownership.owned.to_string()),
+            Line::from(""),
             Line::styled("SPECIFICATIONS", theme::secondary()),
             labelled_value(
                 "Seats",
@@ -913,6 +945,53 @@ fn render_catalogue_inspector(
             .wrap(Wrap { trim: true }),
         inner,
     );
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CatalogueOwnership {
+    owned: usize,
+    ready: usize,
+    travelling: usize,
+}
+
+fn catalogue_ownership(state: &GameState, train: &TrainModel) -> CatalogueOwnership {
+    let mut ownership = CatalogueOwnership::default();
+    for owned in state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .filter(|owned| &owned.model_id == train.id())
+    {
+        ownership.owned += 1;
+        match &owned.status {
+            TrainStatus::Ready { .. } => ownership.ready += 1,
+            TrainStatus::Travelling { .. } => ownership.travelling += 1,
+        }
+    }
+    ownership
+}
+
+fn purchase_status_hint(state: &GameState, train: &TrainModel) -> Option<Line<'static>> {
+    if state.player_company.funds < train.purchase_price() {
+        return Some(Line::styled(
+            "Company Funds are below this purchase price.",
+            theme::error(),
+        ));
+    }
+    if delivery_station_ids(state).is_empty() {
+        return Some(Line::styled(
+            "Connect a Rail Station before buying.",
+            theme::warning(),
+        ));
+    }
+    if low_reserve(state, train) {
+        return Some(Line::styled(
+            "Affordable, but the sample departure reserve is tight.",
+            theme::warning(),
+        ));
+    }
+    None
 }
 
 fn purchase_balance_line(state: &GameState, train: &TrainModel) -> Line<'static> {

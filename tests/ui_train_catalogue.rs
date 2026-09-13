@@ -85,6 +85,10 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "$3,000.00",
         "$5,000.00",
         "IDENTITY",
+        "OWNERSHIP",
+        "Owned: 0",
+        "Ready: 0",
+        "Travelling: 0",
         "CAPACITY",
         "PERFORMANCE",
         "ECONOMICS",
@@ -306,6 +310,7 @@ fn market_footer_keeps_unaffordable_buy_visible_but_disabled() {
     );
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(rendered.contains("UNAFFORDABLE"));
+    assert!(rendered.contains("Company Funds are below this purchase price."));
     assert!(rendered.contains("Shortfall"));
     assert!(rendered.contains("[Enter] Buy"));
     let (row, column) = rendered
@@ -329,6 +334,23 @@ fn market_footer_keeps_unaffordable_buy_visible_but_disabled() {
     let rejected = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(rejected.contains("Insufficient Company Funds for the selected Train."));
     assert!(!rejected.contains("Delivery Rail Stations"));
+}
+
+#[test]
+fn market_inspector_summarizes_owned_units_for_the_selected_model() {
+    let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    let mut shell = Shell::new();
+
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Char('b')),
+        ShellAction::Continue
+    );
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(rendered.contains("OWNERSHIP"));
+    assert!(rendered.contains("Owned: 1"));
+    assert!(rendered.contains("Ready: 1"));
+    assert!(rendered.contains("Travelling: 0"));
 }
 
 #[test]
