@@ -444,11 +444,15 @@ fn render_service_inspector(
     state: &GameState,
     selected_index: usize,
 ) {
+    // The inspector is deliberately state-aware.  Wide/tall terminals expose
+    // the complete operating picture, while short layouts keep only the
+    // information needed to understand the selected Service at a glance.
+    let dense = area.height < 28 || area.width < 40;
     let lines = state
         .player_company
         .passenger_services
         .get(selected_index)
-        .map(|service| service_details(state, service.id))
+        .map(|service| service_details(state, service.id, dense))
         .unwrap_or_else(|| {
             vec![Line::styled(
                 "No Passenger Service selected.",
@@ -473,7 +477,11 @@ fn workspace_inset(area: Rect, horizontal: u16) -> Rect {
     }
 }
 
-fn service_details(state: &GameState, service_id: ServiceId) -> Vec<Line<'static>> {
+fn service_details(
+    state: &GameState,
+    service_id: ServiceId,
+    dense: bool,
+) -> Vec<Line<'static>> {
     let Some(service) = state
         .player_company
         .passenger_services
@@ -497,39 +505,270 @@ fn service_details(state: &GameState, service_id: ServiceId) -> Vec<Line<'static
                 .map(|line| line.distance.metres())
         })
         .sum::<u64>();
-    let active = state
-        .active_journeys
-        .iter()
-        .filter(|journey| journey.service_id == service.id)
-        .count();
+    let snapshot = service_operating_snapshot(state, service_id);
+    let state_label = if snapshot.active_trains > 0 {
+        "IN SERVICE"
+    } else {
+        "IDLE"
+    };
+    let state_style = if snapshot.active_trains > 0 {
+        theme::success()
+    } else {
+        theme::secondary()
+    };
+    let origin = service
+        .origin_station_id()
+        .map(|station_id| station_label(state, station_id))
+        .unwrap_or_else(|| "Unknown".into());
+    let destination = service
+        .destination_station_id()
+        .map(|station_id| station_label(state, station_id))
+        .unwrap_or_else(|| "Unknown".into());
 
-    let mut lines = vec![
-        Line::from(Span::styled(service.name.clone(), theme::focused_title())),
-        Line::from(format!(
-            "Direction  {}",
-            route_label(state, &service.stop_station_ids)
-        )),
-        Line::from(format!("Distance   {}", format::distance(distance))),
-        Line::from(format!("Stops      {}", service.stop_station_ids.len())),
-        Line::from(format!("Active     {active} Journey(s)")),
-        Line::from(""),
-        Line::from(Span::styled("Ordered stops", theme::table_header())),
-    ];
-    lines.extend(
-        service
-            .stop_station_ids
-            .iter()
-            .enumerate()
-            .map(|(index, station_id)| {
-                Line::from(format!(
-                    "{}. {}",
-                    index + 1,
-                    station_label(state, *station_id)
-                ))
-            }),
-    );
+    let mut lines = vec![Line::styled(
+        service.name.clone(),
+        theme::focused_title(),
+    )];
+
+    inspector_section(&mut lines, "STATUS", dense);
+    lines.push(labelled_line_styled("State", state_label, state_style));
+
+    inspector_section(&mut lines, "ROUTE", dense);
+    lines.push(labelled_line(
+        "Direction",
+        &format!("{origin} → {destination}"),
+    ));
+    lines.push(labelled_line("Distance", &format::distance(distance)));
+    lines.push(labelled_line(
+        "Stops",
+        &service.stop_station_ids.len().to_string(),
+    ));
+
+    inspector_section(&mut lines, "OPERATIONS", dense);
+    lines.push(labelled_line(
+        "Active trains",
+        &snapshot.active_trains.to_string(),
+    ));
+    lines.push(labelled_line(
+        "Next arrival",
+        &snapshot
+            .next_arrival
+            .map(|(remaining, station_id)| {
+                format!(
+                    "in {} · {}",
+                    format::duration(remaining),
+                    station_label(state, station_id)
+                )
+            })
+            .unwrap_or_else(|| "—".into()),
+    ));
+
+    inspector_section(&mut lines, "PASSENGERS", dense);
+    lines.push(labelled_line(
+        "Waiting",
+        &format!(
+            "{} · +{}/h",
+            snapshot.waiting_passengers, snapshot.arrival_rate_per_hour
+        ),
+    ));
+    if snapshot.active_trains > 0 || !dense {
+        lines.push(labelled_line(
+            "On board",
+            &snapshot.onboard_passengers.to_string(),
+        ));
+        lines.push(labelled_line(
+            "Carried",
+            &snapshot.passengers_carried.to_string(),
+        ));
+    }
+
+    if snapshot.active_trains > 0 {
+        inspector_section(&mut lines, "COMMERCIAL", dense);
+        lines.push(labelled_line(
+            "Booked revenue",
+            &format_cents(snapshot.booked_revenue_cents),
+        ));
+        if !dense {
+            lines.push(labelled_line(
+                "Credited",
+                &format_cents(snapshot.credited_revenue_cents),
+            ));
+        }
+        lines.push(labelled_line(
+            "Operating cost",
+            &format_cents(snapshot.operating_cost_cents),
+        ));
+        let result = snapshot
+            .booked_revenue_cents
+            .saturating_sub(snapshot.operating_cost_cents);
+        let result_style = if result >= 0 {
+            theme::success()
+        } else {
+            theme::warning()
+        };
+        lines.push(labelled_line_styled(
+            "Current result",
+            &format::signed_cents(result),
+            result_style,
+        ));
+    }
+
+    if !dense {
+        inspector_section(&mut lines, "STOP PATTERN", false);
+        const MAX_VISIBLE_STOPS: usize = 6;
+        lines.extend(
+            service
+                .stop_station_ids
+                .iter()
+                .take(MAX_VISIBLE_STOPS)
+                .enumerate()
+                .map(|(index, station_id)| {
+                    Line::from(format!(
+                        "{}. {}",
+                        index + 1,
+                        station_label(state, *station_id)
+                    ))
+                }),
+        );
+        if service.stop_station_ids.len() > MAX_VISIBLE_STOPS {
+            lines.push(Line::styled(
+                format!(
+                    "… +{} more stops",
+                    service.stop_station_ids.len() - MAX_VISIBLE_STOPS
+                ),
+                theme::secondary(),
+            ));
+        }
+    }
 
     lines
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ServiceOperatingSnapshot {
+    active_trains: usize,
+    next_arrival: Option<(u64, RailStationId)>,
+    waiting_passengers: u32,
+    arrival_rate_per_hour: u32,
+    onboard_passengers: u32,
+    passengers_carried: u32,
+    booked_revenue_cents: i128,
+    credited_revenue_cents: i128,
+    operating_cost_cents: i128,
+}
+
+fn service_operating_snapshot(state: &GameState, service_id: ServiceId) -> ServiceOperatingSnapshot {
+    let Some(service) = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+    else {
+        return ServiceOperatingSnapshot::default();
+    };
+
+    let mut snapshot = ServiceOperatingSnapshot::default();
+    let (waiting, arrival_rate) = service_waiting_demand(state, &service.stop_station_ids);
+    snapshot.waiting_passengers = waiting;
+    snapshot.arrival_rate_per_hour = arrival_rate;
+
+    for journey in state
+        .active_journeys
+        .iter()
+        .filter(|journey| journey.service_id == service_id)
+    {
+        snapshot.active_trains = snapshot.active_trains.saturating_add(1);
+        snapshot.onboard_passengers = snapshot
+            .onboard_passengers
+            .saturating_add(journey.onboard_passengers());
+        snapshot.passengers_carried = snapshot
+            .passengers_carried
+            .saturating_add(journey.passengers_carried);
+        snapshot.booked_revenue_cents = snapshot
+            .booked_revenue_cents
+            .saturating_add(i128::from(journey.operating_revenue.cents()));
+        snapshot.credited_revenue_cents = snapshot
+            .credited_revenue_cents
+            .saturating_add(i128::from(journey.credited_revenue.cents()));
+        snapshot.operating_cost_cents = snapshot
+            .operating_cost_cents
+            .saturating_add(i128::from(journey.infrastructure_access_fee.cents()))
+            .saturating_add(i128::from(journey.fuel_cost.cents()));
+
+        let remaining = remaining_journey_seconds(state, journey.arrives_at);
+        let next_station_id = service
+            .stop_station_ids
+            .get(journey.current_stop_index.saturating_add(1))
+            .copied()
+            .unwrap_or(journey.destination_station_id);
+        if snapshot
+            .next_arrival
+            .map(|(current, _)| remaining < current)
+            .unwrap_or(true)
+        {
+            snapshot.next_arrival = Some((remaining, next_station_id));
+        }
+    }
+
+    snapshot
+}
+
+fn service_waiting_demand(state: &GameState, stops: &[RailStationId]) -> (u32, u32) {
+    let mut waiting = 0_u32;
+    let mut arrival_rate = 0_u32;
+    for (origin_index, origin_station_id) in stops.iter().enumerate() {
+        for destination_station_id in stops.iter().skip(origin_index.saturating_add(1)) {
+            if let Some(demand) = state.origin_destination_demand.iter().find(|demand| {
+                demand.origin_station_id == *origin_station_id
+                    && demand.destination_station_id == *destination_station_id
+            }) {
+                waiting = waiting.saturating_add(demand.waiting_passengers);
+                arrival_rate = arrival_rate.saturating_add(
+                    demand
+                        .passenger_arrival_rate_per_hour
+                        .passengers_per_hour(),
+                );
+            }
+        }
+    }
+    (waiting, arrival_rate)
+}
+
+fn remaining_journey_seconds(state: &GameState, arrives_at: crate::model::UtcSeconds) -> u64 {
+    let remaining = arrives_at
+        .unix_seconds()
+        .saturating_sub(state.last_processed_at.unix_seconds());
+    u64::try_from(remaining).unwrap_or(0)
+}
+
+fn format_cents(cents: i128) -> String {
+    let formatted = format::signed_cents(cents);
+    formatted.strip_prefix('+').unwrap_or(&formatted).to_owned()
+}
+
+fn inspector_section(lines: &mut Vec<Line<'static>>, title: &str, dense: bool) {
+    if !dense {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::styled(title.to_owned(), theme::table_header()));
+}
+
+fn labelled_line(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<16}"), theme::secondary()),
+        Span::raw(value.to_owned()),
+    ])
+}
+
+fn labelled_line_styled(
+    label: &str,
+    value: &str,
+    style: ratatui::style::Style,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<16}"), theme::secondary()),
+        Span::styled(value.to_owned(), style),
+    ])
 }
 
 fn service_active_journeys(state: &GameState, service_id: ServiceId) -> usize {

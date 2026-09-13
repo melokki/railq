@@ -1,7 +1,12 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
-    model::{RailStationId, UtcSeconds},
-    sim::{services::create_service, world::create_new_game},
+    model::{Money, RailStationId, UtcSeconds},
+    sim::{
+        fleet::purchase_train,
+        journeys::dispatch_journey,
+        services::create_service,
+        world::create_new_game,
+    },
     ui::{Shell, ShellAction, capture_rendered_buffer_mut, capture_rendered_cell_colors, theme},
 };
 
@@ -83,7 +88,12 @@ fn existing_services_are_listed_and_can_request_deletion() {
     assert!(rendered.contains("Service"));
     assert!(rendered.contains("Direction"));
     assert!(rendered.contains("›"));
-    assert!(rendered.contains("Ordered stops"));
+    assert!(rendered.contains("STATUS"));
+    assert!(rendered.contains("IDLE"));
+    assert!(rendered.contains("ROUTE"));
+    assert!(rendered.contains("OPERATIONS"));
+    assert!(rendered.contains("PASSENGERS"));
+    assert!(rendered.contains("STOP PATTERN"));
     assert!(!rendered.contains("Service Details"));
 
     assert_eq!(
@@ -99,4 +109,32 @@ fn existing_services_are_listed_and_can_request_deletion() {
         press(&mut shell, &state, KeyCode::Enter),
         ShellAction::DeletePassengerService { service_id }
     );
+}
+
+#[test]
+fn active_service_inspector_surfaces_live_operating_context() {
+    let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
+    let mut state = create_new_game(42, "Alden Passenger", started_at);
+    state.player_company.funds = Money::from_cents(10_000_000);
+    let service_id = create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(2)],
+    )
+    .unwrap();
+    let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
+
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('s'));
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+
+    assert!(rendered.contains("IN SERVICE"));
+    assert!(rendered.contains("Active trains"));
+    assert!(rendered.contains("Next arrival"));
+    assert!(rendered.contains("On board"));
+    assert!(rendered.contains("Carried"));
+    assert!(rendered.contains("COMMERCIAL"));
+    assert!(rendered.contains("Booked revenue"));
+    assert!(rendered.contains("Operating cost"));
+    assert!(rendered.contains("Current result"));
 }
