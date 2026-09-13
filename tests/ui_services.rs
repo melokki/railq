@@ -20,10 +20,20 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     assert!(workspace.contains("No Passenger Services yet"));
 
     assert_eq!(press(&mut shell, &state, KeyCode::Char('n')), ShellAction::Continue);
+    let create = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(create.contains("Create Passenger Service"));
+    assert!(create.contains("1 STOPS"));
+    assert!(create.contains("Route Preview"));
+    assert!(create.contains("Choose the next stop"));
+
     assert_eq!(press(&mut shell, &state, KeyCode::Enter), ShellAction::Continue);
     assert_eq!(press(&mut shell, &state, KeyCode::Down), ShellAction::Continue);
     assert_eq!(press(&mut shell, &state, KeyCode::Enter), ShellAction::Continue);
     assert_eq!(press(&mut shell, &state, KeyCode::Char('f')), ShellAction::Continue);
+    let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(review.contains("2 REVIEW"));
+    assert!(review.contains("Review Passenger Service"));
+    assert!(review.contains("ORDERED STOPS"));
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),

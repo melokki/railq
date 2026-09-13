@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Paragraph, Wrap},
+    widgets::{Block, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
 };
 
 use crate::{
@@ -16,7 +16,7 @@ use crate::{
     sim::services::service_path_for_stops,
 };
 
-use super::{format, theme};
+use super::{format, modal, theme};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServiceWorkspaceAction {
@@ -264,10 +264,9 @@ impl ServiceWorkspace {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
-        if let Some(flow) = &self.create_flow {
-            render_create_flow(frame, area, state, flow);
-            return;
-        }
+        // Keep the workspace visible behind focused workflows. This mirrors the
+        // modal grammar used by Manual Dispatch and makes Create Service feel
+        // like a temporary task rather than an entirely different screen.
         render_service_list(
             frame,
             area,
@@ -275,6 +274,10 @@ impl ServiceWorkspace {
             self.selected_service_index,
             self.delete_confirmation,
         );
+
+        if let Some(flow) = &self.create_flow {
+            render_create_flow(frame, create_service_modal_rect(area), state, flow);
+        }
     }
 }
 
@@ -400,42 +403,316 @@ fn service_details(
 }
 
 fn render_create_flow(frame: &mut Frame, area: Rect, state: &GameState, flow: &CreateServiceFlow) {
-    let [stops_area, picker_area] = Layout::horizontal([
-        Constraint::Percentage(42),
-        Constraint::Percentage(58),
+    let modal_areas = modal::render_shell(
+        frame,
+        area,
+        "Create Passenger Service",
+        create_service_footer_line(flow, area.width),
+    );
+
+    if flow.review {
+        render_create_service_review(frame, modal_areas.body, state, flow);
+    } else {
+        render_create_service_picker(frame, modal_areas.body, state, flow);
+    }
+}
+
+fn create_service_footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'static> {
+    if flow.review {
+        return modal::shortcut_line(&[
+            ("Enter", "create"),
+            ("←", "edit"),
+            ("Esc", "cancel"),
+        ]);
+    }
+
+    if width >= 76 {
+        modal::shortcut_line(&[
+            ("↑/↓", "choose"),
+            ("Enter", "add"),
+            ("Backspace", "remove"),
+            ("F", "review"),
+            ("Esc", "cancel"),
+        ])
+    } else {
+        // On narrow terminals keep the primary progression controls readable;
+        // navigation and undo remain available and are also exposed globally.
+        modal::shortcut_line(&[
+            ("Enter", "add"),
+            ("F", "review"),
+            ("Esc", "cancel"),
+        ])
+    }
+}
+
+fn render_create_service_picker(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    flow: &CreateServiceFlow,
+) {
+    let status_rows = if flow.error.is_some() { 2 } else { 0 };
+    let [context_area, content_area, status_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(5),
+        Constraint::Length(status_rows),
     ])
     .areas(area);
 
-    let mut stop_lines = vec![Line::from(Span::styled(
-        "Ordered stops",
-        theme::table_header(),
-    ))];
-    if flow.stop_station_ids.is_empty() {
-        stop_lines.push(Line::from(Span::styled(
-            "No stops selected yet.",
-            theme::secondary(),
-        )));
+    let route_summary = if flow.stop_station_ids.is_empty() {
+        "No stops selected yet".to_owned()
     } else {
-        stop_lines.extend(flow.stop_station_ids.iter().enumerate().map(|(index, station_id)| {
-            Line::from(format!("{}. {}", index + 1, station_label(state, *station_id)))
-        }));
-    }
+        route_label(state, &flow.stop_station_ids)
+    };
     frame.render_widget(
-        Paragraph::new(stop_lines)
-            .block(panel("New Passenger Service"))
-            .style(theme::panel())
-            .wrap(Wrap { trim: false }),
-        stops_area,
+        Paragraph::new(vec![
+            create_service_step_line(1),
+            Line::from(vec![
+                Span::styled("ROUTE  ", theme::secondary()),
+                Span::styled(route_summary, theme::primary_value()),
+            ]),
+        ])
+        .style(theme::panel())
+        .wrap(Wrap { trim: true }),
+        context_area,
     );
 
-    let lines = if flow.review {
-        let distance = service_path_for_stops(
-            &state.region.rail_authority.rail_network,
-            &flow.stop_station_ids,
-        )
-        .ok()
-        .into_iter()
-        .flatten()
+    let show_preview = content_area.width >= 68 && content_area.height >= 7;
+    let (picker_area, divider_area, preview_area) = if show_preview {
+        let [picker_area, divider_area, preview_area] = Layout::horizontal([
+            Constraint::Min(30),
+            Constraint::Length(1),
+            Constraint::Length(32),
+        ])
+        .areas(content_area);
+        (picker_area, Some(divider_area), Some(preview_area))
+    } else {
+        (content_area, None, None)
+    };
+
+    let [picker_title_area, table_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).areas(picker_area);
+    frame.render_widget(
+        Paragraph::new(Line::styled("Choose the next stop", theme::title()))
+            .style(theme::panel()),
+        picker_title_area,
+    );
+
+    let rows = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .map(|station| Row::new([station_label(state, station.id)]))
+        .collect::<Vec<_>>();
+    let mut table_state = TableState::default();
+    table_state.select(
+        (!rows.is_empty()).then_some(flow.selected_station_index.min(rows.len().saturating_sub(1))),
+    );
+    let table = Table::new(rows, [Constraint::Min(1)])
+        .row_highlight_style(theme::selected_row())
+        .highlight_symbol("› ")
+        .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, table_area, &mut table_state);
+
+    if let (Some(divider_area), Some(preview_area)) = (divider_area, preview_area) {
+        modal::render_vertical_separator(frame, divider_area);
+        render_create_service_preview(frame, preview_area, state, flow);
+    }
+
+    if let Some(error) = &flow.error {
+        frame.render_widget(
+            Paragraph::new(Line::styled(error.clone(), theme::error()))
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            status_area,
+        );
+    }
+}
+
+fn render_create_service_preview(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    flow: &CreateServiceFlow,
+) {
+    let selected_station_id = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .get(flow.selected_station_index)
+        .map(|station| station.id);
+
+    let mut lines = vec![Line::styled("Route Preview", theme::title())];
+    if flow.stop_station_ids.is_empty() {
+        lines.push(Line::styled(
+            "The first stop becomes the Service origin.",
+            theme::secondary(),
+        ));
+    } else {
+        lines.push(Line::styled("ORDERED STOPS", theme::table_header()));
+        lines.extend(
+            flow.stop_station_ids
+                .iter()
+                .enumerate()
+                .map(|(index, station_id)| {
+                    Line::from(vec![
+                        Span::styled(format!("{}  ", index + 1), theme::secondary()),
+                        Span::styled(station_label(state, *station_id), theme::primary_value()),
+                    ])
+                }),
+        );
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::styled("SELECTED", theme::table_header()));
+    let Some(station_id) = selected_station_id else {
+        lines.push(Line::styled("No Rail Station available.", theme::secondary()));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    };
+    lines.push(Line::styled(
+        station_label(state, station_id),
+        theme::focused_title(),
+    ));
+
+    if flow.stop_station_ids.is_empty() {
+        lines.push(Line::styled("Valid origin stop", theme::success()));
+    } else {
+        let mut candidate = flow.stop_station_ids.clone();
+        candidate.push(station_id);
+        match service_path_for_stops(&state.region.rail_authority.rail_network, &candidate) {
+            Ok(line_ids) => {
+                let distance = distance_for_line_ids(state, &line_ids);
+                lines.push(Line::styled("Valid next stop", theme::success()));
+                lines.push(Line::styled(
+                    format!("Route after add · {}", format::distance(distance)),
+                    theme::secondary(),
+                ));
+            }
+            Err(error) => lines.push(Line::styled(error.to_string(), theme::error())),
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_create_service_review(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    flow: &CreateServiceFlow,
+) {
+    let line_ids = service_path_for_stops(
+        &state.region.rail_authority.rail_network,
+        &flow.stop_station_ids,
+    )
+    .unwrap_or_default();
+    let distance = distance_for_line_ids(state, &line_ids);
+
+    let [context_area, summary_area, stops_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(4),
+        Constraint::Min(3),
+    ])
+    .areas(area);
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            create_service_step_line(2),
+            Line::styled("Review Passenger Service", theme::title()),
+        ])
+        .style(theme::panel()),
+        context_area,
+    );
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("DIRECTION  ", theme::secondary()),
+                Span::styled(route_label(state, &flow.stop_station_ids), theme::focused_title()),
+            ]),
+            Line::from(vec![
+                Span::styled("DISTANCE   ", theme::secondary()),
+                Span::styled(format::distance(distance), theme::primary_value()),
+            ]),
+            Line::from(vec![
+                Span::styled("STOPS      ", theme::secondary()),
+                Span::styled(flow.stop_station_ids.len().to_string(), theme::primary_value()),
+            ]),
+            Line::styled(
+                "Directional Service · dispatchable from its first stop.",
+                theme::secondary(),
+            ),
+        ])
+        .style(theme::panel())
+        .wrap(Wrap { trim: true }),
+        summary_area,
+    );
+
+    let mut stop_lines = vec![Line::styled("ORDERED STOPS", theme::table_header())];
+    stop_lines.extend(
+        flow.stop_station_ids
+            .iter()
+            .enumerate()
+            .map(|(index, station_id)| {
+                let is_origin = index == 0;
+                let is_destination = index + 1 == flow.stop_station_ids.len();
+                let suffix = if is_origin {
+                    "  origin"
+                } else if is_destination {
+                    "  destination"
+                } else {
+                    ""
+                };
+                Line::from(vec![
+                    Span::styled(format!("{}  ", index + 1), theme::secondary()),
+                    Span::styled(station_label(state, *station_id), theme::primary_value()),
+                    Span::styled(suffix, theme::secondary()),
+                ])
+            }),
+    );
+    frame.render_widget(
+        Paragraph::new(stop_lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        stops_area,
+    );
+}
+
+fn create_service_step_line(active: u8) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (step, label) in [(1, "STOPS"), (2, "REVIEW")] {
+        if step > 1 {
+            spans.push(Span::styled("  →  ", theme::secondary()));
+        }
+        let style = if step == active {
+            theme::focused_title()
+        } else if step < active {
+            theme::success()
+        } else {
+            theme::secondary()
+        };
+        spans.push(Span::styled(format!("{step} {label}"), style));
+    }
+    Line::from(spans)
+}
+
+fn distance_for_line_ids(state: &GameState, line_ids: &[crate::model::RailLineId]) -> u64 {
+    line_ids
+        .iter()
         .filter_map(|line_id| {
             state
                 .region
@@ -443,55 +720,21 @@ fn render_create_flow(frame: &mut Frame, area: Rect, state: &GameState, flow: &C
                 .rail_network
                 .rail_lines
                 .iter()
-                .find(|line| line.id == line_id)
+                .find(|line| line.id == *line_id)
                 .map(|line| line.distance.metres())
         })
-        .sum::<u64>();
-        vec![
-            Line::from(Span::styled("Review", theme::focused_title())),
-            Line::from(""),
-            Line::from(format!("Direction  {}", route_label(state, &flow.stop_station_ids))),
-            Line::from(format!("Distance   {}", format::distance(distance))),
-            Line::from(format!("Stops      {}", flow.stop_station_ids.len())),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Enter creates and saves this directional Service.",
-                theme::success(),
-            )),
-        ]
-    } else {
-        let mut lines = vec![Line::from(Span::styled(
-            "Choose the next stop",
-            theme::table_header(),
-        ))];
-        for (index, station) in state
-            .region
-            .rail_authority
-            .rail_network
-            .rail_stations
-            .iter()
-            .enumerate()
-        {
-            let selected = index == flow.selected_station_index;
-            lines.push(Line::from(vec![
-                Span::styled(if selected { "> " } else { "  " }, if selected { theme::focused_title() } else { theme::secondary() }),
-                Span::styled(station_label(state, station.id), if selected { theme::primary_value() } else { theme::secondary() }),
-            ]));
-        }
-        if let Some(error) = &flow.error {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(error.clone(), theme::error())));
-        }
-        lines
-    };
+        .sum()
+}
 
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(panel(if flow.review { "Review Service" } else { "Add Stop" }))
-            .style(theme::panel())
-            .wrap(Wrap { trim: false }),
-        picker_area,
-    );
+fn create_service_modal_rect(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(6).min(88).max(48);
+    let height = area.height.saturating_sub(2).min(24).max(16);
+    Rect {
+        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        y: area.y.saturating_add(area.height.saturating_sub(height) / 2),
+        width: width.min(area.width),
+        height: height.min(area.height),
+    }
 }
 
 fn panel(title: &'static str) -> Block<'static> {
