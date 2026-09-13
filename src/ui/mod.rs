@@ -596,13 +596,17 @@ impl Shell {
                 self.company_recovery_review_open = false;
                 self.company_vkm_editor = None;
             }
-            KeyCode::Char('v' | 'V') if self.active_view == View::Company => {
+            KeyCode::Char('v' | 'V')
+                if self.active_view == View::Company && !self.company_receipt_details_open =>
+            {
                 self.company_vkm_editor = Some(company::VkmEditor::start(state));
                 self.company_receipt_details_open = false;
                 self.company_recovery_review_open = false;
                 self.notice = None;
             }
-            KeyCode::Char('r' | 'R') if self.active_view == View::Company => {
+            KeyCode::Char('r' | 'R')
+                if self.active_view == View::Company && !self.company_receipt_details_open =>
+            {
                 if self
                     .company_recovery_selection
                     .selected_destination(state)
@@ -611,11 +615,6 @@ impl Shell {
                     self.company_recovery_review_open = true;
                     self.company_receipt_details_open = false;
                     self.notice = None;
-                } else {
-                    self.notice = Some(
-                        "No finite recovery route is available while the Player Company is operating."
-                            .into(),
-                    );
                 }
             }
             KeyCode::Char('3' | 'b' | 'B') => {
@@ -1893,30 +1892,42 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         items.push(FooterShortcut::enabled("W", "World"));
         items
     } else if shell.active_view == View::Company {
+        let recovery_available = evaluate_financial_recovery(state).ok().is_some_and(|evaluation| {
+            evaluation.status == FinancialStatus::Insolvent
+                && !evaluation.recovery_options.is_empty()
+        });
         if shell.company_recovery_review_open {
-            vec![
-                FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Route"),
-                FooterShortcut::enabled("Enter", "Open"),
-                FooterShortcut::enabled("Esc", "Back"),
-            ]
+            let mut items = vec![FooterShortcut::enabled(
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Route",
+            )];
+            if wide {
+                items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
+            }
+            items.push(FooterShortcut::enabled("Enter", "Review"));
+            items.push(FooterShortcut::enabled("Esc", "Back"));
+            items
         } else if shell.company_receipt_details_open {
-            vec![
-                FooterShortcut::enabled("Esc", "Back"),
-                FooterShortcut::enabled("V", "VKM"),
-                FooterShortcut::enabled("1–4", "Navigate"),
-            ]
-        } else if state.financials.recent_journey_receipts.is_empty() {
-            vec![
-                FooterShortcut::enabled("V", "Edit VKM"),
-                FooterShortcut::enabled("1", "Map"),
-            ]
+            vec![FooterShortcut::enabled("Esc", "Back")]
         } else {
-            vec![
-                FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Receipt"),
-                FooterShortcut::enabled("Enter", "Inspect"),
-                FooterShortcut::enabled("R", "Recovery"),
-                FooterShortcut::enabled("V", "VKM"),
-            ]
+            let mut items = Vec::new();
+            if !state.financials.recent_journey_receipts.is_empty() {
+                items.push(FooterShortcut::enabled(
+                    if compact { "↑↓" } else { "↑↓/JK" },
+                    "Receipt",
+                ));
+                if wide {
+                    items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
+                }
+                items.push(FooterShortcut::enabled("Enter", "Inspect"));
+            }
+            items.push(FooterShortcut::enabled("V", "Edit VKM"));
+            items.push(if recovery_available {
+                FooterShortcut::enabled("R", "Recovery")
+            } else {
+                FooterShortcut::disabled("R", "Recovery")
+            });
+            items
         }
     } else if shell.active_view == View::BuyTrains {
         if let Some(flow) = &shell.market_flow {
@@ -2531,18 +2542,14 @@ fn bankruptcy_text(restart_confirmation: bool) -> String {
             "[X] BANKRUPTCY",
             "No finite sell, retain, rebuy, and dispatch option can return the Player Company to operation.",
             "",
-            "Safe restart review: a fresh game is created only after this Player Company save is preserved in a unique archive backup.",
-            "Press Enter to confirm the safe restart, Esc to keep the Bankrupt save, or Q to exit.",
+            "Safe restart review is open. A fresh game is created only after this Player Company save is preserved in a unique archive backup.",
         ]
         .join("\n")
     } else {
         [
             "[X] BANKRUPTCY",
             "No finite sell, retain, rebuy, and dispatch option can return the Player Company to operation.",
-            "Normal operations are disabled. You may exit safely or start a fresh game.",
-            "",
-            "Press R to review a safe restart. The existing Player Company save is archived first and is never silently overwritten.",
-            "Press Q to exit or ? for keyboard help.",
+            "Normal operations are disabled. A safe restart preserves this Company save in an archive backup before creating a fresh game.",
         ]
         .join("\n")
     }

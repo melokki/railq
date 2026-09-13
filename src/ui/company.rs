@@ -131,16 +131,6 @@ pub fn render_vkm_editor(frame: &mut Frame, area: Rect, editor: &VkmEditor, stat
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(error.to_owned(), theme::error())));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("Enter", theme::focused_title()),
-        Span::styled(" Save   ", theme::secondary()),
-        Span::styled("Backspace", theme::focused_title()),
-        Span::styled(" Delete   ", theme::secondary()),
-        Span::styled("Esc", theme::focused_title()),
-        Span::styled(" Cancel", theme::secondary()),
-    ]));
-
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::panel())
@@ -457,13 +447,9 @@ fn render_recovery_instructions(
     lines.push(Line::from(""));
     lines.push(Line::styled(
         format!(
-            "Enter opens {} for review only. Nothing is sold, bought, or dispatched here.",
+            "Next review: {}. Nothing is sold, bought, or dispatched from this screen.",
             recovery_destination_label(destination)
         ),
-        theme::secondary(),
-    ));
-    lines.push(Line::styled(
-        "Esc returns to Company. Use M/T/B at any step to inspect another workspace.",
         theme::secondary(),
     ));
     frame.render_widget(
@@ -1315,8 +1301,6 @@ fn render_receipt_details(
                     theme::primary_value(),
                 ),
                 financial_line("Result", format_signed_cents(result), result_style(result)),
-                Line::from(""),
-                Line::styled("Esc returns to Journey history.", theme::secondary()),
             ]);
             lines
         }

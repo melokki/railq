@@ -99,6 +99,8 @@ fn retained_receipts_scroll_keep_the_selected_journey_across_arrivals_and_open_d
     assert!(detail.contains("$60.00"));
     assert!(detail.contains("$15.00"));
     assert!(detail.contains("+$525.00"));
+    assert!(detail.contains("[Esc] Back"));
+    assert!(!detail.contains("Esc returns to Journey history."));
     fs::write(evidence_dir.join("detail-120x40.txt"), detail)?;
 
     assert_eq!(

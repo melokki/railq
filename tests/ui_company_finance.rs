@@ -206,6 +206,40 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
     Ok(())
 }
 
+#[test]
+fn company_footer_owns_contextual_actions_without_repeating_navigation() {
+    let state = finance_fixture(10);
+    let mut shell = company_shell(&state);
+    let operating = capture_rendered_buffer(&shell, &state, 120, 40);
+
+    assert!(operating.contains("[V] Edit VKM"));
+    assert!(operating.contains("[R] Recovery"));
+    assert!(!operating.contains("[1] Map"));
+    assert!(!operating.contains("[1–4] Navigate"));
+
+    assert_eq!(
+        shell.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), &state),
+        ShellAction::Continue
+    );
+    let still_operating = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(!still_operating.contains("Finite recovery routes"));
+
+    let insolvency = fixtures_state_for_insolvency();
+    let mut recovery_shell = company_shell(&insolvency);
+    assert_eq!(
+        recovery_shell.handle_key(
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            &insolvency,
+        ),
+        ShellAction::Continue
+    );
+    let recovery = capture_rendered_buffer(&recovery_shell, &insolvency, 120, 40);
+    assert!(recovery.contains("[Enter] Review"));
+    assert!(recovery.contains("[Esc] Back"));
+    assert!(!recovery.contains("Enter opens"));
+    assert!(!recovery.contains("Esc returns to Company"));
+}
+
 fn fixtures_state_for_insolvency() -> GameState {
     let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
     state.player_company.funds = Money::from_cents(1_000_000);
