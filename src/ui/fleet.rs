@@ -237,7 +237,7 @@ pub fn render_nickname_editor(
     state: &GameState,
 ) {
     let card_height = if editor.error().is_some() { 15 } else { 14 };
-    let card = modal::centered_rect(area, 68, card_height);
+    let card = modal::editor_rect(area, card_height);
     let footer = if card.width >= 56 {
         modal::shortcut_line(&[("Enter", "save"), ("Backspace", "delete"), ("Esc", "cancel")])
     } else {
@@ -438,7 +438,7 @@ fn resale_review(state: &GameState, train_id: TrainId) -> Result<ResaleReview<'_
 
 fn render_resale_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &FleetFlow) {
     let review = resale_review(state, flow.train_id);
-    let card = modal::centered_rect(area, 64, 16);
+    let card = modal::confirmation_rect(area, 16);
     let footer = if review.is_ok() {
         modal::shortcut_line(&[("Enter", "resell"), ("Esc", "cancel")])
     } else {

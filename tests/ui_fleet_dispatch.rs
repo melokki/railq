@@ -81,10 +81,19 @@ fn fleet_d_preselects_the_selected_train_and_returns_to_its_list_focus()
     ] {
         let rendered = capture_rendered_buffer_mut(&mut shell, &state, columns, rows);
         assert_eq!(rendered.lines().count(), usize::from(rows));
-        assert!(rendered.contains("2 SERVICE"));
+        assert!(rendered.contains("Dispatch Train 02"));
+        assert!(rendered.contains("1 SERVICE"));
+        assert!(rendered.contains("2 REVIEW"));
         assert!(rendered.contains("Train 02"));
         assert!(rendered.contains("Choose Passenger Service"));
+        assert!(!rendered.contains("1 TRAIN"));
         assert!(!rendered.contains("available Fleet"));
+        assert!(!rendered.contains("[←] train"));
+        assert_eq!(
+            capture_rendered_cell_colors(&shell, &state, columns, rows, 0, 0),
+            Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
+            "Fleet Dispatch should mute the complete application underneath it",
+        );
         if columns == 120 {
             let (row, column) = rendered
                 .lines()
@@ -110,9 +119,10 @@ fn fleet_d_preselects_the_selected_train_and_returns_to_its_list_focus()
         shell.handle_key(key(KeyCode::Left), &state),
         ShellAction::Continue
     );
-    let train_step = capture_rendered_buffer(&shell, &state, 120, 40);
-    assert!(train_step.contains("Manual Dispatch · available Fleet"));
-    assert!(train_step.contains("› Train 02"));
+    let still_service = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(still_service.contains("Dispatch Train 02"));
+    assert!(still_service.contains("Choose Passenger Service"));
+    assert!(!still_service.contains("Choose Train"));
 
     assert_eq!(
         shell.handle_key(key(KeyCode::Esc), &state),

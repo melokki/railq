@@ -1546,7 +1546,7 @@ fn render_focused_modal(
         return;
     }
     if let Some(flow) = &mut shell.dispatch_flow {
-        flow.render_panel(frame, dispatch_modal_rect(content_area), state);
+        flow.render_panel(frame, modal::workflow_rect(content_area), state);
         return;
     }
     if let Some(flow) = &shell.fleet_flow {
@@ -1748,11 +1748,11 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             if wide {
                 items.push(FooterShortcut::enabled("PgUp/PgDn", "Scroll"));
             }
-            items.extend([
-                FooterShortcut::enabled("Enter", "Review"),
-                FooterShortcut::enabled("←", "Back"),
-                FooterShortcut::enabled("Esc", "Cancel"),
-            ]);
+            items.push(FooterShortcut::enabled("Enter", "Review"));
+            if flow.fixed_train_id().is_none() {
+                items.push(FooterShortcut::enabled("←", "Back"));
+            }
+            items.push(FooterShortcut::enabled("Esc", "Cancel"));
             items
         } else {
             vec![
@@ -2045,8 +2045,12 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                 "↑↓ / jk Select a Passenger Service from this station".into(),
                 "PgUp / PgDn Scroll longer route lists".into(),
                 "Enter Review Journey".into(),
-                "← / Backspace Previous step   Esc Cancel".into(),
             ]);
+            if flow.fixed_train_id().is_some() {
+                lines.push("Esc Cancel and return to Fleet".into());
+            } else {
+                lines.push("← / Backspace Previous step   Esc Cancel".into());
+            }
         } else {
             lines.extend([
                 "Enter Confirm dispatch".into(),
@@ -2228,17 +2232,6 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         "The footer is contextual: it only shows actions that matter right now.".into(),
     ]);
     lines
-}
-
-fn dispatch_modal_rect(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(6).min(90).max(44);
-    let height = area.height.saturating_sub(2).min(24).max(14);
-    Rect {
-        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
-        y: area.y.saturating_add(area.height.saturating_sub(height) / 2),
-        width: width.min(area.width),
-        height: height.min(area.height),
-    }
 }
 
 fn render_world_details_overlay(frame: &mut ratatui::Frame, area: Rect, state: &GameState) {

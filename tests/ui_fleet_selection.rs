@@ -279,6 +279,25 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
     Ok(())
 }
 
+
+#[test]
+fn fleet_rename_uses_the_shared_focused_modal_treatment() {
+    let state = operating_fleet();
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('r'));
+
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(rendered.contains("Rename Train"));
+    assert!(rendered.contains("[Enter] save"));
+    assert!(rendered.contains("[Esc] cancel"));
+    assert_eq!(
+        capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
+        Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
+        "Train rename should mute the complete application underneath it",
+    );
+}
+
 #[test]
 fn fleet_focus_respects_the_visible_workspace_and_s_reviews_the_selected_ready_train() {
     let mut state = operating_fleet();
@@ -304,6 +323,11 @@ fn fleet_focus_respects_the_visible_workspace_and_s_reviews_the_selected_ready_t
     assert!(resale.contains("Proceeds"));
     assert!(resale.contains("Funds after"));
     assert!(resale.contains("[Enter] resell"));
+    assert_eq!(
+        capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
+        Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
+        "Train resale should mute the complete application underneath it",
+    );
 
     let train_id = state.player_company.fleet.trains[1].id;
     assert_eq!(

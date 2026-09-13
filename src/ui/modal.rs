@@ -36,6 +36,36 @@ pub fn centered_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
     }
 }
 
+/// Standard geometry for multi-step workflows such as Manual Dispatch.
+///
+/// Keeping this in the shared modal module prevents individual workspaces from
+/// drifting into slightly different centering and size rules.
+pub fn workflow_rect(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(6).min(90).max(44).min(area.width);
+    let height = area
+        .height
+        .saturating_sub(2)
+        .min(24)
+        .max(14)
+        .min(area.height);
+    Rect {
+        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        y: area.y.saturating_add(area.height.saturating_sub(height) / 2),
+        width,
+        height,
+    }
+}
+
+/// Standard geometry for compact editors such as Train rename.
+pub fn editor_rect(area: Rect, height: u16) -> Rect {
+    centered_rect(area, 68, height)
+}
+
+/// Standard geometry for consequential yes/no style confirmations.
+pub fn confirmation_rect(area: Rect, height: u16) -> Rect {
+    centered_rect(area, 68, height)
+}
+
 /// Dims an already rendered application layer before drawing a focused modal.
 ///
 /// Terminal UIs have no alpha channel, so the Bastion-style backdrop is
