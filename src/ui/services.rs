@@ -158,7 +158,21 @@ impl ServiceWorkspace {
             }
             KeyCode::Char('d' | 'D') => {
                 if let Some(service_id) = self.selected_service_id(state) {
-                    self.delete_confirmation = Some(service_id);
+                    if service_active_journeys(state, service_id) == 0 {
+                        self.delete_confirmation = Some(service_id);
+                    }
+                }
+                ServiceWorkspaceAction::Continue
+            }
+            KeyCode::PageUp => {
+                self.selected_service_index = self.selected_service_index.saturating_sub(8);
+                ServiceWorkspaceAction::Continue
+            }
+            KeyCode::PageDown => {
+                let len = state.player_company.passenger_services.len();
+                if len > 0 {
+                    self.selected_service_index =
+                        (self.selected_service_index + 8).min(len.saturating_sub(1));
                 }
                 ServiceWorkspaceAction::Continue
             }
@@ -229,49 +243,62 @@ impl ServiceWorkspace {
     pub fn footer_shortcuts(
         &self,
         compact: bool,
+        wide: bool,
         state: &GameState,
-    ) -> &'static [(&'static str, &'static str)] {
+    ) -> Vec<(&'static str, &'static str, bool)> {
         if let Some(service_id) = self.delete_confirmation {
-            if service_active_journeys(state, service_id) == 0 {
-                &[("Enter", "Delete"), ("Esc", "Cancel")]
+            return if service_active_journeys(state, service_id) == 0 {
+                vec![("Enter", "Delete", true), ("Esc", "Cancel", true)]
             } else {
-                &[("Esc", "Close")]
-            }
-        } else if let Some(flow) = &self.create_flow {
-            if flow.review {
-                &[("Enter", "Create"), ("←", "Edit"), ("Esc", "Cancel")]
-            } else if compact {
-                &[
-                    ("↑↓", "Station"),
-                    ("Enter", "Add stop"),
-                    ("Backspace", "Remove"),
-                    ("F", "Review"),
-                    ("Esc", "Cancel"),
-                ]
-            } else {
-                &[
-                    ("↑↓/JK", "Station"),
-                    ("Enter", "Add stop"),
-                    ("Backspace", "Remove"),
-                    ("F", "Review"),
-                    ("Esc", "Cancel"),
-                ]
-            }
-        } else if compact {
-            &[
-                ("↑↓", "Service"),
-                ("N", "New"),
-                ("D", "Delete"),
-                ("Esc", "Map"),
-            ]
-        } else {
-            &[
-                ("↑↓/JK", "Service"),
-                ("N", "New"),
-                ("D", "Delete"),
-                ("Esc", "Map"),
-            ]
+                vec![("Esc", "Close", true)]
+            };
         }
+
+        if let Some(flow) = &self.create_flow {
+            return if flow.review {
+                vec![
+                    ("Enter", "Create", true),
+                    ("←", "Edit", true),
+                    ("Esc", "Cancel", true),
+                ]
+            } else if compact {
+                vec![
+                    ("↑↓", "Station", true),
+                    ("Enter", "Add stop", true),
+                    ("Backspace", "Remove", true),
+                    ("F", "Review", true),
+                    ("Esc", "Cancel", true),
+                ]
+            } else {
+                vec![
+                    ("↑↓/JK", "Station", true),
+                    ("Enter", "Add stop", true),
+                    ("Backspace", "Remove", true),
+                    ("F", "Review", true),
+                    ("Esc", "Cancel", true),
+                ]
+            };
+        }
+
+        let has_services = !state.player_company.passenger_services.is_empty();
+        let can_delete = self
+            .selected_service_id(state)
+            .map(|service_id| service_active_journeys(state, service_id) == 0)
+            .unwrap_or(false);
+        let mut actions = vec![(
+            if compact { "↑↓" } else { "↑↓/JK" },
+            "Service",
+            has_services,
+        )];
+        if wide && has_services {
+            actions.push(("PgUp/PgDn", "Page", true));
+        }
+        actions.extend([
+            ("N", "New", true),
+            ("D", "Delete", can_delete),
+            ("Esc", "Map", true),
+        ]);
+        actions
     }
 
     fn selected_service_id(&self, state: &GameState) -> Option<ServiceId> {

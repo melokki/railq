@@ -1814,9 +1814,15 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
     } else if shell.active_view == View::Map && shell.services_open {
         shell
             .service_workspace
-            .footer_shortcuts(compact, state)
-            .iter()
-            .map(|(key, action)| FooterShortcut::enabled(*key, *action))
+            .footer_shortcuts(compact, wide, state)
+            .into_iter()
+            .map(|(key, action, enabled)| {
+                if enabled {
+                    FooterShortcut::enabled(key, action)
+                } else {
+                    FooterShortcut::disabled(key, action)
+                }
+            })
             .collect()
     } else if shell.active_view == View::Map {
         let train_count = state.player_company.fleet.trains.len();
@@ -2155,8 +2161,9 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         } else {
             lines.extend([
                 "↑↓ / jk Select Passenger Service".into(),
+                "PgUp / PgDn Move through longer Service lists".into(),
                 "n Create a new directional Passenger Service".into(),
-                "d Delete selected unused Passenger Service".into(),
+                "d Delete the selected Service when it has no active Journeys".into(),
                 "Esc Return to Map".into(),
             ]);
         }

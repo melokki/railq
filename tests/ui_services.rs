@@ -7,7 +7,10 @@ use railq::{
         services::create_service,
         world::create_new_game,
     },
-    ui::{Shell, ShellAction, capture_rendered_buffer_mut, capture_rendered_cell_colors, theme},
+    ui::{
+        Shell, ShellAction, capture_rendered_buffer_mut, capture_rendered_cell_colors,
+        services::ServiceWorkspace, theme,
+    },
 };
 
 fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) -> ShellAction {
@@ -137,4 +140,65 @@ fn active_service_inspector_surfaces_live_operating_context() {
     assert!(rendered.contains("Booked revenue"));
     assert!(rendered.contains("Operating cost"));
     assert!(rendered.contains("Current result"));
+}
+
+#[test]
+fn service_footer_keeps_delete_visible_but_disabled_while_service_is_active() {
+    let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
+    let mut state = create_new_game(42, "Alden Passenger", started_at);
+    state.player_company.funds = Money::from_cents(10_000_000);
+    let service_id = create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(2)],
+    )
+    .unwrap();
+    let workspace = ServiceWorkspace::default();
+
+    let idle_footer = workspace.footer_shortcuts(false, true, &state);
+    assert_eq!(
+        idle_footer
+            .iter()
+            .find(|(key, _, _)| *key == "D")
+            .map(|(_, _, enabled)| *enabled),
+        Some(true),
+    );
+    assert!(idle_footer.iter().any(|(key, action, enabled)| {
+        *key == "PgUp/PgDn" && *action == "Page" && *enabled
+    }));
+
+    let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
+
+    let active_footer = workspace.footer_shortcuts(false, true, &state);
+    assert_eq!(
+        active_footer
+            .iter()
+            .find(|(key, _, _)| *key == "D")
+            .map(|(_, _, enabled)| *enabled),
+        Some(false),
+    );
+}
+
+#[test]
+fn delete_shortcut_is_a_no_op_while_selected_service_is_active() {
+    let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
+    let mut state = create_new_game(42, "Alden Passenger", started_at);
+    state.player_company.funds = Money::from_cents(10_000_000);
+    let service_id = create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(2)],
+    )
+    .unwrap();
+    let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
+    let mut shell = Shell::new();
+
+    press(&mut shell, &state, KeyCode::Char('s'));
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Char('d')),
+        ShellAction::Continue
+    );
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(!rendered.contains("Delete Passenger Service"));
+    assert!(rendered.contains("IN SERVICE"));
 }
