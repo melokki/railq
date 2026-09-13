@@ -498,14 +498,14 @@ mod tests {
                 fleet: Fleet {
                     trains: vec![Train {
                         id: TRAIN_ID,
-                        evn: crate::model::EuropeanVehicleNumber::generate(95, 67, 70, 1).unwrap(),
+                        evn: crate::model::EuropeanVehicleNumber::generate(95, 99, 701, 1).unwrap(),
                         nickname: None,
                         status: TrainStatus::Ready { at: ORIGIN },
-                        model_id: crate::model::TrainModelId::new("local-70"),
+                        model_id: crate::model::TrainModelId::new("helvetra-r70"),
                         original_purchase_price: Money::from_cents(5_000),
                     }],
                     next_train_id: TRAIN_ID.get() + 1,
-                    next_evn_unit_by_model: [(crate::model::TrainModelId::new("local-70"), 2)]
+                    next_evn_unit_by_model: [(crate::model::TrainModelId::new("helvetra-r70"), 2)]
                         .into_iter()
                         .collect(),
                 },
@@ -557,11 +557,11 @@ mod tests {
         assert_eq!(quote.fare, Money::from_cents(17));
         assert_eq!(quote.operating_revenue, Money::from_cents(51));
         assert_eq!(quote.infrastructure_access_fee, Money::from_cents(8));
-        assert_eq!(quote.fuel_cost, Money::from_cents(68));
-        assert_eq!(quote.operating_cost, Money::from_cents(76));
-        assert_eq!(quote.journey_profitability, Money::from_cents(-25));
-        assert_eq!(quote.duration, DurationSeconds::from_seconds(61));
-        assert_eq!(quote.cash_after_cost, Money::from_cents(9_924));
+        assert_eq!(quote.fuel_cost, Money::from_cents(58));
+        assert_eq!(quote.operating_cost, Money::from_cents(66));
+        assert_eq!(quote.journey_profitability, Money::from_cents(-15));
+        assert_eq!(quote.duration, DurationSeconds::from_seconds(47));
+        assert_eq!(quote.cash_after_cost, Money::from_cents(9_934));
     }
 
     #[test]

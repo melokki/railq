@@ -92,14 +92,20 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                     "{slug} should show Company Funds in the wide shell header"
                 );
             } else {
-                assert!(rendered.contains("Funds"), "{slug} should show funds in the shell header");
+                assert!(
+                    rendered.contains("Funds"),
+                    "{slug} should show funds in the shell header"
+                );
             }
             assert!(
                 rendered.contains("Fleet value"),
                 "{slug} should show Fleet value"
             );
             if columns >= 100 {
-                assert!(rendered.contains("FLEET"), "{slug} should show Fleet section");
+                assert!(
+                    rendered.contains("FLEET"),
+                    "{slug} should show Fleet section"
+                );
                 assert!(
                     rendered.contains("SERVICES"),
                     "{slug} should show Services summary"
@@ -108,12 +114,30 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                     rendered.contains("NETWORK FOOTPRINT"),
                     "{slug} should show network footprint"
                 );
-                assert!(rendered.contains("Defined"), "{slug} should show defined services");
-                assert!(rendered.contains("Active"), "{slug} should show active services");
-                assert!(rendered.contains("Idle"), "{slug} should show idle services");
-                assert!(rendered.contains("Served"), "{slug} should show served settlements");
-                assert!(rendered.contains("Connected"), "{slug} should show connected settlements");
-                assert!(rendered.contains("Coverage"), "{slug} should show network coverage");
+                assert!(
+                    rendered.contains("Defined"),
+                    "{slug} should show defined services"
+                );
+                assert!(
+                    rendered.contains("Active"),
+                    "{slug} should show active services"
+                );
+                assert!(
+                    rendered.contains("Idle"),
+                    "{slug} should show idle services"
+                );
+                assert!(
+                    rendered.contains("Served"),
+                    "{slug} should show served settlements"
+                );
+                assert!(
+                    rendered.contains("Connected"),
+                    "{slug} should show connected settlements"
+                );
+                assert!(
+                    rendered.contains("Coverage"),
+                    "{slug} should show network coverage"
+                );
                 assert!(
                     rendered.contains("COMPANY IDENTITY"),
                     "{slug} should show Company identity section"
@@ -160,8 +184,15 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                 rendered.contains(result),
                 "{slug} should show signed result {result}"
             );
-            let margin = if slug == "profitable" { "+45.0%" } else { "-450.0%" };
-            assert!(rendered.contains("Margin"), "{slug} should show operating margin");
+            let margin = if slug == "profitable" {
+                "+45.0%"
+            } else {
+                "-450.0%"
+            };
+            assert!(
+                rendered.contains("Margin"),
+                "{slug} should show operating margin"
+            );
             assert!(
                 rendered.contains(margin),
                 "{slug} should show operating margin {margin}"
@@ -189,7 +220,8 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
 
     let insolvency_state = fixtures_state_for_insolvency();
     let insolvency_shell = company_shell(&insolvency_state);
-    let insolvency_rendered = capture_rendered_buffer(&insolvency_shell, &insolvency_state, 120, 40);
+    let insolvency_rendered =
+        capture_rendered_buffer(&insolvency_shell, &insolvency_state, 120, 40);
     let (status_x, status_y) = text_position(&insolvency_rendered, "[!] INSOLVENT")
         .expect("insolvency status should be rendered");
     let colors = capture_rendered_cell_colors(
@@ -218,7 +250,10 @@ fn company_footer_owns_contextual_actions_without_repeating_navigation() {
     assert!(!operating.contains("[1–4] Navigate"));
 
     assert_eq!(
-        shell.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), &state),
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            &state
+        ),
         ShellAction::Continue
     );
     let still_operating = capture_rendered_buffer(&shell, &state, 120, 40);

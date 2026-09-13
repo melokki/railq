@@ -1,23 +1,68 @@
-// Train model IDs, EVN type codes, and EVN series codes are persistence-stable once released. Change them only with a save migration.
+// Train model IDs, EVN type codes, and EVN series codes are persistence-stable once released.
+// Change them only with a save migration.
+//
+// All current catalogue entries are diesel multiple units, so evn_type_code 95 is used throughout.
+// Speeds and capacities are inspired by real diesel multiple-unit families, while purchase prices
+// and fuel costs are RailQ gameplay-balancing values.
 [
     (
-        id: "local-70",
-        name: "Local 70",
+        id: "helvetra-r70",
+        name: "Helvetra R70",
         evn_type_code: 95,
-        evn_series_code: 70,
+        evn_series_code: 701,
         purchase_price_cents: 300000,
         passenger_capacity: 70,
-        speed_metres_per_second: 25,
-        fuel_cost_cents_per_kilometre: 45,
+        speed_metres_per_second: 33,
+        fuel_cost_cents_per_kilometre: 38,
     ),
     (
-        id: "express-120",
-        name: "Express 120",
+        id: "veltrian-d121",
+        name: "Veltrian D121",
         evn_type_code: 95,
-        evn_series_code: 120,
-        purchase_price_cents: 500000,
-        passenger_capacity: 120,
+        evn_series_code: 721,
+        purchase_price_cents: 440000,
+        passenger_capacity: 121,
         speed_metres_per_second: 33,
-        fuel_cost_cents_per_kilometre: 30,
+        fuel_cost_cents_per_kilometre: 48,
+    ),
+    (
+        id: "montaire-r125",
+        name: "Montaire R125",
+        evn_type_code: 95,
+        evn_series_code: 741,
+        purchase_price_cents: 560000,
+        passenger_capacity: 125,
+        speed_metres_per_second: 39,
+        fuel_cost_cents_per_kilometre: 43,
+    ),
+    (
+        id: "korven-r160",
+        name: "Korven R160",
+        evn_type_code: 95,
+        evn_series_code: 761,
+        purchase_price_cents: 720000,
+        passenger_capacity: 160,
+        speed_metres_per_second: 44,
+        fuel_cost_cents_per_kilometre: 54,
+    ),
+    (
+        id: "helvetra-f171",
+        name: "Helvetra F171",
+        evn_type_code: 95,
+        evn_series_code: 781,
+        purchase_price_cents: 850000,
+        passenger_capacity: 171,
+        speed_metres_per_second: 39,
+        fuel_cost_cents_per_kilometre: 46,
+    ),
+    (
+        id: "montaire-r300",
+        name: "Montaire R300",
+        evn_type_code: 95,
+        evn_series_code: 801,
+        purchase_price_cents: 1200000,
+        passenger_capacity: 300,
+        speed_metres_per_second: 39,
+        fuel_cost_cents_per_kilometre: 78,
     ),
 ]

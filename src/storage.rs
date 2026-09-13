@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     balance::BalanceConfig,
-    catalog::{model_for_train, train_catalogue},
+    catalog::{TrainModel, model_for_train, train_catalogue},
     model::{
         CalculationError, DemandRules, DistanceMetres, DurationSeconds, EuropeanVehicleNumber,
         Financials, Fleet, GameRules, GameState, Journey, JourneyId, JourneyPassengerGroup,
@@ -40,7 +40,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 9;
+pub const SAVE_VERSION: u32 = 10;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -526,6 +526,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
+            migrate_v9_to_v10(connection, path)?;
         }
         2 => {
             migrate_v2_to_v3(connection, path)?;
@@ -535,6 +536,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
+            migrate_v9_to_v10(connection, path)?;
         }
         3 => {
             migrate_v3_to_v4(connection, path)?;
@@ -543,6 +545,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
+            migrate_v9_to_v10(connection, path)?;
         }
         4 => {
             migrate_v4_to_v5(connection, path)?;
@@ -550,23 +553,31 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
+            migrate_v9_to_v10(connection, path)?;
         }
         5 => {
             migrate_v5_to_v6(connection, path)?;
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
+            migrate_v9_to_v10(connection, path)?;
         }
         6 => {
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
+            migrate_v9_to_v10(connection, path)?;
         }
         7 => {
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
+            migrate_v9_to_v10(connection, path)?;
         }
-        8 => migrate_v8_to_v9(connection, path)?,
+        8 => {
+            migrate_v8_to_v9(connection, path)?;
+            migrate_v9_to_v10(connection, path)?;
+        }
+        9 => migrate_v9_to_v10(connection, path)?,
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -584,6 +595,50 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
         }
     }
     Ok(())
+}
+
+fn catalogue_model_for_persisted_id(model_id: &str) -> Option<&'static TrainModel> {
+    let requested = TrainModelId::new(model_id.to_owned());
+    train_catalogue().by_id(&requested).or_else(|| {
+        let replacement_id = match model_id {
+            "local-70" => "helvetra-r70",
+            "express-120" => "veltrian-d121",
+            _ => return None,
+        };
+        train_catalogue().by_id(&TrainModelId::new(replacement_id))
+    })
+}
+
+fn catalogue_model_for_legacy_signature(
+    model_name: &str,
+    passenger_capacity: i64,
+    speed_metres_per_second: i64,
+    fuel_cost_cents_per_kilometre: i64,
+) -> Option<&'static TrainModel> {
+    train_catalogue()
+        .models()
+        .iter()
+        .find(|model| {
+            model.name() == model_name
+                && i64::from(model.passenger_capacity().passengers()) == passenger_capacity
+                && i64::try_from(model.speed().metres_per_second()).ok()
+                    == Some(speed_metres_per_second)
+                && i64::try_from(model.fuel_cost_per_kilometre().cents_per_kilometre()).ok()
+                    == Some(fuel_cost_cents_per_kilometre)
+        })
+        .or_else(|| {
+            let replacement_id = match (
+                model_name,
+                passenger_capacity,
+                speed_metres_per_second,
+                fuel_cost_cents_per_kilometre,
+            ) {
+                ("Local 70", 70, 25, 45) => "helvetra-r70",
+                ("Express 120", 120, 33, 30) => "veltrian-d121",
+                _ => return None,
+            };
+            train_catalogue().by_id(&TrainModelId::new(replacement_id))
+        })
 }
 
 fn migrate_v1_to_v2(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
@@ -630,22 +685,18 @@ fn migrate_v1_to_v2(connection: &Connection, path: &Path) -> Result<(), SaveSlot
             let fuel_rate: i64 = row
                 .get(7)
                 .map_err(|source| db_error("decode v1 Train fuel rate from", path, source))?;
-            let model = train_catalogue()
-                .models()
-                .iter()
-                .find(|model| {
-                    model.name() == model_name
-                        && i64::from(model.passenger_capacity().passengers()) == passenger_capacity
-                        && i64::try_from(model.speed().metres_per_second()).ok() == Some(speed)
-                        && i64::try_from(model.fuel_cost_per_kilometre().cents_per_kilometre()).ok()
-                            == Some(fuel_rate)
-                })
-                .ok_or_else(|| SaveSlotError::InvalidSave {
-                    path: path.to_path_buf(),
-                    source: Box::new(SaveCodecError::TrainModelNotFound {
-                        model_name: model_name.clone(),
-                    }),
-                })?;
+            let model = catalogue_model_for_legacy_signature(
+                &model_name,
+                passenger_capacity,
+                speed,
+                fuel_rate,
+            )
+            .ok_or_else(|| SaveSlotError::InvalidSave {
+                path: path.to_path_buf(),
+                source: Box::new(SaveCodecError::TrainModelNotFound {
+                    model_name: model_name.clone(),
+                }),
+            })?;
 
             connection
                 .execute(
@@ -1077,14 +1128,14 @@ fn migrate_v6_to_v7(connection: &Connection, path: &Path) -> Result<(), SaveSlot
                 let model_id: String = row
                     .get(1)
                     .map_err(|source| db_error("decode v6 Train model from", path, source))?;
-                let model = train_catalogue()
-                    .by_id(&TrainModelId::new(model_id.clone()))
-                    .ok_or_else(|| SaveSlotError::InvalidSave {
+                let model = catalogue_model_for_persisted_id(&model_id).ok_or_else(|| {
+                    SaveSlotError::InvalidSave {
                         path: path.to_path_buf(),
                         source: Box::new(SaveCodecError::TrainModelNotFound {
                             model_name: model_id.clone(),
                         }),
-                    })?;
+                    }
+                })?;
                 let unit_number = next_units.entry(model_id.clone()).or_insert(1);
                 if *unit_number > EuropeanVehicleNumber::MAX_UNIT_NUMBER {
                     return Err(invalid_value(path, "EVN unit number"));
@@ -1190,14 +1241,14 @@ fn migrate_v7_to_v8(connection: &Connection, path: &Path) -> Result<(), SaveSlot
             let model_id: String = row
                 .get(1)
                 .map_err(|source| db_error("decode v7 Train model from", path, source))?;
-            let model = train_catalogue()
-                .by_id(&TrainModelId::new(model_id.clone()))
-                .ok_or_else(|| SaveSlotError::InvalidSave {
+            let model = catalogue_model_for_persisted_id(&model_id).ok_or_else(|| {
+                SaveSlotError::InvalidSave {
                     path: path.to_path_buf(),
                     source: Box::new(SaveCodecError::TrainModelNotFound {
                         model_name: model_id.clone(),
                     }),
-                })?;
+                }
+            })?;
 
             let unit_number = next_units.entry(model_id.clone()).or_insert(1);
             if *unit_number > EuropeanVehicleNumber::MAX_UNIT_NUMBER {
@@ -1261,13 +1312,143 @@ fn migrate_v8_to_v9(connection: &Connection, path: &Path) -> Result<(), SaveSlot
         .map_err(|source| db_error("begin v8 to v9 migration for", path, source))?;
 
     let migration = connection
-        .pragma_update(None, "user_version", SAVE_VERSION)
+        .pragma_update(None, "user_version", 9_u32)
         .map_err(|source| db_error("write v9 schema version to", path, source));
 
     match migration {
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v8 to v9 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v9_to_v10(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v9 to v10 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let mut statement = connection
+            .prepare(
+                "SELECT id, evn, model_id
+                 FROM trains
+                 WHERE model_id IN ('local-70', 'express-120')
+                 ORDER BY id",
+            )
+            .map_err(|source| {
+                db_error("read v9 Trains for catalogue migration from", path, source)
+            })?;
+        let mut rows = statement.query([]).map_err(|source| {
+            db_error("read v9 Trains for catalogue migration from", path, source)
+        })?;
+        let mut migrated_trains = Vec::new();
+        while let Some(row) = rows.next().map_err(|source| {
+            db_error(
+                "read v9 Train row for catalogue migration from",
+                path,
+                source,
+            )
+        })? {
+            let train_id: i64 = row
+                .get(0)
+                .map_err(|source| db_error("decode v9 Train ID from", path, source))?;
+            let old_evn: String = row
+                .get(1)
+                .map_err(|source| db_error("decode v9 Train EVN from", path, source))?;
+            let old_model_id: String = row
+                .get(2)
+                .map_err(|source| db_error("decode v9 Train model from", path, source))?;
+            let replacement = catalogue_model_for_persisted_id(&old_model_id).ok_or_else(|| {
+                SaveSlotError::InvalidSave {
+                    path: path.to_path_buf(),
+                    source: Box::new(SaveCodecError::TrainModelNotFound {
+                        model_name: old_model_id.clone(),
+                    }),
+                }
+            })?;
+            let old_evn = EuropeanVehicleNumber::parse(&old_evn)
+                .map_err(|_| invalid_value(path, "European Vehicle Number"))?;
+            let replacement_evn = EuropeanVehicleNumber::generate(
+                replacement.evn_type_code(),
+                old_evn.registration_code(),
+                replacement.evn_series_code(),
+                old_evn.unit_number(),
+            )
+            .map_err(|_| invalid_value(path, "European Vehicle Number"))?;
+            migrated_trains.push((
+                train_id,
+                replacement_evn,
+                replacement.id().as_str().to_owned(),
+            ));
+        }
+        drop(rows);
+        drop(statement);
+
+        for (train_id, evn, model_id) in migrated_trains {
+            connection
+                .execute(
+                    "UPDATE trains SET evn = ?1, model_id = ?2 WHERE id = ?3",
+                    params![evn.as_str(), model_id, train_id],
+                )
+                .map_err(|source| db_error("write migrated v10 Train to", path, source))?;
+        }
+
+        for (old_model_id, new_model_id) in [
+            ("local-70", "helvetra-r70"),
+            ("express-120", "veltrian-d121"),
+        ] {
+            let old_next_unit: Option<i64> = connection
+                .query_row(
+                    "SELECT next_unit_number FROM train_model_sequences WHERE model_id = ?1",
+                    params![old_model_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|source| db_error("read legacy EVN sequence from", path, source))?;
+            let Some(old_next_unit) = old_next_unit else {
+                continue;
+            };
+            let new_next_unit: Option<i64> = connection
+                .query_row(
+                    "SELECT next_unit_number FROM train_model_sequences WHERE model_id = ?1",
+                    params![new_model_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|source| db_error("read replacement EVN sequence from", path, source))?;
+            let merged_next_unit =
+                new_next_unit.map_or(old_next_unit, |current| current.max(old_next_unit));
+
+            connection
+                .execute(
+                    "DELETE FROM train_model_sequences WHERE model_id = ?1",
+                    params![old_model_id],
+                )
+                .map_err(|source| db_error("remove legacy EVN sequence from", path, source))?;
+            connection
+                .execute(
+                    "INSERT INTO train_model_sequences(model_id, next_unit_number)
+                     VALUES(?1, ?2)
+                     ON CONFLICT(model_id) DO UPDATE SET next_unit_number = excluded.next_unit_number",
+                    params![new_model_id, merged_next_unit],
+                )
+                .map_err(|source| db_error("write replacement EVN sequence to", path, source))?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v10 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v9 to v10 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -2060,18 +2241,25 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
         .trains
         .into_iter()
         .map(|train| {
-            let model = train_catalogue()
-                .models()
-                .iter()
-                .find(|model| {
-                    model.name() == train.model_name
-                        && model.passenger_capacity() == train.passenger_capacity
-                        && model.speed() == train.speed
-                        && model.fuel_cost_per_kilometre() == train.fuel_cost_per_kilometre
-                })
-                .ok_or_else(|| SaveCodecError::TrainModelNotFound {
-                    model_name: train.model_name.clone(),
+            let passenger_capacity = i64::from(train.passenger_capacity.passengers());
+            let speed = i64::try_from(train.speed.metres_per_second()).map_err(|_| {
+                SaveCodecError::InvalidValue {
+                    field: "legacy Train speed",
+                }
+            })?;
+            let fuel_rate = i64::try_from(train.fuel_cost_per_kilometre.cents_per_kilometre())
+                .map_err(|_| SaveCodecError::InvalidValue {
+                    field: "legacy Train fuel rate",
                 })?;
+            let model = catalogue_model_for_legacy_signature(
+                &train.model_name,
+                passenger_capacity,
+                speed,
+                fuel_rate,
+            )
+            .ok_or_else(|| SaveCodecError::TrainModelNotFound {
+                model_name: train.model_name.clone(),
+            })?;
             let unit_number = next_evn_unit_by_model
                 .entry(model.id().clone())
                 .or_insert(1);
@@ -3173,7 +3361,7 @@ mod tests {
             .unwrap();
         let next_unit_number: i64 = connection
             .query_row(
-                "SELECT next_unit_number FROM train_model_sequences WHERE model_id = 'local-70'",
+                "SELECT next_unit_number FROM train_model_sequences WHERE model_id = 'helvetra-r70'",
                 [],
                 |row| row.get(0),
             )
@@ -3185,13 +3373,89 @@ mod tests {
         assert!(passenger_group_count > 0);
         assert_eq!(state_blob_table, 0);
         assert_eq!(saved_catalogue_table, 0);
-        assert_eq!(model_id, "local-70");
+        assert_eq!(model_id, "helvetra-r70");
         let evn = EuropeanVehicleNumber::parse(&evn).unwrap();
         assert_eq!(evn.registration_code(), 67);
-        assert_eq!(evn.series_code(), 70);
+        assert_eq!(evn.series_code(), 701);
         assert_eq!(evn.unit_number(), 1);
         assert_eq!(next_train_id, 2);
         assert_eq!(next_unit_number, 2);
+    }
+
+    #[test]
+    fn v9_catalogue_ids_migrate_to_replacement_models() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        {
+            let slot = SaveSlot::open(&path).unwrap();
+            let mut state =
+                create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+            state.player_company.funds = Money::from_cents(1_000_000);
+            purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+            purchase_train(&mut state, 1, RailStationId::new(1)).unwrap();
+            slot.save(&state).unwrap();
+        }
+
+        let connection = Connection::open(&path).unwrap();
+        let old_local_evn = EuropeanVehicleNumber::generate(95, 67, 70, 1).unwrap();
+        let old_express_evn = EuropeanVehicleNumber::generate(95, 67, 120, 1).unwrap();
+        connection
+            .execute(
+                "UPDATE trains SET model_id = 'local-70', evn = ?1 WHERE id = 1",
+                params![old_local_evn.as_str()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE trains SET model_id = 'express-120', evn = ?1 WHERE id = 2",
+                params![old_express_evn.as_str()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE train_model_sequences SET model_id = 'local-70' WHERE model_id = 'helvetra-r70'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE train_model_sequences SET model_id = 'express-120' WHERE model_id = 'veltrian-d121'",
+                [],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", 9_u32)
+            .unwrap();
+        drop(connection);
+
+        let slot = SaveSlot::open(&path).unwrap();
+        let state = slot.load().unwrap().unwrap();
+        assert_eq!(
+            state
+                .player_company
+                .fleet
+                .trains
+                .iter()
+                .map(|train| (train.model_id.as_str(), train.evn.series_code()))
+                .collect::<Vec<_>>(),
+            vec![("helvetra-r70", 701), ("veltrian-d121", 721)]
+        );
+        assert_eq!(
+            state
+                .player_company
+                .fleet
+                .next_evn_unit_by_model
+                .get(&TrainModelId::new("helvetra-r70")),
+            Some(&2)
+        );
+        assert_eq!(
+            state
+                .player_company
+                .fleet
+                .next_evn_unit_by_model
+                .get(&TrainModelId::new("veltrian-d121")),
+            Some(&2)
+        );
     }
 
     #[test]
@@ -3356,7 +3620,7 @@ mod tests {
             .unwrap();
         let next_unit_number: i64 = connection
             .query_row(
-                "SELECT next_unit_number FROM train_model_sequences WHERE model_id = 'local-70'",
+                "SELECT next_unit_number FROM train_model_sequences WHERE model_id = 'helvetra-r70'",
                 [],
                 |row| row.get(0),
             )
@@ -3409,8 +3673,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(version, SAVE_VERSION);
-        assert_eq!(model_id, "local-70");
-        assert_eq!(evn, "956700700019");
+        assert_eq!(model_id, "helvetra-r70");
+        assert_eq!(evn, "956707010016");
         assert_eq!(next_train_id, 2);
         assert_eq!(next_unit_number, 2);
         assert_eq!(old_catalogue_exists, 0);

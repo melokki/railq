@@ -273,15 +273,28 @@ mod tests {
     #[test]
     fn embedded_catalogue_has_stable_unique_models() {
         let catalogue = train_catalogue();
-        assert_eq!(catalogue.models().len(), 2);
-        assert_eq!(catalogue.models()[0].id().as_str(), "local-70");
-        assert_eq!(catalogue.models()[1].id().as_str(), "express-120");
-        assert_eq!(catalogue.models()[0].evn_type_code(), 95);
-        assert_eq!(catalogue.models()[1].evn_type_code(), 95);
-        assert_eq!(catalogue.models()[0].propulsion_label(), "Diesel");
-        assert_eq!(catalogue.models()[1].propulsion_label(), "Diesel");
-        assert_eq!(catalogue.models()[0].evn_series_code(), 70);
-        assert_eq!(catalogue.models()[1].evn_series_code(), 120);
+        assert_eq!(catalogue.models().len(), 6);
+        assert_eq!(
+            catalogue
+                .models()
+                .iter()
+                .map(|model| (model.id().as_str(), model.evn_series_code()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("helvetra-r70", 701),
+                ("veltrian-d121", 721),
+                ("montaire-r125", 741),
+                ("korven-r160", 761),
+                ("helvetra-f171", 781),
+                ("montaire-r300", 801),
+            ]
+        );
+        assert!(
+            catalogue
+                .models()
+                .iter()
+                .all(|model| model.evn_type_code() == 95 && model.propulsion_label() == "Diesel")
+        );
     }
 
     #[test]

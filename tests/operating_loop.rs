@@ -23,19 +23,19 @@ use railq::{
 const ORIGIN: RailStationId = RailStationId::new(1);
 const DESTINATION: RailStationId = RailStationId::new(2);
 const DEPARTURE: UtcSeconds = UtcSeconds::from_unix_seconds(0);
-const FIRST_ARRIVAL: UtcSeconds = UtcSeconds::from_unix_seconds(400);
-const RETURN_ARRIVAL: UtcSeconds = UtcSeconds::from_unix_seconds(800);
+const FIRST_ARRIVAL: UtcSeconds = UtcSeconds::from_unix_seconds(304);
+const RETURN_ARRIVAL: UtcSeconds = UtcSeconds::from_unix_seconds(608);
 
 // The fixture's selected Rail Line is 10 km. At 10 cents per passenger-km,
-// each Passenger carried pays 100 cents. The embedded Local 70 costs 45 cents
-// per kilometre in fuel and runs at 25 m/s, so one Journey costs 100 cents
-// access + 450 cents fuel and lasts 400 seconds.
+// each Passenger carried pays 100 cents. The embedded Helvetra R70 costs 38 cents
+// per kilometre in fuel and runs at 33 m/s, so one Journey costs 100 cents
+// access + 380 cents fuel and lasts 304 seconds.
 const PURCHASE_PRICE: Money = Money::from_cents(300_000);
 const RESALE_PROCEEDS: Money = Money::from_cents(210_000);
 const FARE_PER_PASSENGER: Money = Money::from_cents(100);
 const ACCESS_FEE: Money = Money::from_cents(100);
-const FUEL_COST: Money = Money::from_cents(450);
-const OPERATING_COST: Money = Money::from_cents(550);
+const FUEL_COST: Money = Money::from_cents(380);
+const OPERATING_COST: Money = Money::from_cents(480);
 
 fn operating_game(company_funds: Money) -> GameState {
     let fare_rate = MoneyPerKilometre::new(10).expect("fixture fare rate is positive");
@@ -54,7 +54,7 @@ fn operating_game(company_funds: Money) -> GameState {
     assert_eq!(
         train_catalogue().models()[0].purchase_price(),
         PURCHASE_PRICE,
-        "the operating-loop fixture intentionally exercises the embedded Local 70"
+        "the operating-loop fixture intentionally exercises the embedded Helvetra R70"
     );
     state
 }
@@ -111,11 +111,11 @@ fn buy_service_dispatch_arrive_return_and_sell_has_hand_calculated_profit() {
     assert_eq!(outbound.infrastructure_access_fee, ACCESS_FEE);
     assert_eq!(outbound.fuel_cost, FUEL_COST);
     assert_eq!(outbound.operating_cost, OPERATING_COST);
-    assert_eq!(outbound.journey_profitability, Money::from_cents(-150));
+    assert_eq!(outbound.journey_profitability, Money::from_cents(-80));
 
     let outbound_journey =
         dispatch_journey(&mut state, train_id, service_id, DEPARTURE).expect("outbound departs");
-    assert_eq!(state.player_company.funds, Money::from_cents(99_450));
+    assert_eq!(state.player_company.funds, Money::from_cents(99_520));
     assert_eq!(
         state.player_company.fleet.trains[0].status,
         TrainStatus::Travelling {
@@ -123,7 +123,7 @@ fn buy_service_dispatch_arrive_return_and_sell_has_hand_calculated_profit() {
         }
     );
     advance_time(&mut state, FIRST_ARRIVAL).expect("outbound settles");
-    assert_eq!(state.player_company.funds, Money::from_cents(99_850));
+    assert_eq!(state.player_company.funds, Money::from_cents(99_920));
     assert_eq!(
         state.player_company.fleet.trains[0].status,
         TrainStatus::Ready { at: DESTINATION }
@@ -133,20 +133,20 @@ fn buy_service_dispatch_arrive_return_and_sell_has_hand_calculated_profit() {
     assert_eq!(return_trip.boarded_passengers, 3);
     assert_eq!(return_trip.operating_revenue, Money::from_cents(300));
     assert_eq!(return_trip.operating_cost, OPERATING_COST);
-    assert_eq!(return_trip.journey_profitability, Money::from_cents(-250));
+    assert_eq!(return_trip.journey_profitability, Money::from_cents(-180));
     dispatch_journey(&mut state, train_id, service_id, FIRST_ARRIVAL).expect("return departs");
-    assert_eq!(state.player_company.funds, Money::from_cents(99_300));
+    assert_eq!(state.player_company.funds, Money::from_cents(99_440));
     advance_time(&mut state, RETURN_ARRIVAL).expect("return settles");
 
-    assert_eq!(state.player_company.funds, Money::from_cents(99_600));
+    assert_eq!(state.player_company.funds, Money::from_cents(99_740));
     assert_eq!(state.financials.operating_revenue, Money::from_cents(700));
     assert_eq!(
         state.financials.infrastructure_access_fees,
         Money::from_cents(200)
     );
-    assert_eq!(state.financials.fuel_costs, Money::from_cents(900));
+    assert_eq!(state.financials.fuel_costs, Money::from_cents(760));
     assert_eq!(sell_train(&mut state, train_id), Ok(RESALE_PROCEEDS));
-    assert_eq!(state.player_company.funds, Money::from_cents(309_600));
+    assert_eq!(state.player_company.funds, Money::from_cents(309_740));
     assert!(state.player_company.fleet.trains.is_empty());
 }
 
@@ -176,7 +176,7 @@ fn two_trains_take_only_their_shared_finite_directional_demand() {
     );
 
     advance_time(&mut state, FIRST_ARRIVAL).expect("both Journeys settle");
-    assert_eq!(state.player_company.funds, Money::from_cents(108_900));
+    assert_eq!(state.player_company.funds, Money::from_cents(109_040));
     assert_eq!(
         state.financials.operating_revenue,
         Money::from_cents(10_000)
@@ -196,15 +196,15 @@ fn empty_repositioning_journey_has_zero_revenue_and_costs_money() {
     assert_eq!(journey.operating_revenue, Money::ZERO);
     assert_eq!(journey.infrastructure_access_fee, ACCESS_FEE);
     assert_eq!(journey.fuel_cost, FUEL_COST);
-    assert_eq!(state.player_company.funds, Money::from_cents(99_450));
+    assert_eq!(state.player_company.funds, Money::from_cents(99_520));
 
     advance_time(&mut state, FIRST_ARRIVAL).expect("empty Journey settles");
-    assert_eq!(state.player_company.funds, Money::from_cents(99_450));
+    assert_eq!(state.player_company.funds, Money::from_cents(99_520));
     assert_eq!(state.financials.operating_revenue, Money::ZERO);
 }
 
 #[test]
-fn one_passenger_journey_is_loss_making_by_four_dollars_and_fifty_cents() {
+fn one_passenger_journey_is_loss_making_by_three_dollars_and_eighty_cents() {
     let mut state = operating_game(Money::from_cents(400_000));
     set_waiting_passengers(&mut state, ORIGIN, DESTINATION, 1);
     let train_id = purchase_train(&mut state, 0, ORIGIN).expect("Train is bought");
@@ -215,11 +215,11 @@ fn one_passenger_journey_is_loss_making_by_four_dollars_and_fifty_cents() {
     assert_eq!(quote.boarded_passengers, 1);
     assert_eq!(quote.operating_revenue, FARE_PER_PASSENGER);
     assert_eq!(quote.operating_cost, OPERATING_COST);
-    assert_eq!(quote.journey_profitability, Money::from_cents(-450));
+    assert_eq!(quote.journey_profitability, Money::from_cents(-380));
     dispatch_journey(&mut state, train_id, service_id, DEPARTURE).expect("Journey departs");
     advance_time(&mut state, FIRST_ARRIVAL).expect("Journey settles");
 
-    assert_eq!(state.player_company.funds, Money::from_cents(99_550));
+    assert_eq!(state.player_company.funds, Money::from_cents(99_620));
     assert_eq!(state.financials.operating_revenue, FARE_PER_PASSENGER);
     assert_eq!(state.financials.infrastructure_access_fees, ACCESS_FEE);
     assert_eq!(state.financials.fuel_costs, FUEL_COST);

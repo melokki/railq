@@ -4,13 +4,13 @@
 //! boarding and alighting remain deferred to the next roadmap item.
 
 use crossterm::event::KeyCode;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     catalog::model_for_train,
@@ -713,8 +713,7 @@ fn service_details(
                 theme::primary_value(),
             ));
             let load = if train.capacity > 0 {
-                let percent = u64::from(train.onboard_passengers)
-                    .saturating_mul(100)
+                let percent = u64::from(train.onboard_passengers).saturating_mul(100)
                     / u64::from(train.capacity);
                 format!(
                     "ETA {} · Load {}/{} · {}%",
@@ -756,8 +755,7 @@ fn service_details(
     }
     if snapshot.active_trains > 0 || !dense {
         let onboard = if snapshot.total_capacity > 0 {
-            let percent = u64::from(snapshot.onboard_passengers)
-                .saturating_mul(100)
+            let percent = u64::from(snapshot.onboard_passengers).saturating_mul(100)
                 / u64::from(snapshot.total_capacity);
             format!(
                 "{} / {} · {}%",
@@ -1154,7 +1152,10 @@ fn render_create_service_picker(
             Line::from(vec![
                 Span::styled("ROUTE  ", theme::secondary()),
                 Span::styled(
-                    truncate_display(&route_summary, context_area.width.saturating_sub(7) as usize),
+                    truncate_display(
+                        &route_summary,
+                        context_area.width.saturating_sub(7) as usize,
+                    ),
                     theme::primary_value(),
                 ),
             ]),
@@ -1369,11 +1370,7 @@ fn render_create_service_review(
         summary_area,
     );
 
-    let stop_lines = review_stop_lines(
-        state,
-        &flow.stop_station_ids,
-        stops_area.height as usize,
-    );
+    let stop_lines = review_stop_lines(state, &flow.stop_station_ids, stops_area.height as usize);
     frame.render_widget(
         Paragraph::new(stop_lines)
             .style(theme::panel())

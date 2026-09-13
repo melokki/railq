@@ -1902,10 +1902,13 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         items.push(FooterShortcut::enabled("W", "World"));
         items
     } else if shell.active_view == View::Company {
-        let recovery_available = evaluate_financial_recovery(state).ok().is_some_and(|evaluation| {
-            evaluation.status == FinancialStatus::Insolvent
-                && !evaluation.recovery_options.is_empty()
-        });
+        let recovery_available =
+            evaluate_financial_recovery(state)
+                .ok()
+                .is_some_and(|evaluation| {
+                    evaluation.status == FinancialStatus::Insolvent
+                        && !evaluation.recovery_options.is_empty()
+                });
         if shell.company_recovery_review_open {
             let mut items = vec![FooterShortcut::enabled(
                 if compact { "↑↓" } else { "↑↓/JK" },

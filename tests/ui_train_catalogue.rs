@@ -80,10 +80,10 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     for expected in [
         "Market",
-        "Local 70",
-        "Express 120",
+        "Helvetra R70",
+        "Veltrian D121",
         "$3,000.00",
-        "$5,000.00",
+        "$4,400.00",
         "IDENTITY",
         "OWNERSHIP",
         "Owned: 0",
@@ -94,9 +94,9 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "ECONOMICS",
         "RESERVE",
         "70 passengers",
-        "90.0 km/h",
+        "118.8 km/h",
         "Diesel",
-        "$0.45/km",
+        "$0.38/km",
         "Cash after",
     ] {
         assert!(
@@ -147,13 +147,13 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     for expected in [
         "Market",
-        "Local 70",
-        "Express 120",
+        "Helvetra R70",
+        "Veltrian D121",
         "$3,000.00",
-        "$5,000.00",
+        "$4,400.00",
         "70 passengers",
-        "90.0 km/h",
-        "$0.45/km",
+        "118.8 km/h",
+        "$0.38/km",
         "EVN type",
     ] {
         assert!(
@@ -170,7 +170,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     let (row, column) = selected
         .lines()
         .enumerate()
-        .find_map(|(row, line)| line.find("› Express 120").map(|column| (row, column)))
+        .find_map(|(row, line)| line.find("› Veltrian D121").map(|column| (row, column)))
         .expect("the selected catalogue model is visibly marked");
     assert_eq!(
         capture_rendered_cell_colors(
@@ -193,7 +193,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "1 Train → 2 Delivery Rail Station → 3 Review",
         "Delivery Rail Stations",
         "Selected delivery",
-        "Express 120",
+        "Veltrian D121",
         "Left / Backspace · model",
     ] {
         assert!(
@@ -271,7 +271,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         ShellAction::Continue
     );
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(review.contains("Express 120"));
+    assert!(review.contains("Veltrian D121"));
     assert!(review.contains("Confirm Train Purchase"));
     assert!(review.contains("[Enter] confirm"));
     fs::write(evidence_dir.join("delivery-review-120x40.txt"), review)?;
@@ -290,7 +290,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         ShellAction::Continue
     );
     let restored = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(restored.contains("› Express 120"));
+    assert!(restored.contains("› Veltrian D121"));
     assert_eq!(
         state, before,
         "delivery selection, review, and cancellation are presentation-only"
@@ -387,7 +387,7 @@ fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
     for expected in [
         "TRAIN ✓   DELIVERY ✓   REVIEW ●",
         "Confirm Train Purchase",
-        "Local 70",
+        "Helvetra R70",
         "TRAIN",
         "EVN type",
         "Capacity",
@@ -430,7 +430,7 @@ fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
     );
     let compact = capture_rendered_buffer_mut(&mut shell, app.state(), 80, 24);
     for expected in [
-        "Local 70",
+        "Helvetra R70",
         "Delivery",
         "Price",
         "$3,000.00",

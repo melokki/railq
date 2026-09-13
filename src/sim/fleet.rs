@@ -384,7 +384,7 @@ mod tests {
             evn: EuropeanVehicleNumber::generate(
                 95,
                 state.region.railway_registration.numeric_code,
-                70,
+                701,
                 1,
             )
             .unwrap(),
@@ -392,7 +392,7 @@ mod tests {
             status: TrainStatus::Ready {
                 at: RailStationId::new(1),
             },
-            model_id: TrainModelId::new("local-70"),
+            model_id: TrainModelId::new("helvetra-r70"),
             original_purchase_price: Money::from_cents(101),
         });
         state.player_company.fleet.next_train_id = train_id.get() + 1;
@@ -400,7 +400,7 @@ mod tests {
             .player_company
             .fleet
             .next_evn_unit_by_model
-            .insert(TrainModelId::new("local-70"), 2);
+            .insert(TrainModelId::new("helvetra-r70"), 2);
         state.player_company.funds = Money::ZERO;
 
         assert_eq!(sell_train(&mut state, train_id), Ok(Money::from_cents(70)));
@@ -510,9 +510,9 @@ mod tests {
             .find(|train| train.id == second_id)
             .unwrap();
 
-        assert_eq!(first.evn.series_code(), 70);
+        assert_eq!(first.evn.series_code(), 701);
         assert_eq!(first.evn.unit_number(), 1);
-        assert_eq!(second.evn.series_code(), 120);
+        assert_eq!(second.evn.series_code(), 721);
         assert_eq!(second.evn.unit_number(), 1);
     }
 }

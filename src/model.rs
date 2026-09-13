@@ -1286,14 +1286,14 @@ mod tests {
                 fleet: Fleet {
                     trains: vec![Train {
                         id: train_id,
-                        evn: EuropeanVehicleNumber::generate(95, 67, 70, 1).unwrap(),
+                        evn: EuropeanVehicleNumber::generate(95, 67, 701, 1).unwrap(),
                         nickname: None,
                         status: TrainStatus::Ready { at: station_id },
-                        model_id: TrainModelId::new("local-70"),
+                        model_id: TrainModelId::new("helvetra-r70"),
                         original_purchase_price: Money::from_cents(5_000),
                     }],
                     next_train_id: train_id.get() + 1,
-                    next_evn_unit_by_model: [(TrainModelId::new("local-70"), 2)]
+                    next_evn_unit_by_model: [(TrainModelId::new("helvetra-r70"), 2)]
                         .into_iter()
                         .collect(),
                 },

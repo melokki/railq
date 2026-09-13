@@ -99,7 +99,11 @@ pub fn render_vkm_editor(frame: &mut Frame, area: Rect, editor: &VkmEditor, stat
         frame,
         card,
         "Edit Vehicle Keeper Mark",
-        modal::shortcut_line(&[("Enter", "save"), ("Backspace", "delete"), ("Esc", "cancel")]),
+        modal::shortcut_line(&[
+            ("Enter", "save"),
+            ("Backspace", "delete"),
+            ("Esc", "cancel"),
+        ]),
     );
 
     let mut lines = vec![
@@ -705,7 +709,10 @@ fn render_company_overview(
         Err(error) => vec![
             section_heading("STATUS"),
             Line::styled("[?] STATUS UNAVAILABLE", theme::error().bold()),
-            Line::styled(format!("Financial evaluation unavailable: {error}"), theme::error()),
+            Line::styled(
+                format!("Financial evaluation unavailable: {error}"),
+                theme::error(),
+            ),
         ],
     };
     render_dashboard_section(frame, status_area, status_lines);
@@ -754,7 +761,11 @@ fn render_company_overview(
         fleet_area,
         vec![
             section_heading("FLEET"),
-            dashboard_line("Owned trains", trains.len().to_string(), theme::primary_value()),
+            dashboard_line(
+                "Owned trains",
+                trains.len().to_string(),
+                theme::primary_value(),
+            ),
             dashboard_line("Models", model_count.to_string(), theme::primary_value()),
             dashboard_line(
                 "Fleet value",
@@ -991,11 +1002,7 @@ fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
             format_cents(fleet_value_cents(state)),
             theme::primary_value(),
         ),
-        dashboard_line(
-            "Result",
-            format_signed_cents(result),
-            result_style(result),
-        ),
+        dashboard_line("Result", format_signed_cents(result), result_style(result)),
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -1249,10 +1256,7 @@ fn render_compact_summary(
     );
 }
 
-fn receipt_detail_lines(
-    state: &GameState,
-    receipt: Option<&JourneyReceipt>,
-) -> Vec<Line<'static>> {
+fn receipt_detail_lines(state: &GameState, receipt: Option<&JourneyReceipt>) -> Vec<Line<'static>> {
     match receipt {
         Some(receipt) => {
             let result = receipt_result_cents(

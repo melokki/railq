@@ -53,7 +53,7 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     assert!(wide.contains("Fleet"));
     assert!(wide.contains("Train"));
     assert!(wide.contains("EVN"));
-    assert!(wide.contains("Local 70"));
+    assert!(wide.contains("Helvetra R70"));
     assert!(wide.contains("Propulsion"));
     assert!(wide.contains("Diesel"));
     assert!(wide.contains("JOURNEY"));

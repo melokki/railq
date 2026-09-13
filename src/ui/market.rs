@@ -1477,7 +1477,7 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_shows_both_diesel_trains_with_price_stats_and_sample_cost() {
+    fn catalogue_shows_all_diesel_trains_with_price_stats_and_sample_cost() {
         let state = create_new_game(42, "Alden Passenger", STARTED_AT);
         let rendered = render(&state);
 
@@ -1525,7 +1525,7 @@ mod tests {
     #[test]
     fn confirmation_warns_when_purchase_leaves_no_sample_trip_reserve() {
         let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
-        state.player_company.funds = Money::from_cents(500_000);
+        state.player_company.funds = train_catalogue().models()[1].purchase_price();
         let mut flow = MarketFlow::start(&state, 1).unwrap();
 
         flow.handle_key(key(KeyCode::Enter), &state);

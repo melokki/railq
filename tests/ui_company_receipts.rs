@@ -56,17 +56,11 @@ fn retained_receipts_scroll_keep_the_selected_journey_across_arrivals_and_open_d
     assert!(wide.contains("Access fees"));
     assert!(wide.contains("Fuel"));
     assert!(wide.contains("Result"));
-    let (selected_x, selected_y) = text_position(&wide, "J18")
-        .expect("selected receipt should be visible in Journey history");
-    let selected_colors = capture_rendered_cell_colors(
-        &shell,
-        &state,
-        120,
-        40,
-        selected_x,
-        selected_y,
-    )
-    .expect("selected receipt should paint its Journey cell");
+    let (selected_x, selected_y) =
+        text_position(&wide, "J18").expect("selected receipt should be visible in Journey history");
+    let selected_colors =
+        capture_rendered_cell_colors(&shell, &state, 120, 40, selected_x, selected_y)
+            .expect("selected receipt should paint its Journey cell");
     assert_eq!(selected_colors, (theme::BACKGROUND, theme::ACCENT));
     fs::write(evidence_dir.join("retained-120x40.txt"), wide)?;
 
