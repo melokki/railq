@@ -229,25 +229,21 @@ impl TrainNicknameEditor {
     }
 }
 
-/// Renders the Train nickname editor above the Fleet workspace.
+/// Renders the Train nickname editor as a focused modal above the Fleet workspace.
 pub fn render_nickname_editor(
     frame: &mut Frame,
     area: Rect,
     editor: &TrainNicknameEditor,
     state: &GameState,
 ) {
-    let width = area.width.min(70).max(38);
-    let height = area.height.min(13).max(9);
-    let card = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
-    frame.render_widget(ratatui::widgets::Clear, card);
-    let block = panel_block("Rename Train", true);
-    let inner = block.inner(card);
-    frame.render_widget(block, card);
+    let card_height = if editor.error().is_some() { 15 } else { 14 };
+    let card = modal::centered_rect(area, 68, card_height);
+    let footer = if card.width >= 56 {
+        modal::shortcut_line(&[("Enter", "save"), ("Backspace", "delete"), ("Esc", "cancel")])
+    } else {
+        modal::shortcut_line(&[("Enter", "save"), ("Esc", "cancel")])
+    };
+    let modal_areas = modal::render_shell(frame, card, "Rename Train", footer);
 
     let train = state
         .player_company
@@ -260,42 +256,48 @@ pub fn render_nickname_editor(
         |train| (train_model_name(train), train.evn.formatted()),
     );
 
+    let draft = if editor.draft().is_empty() {
+        " ".to_owned()
+    } else {
+        editor.draft().to_owned()
+    };
     let mut lines = vec![
-        labelled_line("Train", &format!("{:02} · {model}", editor.train_id().get())),
+        Line::styled(
+            format!("Train {:02} · {model}", editor.train_id().get()),
+            theme::focused_title(),
+        ),
         labelled_line("EVN", &evn),
         Line::from(""),
+        section_heading("NICKNAME"),
+        Line::from(vec![
+            Span::styled("› ", theme::focused_title()),
+            Span::styled(draft, theme::primary_value()),
+            Span::styled("▏", theme::focused_title()),
+        ]),
+        Line::from(""),
         Line::from(Span::styled(
-            "Nickname is a player-facing label only; the official EVN never changes.",
+            "This is a player-facing label only; the official EVN never changes.",
             theme::secondary(),
         )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Nickname     ", theme::secondary()),
-            Span::styled(editor.draft().to_owned(), theme::focused_title()),
-        ]),
         Line::from(Span::styled(
-            "Leave empty and press Enter to clear the nickname.",
+            if editor.draft().is_empty() {
+                "Saving an empty nickname restores the default Train label."
+            } else {
+                "Type to edit the nickname; Backspace removes the previous character."
+            },
             theme::secondary(),
         )),
     ];
     if let Some(error) = editor.error() {
+        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(error.to_owned(), theme::error())));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("Enter", theme::focused_title()),
-        Span::styled(" Save   ", theme::secondary()),
-        Span::styled("Backspace", theme::focused_title()),
-        Span::styled(" Delete   ", theme::secondary()),
-        Span::styled("Esc", theme::focused_title()),
-        Span::styled(" Cancel", theme::secondary()),
-    ]));
 
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        inner,
+        modal_areas.body,
     );
 }
 
