@@ -38,3 +38,23 @@ fn captures_company_status_at_wide_and_compact_sizes() -> Result<(), Box<dyn Err
     }
     Ok(())
 }
+
+#[test]
+fn map_header_separates_registration_from_the_marker_legend() {
+    let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let shell = Shell::new();
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+    let registration = format!(
+        "{} {}",
+        state.region.railway_registration.display_code(),
+        state.region.railway_registration.mark
+    );
+
+    assert!(rendered.contains("Network"));
+    assert!(rendered.contains("Registration ·"));
+    assert!(rendered.contains(&registration));
+    assert!(rendered.contains("● station"));
+    assert!(rendered.contains("○ settlement"));
+    assert!(rendered.contains("▶ train"));
+    assert!(!rendered.contains("● connected  ○ unconnected  ▶ travelling"));
+}

@@ -255,17 +255,7 @@ fn render_operational_network(
     state: &GameState,
     selection: &mut MapLocationSelection,
 ) {
-    let registration = format!(
-        "{} {}",
-        state.region.railway_registration.display_code(),
-        state.region.railway_registration.mark
-    );
-    let title = if area.width >= 72 {
-        format!("Network · {registration} · ● connected  ○ unconnected  ▶ travelling")
-    } else {
-        format!("Network · {registration}")
-    };
-    let block = panel_block(&title, true);
+    let block = operational_network_block(state, area.width);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(layout) = operational_layout(state) else {
@@ -287,6 +277,52 @@ fn render_operational_network(
         Paragraph::new(rows).style(theme::panel()).wrap(Wrap { trim: false }),
         inner,
     );
+}
+
+fn operational_network_block(state: &GameState, width: u16) -> Block<'static> {
+    let registration = format!(
+        "{} {}",
+        state.region.railway_registration.display_code(),
+        state.region.railway_registration.mark
+    );
+
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::focused_border())
+        .title_top(Line::styled(" Network ", theme::focused_title()).left_aligned())
+        .style(theme::panel());
+
+    // Keep identity separate from the workspace name. The previous single title
+    // mixed registration and map-marker explanations into one long sentence,
+    // which made the panel harder to scan than the map itself.
+    if width >= 40 {
+        block = block.title_top(
+            Line::from(vec![
+                Span::styled(" Registration · ", theme::secondary()),
+                Span::styled(format!("{registration} "), theme::primary_value()),
+            ])
+            .right_aligned(),
+        );
+    }
+
+    // Marker meanings remain available, but as quiet reference material on the
+    // lower border instead of competing with the panel title. On compact maps
+    // the legend disappears before it can crowd the usable map area.
+    if width >= 62 {
+        block = block.title_bottom(
+            Line::from(vec![
+                Span::styled(" ● ", theme::primary_value()),
+                Span::styled("station", theme::secondary()),
+                Span::styled("   ○ ", theme::secondary()),
+                Span::styled("settlement", theme::secondary()),
+                Span::styled("   ▶ ", theme::warning()),
+                Span::styled("train ", theme::secondary()),
+            ])
+            .right_aligned(),
+        );
+    }
+
+    block
 }
 
 fn render_location_inspector(
