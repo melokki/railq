@@ -1,4 +1,4 @@
-//! Passenger Service path lookup, creation, and deletion.
+//! Passenger Service path lookup, creation, editing, and deletion.
 //!
 //! Services belong to the Player Company. They reuse Rail Authority-owned
 //! Rail Lines, remain directional, and are deliberately distinct from
@@ -105,7 +105,7 @@ impl fmt::Display for ServiceError {
             }
             Self::ServiceInUse { service_id } => write!(
                 formatter,
-                "Passenger Service {} cannot be deleted while a Journey is using it",
+                "Passenger Service {} cannot be changed while a Journey is using it",
                 service_id.get()
             ),
             Self::ServiceIdExhausted => write!(formatter, "Passenger Service IDs are exhausted"),
@@ -269,6 +269,53 @@ pub fn create_service(
     Ok(service_id)
 }
 
+/// Updates the ordered stop pattern of an unused Passenger Service while
+/// preserving its persistent identity and generated name.
+///
+/// Active Journeys retain references to the Service definition, so editing is
+/// deliberately rejected until every Journey using the Service has arrived.
+pub fn update_service(
+    state: &mut GameState,
+    service_id: ServiceId,
+    stop_station_ids: Vec<RailStationId>,
+) -> Result<(), ServiceError> {
+    let Some(index) = state
+        .player_company
+        .passenger_services
+        .iter()
+        .position(|service| service.id == service_id)
+    else {
+        return Err(ServiceError::ServiceNotFound { service_id });
+    };
+
+    if state
+        .active_journeys
+        .iter()
+        .any(|journey| journey.service_id == service_id)
+    {
+        return Err(ServiceError::ServiceInUse { service_id });
+    }
+
+    let rail_line_ids =
+        service_path_for_stops(&state.region.rail_authority.rail_network, &stop_station_ids)?;
+
+    if let Some(existing) = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id != service_id && service.stop_station_ids == stop_station_ids)
+    {
+        return Err(ServiceError::DuplicateService {
+            service_id: existing.id,
+        });
+    }
+
+    let service = &mut state.player_company.passenger_services[index];
+    service.stop_station_ids = stop_station_ids;
+    service.rail_line_ids = rail_line_ids;
+    Ok(())
+}
+
 /// Finds or creates the direct two-stop Passenger Service in one direction.
 ///
 /// This compatibility helper remains for tests, recovery logic, and legacy
@@ -380,6 +427,7 @@ mod tests {
     use super::{
         ServiceError, create_service, delete_service, find_or_create_service,
         find_or_create_service_between_settlements, path_between_stations, service_path_for_stops,
+        update_service,
     };
 
     fn game() -> crate::model::GameState {
@@ -503,6 +551,39 @@ mod tests {
             })
         );
         assert!(game.player_company.passenger_services.is_empty());
+    }
+
+    #[test]
+    fn unused_service_can_be_updated_without_changing_identity() {
+        let mut game = game();
+        let service_id = create_service(
+            &mut game,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+        )
+        .unwrap();
+
+        update_service(
+            &mut game,
+            service_id,
+            vec![RailStationId::new(1), RailStationId::new(3)],
+        )
+        .unwrap();
+
+        let service = game
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .unwrap();
+        assert_eq!(service.name, "R1");
+        assert_eq!(
+            service.stop_station_ids,
+            vec![RailStationId::new(1), RailStationId::new(3)]
+        );
+        assert_eq!(
+            service.rail_line_ids,
+            vec![RailLineId::new(1), RailLineId::new(2)]
+        );
     }
 
     #[test]

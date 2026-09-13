@@ -114,6 +114,11 @@ pub enum ShellAction {
     CreatePassengerService {
         stop_station_ids: Vec<RailStationId>,
     },
+    /// Confirmed player input updating one unused directional Passenger Service.
+    UpdatePassengerService {
+        service_id: ServiceId,
+        stop_station_ids: Vec<RailStationId>,
+    },
     /// Confirmed player input deleting one unused Passenger Service.
     DeletePassengerService { service_id: ServiceId },
     /// Confirmed player input updating the Player Company's Vehicle Keeper Mark.
@@ -150,6 +155,12 @@ pub enum TerminalCommand {
     SellTrain { train_id: TrainId, now: UtcSeconds },
     /// Create one directional Passenger Service.
     CreatePassengerService {
+        stop_station_ids: Vec<RailStationId>,
+        now: UtcSeconds,
+    },
+    /// Update one unused directional Passenger Service.
+    UpdatePassengerService {
+        service_id: ServiceId,
         stop_station_ids: Vec<RailStationId>,
         now: UtcSeconds,
     },
@@ -501,6 +512,13 @@ impl Shell {
                     services::ServiceWorkspaceAction::Create { stop_station_ids } => {
                         ShellAction::CreatePassengerService { stop_station_ids }
                     }
+                    services::ServiceWorkspaceAction::Update {
+                        service_id,
+                        stop_station_ids,
+                    } => ShellAction::UpdatePassengerService {
+                        service_id,
+                        stop_station_ids,
+                    },
                     services::ServiceWorkspaceAction::Delete { service_id } => {
                         ShellAction::DeletePassengerService { service_id }
                     }
@@ -923,6 +941,13 @@ impl Shell {
         self.notice = Some("Passenger Service created and saved.".into());
     }
 
+    /// Closes a saved Passenger Service edit and keeps the Services workspace open.
+    pub fn confirm_passenger_service_updated(&mut self, state: &GameState) {
+        self.service_workspace.confirm_updated(state);
+        self.services_open = true;
+        self.notice = Some("Passenger Service updated and saved.".into());
+    }
+
     /// Keeps a rejected Passenger Service action visible in the creation workspace.
     pub fn reject_passenger_service_action(&mut self, error: impl Into<String>) {
         let message = error.into();
@@ -1268,6 +1293,20 @@ where
                             Err(error) => shell.reject_passenger_service_action(error.to_string()),
                         }
                     }
+                    ShellAction::UpdatePassengerService {
+                        service_id,
+                        stop_station_ids,
+                    } => match command(TerminalCommand::UpdatePassengerService {
+                        service_id,
+                        stop_station_ids,
+                        now: current_utc_seconds(),
+                    }) {
+                        Ok(next_state) => {
+                            state = next_state;
+                            shell.confirm_passenger_service_updated(&state);
+                        }
+                        Err(error) => shell.reject_passenger_service_action(error.to_string()),
+                    },
                     ShellAction::DeletePassengerService { service_id } => {
                         match command(TerminalCommand::DeletePassengerService {
                             service_id,
@@ -2163,13 +2202,14 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                 "↑↓ / jk Select Passenger Service".into(),
                 "PgUp / PgDn Move through longer Service lists".into(),
                 "n Create a new directional Passenger Service".into(),
+                "e Edit the selected Service when it has no active Journeys".into(),
                 "d Delete the selected Service when it has no active Journeys".into(),
                 "Esc Return to Map".into(),
             ]);
         }
         lines.extend([
             String::new(),
-            "During creation: Enter adds a stop, Backspace removes the last stop, f reviews."
+            "During create/edit: Enter adds a stop, Backspace removes the last stop, f reviews."
                 .into(),
         ]);
         return lines;

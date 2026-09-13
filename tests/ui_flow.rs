@@ -112,9 +112,27 @@ fn handle_action(
             app.create_passenger_service(stop_station_ids, now).unwrap();
             shell.confirm_passenger_service_created(app.state());
         }
+        ShellAction::UpdatePassengerService {
+            service_id,
+            stop_station_ids,
+        } => {
+            app.update_passenger_service(service_id, stop_station_ids, now)
+                .unwrap();
+            shell.confirm_passenger_service_updated(app.state());
+        }
         ShellAction::DeletePassengerService { service_id } => {
             app.delete_passenger_service(service_id, now).unwrap();
             shell.confirm_passenger_service_deleted(app.state());
+        }
+        ShellAction::UpdateCompanyVkm {
+            vehicle_keeper_mark,
+        } => {
+            app.update_company_vkm(vehicle_keeper_mark, now).unwrap();
+            shell.confirm_company_vkm_saved(app.state());
+        }
+        ShellAction::UpdateTrainNickname { train_id, nickname } => {
+            app.update_train_nickname(train_id, nickname, now).unwrap();
+            shell.confirm_train_nickname_saved(app.state());
         }
         ShellAction::Continue | ShellAction::Exit | ShellAction::RestartAfterBankruptcy => {}
     }

@@ -373,11 +373,8 @@ fn render_purchase_review(
     delivery_station_id: RailStationId,
     rejection: Option<&str>,
 ) {
-    let footer = modal::shortcut_line(&[
-        ("Enter", "confirm"),
-        ("←", "delivery"),
-        ("Esc", "cancel"),
-    ]);
+    let footer =
+        modal::shortcut_line(&[("Enter", "confirm"), ("←", "delivery"), ("Esc", "cancel")]);
     let modal_areas = modal::render_shell(frame, area, "Confirm Train Purchase", footer);
 
     let Some(train) = train_catalogue().models().get(catalogue_index) else {
@@ -452,7 +449,10 @@ fn purchase_confirmation_lines(
     let mut lines = vec![
         Line::from(""),
         Line::styled("TRAIN", theme::secondary()),
-        review_value("EVN type", &format!("{:02} · {}", train.evn_type_code(), train.evn_type_label())),
+        review_value(
+            "EVN type",
+            &format!("{:02} · {}", train.evn_type_code(), train.evn_type_label()),
+        ),
         review_value(
             "Capacity",
             &format!("{} passengers", train.passenger_capacity().passengers()),
@@ -525,7 +525,10 @@ fn compact_purchase_confirmation_lines(
 fn review_value(label: &str, value: &str) -> Line<'static> {
     const LABEL_WIDTH: usize = 17;
     Line::from(vec![
-        Span::styled(format!("{label:<width$}", width = LABEL_WIDTH), theme::secondary()),
+        Span::styled(
+            format!("{label:<width$}", width = LABEL_WIDTH),
+            theme::secondary(),
+        ),
         Span::styled(value.to_owned(), theme::primary_value()),
     ])
 }
@@ -658,19 +661,14 @@ pub fn render_dashboard(
 
     let wide = area.width >= 96 && area.height >= 18;
     let (catalogue_area, inspector_area) = if wide {
-        let [catalogue_area, inspector_area] = Layout::horizontal([
-            Constraint::Min(42),
-            Constraint::Length(48),
-        ])
-        .areas(shell_inner);
+        let [catalogue_area, inspector_area] =
+            Layout::horizontal([Constraint::Min(42), Constraint::Length(48)]).areas(shell_inner);
         (horizontal_inset(catalogue_area, 1), inspector_area)
     } else {
         let catalogue_height = shell_inner.height.min(4);
-        let [catalogue_area, inspector_area] = Layout::vertical([
-            Constraint::Length(catalogue_height),
-            Constraint::Min(8),
-        ])
-        .areas(shell_inner);
+        let [catalogue_area, inspector_area] =
+            Layout::vertical([Constraint::Length(catalogue_height), Constraint::Min(8)])
+                .areas(shell_inner);
         (horizontal_inset(catalogue_area, 1), inspector_area)
     };
 
@@ -712,7 +710,15 @@ pub fn render_dashboard(
                 Constraint::Length(7),
                 Constraint::Length(13),
             ],
-            vec!["Model", "Seats", "Top speed", "Propulsion", "Fuel/km", "Owned", "Price"],
+            vec![
+                "Model",
+                "Seats",
+                "Top speed",
+                "Propulsion",
+                "Fuel/km",
+                "Owned",
+                "Price",
+            ],
         )
     } else if catalogue_area.width >= 66 {
         (
@@ -796,14 +802,7 @@ pub fn render_dashboard(
     let selected_train = selection
         .selected_catalogue_index(state)
         .and_then(|index| catalogue.get(index));
-    render_catalogue_inspector(
-        frame,
-        inspector_area,
-        state,
-        selected_train,
-        wide,
-        true,
-    );
+    render_catalogue_inspector(frame, inspector_area, state, selected_train, wide, true);
 }
 
 fn render_catalogue_inspector(
@@ -1007,10 +1006,7 @@ fn purchase_balance_line(state: &GameState, train: &TrainModel) -> Line<'static>
         ]);
     }
 
-    labelled_value(
-        "Cash after",
-        &funds_after_purchase_display(state, train),
-    )
+    labelled_value("Cash after", &funds_after_purchase_display(state, train))
 }
 
 fn horizontal_inset(area: Rect, amount: u16) -> Rect {

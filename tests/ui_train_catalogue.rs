@@ -330,7 +330,10 @@ fn market_footer_keeps_unaffordable_buy_visible_but_disabled() {
         Some((theme::SECONDARY, theme::PANEL)),
     );
 
-    assert_eq!(press(&mut shell, &state, KeyCode::Enter), ShellAction::Continue);
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Continue
+    );
     let rejected = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(rejected.contains("Insufficient Company Funds for the selected Train."));
     assert!(!rejected.contains("Delivery Rail Stations"));

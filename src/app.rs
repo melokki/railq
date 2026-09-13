@@ -16,7 +16,9 @@ use crate::{
         finance::{FinanceError, FinancialStatus, evaluate_financial_recovery},
         fleet::{FleetError, purchase_train, sell_train},
         journeys::{DispatchError, dispatch_journey},
-        services::{ServiceError, create_service, delete_service, find_or_create_service},
+        services::{
+            ServiceError, create_service, delete_service, find_or_create_service, update_service,
+        },
         time::{AdvanceTimeError, SettledJourney, advance_time, advance_time_with_arrivals},
         world::create_new_game,
     },
@@ -225,6 +227,24 @@ impl<S: GameStore> App<S> {
                 Err(AppError::Bankruptcy)
             } else {
                 Ok(service_id)
+            }
+        })
+    }
+
+    /// Updates and persists one unused directional Passenger Service.
+    pub fn update_passenger_service(
+        &mut self,
+        service_id: ServiceId,
+        stop_station_ids: Vec<RailStationId>,
+        now: UtcSeconds,
+    ) -> Result<(), AppError<S::Error>> {
+        self.transact(now, |state, _| {
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            update_service(state, service_id, stop_station_ids).map_err(AppError::Service)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(())
             }
         })
     }

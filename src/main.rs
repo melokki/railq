@@ -68,6 +68,13 @@ fn run_dashboard(
             } => {
                 app.create_passenger_service(stop_station_ids, now)?;
             }
+            ui::TerminalCommand::UpdatePassengerService {
+                service_id,
+                stop_station_ids,
+                now,
+            } => {
+                app.update_passenger_service(service_id, stop_station_ids, now)?;
+            }
             ui::TerminalCommand::DeletePassengerService { service_id, now } => {
                 app.delete_passenger_service(service_id, now)?;
             }

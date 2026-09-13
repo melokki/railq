@@ -25,6 +25,10 @@ pub enum ServiceWorkspaceAction {
     Create {
         stop_station_ids: Vec<RailStationId>,
     },
+    Update {
+        service_id: ServiceId,
+        stop_station_ids: Vec<RailStationId>,
+    },
     Delete {
         service_id: ServiceId,
     },
@@ -43,6 +47,7 @@ struct CreateServiceFlow {
     selected_station_index: usize,
     review: bool,
     error: Option<String>,
+    editing_service_id: Option<ServiceId>,
 }
 
 impl ServiceWorkspace {
@@ -72,8 +77,14 @@ impl ServiceWorkspace {
                 .expect("the creation flow was checked above");
             if flow.review {
                 return match key {
-                    KeyCode::Enter => ServiceWorkspaceAction::Create {
-                        stop_station_ids: flow.stop_station_ids.clone(),
+                    KeyCode::Enter => match flow.editing_service_id {
+                        Some(service_id) => ServiceWorkspaceAction::Update {
+                            service_id,
+                            stop_station_ids: flow.stop_station_ids.clone(),
+                        },
+                        None => ServiceWorkspaceAction::Create {
+                            stop_station_ids: flow.stop_station_ids.clone(),
+                        },
                     },
                     KeyCode::Backspace | KeyCode::Left => {
                         flow.review = false;
@@ -156,6 +167,40 @@ impl ServiceWorkspace {
                 self.create_flow = Some(CreateServiceFlow::default());
                 ServiceWorkspaceAction::Continue
             }
+            KeyCode::Char('e' | 'E') => {
+                if let Some(service_id) = self.selected_service_id(state) {
+                    if service_active_journeys(state, service_id) == 0 {
+                        if let Some(service) = state
+                            .player_company
+                            .passenger_services
+                            .iter()
+                            .find(|service| service.id == service_id)
+                        {
+                            let selected_station_index = service
+                                .stop_station_ids
+                                .last()
+                                .and_then(|station_id| {
+                                    state
+                                        .region
+                                        .rail_authority
+                                        .rail_network
+                                        .rail_stations
+                                        .iter()
+                                        .position(|station| station.id == *station_id)
+                                })
+                                .unwrap_or(0);
+                            self.create_flow = Some(CreateServiceFlow {
+                                stop_station_ids: service.stop_station_ids.clone(),
+                                selected_station_index,
+                                review: false,
+                                error: None,
+                                editing_service_id: Some(service_id),
+                            });
+                        }
+                    }
+                }
+                ServiceWorkspaceAction::Continue
+            }
             KeyCode::Char('d' | 'D') => {
                 if let Some(service_id) = self.selected_service_id(state) {
                     if service_active_journeys(state, service_id) == 0 {
@@ -202,6 +247,18 @@ impl ServiceWorkspace {
             .saturating_sub(1);
     }
 
+    pub fn confirm_updated(&mut self, state: &GameState) {
+        self.create_flow = None;
+        self.delete_confirmation = None;
+        self.selected_service_index = self.selected_service_index.min(
+            state
+                .player_company
+                .passenger_services
+                .len()
+                .saturating_sub(1),
+        );
+    }
+
     pub fn confirm_deleted(&mut self, state: &GameState) {
         self.delete_confirmation = None;
         self.selected_service_index = self.selected_service_index.min(
@@ -228,12 +285,16 @@ impl ServiceWorkspace {
             "Enter Delete  Esc Cancel"
         } else if let Some(flow) = &self.create_flow {
             if flow.review {
-                "Enter Create  ←/Backspace Edit  Esc Cancel"
+                if flow.editing_service_id.is_some() {
+                    "Enter Save  ←/Backspace Edit  Esc Cancel"
+                } else {
+                    "Enter Create  ←/Backspace Edit  Esc Cancel"
+                }
             } else {
                 "↑↓/jk Station  Enter Add stop  Backspace Remove  f Review  Esc Cancel"
             }
         } else {
-            "↑↓/jk Service  n New  d Delete  Esc Map"
+            "↑↓/jk Service  n New  e Edit  d Delete  Esc Map"
         }
     }
 
@@ -257,7 +318,15 @@ impl ServiceWorkspace {
         if let Some(flow) = &self.create_flow {
             return if flow.review {
                 vec![
-                    ("Enter", "Create", true),
+                    (
+                        "Enter",
+                        if flow.editing_service_id.is_some() {
+                            "Save"
+                        } else {
+                            "Create"
+                        },
+                        true,
+                    ),
                     ("←", "Edit", true),
                     ("Esc", "Cancel", true),
                 ]
@@ -281,10 +350,11 @@ impl ServiceWorkspace {
         }
 
         let has_services = !state.player_company.passenger_services.is_empty();
-        let can_delete = self
+        let can_edit = self
             .selected_service_id(state)
             .map(|service_id| service_active_journeys(state, service_id) == 0)
             .unwrap_or(false);
+        let can_delete = can_edit;
         let mut actions = vec![(
             if compact { "↑↓" } else { "↑↓/JK" },
             "Service",
@@ -295,6 +365,7 @@ impl ServiceWorkspace {
         }
         actions.extend([
             ("N", "New", true),
+            ("E", "Edit", can_edit),
             ("D", "Delete", can_delete),
             ("Esc", "Map", true),
         ]);
@@ -324,7 +395,7 @@ impl ServiceWorkspace {
     /// Renders the currently focused Passenger Services modal, if any.
     pub fn render_modal(&self, frame: &mut Frame, area: Rect, state: &GameState) {
         if let Some(flow) = &self.create_flow {
-            render_create_flow(frame, create_service_modal_rect(area), state, flow);
+            render_create_flow(frame, modal::workflow_rect(area), state, flow);
         } else if let Some(service_id) = self.delete_confirmation {
             render_delete_confirmation(frame, area, state, service_id);
         }
@@ -504,11 +575,7 @@ fn workspace_inset(area: Rect, horizontal: u16) -> Rect {
     }
 }
 
-fn service_details(
-    state: &GameState,
-    service_id: ServiceId,
-    dense: bool,
-) -> Vec<Line<'static>> {
+fn service_details(state: &GameState, service_id: ServiceId, dense: bool) -> Vec<Line<'static>> {
     let Some(service) = state
         .player_company
         .passenger_services
@@ -552,10 +619,7 @@ fn service_details(
         .map(|station_id| station_label(state, station_id))
         .unwrap_or_else(|| "Unknown".into());
 
-    let mut lines = vec![Line::styled(
-        service.name.clone(),
-        theme::focused_title(),
-    )];
+    let mut lines = vec![Line::styled(service.name.clone(), theme::focused_title())];
 
     inspector_section(&mut lines, "STATUS", dense);
     lines.push(labelled_line_styled("State", state_label, state_style));
@@ -684,7 +748,10 @@ struct ServiceOperatingSnapshot {
     operating_cost_cents: i128,
 }
 
-fn service_operating_snapshot(state: &GameState, service_id: ServiceId) -> ServiceOperatingSnapshot {
+fn service_operating_snapshot(
+    state: &GameState,
+    service_id: ServiceId,
+) -> ServiceOperatingSnapshot {
     let Some(service) = state
         .player_company
         .passenger_services
@@ -750,11 +817,8 @@ fn service_waiting_demand(state: &GameState, stops: &[RailStationId]) -> (u32, u
                     && demand.destination_station_id == *destination_station_id
             }) {
                 waiting = waiting.saturating_add(demand.waiting_passengers);
-                arrival_rate = arrival_rate.saturating_add(
-                    demand
-                        .passenger_arrival_rate_per_hour
-                        .passengers_per_hour(),
-                );
+                arrival_rate = arrival_rate
+                    .saturating_add(demand.passenger_arrival_rate_per_hour.passengers_per_hour());
             }
         }
     }
@@ -787,11 +851,7 @@ fn labelled_line(label: &str, value: &str) -> Line<'static> {
     ])
 }
 
-fn labelled_line_styled(
-    label: &str,
-    value: &str,
-    style: ratatui::style::Style,
-) -> Line<'static> {
+fn labelled_line_styled(label: &str, value: &str, style: ratatui::style::Style) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label:<16}"), theme::secondary()),
         Span::styled(value.to_owned(), style),
@@ -864,10 +924,21 @@ fn render_delete_confirmation(
 }
 
 fn render_create_flow(frame: &mut Frame, area: Rect, state: &GameState, flow: &CreateServiceFlow) {
+    let title = flow
+        .editing_service_id
+        .and_then(|service_id| {
+            state
+                .player_company
+                .passenger_services
+                .iter()
+                .find(|service| service.id == service_id)
+                .map(|service| format!("Edit Passenger Service · {}", service.name))
+        })
+        .unwrap_or_else(|| "Create Passenger Service".to_owned());
     let modal_areas = modal::render_shell(
         frame,
         area,
-        "Create Passenger Service",
+        &title,
         create_service_footer_line(flow, area.width),
     );
 
@@ -880,7 +951,18 @@ fn render_create_flow(frame: &mut Frame, area: Rect, state: &GameState, flow: &C
 
 fn create_service_footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'static> {
     if flow.review {
-        return modal::shortcut_line(&[("Enter", "create"), ("←", "edit"), ("Esc", "cancel")]);
+        return modal::shortcut_line(&[
+            (
+                "Enter",
+                if flow.editing_service_id.is_some() {
+                    "save"
+                } else {
+                    "create"
+                },
+            ),
+            ("←", "edit"),
+            ("Esc", "cancel"),
+        ]);
     }
 
     if width >= 76 {
@@ -1090,7 +1172,14 @@ fn render_create_service_review(
     frame.render_widget(
         Paragraph::new(vec![
             create_service_step_line(2),
-            Line::styled("Review Passenger Service", theme::title()),
+            Line::styled(
+                if flow.editing_service_id.is_some() {
+                    "Review Service Changes"
+                } else {
+                    "Review Passenger Service"
+                },
+                theme::title(),
+            ),
         ])
         .style(theme::panel()),
         context_area,
@@ -1117,7 +1206,11 @@ fn render_create_service_review(
                 ),
             ]),
             Line::styled(
-                "Directional Service · dispatchable from its first stop.",
+                if flow.editing_service_id.is_some() {
+                    "Service identity is preserved; the ordered stop pattern will be replaced."
+                } else {
+                    "Directional Service · dispatchable from its first stop."
+                },
                 theme::secondary(),
             ),
         ])
@@ -1188,19 +1281,6 @@ fn distance_for_line_ids(state: &GameState, line_ids: &[crate::model::RailLineId
                 .map(|line| line.distance.metres())
         })
         .sum()
-}
-
-fn create_service_modal_rect(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(6).min(88).max(48);
-    let height = area.height.saturating_sub(2).min(24).max(16);
-    Rect {
-        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
-        y: area
-            .y
-            .saturating_add(area.height.saturating_sub(height) / 2),
-        width: width.min(area.width),
-        height: height.min(area.height),
-    }
 }
 
 fn panel(title: &'static str) -> Block<'static> {
