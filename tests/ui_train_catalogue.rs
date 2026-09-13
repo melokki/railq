@@ -79,36 +79,47 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     );
     let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     for expected in [
+        "Market",
         "Local 70",
         "Express 120",
         "$3,000.00",
         "$5,000.00",
-        "70 pax",
-        "120 pax",
+        "VEHICLE IDENTITY",
+        "OPERATING PROFILE",
+        "70 passengers",
         "90.0 km/h",
-        "118.8 km/h",
         "$0.45/km",
-        "$0.30/km",
-        "Selected model",
+        "Cash after purchase",
     ] {
         assert!(
             wide.contains(expected),
             "wide catalogue should show {expected}"
         );
     }
+    assert!(
+        !wide.contains("Train Market ·"),
+        "the workspace frame should own a simple Market title"
+    );
+    assert!(
+        !wide.contains("Purchase decision"),
+        "the selected model inspector should not be a second competing panel"
+    );
+    assert!(
+        !wide.contains("Enter · choose delivery Rail Station"),
+        "purchase actions belong in the global footer"
+    );
 
     let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     for expected in [
+        "Market",
         "Local 70",
         "Express 120",
         "$3,000.00",
         "$5,000.00",
-        "70 pax",
-        "120 pax",
+        "70 passengers",
         "90.0 km/h",
-        "118.8 km/h",
         "$0.45/km",
-        "$0.30/km",
+        "EVN type",
     ] {
         assert!(
             compact.contains(expected),
@@ -124,7 +135,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     let (row, column) = selected
         .lines()
         .enumerate()
-        .find_map(|(row, line)| line.find("> Express 120").map(|column| (row, column)))
+        .find_map(|(row, line)| line.find("› Express 120").map(|column| (row, column)))
         .expect("the selected catalogue model is visibly marked");
     assert_eq!(
         capture_rendered_cell_colors(
@@ -242,7 +253,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         ShellAction::Continue
     );
     let restored = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(restored.contains("> Express 120"));
+    assert!(restored.contains("› Express 120"));
     assert_eq!(
         state, before,
         "delivery selection, review, and cancellation are presentation-only"
