@@ -770,7 +770,7 @@ fn render_dashboard_section(frame: &mut Frame, area: Rect, lines: Vec<Line<'stat
 }
 
 fn render_financial_performance(frame: &mut Frame, area: Rect, state: &GameState) {
-    let [heading_area, table_area] =
+    let [heading_area, content_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
     frame.render_widget(
         Paragraph::new(section_heading("FINANCIAL PERFORMANCE · LIFETIME")).style(theme::panel()),
@@ -778,35 +778,56 @@ fn render_financial_performance(frame: &mut Frame, area: Rect, state: &GameState
     );
 
     let result = operating_result_cents(state);
-    let rows = vec![
-        Row::new([
-            Cell::from("Revenue").style(theme::secondary()),
-            Cell::from(format_money(state.financials.operating_revenue))
-                .style(theme::primary_value()),
-            Cell::from("Access fees").style(theme::secondary()),
-            Cell::from(format_money(state.financials.infrastructure_access_fees))
-                .style(theme::primary_value()),
-        ]),
-        Row::new([
-            Cell::from("Fuel").style(theme::secondary()),
-            Cell::from(format_money(state.financials.fuel_costs)).style(theme::primary_value()),
-            Cell::from("Operating result").style(theme::secondary()),
-            Cell::from(format_signed_cents(result)).style(result_style(result)),
-        ]),
-    ];
-    frame.render_widget(
-        Table::new(
-            rows,
-            [
-                Constraint::Length(18),
-                Constraint::Length(18),
-                Constraint::Length(20),
-                Constraint::Length(18),
-            ],
-        )
-        .column_spacing(1)
-        .style(theme::panel()),
-        table_area,
+    let operating_costs = operating_costs_cents(state);
+    let [performance_area, costs_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
+            .spacing(3)
+            .areas(content_area);
+
+    render_dashboard_section(
+        frame,
+        performance_area,
+        vec![
+            section_heading("PERFORMANCE"),
+            dashboard_line(
+                "Revenue",
+                format_money(state.financials.operating_revenue),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Operating result",
+                format_signed_cents(result),
+                result_style(result),
+            ),
+            dashboard_line(
+                "Margin",
+                operating_margin_label(state),
+                result_style(result),
+            ),
+        ],
+    );
+
+    render_dashboard_section(
+        frame,
+        costs_area,
+        vec![
+            section_heading("COST BREAKDOWN"),
+            dashboard_line(
+                "Access fees",
+                format_money(state.financials.infrastructure_access_fees),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Fuel",
+                format_money(state.financials.fuel_costs),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Total costs",
+                format_cents(operating_costs),
+                theme::primary_value(),
+            ),
+        ],
     );
 }
 
@@ -1067,25 +1088,25 @@ fn render_compact_summary(
             theme::primary_value(),
         ),
         Line::from(""),
-        section_heading("FINANCIAL"),
+        section_heading("FINANCIAL · LIFETIME"),
         dashboard_line(
             "Revenue",
             format_money(state.financials.operating_revenue),
             theme::primary_value(),
         ),
         dashboard_line(
-            "Access fees",
-            format_money(state.financials.infrastructure_access_fees),
+            "Operating costs",
+            format_cents(operating_costs_cents(state)),
             theme::primary_value(),
         ),
         dashboard_line(
-            "Fuel",
-            format_money(state.financials.fuel_costs),
-            theme::primary_value(),
-        ),
-        dashboard_line(
-            "Result",
+            "Operating result",
             format_signed_cents(result),
+            result_style(result),
+        ),
+        dashboard_line(
+            "Margin",
+            operating_margin_label(state),
             result_style(result),
         ),
     ];
@@ -1302,6 +1323,29 @@ fn operating_result_cents(state: &GameState) -> i128 {
         state.financials.infrastructure_access_fees,
         state.financials.fuel_costs,
     )
+}
+
+fn operating_costs_cents(state: &GameState) -> i128 {
+    i128::from(state.financials.infrastructure_access_fees.cents())
+        + i128::from(state.financials.fuel_costs.cents())
+}
+
+fn operating_margin_label(state: &GameState) -> String {
+    let revenue = i128::from(state.financials.operating_revenue.cents());
+    if revenue == 0 {
+        return "—".into();
+    }
+
+    let tenths = operating_result_cents(state).saturating_mul(1_000) / revenue;
+    let absolute = tenths.abs();
+    let sign = if tenths > 0 {
+        "+"
+    } else if tenths < 0 {
+        "-"
+    } else {
+        ""
+    };
+    format!("{sign}{}.{:01}%", absolute / 10, absolute % 10)
 }
 
 fn receipt_result_cents(revenue: Money, access_fees: Money, fuel_costs: Money) -> i128 {

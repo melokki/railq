@@ -119,18 +119,42 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                 "{slug} should show revenue amount {revenue}"
             );
             assert!(
-                rendered.contains("Access fees"),
-                "{slug} should show access fees"
+                rendered.contains("Operating costs") || rendered.contains("Total costs"),
+                "{slug} should show the operating cost total"
             );
             assert!(
-                rendered.contains("$1.00"),
-                "{slug} should show access fee amount"
+                rendered.contains("$5.50"),
+                "{slug} should show the combined operating costs"
             );
-            assert!(rendered.contains("Fuel"), "{slug} should show fuel costs");
-            assert!(rendered.contains("$4.50"), "{slug} should show fuel amount");
+            if columns >= 100 {
+                assert!(
+                    rendered.contains("COST BREAKDOWN"),
+                    "{slug} should show the cost breakdown"
+                );
+                assert!(
+                    rendered.contains("Access fees"),
+                    "{slug} should show access fees"
+                );
+                assert!(
+                    rendered.contains("$1.00"),
+                    "{slug} should show access fee amount"
+                );
+                assert!(rendered.contains("Fuel"), "{slug} should show fuel costs");
+                assert!(rendered.contains("$4.50"), "{slug} should show fuel amount");
+            }
+            assert!(
+                rendered.contains("Operating result"),
+                "{slug} should label the operating result"
+            );
             assert!(
                 rendered.contains(result),
                 "{slug} should show signed result {result}"
+            );
+            let margin = if slug == "profitable" { "+45.0%" } else { "-450.0%" };
+            assert!(rendered.contains("Margin"), "{slug} should show operating margin");
+            assert!(
+                rendered.contains(margin),
+                "{slug} should show operating margin {margin}"
             );
             assert!(
                 rendered.contains(status),
