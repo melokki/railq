@@ -313,61 +313,164 @@ impl ServiceWorkspace {
 }
 
 fn render_service_list(frame: &mut Frame, area: Rect, state: &GameState, selected_index: usize) {
-    let [list_area, details_area] =
-        Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(area);
+    // Passenger Services is one workspace. The outer frame owns the view and
+    // the list/detail split is expressed with quiet separators rather than
+    // competing bordered panels.
+    let shell = panel("Passenger Services");
+    let inner = shell.inner(area);
+    frame.render_widget(shell, area);
+    let content = workspace_inset(inner, 1);
 
     let services = &state.player_company.passenger_services;
-    let lines = if services.is_empty() {
-        vec![Line::from(Span::styled(
-            "No Passenger Services yet. Press N to create one.",
-            theme::secondary(),
-        ))]
-    } else {
-        services
-            .iter()
-            .enumerate()
-            .map(|(index, service)| {
-                let marker = if index == selected_index { "> " } else { "  " };
-                let route = route_label(state, &service.stop_station_ids);
-                Line::from(vec![
-                    Span::styled(
-                        marker,
-                        if index == selected_index {
-                            theme::focused_title()
-                        } else {
-                            theme::secondary()
-                        },
-                    ),
-                    Span::styled(format!("{}  ", service.name), theme::primary_value()),
-                    Span::styled(route, theme::secondary()),
-                ])
-            })
-            .collect()
-    };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(panel("Passenger Services"))
+    if services.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled("No Passenger Services yet", theme::title()),
+                Line::from(""),
+                Line::styled(
+                    "Create a Service to define an ordered, directional stop pattern.",
+                    theme::secondary(),
+                ),
+            ])
             .style(theme::panel())
-            .wrap(Wrap { trim: false }),
-        list_area,
-    );
+            .wrap(Wrap { trim: true }),
+            content,
+        );
+        return;
+    }
 
-    let detail_lines = services
+    let selected_index = selected_index.min(services.len().saturating_sub(1));
+    if content.width >= 96 && content.height >= 18 {
+        render_wide_service_workspace(frame, content, state, selected_index);
+    } else {
+        render_compact_service_workspace(frame, content, state, selected_index);
+    }
+}
+
+fn render_wide_service_workspace(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selected_index: usize,
+) {
+    let [list_area, divider_area, inspector_area] = Layout::horizontal([
+        Constraint::Min(40),
+        Constraint::Length(1),
+        Constraint::Length(46),
+    ])
+    .areas(area);
+
+    render_service_picker(frame, list_area, state, selected_index, true);
+    modal::render_vertical_separator(frame, divider_area);
+    render_service_inspector(
+        frame,
+        workspace_inset(inspector_area, 1),
+        state,
+        selected_index,
+    );
+}
+
+fn render_compact_service_workspace(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selected_index: usize,
+) {
+    let list_height = area.height.saturating_mul(2) / 5;
+    let [list_area, divider_area, inspector_area] = Layout::vertical([
+        Constraint::Length(list_height.max(5)),
+        Constraint::Length(1),
+        Constraint::Min(5),
+    ])
+    .areas(area);
+
+    render_service_picker(frame, list_area, state, selected_index, false);
+    modal::render_horizontal_separator(frame, divider_area);
+    render_service_inspector(frame, inspector_area, state, selected_index);
+}
+
+fn render_service_picker(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selected_index: usize,
+    wide: bool,
+) {
+    let services = &state.player_company.passenger_services;
+    let rows = services
+        .iter()
+        .map(|service| {
+            if wide {
+                Row::new([
+                    service.name.clone(),
+                    route_label(state, &service.stop_station_ids),
+                ])
+            } else {
+                let origin = service
+                    .origin_station_id()
+                    .map(|station_id| station_label(state, station_id))
+                    .unwrap_or_else(|| "Unknown".into());
+                let destination = service
+                    .destination_station_id()
+                    .map(|station_id| station_label(state, station_id))
+                    .unwrap_or_else(|| "Unknown".into());
+                Row::new([service.name.clone(), format!("{origin} → {destination}")])
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let header = Row::new(["Service", "Direction"])
+        .style(theme::table_header())
+        .bottom_margin(1);
+    let widths = if wide {
+        [Constraint::Length(12), Constraint::Min(20)]
+    } else {
+        [Constraint::Length(10), Constraint::Min(16)]
+    };
+    let table = Table::new(rows, widths)
+        .header(header)
+        .style(theme::panel())
+        .row_highlight_style(theme::selected_row())
+        .highlight_symbol("› ")
+        .highlight_spacing(HighlightSpacing::Always);
+    let mut table_state = TableState::default();
+    table_state.select(Some(selected_index));
+    frame.render_stateful_widget(table, area, &mut table_state);
+}
+
+fn render_service_inspector(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selected_index: usize,
+) {
+    let lines = state
+        .player_company
+        .passenger_services
         .get(selected_index)
         .map(|service| service_details(state, service.id))
         .unwrap_or_else(|| {
-            vec![Line::from(Span::styled(
-                "Create a Service to define an ordered, directional stop pattern.",
+            vec![Line::styled(
+                "No Passenger Service selected.",
                 theme::secondary(),
-            ))]
+            )]
         });
     frame.render_widget(
-        Paragraph::new(detail_lines)
-            .block(panel("Service Details"))
+        Paragraph::new(lines)
             .style(theme::panel())
-            .wrap(Wrap { trim: false }),
-        details_area,
+            .wrap(Wrap { trim: true }),
+        area,
     );
+}
+
+fn workspace_inset(area: Rect, horizontal: u16) -> Rect {
+    let padding = horizontal.min(area.width / 2);
+    Rect {
+        x: area.x.saturating_add(padding),
+        y: area.y,
+        width: area.width.saturating_sub(padding.saturating_mul(2)),
+        height: area.height,
+    }
 }
 
 fn service_details(state: &GameState, service_id: ServiceId) -> Vec<Line<'static>> {

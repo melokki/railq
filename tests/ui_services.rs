@@ -21,6 +21,7 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     let workspace = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(workspace.contains("Passenger Services"));
     assert!(workspace.contains("No Passenger Services yet"));
+    assert!(!workspace.contains("Press N"));
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Char('n')),
@@ -79,7 +80,11 @@ fn existing_services_are_listed_and_can_request_deletion() {
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(rendered.contains("R1"));
+    assert!(rendered.contains("Service"));
+    assert!(rendered.contains("Direction"));
+    assert!(rendered.contains("›"));
     assert!(rendered.contains("Ordered stops"));
+    assert!(!rendered.contains("Service Details"));
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Char('d')),
