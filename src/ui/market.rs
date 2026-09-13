@@ -809,23 +809,17 @@ fn render_catalogue_inspector(
     };
 
     let (status, status_style) = purchase_status(state, train);
-    let mut lines = if wide {
-        vec![
-            Line::styled(train.name().to_owned(), theme::focused_title()),
-            Line::styled(status, status_style),
+    let mut lines = vec![
+        Line::styled(train.name().to_owned(), theme::focused_title()),
+        Line::styled(status, status_style),
+    ];
+
+    if wide {
+        lines.extend([
             Line::from(""),
-            labelled_value("Price", &format_money(train.purchase_price())),
-            labelled_value("Company Funds", &format_money(state.player_company.funds)),
-            labelled_value(
-                "Cash after purchase",
-                &funds_after_purchase_display(state, train),
-            ),
-            Line::from(""),
-            Line::styled("VEHICLE IDENTITY", theme::secondary()),
-            labelled_value(
-                "EVN type",
-                &format!("{:02} · {}", train.evn_type_code(), train.evn_type_label()),
-            ),
+            Line::styled("IDENTITY", theme::secondary()),
+            labelled_value("EVN type", &format!("{:02}", train.evn_type_code())),
+            labelled_value("Vehicle type", train.evn_type_label()),
             labelled_value("EVN series", &format!("{:04}", train.evn_series_code())),
             labelled_value(
                 "Registration",
@@ -837,14 +831,17 @@ fn render_catalogue_inspector(
             ),
             labelled_value("Official EVN", "assigned on purchase"),
             Line::from(""),
-            Line::styled("OPERATING PROFILE", theme::secondary()),
+            Line::styled("CAPACITY", theme::secondary()),
             labelled_value(
-                "Capacity",
+                "Seats",
                 &format!("{} passengers", train.passenger_capacity().passengers()),
             ),
-            labelled_value("Maximum speed", &format_speed_kmh(train)),
+            Line::from(""),
+            Line::styled("PERFORMANCE", theme::secondary()),
+            labelled_value("Top speed", &format_speed_kmh(train)),
+            labelled_value("Propulsion", train.propulsion_label()),
             labelled_value(
-                "Fuel",
+                "Fuel cost",
                 &format!(
                     "{}/km",
                     format_money_per_kilometre(
@@ -852,48 +849,25 @@ fn render_catalogue_inspector(
                     )
                 ),
             ),
-        ]
-    } else {
-        vec![
-            Line::styled(train.name().to_owned(), theme::focused_title()),
-            Line::styled(status, status_style),
             Line::from(""),
-            labelled_value("Price", &format_money(train.purchase_price())),
-            labelled_value("Funds", &format_money(state.player_company.funds)),
-            labelled_value(
-                "Cash after",
-                &funds_after_purchase_display(state, train),
-            ),
-            Line::from(""),
-            labelled_value(
-                "Capacity",
-                &format!("{} passengers", train.passenger_capacity().passengers()),
-            ),
-            labelled_value("Speed", &format_speed_kmh(train)),
-            labelled_value(
-                "Fuel",
-                &format!(
-                    "{}/km",
-                    format_money_per_kilometre(
-                        train.fuel_cost_per_kilometre().cents_per_kilometre()
-                    )
-                ),
-            ),
-            labelled_value("EVN type", &format!("{:02}", train.evn_type_code())),
-        ]
-    };
+            Line::styled("ECONOMICS", theme::secondary()),
+            labelled_value("Purchase price", &format_money(train.purchase_price())),
+            purchase_balance_line(state, train),
+        ]);
 
-    if wide {
         lines.push(Line::from(""));
-        lines.push(Line::styled("RESERVE CHECK", theme::secondary()));
+        lines.push(Line::styled("RESERVE", theme::secondary()));
         if let Some(sample) = sample_trip(state, train) {
-            lines.push(Line::from(format!("{} · {}", sample.route, sample.distance)));
             lines.push(labelled_value(
-                "Sample departure",
+                "Sample route",
+                &format!("{} · {}", sample.route, sample.distance),
+            ));
+            lines.push(labelled_value(
+                "Departure cost",
                 &format_money(sample.departure_cost),
             ));
             lines.push(labelled_value(
-                "Reserve afterwards",
+                "After sample",
                 &reserve_after_sample_display(state, train, &sample),
             ));
         } else {
@@ -902,6 +876,29 @@ fn render_catalogue_inspector(
                 theme::secondary(),
             ));
         }
+    } else {
+        lines.extend([
+            Line::from(""),
+            Line::styled("ECONOMICS", theme::secondary()),
+            labelled_value("Price", &format_money(train.purchase_price())),
+            purchase_balance_line(state, train),
+            Line::styled("SPECIFICATIONS", theme::secondary()),
+            labelled_value(
+                "Seats",
+                &format!("{} passengers", train.passenger_capacity().passengers()),
+            ),
+            labelled_value("Speed", &format_speed_kmh(train)),
+            labelled_value("Propulsion", train.propulsion_label()),
+            labelled_value(
+                "Fuel",
+                &format!(
+                    "{}/km",
+                    format_money_per_kilometre(
+                        train.fuel_cost_per_kilometre().cents_per_kilometre()
+                    )
+                ),
+            ),
+        ]);
     }
 
     frame.render_widget(
@@ -910,6 +907,25 @@ fn render_catalogue_inspector(
             .wrap(Wrap { trim: true }),
         inner,
     );
+}
+
+fn purchase_balance_line(state: &GameState, train: &TrainModel) -> Line<'static> {
+    if state.player_company.funds < train.purchase_price() {
+        let shortfall = train
+            .purchase_price()
+            .checked_sub(state.player_company.funds)
+            .map(format_money)
+            .unwrap_or_else(|_| "unavailable".into());
+        return Line::from(vec![
+            Span::styled("Shortfall: ", theme::secondary()),
+            Span::styled(shortfall, theme::error()),
+        ]);
+    }
+
+    labelled_value(
+        "Cash after",
+        &funds_after_purchase_display(state, train),
+    )
 }
 
 fn horizontal_inset(area: Rect, amount: u16) -> Rect {
