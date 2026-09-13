@@ -191,7 +191,9 @@ enum MapInk {
     Empty,
     Rail,
     RailAccent,
+    RailLabel,
     Connected,
+    ConnectedAdjacent,
     Unconnected,
     Selected,
     Train,
@@ -314,7 +316,9 @@ fn operational_network_block(state: &GameState, width: u16) -> Block<'static> {
     if width >= 62 {
         block = block.title_bottom(
             Line::from(vec![
-                Span::styled(" ● ", theme::primary_value()),
+                Span::styled(" ◆ ", theme::focused_title()),
+                Span::styled("selected", theme::secondary()),
+                Span::styled("   ● ", theme::primary_value()),
                 Span::styled("station", theme::secondary()),
                 Span::styled("   ○ ", theme::secondary()),
                 Span::styled("settlement", theme::secondary()),
@@ -810,6 +814,7 @@ fn render_map_rows(
         .iter()
         .map(|place| (place.settlement_id, place))
         .collect::<BTreeMap<_, _>>();
+    let adjacent = selected_neighbours(layout, selected);
 
     for line in &layout.lines {
         let (Some(first), Some(second)) = (
@@ -836,7 +841,7 @@ fn render_map_rows(
         for x in 0..width {
             if rail_mask[y][x] != 0 {
                 grid[y][x] = MapCell {
-                    ch: rail_glyph(rail_mask[y][x]),
+                    ch: rail_glyph(rail_mask[y][x], rail_accent[y][x]),
                     ink: if rail_accent[y][x] {
                         MapInk::RailAccent
                     } else {
@@ -845,6 +850,22 @@ fn render_map_rows(
                 };
             }
         }
+    }
+
+    // Draw place markers before moving Trains. A Train that is exactly on a
+    // station cell should win visually for that instant, while labels are
+    // placed afterwards and therefore avoid both markers and Trains.
+    for place in &layout.places {
+        let (x, y) = screen_position(place);
+        let ink = place_ink(place, selected, &adjacent);
+        let marker = if selected == Some(place.settlement_id) {
+            '◆'
+        } else if place.station_id.is_some() {
+            '●'
+        } else {
+            '○'
+        };
+        put_cell(&mut grid, x, y, marker, ink);
     }
 
     let station_positions = layout
@@ -863,28 +884,20 @@ fn render_map_rows(
         state.last_processed_at,
     );
 
-    // Markers are placed first so annotations and labels can avoid stations,
-    // travelling Trains, and the existing rail geometry.
+    // Labels follow the same focus hierarchy as the markers: the selected
+    // location is strongest, its direct Rail neighbours stay readable, and
+    // the rest of the network recedes. Operational counts live in the inspector
+    // instead of being repeated beside every station name.
     for place in &layout.places {
         let (x, y) = screen_position(place);
-        let ink = place_ink(place, selected);
-        let marker = if selected == Some(place.settlement_id) {
-            '◆'
-        } else if place.station_id.is_some() {
-            '●'
-        } else {
-            '○'
-        };
-        put_cell(&mut grid, x, y, marker, ink);
-    }
-
-    // Place names are the primary map annotation and must never be damaged by
-    // optional distance text. Draw them first so distance annotations can only
-    // occupy genuinely free cells around the selected Rail Links.
-    for place in &layout.places {
-        let (x, y) = screen_position(place);
-        let label = map_place_label(state, place, selected);
-        place_map_label(&mut grid, x, y, &label, place_ink(place, selected));
+        let label = map_place_label(place, selected);
+        place_map_label(
+            &mut grid,
+            x,
+            y,
+            &label,
+            place_ink(place, selected, &adjacent),
+        );
     }
 
     // Exact distances appear only for Rail Links incident to the current
@@ -945,25 +958,26 @@ fn draw_active_train_markers(
     station_positions: &BTreeMap<RailStationId, (i32, i32)>,
     now: UtcSeconds,
 ) {
+    let mut markers = BTreeMap::<(i32, i32), (char, usize)>::new();
     for journey in &state.active_journeys {
         let Some((position, glyph)) =
             journey_map_marker(state, journey, station_positions, now)
         else {
             continue;
         };
+        markers
+            .entry(position)
+            .and_modify(|(_, count)| *count = count.saturating_add(1))
+            .or_insert((glyph, 1));
+    }
 
-        let overlapping_train = usize::try_from(position.1)
-            .ok()
-            .and_then(|y| grid.get(y))
-            .and_then(|row| usize::try_from(position.0).ok().and_then(|x| row.get(x)))
-            .is_some_and(|cell| cell.ink == MapInk::Train);
-        put_cell(
-            grid,
-            position.0,
-            position.1,
-            if overlapping_train { '◆' } else { glyph },
-            MapInk::Train,
-        );
+    for (position, (direction, count)) in markers {
+        let glyph = match count {
+            1 => direction,
+            2..=9 => char::from_digit(u32::try_from(count).unwrap_or(9), 10).unwrap_or('+'),
+            _ => '+',
+        };
+        put_cell(grid, position.0, position.1, glyph, MapInk::Train);
     }
 }
 
@@ -1124,9 +1138,38 @@ fn point_along_orthogonal_rail(
     ((end.0, y), if direction >= 0 { '▼' } else { '▲' })
 }
 
-fn place_ink(place: &OperationalPlace, selected: Option<SettlementId>) -> MapInk {
+fn selected_neighbours(
+    layout: &OperationalLayout,
+    selected: Option<SettlementId>,
+) -> BTreeSet<SettlementId> {
+    let Some(selected) = selected else {
+        return BTreeSet::new();
+    };
+
+    layout
+        .lines
+        .iter()
+        .filter_map(|line| {
+            if line.first_settlement_id == selected {
+                Some(line.second_settlement_id)
+            } else if line.second_settlement_id == selected {
+                Some(line.first_settlement_id)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn place_ink(
+    place: &OperationalPlace,
+    selected: Option<SettlementId>,
+    adjacent: &BTreeSet<SettlementId>,
+) -> MapInk {
     if selected == Some(place.settlement_id) {
         MapInk::Selected
+    } else if adjacent.contains(&place.settlement_id) {
+        MapInk::ConnectedAdjacent
     } else if place.station_id.is_some() {
         MapInk::Connected
     } else {
@@ -1134,25 +1177,12 @@ fn place_ink(place: &OperationalPlace, selected: Option<SettlementId>) -> MapInk
     }
 }
 
-fn map_place_label(
-    state: &GameState,
-    place: &OperationalPlace,
-    selected: Option<SettlementId>,
-) -> String {
-    let mut label = if selected == Some(place.settlement_id) {
+fn map_place_label(place: &OperationalPlace, selected: Option<SettlementId>) -> String {
+    if selected == Some(place.settlement_id) {
         place.name.to_uppercase()
     } else {
         place.name.clone()
-    };
-
-    if let Some(station_id) = place.station_id {
-        let ready_count = ready_trains(state, station_id).len();
-        if ready_count > 0 {
-            let _ = write!(label, " [{ready_count}]");
-        }
     }
-
-    label
 }
 
 fn place_link_distance_label(
@@ -1183,7 +1213,7 @@ fn place_link_distance_label(
         .into_iter()
         .find(|(x, y)| can_place_text(grid, *x, *y, &text))
     {
-        put_text(grid, x, y, &text, MapInk::RailAccent);
+        put_text(grid, x, y, &text, MapInk::RailLabel);
     }
 }
 
@@ -1319,7 +1349,15 @@ fn add_rail_bit(
     }
 }
 
-fn rail_glyph(mask: u8) -> char {
+fn rail_glyph(mask: u8, accent: bool) -> char {
+    if accent {
+        heavy_rail_glyph(mask)
+    } else {
+        light_rail_glyph(mask)
+    }
+}
+
+fn heavy_rail_glyph(mask: u8) -> char {
     match mask {
         m if m == (RAIL_LEFT | RAIL_RIGHT) => '━',
         m if m == (RAIL_UP | RAIL_DOWN) => '┃',
@@ -1335,6 +1373,26 @@ fn rail_glyph(mask: u8) -> char {
         m if m & (RAIL_LEFT | RAIL_RIGHT) != 0 && m & (RAIL_UP | RAIL_DOWN) != 0 => '╋',
         m if m & (RAIL_LEFT | RAIL_RIGHT) != 0 => '━',
         m if m & (RAIL_UP | RAIL_DOWN) != 0 => '┃',
+        _ => '·',
+    }
+}
+
+fn light_rail_glyph(mask: u8) -> char {
+    match mask {
+        m if m == (RAIL_LEFT | RAIL_RIGHT) => '─',
+        m if m == (RAIL_UP | RAIL_DOWN) => '│',
+        m if m == (RAIL_RIGHT | RAIL_DOWN) => '┌',
+        m if m == (RAIL_LEFT | RAIL_DOWN) => '┐',
+        m if m == (RAIL_RIGHT | RAIL_UP) => '└',
+        m if m == (RAIL_LEFT | RAIL_UP) => '┘',
+        m if m == (RAIL_LEFT | RAIL_RIGHT | RAIL_DOWN) => '┬',
+        m if m == (RAIL_LEFT | RAIL_RIGHT | RAIL_UP) => '┴',
+        m if m == (RAIL_UP | RAIL_DOWN | RAIL_RIGHT) => '├',
+        m if m == (RAIL_UP | RAIL_DOWN | RAIL_LEFT) => '┤',
+        m if m == (RAIL_LEFT | RAIL_RIGHT | RAIL_UP | RAIL_DOWN) => '┼',
+        m if m & (RAIL_LEFT | RAIL_RIGHT) != 0 && m & (RAIL_UP | RAIL_DOWN) != 0 => '┼',
+        m if m & (RAIL_LEFT | RAIL_RIGHT) != 0 => '─',
+        m if m & (RAIL_UP | RAIL_DOWN) != 0 => '│',
         _ => '·',
     }
 }
@@ -1360,10 +1418,12 @@ fn map_ink_style(ink: MapInk) -> Style {
         MapInk::Empty => theme::panel(),
         MapInk::Rail => theme::secondary().add_modifier(Modifier::DIM),
         MapInk::RailAccent => theme::focused_title(),
-        MapInk::Connected => theme::primary_value(),
-        MapInk::Unconnected => theme::secondary(),
+        MapInk::RailLabel => theme::focused_border(),
+        MapInk::Connected => theme::secondary(),
+        MapInk::ConnectedAdjacent => theme::primary_value(),
+        MapInk::Unconnected => theme::secondary().add_modifier(Modifier::DIM),
         MapInk::Selected => theme::focused_title(),
-        MapInk::Train => theme::warning(),
+        MapInk::Train => theme::warning().add_modifier(Modifier::BOLD),
     }
 }
 
@@ -2799,9 +2859,10 @@ mod tests {
     };
 
     use super::{
-        MapCell, MapDirection, TERMINAL_CELL_HEIGHT_TO_WIDTH, directional_line_length,
-        journey_progress_percent, journey_route_segments, map_place_label, operational_layout,
-        place_link_distance_label, point_along_orthogonal_rail, render_at, schematic_layout,
+        MapCell, MapDirection, RAIL_LEFT, RAIL_RIGHT, TERMINAL_CELL_HEIGHT_TO_WIDTH,
+        directional_line_length, journey_progress_percent, journey_route_segments, map_place_label,
+        operational_layout, place_link_distance_label, point_along_orthogonal_rail, rail_glyph,
+        render_at, schematic_layout,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
@@ -2874,7 +2935,7 @@ mod tests {
     }
 
     #[test]
-    fn operational_map_labels_show_ready_train_count_and_stronger_selection() {
+    fn operational_map_labels_keep_selection_strong_without_repeating_counts() {
         let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
         let station_id = RailStationId::new(1);
         purchase_train(&mut state, 0, station_id).unwrap();
@@ -2885,12 +2946,18 @@ mod tests {
             .find(|place| place.station_id == Some(station_id))
             .expect("starter Rail Station should be on map");
 
-        let normal = map_place_label(&state, place, None);
-        assert!(normal.ends_with("[1]"));
+        let normal = map_place_label(place, None);
+        assert_eq!(normal, place.name);
 
-        let selected = map_place_label(&state, place, Some(place.settlement_id));
-        assert!(selected.starts_with(&place.name.to_uppercase()));
-        assert!(selected.ends_with("[1]"));
+        let selected = map_place_label(place, Some(place.settlement_id));
+        assert_eq!(selected, place.name.to_uppercase());
+    }
+
+    #[test]
+    fn selected_routes_use_heavy_rail_while_background_routes_stay_light() {
+        let horizontal = RAIL_LEFT | RAIL_RIGHT;
+        assert_eq!(rail_glyph(horizontal, false), '─');
+        assert_eq!(rail_glyph(horizontal, true), '━');
     }
 
     #[test]

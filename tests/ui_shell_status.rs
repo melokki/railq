@@ -53,6 +53,7 @@ fn map_header_separates_registration_from_the_marker_legend() {
     assert!(rendered.contains("Network"));
     assert!(rendered.contains("Registration ·"));
     assert!(rendered.contains(&registration));
+    assert!(rendered.contains("◆ selected"));
     assert!(rendered.contains("● station"));
     assert!(rendered.contains("○ settlement"));
     assert!(rendered.contains("▶ train"));
