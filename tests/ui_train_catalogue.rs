@@ -224,7 +224,8 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     );
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("Express 120"));
-    assert!(review.contains("Enter · confirm purchase (revalidated)"));
+    assert!(review.contains("Confirm Train Purchase"));
+    assert!(review.contains("[Enter] purchase"));
     fs::write(evidence_dir.join("delivery-review-120x40.txt"), review)?;
 
     assert_eq!(
@@ -278,8 +279,8 @@ fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
     let review = capture_rendered_buffer_mut(&mut shell, app.state(), 120, 40);
     fs::write(evidence_dir.join("purchase-review-120x40.txt"), &review)?;
     for expected in [
-        "1 Train → 2 Delivery Rail Station → 3 Review",
-        "Purchase",
+        "TRAIN ✓   DELIVERY ✓   REVIEW ●",
+        "Confirm Train Purchase",
         "Local 70",
         "Delivery Rail Station:",
         "Price: $3,000.00",
@@ -291,7 +292,7 @@ fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
         "not a planned Passenger",
         "Service or required Journey.",
         "LOW RESERVE",
-        "Enter · confirm purchase (revalidated)",
+        "[Enter] purchase",
     ] {
         assert!(review.contains(expected), "review should show {expected}");
     }
@@ -317,7 +318,7 @@ fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
         "Company Funds after purchase: $5.00",
         "Sample departure cost:",
         "LOW RESERVE",
-        "Enter · confirm purchase",
+        "[Enter] purchase",
     ] {
         assert!(
             compact.contains(expected),

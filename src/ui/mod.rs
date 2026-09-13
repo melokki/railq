@@ -1397,7 +1397,6 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         );
     } else if !is_bankrupt(state)
         && shell.active_view == View::Trains
-        && shell.fleet_flow.is_none()
         && shell.dispatch_flow.is_none()
     {
         shell.fleet_split_visible = content_area.width >= 96 && content_area.height >= 18;
@@ -1412,29 +1411,28 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             &mut shell.fleet_selection,
             shell.fleet_details_open,
         );
+        if let Some(flow) = &shell.fleet_flow {
+            flow.render_review(frame, content_area, state);
+        }
     } else if shell.active_view == View::Trains && shell.dispatch_flow.is_some() {
         if let Some(flow) = &mut shell.dispatch_flow {
             flow.render_panel(frame, content_area, state);
         }
     } else if shell.active_view == View::Trains {
-        if let Some(flow) = &shell.fleet_flow {
-            flow.render_review(frame, content_area, state);
-        } else {
-            frame.render_widget(
-                Paragraph::new(fleet::render_at(state, now))
-                    .block(
-                        Block::default()
-                            .borders(theme::THIN_BORDERS)
-                            .border_style(theme::border())
-                            .title(shell.active_view.label())
-                            .title_style(theme::title())
-                            .style(theme::panel()),
-                    )
-                    .style(theme::panel())
-                    .wrap(Wrap { trim: false }),
-                content_area,
-            );
-        }
+        frame.render_widget(
+            Paragraph::new(fleet::render_at(state, now))
+                .block(
+                    Block::default()
+                        .borders(theme::THIN_BORDERS)
+                        .border_style(theme::border())
+                        .title(shell.active_view.label())
+                        .title_style(theme::title())
+                        .style(theme::panel()),
+                )
+                .style(theme::panel())
+                .wrap(Wrap { trim: false }),
+            content_area,
+        );
     } else if shell.active_view == View::Company
         && shell.company_recovery_review_open
         && !is_bankrupt(state)
@@ -1453,18 +1451,20 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             &mut shell.company_receipt_selection,
             shell.company_receipt_details_open,
         );
-    } else if shell.active_view == View::BuyTrains
-        && shell.market_flow.is_none()
-        && !is_bankrupt(state)
-    {
-        market::render_dashboard(frame, content_area, state, &mut shell.market_selection);
-    } else if shell.active_view == View::BuyTrains && shell.market_flow.is_some() {
+    } else if shell.active_view == View::BuyTrains && !is_bankrupt(state) {
+        let purchase_confirmation_open = shell
+            .market_flow
+            .as_ref()
+            .is_some_and(market::MarketFlow::is_confirming);
+        if shell.market_flow.is_none() || purchase_confirmation_open {
+            market::render_dashboard(frame, content_area, state, &mut shell.market_selection);
+        }
         if let Some(flow) = &mut shell.market_flow {
             flow.render_panel(frame, content_area, state);
         }
     } else {
         let content = if is_bankrupt(state) {
-            bankruptcy_text(shell.restart_confirmation)
+            bankruptcy_text(false)
         } else {
             match shell.active_view {
                 View::Map => map::render_at(state, now),
@@ -1498,6 +1498,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             frame.render_widget(Clear, modal_area);
             flow.render_panel(frame, modal_area, state);
         }
+    }
+    if is_bankrupt(state) && shell.restart_confirmation {
+        render_bankruptcy_restart_confirmation(frame, content_area);
     }
 
     render_footer(frame, footer_area, shell, state);
@@ -1672,7 +1675,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
     if is_bankrupt(state) {
         return if shell.restart_confirmation {
             vec![
-                FooterShortcut::enabled("Enter", "Confirm restart"),
+                FooterShortcut::enabled("Enter", "Restart"),
                 FooterShortcut::enabled("Esc", "Cancel"),
                 FooterShortcut::enabled("Q", "Quit"),
             ]
@@ -1714,7 +1717,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         }
     } else if shell.active_view == View::Trains && shell.fleet_flow.is_some() {
         vec![
-            FooterShortcut::enabled("Enter", "Confirm resale"),
+            FooterShortcut::enabled("Enter", "Resell"),
             FooterShortcut::enabled("Esc", "Cancel"),
         ]
     } else if shell.active_view == View::Trains && shell.fleet_details_open {
@@ -1790,7 +1793,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
     } else if shell.active_view == View::Map && shell.services_open {
         shell
             .service_workspace
-            .footer_shortcuts(compact)
+            .footer_shortcuts(compact, state)
             .iter()
             .map(|(key, action)| FooterShortcut::enabled(*key, *action))
             .collect()
@@ -1859,7 +1862,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
                 ]
             } else {
                 vec![
-                    FooterShortcut::enabled("Enter", "Confirm"),
+                    FooterShortcut::enabled("Enter", "Purchase"),
                     FooterShortcut::enabled("←", "Back"),
                     FooterShortcut::enabled("Esc", "Cancel"),
                 ]
@@ -2427,6 +2430,33 @@ fn render_outcome_overlay(frame: &mut ratatui::Frame, area: Rect, outcome: &Acti
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         overlay_area,
+    );
+}
+
+fn render_bankruptcy_restart_confirmation(frame: &mut ratatui::Frame, area: Rect) {
+    let card = modal::centered_rect(area, 70, 15);
+    let modal_areas = modal::render_shell(
+        frame,
+        card,
+        "Confirm Safe Restart",
+        modal::shortcut_line(&[("Enter", "restart"), ("Esc", "keep save")]),
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Safe restart review", theme::focused_title()),
+            Line::from(""),
+            Line::from(
+                "A fresh game is created only after the current Player Company save is preserved in a unique archive backup.",
+            ),
+            Line::from(""),
+            Line::styled(
+                "The existing save is never silently overwritten.",
+                theme::warning(),
+            ),
+        ])
+        .style(theme::panel())
+        .wrap(Wrap { trim: true }),
+        modal_areas.body,
     );
 }
 

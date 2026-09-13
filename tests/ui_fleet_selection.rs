@@ -212,11 +212,11 @@ fn fleet_focus_respects_the_visible_workspace_and_s_reviews_the_selected_ready_t
     press(&mut shell, &state, KeyCode::Down);
     press(&mut shell, &state, KeyCode::Char('s'));
     let resale = capture_rendered_buffer(&shell, &state, 120, 40);
-    assert!(resale.contains("Fleet · resale review"));
+    assert!(resale.contains("Confirm Train Resale"));
     assert!(resale.contains("Resell Train 02"));
     assert!(resale.contains("Proceeds"));
     assert!(resale.contains("Funds after"));
-    assert!(resale.contains("Enter · confirm resale"));
+    assert!(resale.contains("[Enter] resell"));
 
     let train_id = state.player_company.fleet.trains[1].id;
     assert_eq!(
@@ -253,8 +253,8 @@ fn resale_review_has_complete_themed_evidence_at_normal_and_compact_sizes()
             "70%",
             "Funds now",
             "Funds after",
-            "Enter · confirm resale",
-            "Esc · cancel",
+            "[Enter] resell",
+            "[Esc] cancel",
         ] {
             assert!(
                 rendered.contains(fact),
@@ -265,7 +265,7 @@ fn resale_review_has_complete_themed_evidence_at_normal_and_compact_sizes()
             .lines()
             .enumerate()
             .find_map(|(row, line)| {
-                line.find("Enter · confirm resale")
+                line.find("[Enter] resell")
                     .map(|column| (row, column))
             })
             .expect("confirmation instruction must be visible");

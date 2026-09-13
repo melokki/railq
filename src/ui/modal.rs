@@ -21,6 +21,21 @@ pub struct ModalAreas {
     pub footer: Rect,
 }
 
+/// Returns a centered rectangle capped to the available workspace.
+///
+/// Confirmation dialogs use this instead of taking over the whole workspace,
+/// while still degrading cleanly to the full area on small terminals.
+pub fn centered_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
+    let width = area.width.min(max_width);
+    let height = area.height.min(max_height);
+    Rect {
+        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        y: area.y.saturating_add(area.height.saturating_sub(height) / 2),
+        width,
+        height,
+    }
+}
+
 /// Draws the shared RailQ modal shell and returns the padded body/footer areas.
 pub fn render_shell(
     frame: &mut Frame,

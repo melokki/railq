@@ -59,6 +59,11 @@ fn existing_services_are_listed_and_can_request_deletion() {
     assert!(rendered.contains("Ordered stops"));
 
     assert_eq!(press(&mut shell, &state, KeyCode::Char('d')), ShellAction::Continue);
+    let confirmation = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(confirmation.contains("Delete Passenger Service"));
+    assert!(confirmation.contains("Delete this Service?"));
+    assert!(confirmation.contains("[Enter] delete"));
+    assert!(confirmation.contains("[Esc] cancel"));
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),
         ShellAction::DeletePassengerService { service_id }

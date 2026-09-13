@@ -45,7 +45,9 @@ impl ServiceWorkspace {
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) -> ServiceWorkspaceAction {
         if let Some(service_id) = self.delete_confirmation {
             return match key {
-                KeyCode::Enter => ServiceWorkspaceAction::Delete { service_id },
+                KeyCode::Enter if service_active_journeys(state, service_id) == 0 => {
+                    ServiceWorkspaceAction::Delete { service_id }
+                }
                 KeyCode::Esc | KeyCode::Backspace | KeyCode::Left => {
                     self.delete_confirmation = None;
                     ServiceWorkspaceAction::Continue
@@ -215,9 +217,17 @@ impl ServiceWorkspace {
     /// Contextual actions for the shared RailQ footer.  The footer owns the
     /// visual treatment so Passenger Services can describe behaviour without
     /// embedding presentation markup in a string.
-    pub fn footer_shortcuts(&self, compact: bool) -> &'static [(&'static str, &'static str)] {
-        if self.delete_confirmation.is_some() {
-            &[("Enter", "Delete"), ("Esc", "Cancel")]
+    pub fn footer_shortcuts(
+        &self,
+        compact: bool,
+        state: &GameState,
+    ) -> &'static [(&'static str, &'static str)] {
+        if let Some(service_id) = self.delete_confirmation {
+            if service_active_journeys(state, service_id) == 0 {
+                &[("Enter", "Delete"), ("Esc", "Cancel")]
+            } else {
+                &[("Esc", "Close")]
+            }
         } else if let Some(flow) = &self.create_flow {
             if flow.review {
                 &[("Enter", "Create"), ("←", "Edit"), ("Esc", "Cancel")]
@@ -267,16 +277,12 @@ impl ServiceWorkspace {
         // Keep the workspace visible behind focused workflows. This mirrors the
         // modal grammar used by Manual Dispatch and makes Create Service feel
         // like a temporary task rather than an entirely different screen.
-        render_service_list(
-            frame,
-            area,
-            state,
-            self.selected_service_index,
-            self.delete_confirmation,
-        );
+        render_service_list(frame, area, state, self.selected_service_index);
 
         if let Some(flow) = &self.create_flow {
             render_create_flow(frame, create_service_modal_rect(area), state, flow);
+        } else if let Some(service_id) = self.delete_confirmation {
+            render_delete_confirmation(frame, area, state, service_id);
         }
     }
 }
@@ -286,7 +292,6 @@ fn render_service_list(
     area: Rect,
     state: &GameState,
     selected_index: usize,
-    delete_confirmation: Option<ServiceId>,
 ) {
     let [list_area, details_area] = Layout::horizontal([
         Constraint::Percentage(42),
@@ -325,7 +330,7 @@ fn render_service_list(
 
     let detail_lines = services
         .get(selected_index)
-        .map(|service| service_details(state, service.id, delete_confirmation))
+        .map(|service| service_details(state, service.id))
         .unwrap_or_else(|| {
             vec![Line::from(Span::styled(
                 "Create a Service to define an ordered, directional stop pattern.",
@@ -344,7 +349,6 @@ fn render_service_list(
 fn service_details(
     state: &GameState,
     service_id: ServiceId,
-    delete_confirmation: Option<ServiceId>,
 ) -> Vec<Line<'static>> {
     let Some(service) = state
         .player_company
@@ -388,18 +392,72 @@ fn service_details(
         Line::from(format!("{}. {}", index + 1, station_label(state, *station_id)))
     }));
 
-    if delete_confirmation == Some(service.id) {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            if active == 0 {
-                "Delete this Service? Enter confirms; Esc cancels."
-            } else {
-                "This Service has an active Journey and cannot be deleted."
-            },
-            if active == 0 { theme::warning() } else { theme::error() },
-        )));
-    }
     lines
+}
+
+fn service_active_journeys(state: &GameState, service_id: ServiceId) -> usize {
+    state
+        .active_journeys
+        .iter()
+        .filter(|journey| journey.service_id == service_id)
+        .count()
+}
+
+fn render_delete_confirmation(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    service_id: ServiceId,
+) {
+    let Some(service) = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+    else {
+        return;
+    };
+    let active = service_active_journeys(state, service_id);
+    let card = modal::centered_rect(area, 64, 14);
+    let footer = if active == 0 {
+        modal::shortcut_line(&[("Enter", "delete"), ("Esc", "cancel")])
+    } else {
+        modal::shortcut_line(&[("Esc", "close")])
+    };
+    let modal_areas = modal::render_shell(frame, card, "Delete Passenger Service", footer);
+
+    let mut lines = vec![
+        Line::styled(service.name.clone(), theme::focused_title()),
+        Line::from(route_label(state, &service.stop_station_ids)),
+        Line::from(""),
+    ];
+    if active == 0 {
+        lines.extend([
+            Line::styled("Delete this Service?", theme::warning()),
+            Line::from("The saved stop pattern will be removed."),
+            Line::from(Span::styled(
+                "This does not sell Trains or change completed Journey receipts.",
+                theme::secondary(),
+            )),
+        ]);
+    } else {
+        lines.extend([
+            Line::styled("Deletion unavailable", theme::error()),
+            Line::from(format!(
+                "{active} active Journey(s) still use this Service."
+            )),
+            Line::from(Span::styled(
+                "Wait for those Journeys to arrive before deleting it.",
+                theme::secondary(),
+            )),
+        ]);
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        modal_areas.body,
+    );
 }
 
 fn render_create_flow(frame: &mut Frame, area: Rect, state: &GameState, flow: &CreateServiceFlow) {

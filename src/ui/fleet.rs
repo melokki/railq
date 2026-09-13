@@ -21,7 +21,7 @@ use crate::{
         GameState, Journey, Money, RailStationId, Train, TrainId, TrainNickname, TrainStatus,
         UtcSeconds,
     },
-    ui::theme,
+    ui::{modal, theme},
 };
 
 /// Persistent Fleet browsing state. The selected identity is a Train ID so a
@@ -433,18 +433,24 @@ fn resale_review(state: &GameState, train_id: TrainId) -> Result<ResaleReview<'_
 }
 
 fn render_resale_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &FleetFlow) {
-    let block = panel_block("Trains · resale review", true);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let review = resale_review(state, flow.train_id);
+    let card = modal::centered_rect(area, 64, 16);
+    let footer = if review.is_ok() {
+        modal::shortcut_line(&[("Enter", "resell"), ("Esc", "cancel")])
+    } else {
+        modal::shortcut_line(&[("Esc", "close")])
+    };
+    let modal_areas = modal::render_shell(frame, card, "Confirm Train Resale", footer);
 
-    let lines = match resale_review(state, flow.train_id) {
+    let mut lines = match review {
         Ok(review) => vec![
             Line::styled(
                 format!("Resell Train {:02}", review.train.id.get()),
-                theme::title(),
+                theme::focused_title(),
             ),
             labelled_line("Model", &train_model_name(review.train)),
             labelled_line("Status", "READY"),
+            Line::from(""),
             labelled_line(
                 "Proceeds",
                 &format!("{} (70%)", format_money(review.proceeds)),
@@ -452,40 +458,30 @@ fn render_resale_review(frame: &mut Frame, area: Rect, state: &GameState, flow: 
             labelled_line("Funds now", &format_money(state.player_company.funds)),
             labelled_line("Funds after", &format_money(review.funds_after)),
             Line::from(""),
-            Line::styled("Enter · confirm resale", theme::focused_title()),
-            Line::styled("Esc · cancel (no changes)", theme::hint()),
+            Line::styled(
+                "The Train will be removed from your Fleet after the sale is saved.",
+                theme::warning(),
+            ),
         ],
         Err(reason) => vec![
-            Line::styled("Resale unavailable", theme::title()),
-            Line::styled(reason, theme::error()),
+            Line::styled("Resale unavailable", theme::error()),
             Line::from(""),
-            Line::styled("Esc · return to Fleet", theme::hint()),
+            Line::from(reason),
         ],
     };
+    if let Some(rejection) = &flow.rejection {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!("Resale rejected: {rejection}"),
+            theme::error(),
+        ));
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        inner,
+        modal_areas.body,
     );
-
-    if let Some(rejection) = &flow.rejection {
-        let rejection_area = Rect {
-            x: inner.x,
-            y: inner.y.saturating_add(inner.height.saturating_sub(2)),
-            width: inner.width,
-            height: inner.height.min(2),
-        };
-        frame.render_widget(
-            Paragraph::new(vec![Line::styled(
-                format!("Resale rejected: {rejection}"),
-                theme::error(),
-            )])
-            .style(theme::panel())
-            .wrap(Wrap { trim: true }),
-            rejection_area,
-        );
-    }
 }
 
 /// Renders the Fleet workspace. Wide terminals keep the selected Train's

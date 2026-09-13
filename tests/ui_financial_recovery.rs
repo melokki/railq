@@ -114,8 +114,11 @@ fn bankruptcy_restart_review_keeps_help_cancel_failure_and_saved_outcome_explici
         &review,
     )?;
     assert!(review.contains("BANKRUPTCY"));
+    assert!(review.contains("Confirm Safe Restart"));
     assert!(review.contains("Safe restart review"));
     assert!(review.contains("preserved"));
+    assert!(review.contains("[Enter] restart"));
+    assert!(review.contains("[Esc] keep save"));
 
     assert_eq!(
         shell.handle_key(key(KeyCode::Esc), &state),

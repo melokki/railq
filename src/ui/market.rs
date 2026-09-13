@@ -20,7 +20,7 @@ use ratatui::{
 use crate::{
     catalog::{TrainModel, train_catalogue},
     model::{GameState, Money, RailLine, RailStationId},
-    ui::theme,
+    ui::{modal, theme},
 };
 
 /// Persistent catalogue focus. Catalogue records are saved with a game, so an
@@ -122,6 +122,11 @@ impl MarketFlow {
     /// Returns whether this flow currently owns delivery Rail Station input.
     pub fn is_selecting_delivery(&self) -> bool {
         matches!(self.step, MarketStep::SelectDelivery { .. })
+    }
+
+    /// Returns whether the purchase is at its final explicit confirmation step.
+    pub fn is_confirming(&self) -> bool {
+        matches!(self.step, MarketStep::Confirm { .. })
     }
 
     /// Starts delivery selection for a focused catalogue Train without changing
@@ -282,7 +287,7 @@ impl MarketFlow {
                 delivery_station_id,
             } => render_purchase_review(
                 frame,
-                area,
+                modal::centered_rect(area, 78, 24),
                 state,
                 *catalogue_index,
                 *delivery_station_id,
@@ -355,114 +360,70 @@ fn render_purchase_review(
     delivery_station_id: RailStationId,
     rejection: Option<&str>,
 ) {
+    let footer = modal::shortcut_line(&[
+        ("Enter", "purchase"),
+        ("←", "delivery"),
+        ("Esc", "cancel"),
+    ]);
+    let modal_areas = modal::render_shell(frame, area, "Confirm Train Purchase", footer);
+
     let Some(train) = train_catalogue().models().get(catalogue_index) else {
         frame.render_widget(
             Paragraph::new(vec![
-                Line::styled(
-                    "1 Train → 2 Delivery Rail Station → 3 Review",
-                    theme::focused_title(),
+                Line::styled("Purchase unavailable", theme::error()),
+                Line::from(""),
+                Line::from(
+                    "The selected catalogue Train is no longer available. Return to delivery and choose a current model.",
                 ),
-                Line::styled(
-                    "The selected catalogue Train is no longer available. Return to the catalogue and choose a current model.",
-                    theme::error(),
-                ),
-                Line::styled("Left / Backspace · delivery   Esc · cancel", theme::hint()),
             ])
-            .block(panel_block("Train Market · purchase review", true))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-            area,
+            modal_areas.body,
         );
         return;
     };
 
-    let footer_rows = 2_u16.saturating_add(u16::from(rejection.is_some()));
-    let [step_area, body_area, footer_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(5),
-        Constraint::Length(footer_rows),
-    ])
-    .areas(area);
-    frame.render_widget(
-        Paragraph::new(Line::styled(
-            "1 Train → 2 Delivery Rail Station → 3 Review",
-            theme::focused_title(),
-        ))
-        .style(theme::panel()),
-        step_area,
-    );
-
-    if body_area.width >= 96 && body_area.height >= 10 {
-        let [purchase_area, reserve_area] =
-            Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)])
-                .spacing(1)
-                .areas(body_area);
-        frame.render_widget(
-            Paragraph::new(purchase_review_lines(state, train, delivery_station_id))
-                .block(panel_block("Purchase", true))
-                .style(theme::panel())
-                .wrap(Wrap { trim: true }),
-            purchase_area,
-        );
-        frame.render_widget(
-            Paragraph::new(sample_reserve_lines(state, train))
-                .block(panel_block("Sample departure reserve", false))
-                .style(theme::panel())
-                .wrap(Wrap { trim: true }),
-            reserve_area,
-        );
-    } else if body_area.height >= 16 {
-        let mut lines = purchase_review_lines(state, train, delivery_station_id);
+    let compact = modal_areas.body.height < 17;
+    let mut lines = vec![Line::styled(
+        "TRAIN ✓   DELIVERY ✓   REVIEW ●",
+        theme::focused_title(),
+    )];
+    lines.push(Line::from(""));
+    if compact {
+        lines.extend(compact_purchase_review_lines(
+            state,
+            train,
+            delivery_station_id,
+        ));
+    } else {
+        lines.extend(purchase_review_lines(state, train, delivery_station_id));
         lines.push(Line::from(""));
         lines.extend(sample_reserve_lines(state, train));
-        frame.render_widget(
-            Paragraph::new(lines)
-                .block(panel_block("Train Market · purchase review", true))
-                .style(theme::panel())
-                .wrap(Wrap { trim: true }),
-            body_area,
-        );
-    } else {
-        frame.render_widget(
-            Paragraph::new(compact_purchase_review_lines(
-                state,
-                train,
-                delivery_station_id,
-            ))
-            .block(panel_block("Train Market · purchase review", true))
-            .style(theme::panel())
-            .wrap(Wrap { trim: true }),
-            body_area,
-        );
     }
-
-    let mut footer = Vec::new();
+    lines.push(Line::from(""));
     if low_reserve(state, train) {
-        footer.push(Line::styled(
-            "LOW RESERVE · funds after purchase cannot cover this sample departure cost.",
+        lines.push(Line::styled(
+            "LOW RESERVE · funds after purchase cannot cover the sample departure cost.",
             theme::warning(),
         ));
     } else {
-        footer.push(Line::styled(
-            "Reserve check · funds after purchase cover this sample departure cost.",
+        lines.push(Line::styled(
+            "Reserve check · funds after purchase cover the sample departure cost.",
             theme::success(),
         ));
     }
     if let Some(rejection) = rejection {
-        footer.push(Line::styled(
+        lines.push(Line::styled(
             format!("Purchase rejected: {rejection}"),
             theme::error(),
         ));
     }
-    footer.push(Line::styled(
-        "Enter · confirm purchase (revalidated)   Left / Backspace · delivery   Esc · cancel",
-        theme::hint(),
-    ));
+
     frame.render_widget(
-        Paragraph::new(footer)
+        Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        footer_area,
+        modal_areas.body,
     );
 }
 
