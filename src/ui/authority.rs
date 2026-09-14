@@ -522,44 +522,109 @@ fn append_timeline(lines: &mut Vec<Line<'static>>, project: &InfrastructureProje
         lines.push(timestamp_line("Funded", value, now));
     }
 
-    match (
-        project.timeline.scheduled_start_at,
-        project.timeline.construction_started_at,
-    ) {
-        (Some(scheduled), None) => lines.push(schedule_line("Scheduled start", scheduled, now)),
-        (_, Some(started)) => {
-            lines.push(timestamp_line("Construction started", started, now));
-            if let Some(completion) = project.timeline.planned_completion_at {
-                let duration = completion
-                    .unix_seconds()
-                    .saturating_sub(started.unix_seconds())
-                    .max(0) as u64;
-                lines.push(duration_line("Construction duration", duration));
-                lines.push(absolute_timestamp_line("Expected opening", completion));
+    lines.push(Line::from(""));
+    match project.status {
+        InfrastructureProjectStatus::Requested => {
+            lines.push(Line::styled("REQUESTED", theme::table_header()));
+            lines.push(value_line("Next", "Awaiting review"));
+        }
+        InfrastructureProjectStatus::UnderReview => {
+            lines.push(Line::styled("REVIEW", theme::table_header()));
+            if let Some(value) = project.timeline.review_started_at {
+                lines.push(timestamp_line("Started", value, now));
+            }
+            lines.push(value_line("Next", "Decision pending"));
+        }
+        InfrastructureProjectStatus::Proposed => {
+            lines.push(Line::styled("PROPOSAL", theme::table_header()));
+            if let Some(value) = project.timeline.proposed_at {
+                lines.push(timestamp_line("Proposed", value, now));
+            }
+            lines.push(value_line("Next", "Authority decision"));
+        }
+        InfrastructureProjectStatus::Approved => {
+            lines.push(Line::styled("APPROVED", theme::table_header()));
+            lines.push(value_line("Next", "Funding"));
+        }
+        InfrastructureProjectStatus::Deferred => {
+            lines.push(Line::styled("DEFERRED", theme::table_header()));
+            if let Some(value) = project.timeline.deferred_at {
+                lines.push(timestamp_line("Deferred", value, now));
+            }
+        }
+        InfrastructureProjectStatus::Funding => {
+            lines.push(Line::styled("FUNDING", theme::table_header()));
+            let estimated = i128::from(project.funding.estimated_cost.cents()).max(0);
+            let committed = i128::from(project.funding.authority_committed.cents()).max(0);
+            let percent = if estimated == 0 {
+                0
+            } else {
+                committed.saturating_mul(100).saturating_div(estimated).min(100) as u8
+            };
+            lines.push(progress_line("Progress", percent));
+            if let Ok(gap) = project.funding.funding_gap() {
+                lines.push(money_line("Remaining", gap));
+            }
+        }
+        InfrastructureProjectStatus::Scheduled => {
+            lines.push(Line::styled("CONSTRUCTION QUEUE", theme::table_header()));
+            if let Some(value) = project.timeline.scheduled_start_at {
+                lines.push(schedule_line("Starts", value, now));
+            } else {
+                lines.push(value_line("Starts", "Awaiting construction slot"));
+            }
+        }
+        InfrastructureProjectStatus::Construction => {
+            lines.push(Line::styled("CONSTRUCTION", theme::table_header()));
+            if let Some(started) = project.timeline.construction_started_at {
+                lines.push(timestamp_line("Started", started, now));
+                if let Some(completion) = project.timeline.planned_completion_at {
+                    let duration = completion
+                        .unix_seconds()
+                        .saturating_sub(started.unix_seconds())
+                        .max(0) as u64;
+                    let elapsed = now
+                        .unix_seconds()
+                        .saturating_sub(started.unix_seconds())
+                        .max(0) as u64;
+                    let remaining = completion
+                        .unix_seconds()
+                        .saturating_sub(now.unix_seconds())
+                        .max(0) as u64;
+                    let progress = if duration == 0 {
+                        100
+                    } else {
+                        elapsed.min(duration).saturating_mul(100).saturating_div(duration) as u8
+                    };
 
-                let remaining = completion
-                    .unix_seconds()
-                    .saturating_sub(now.unix_seconds())
-                    .max(0) as u64;
+                    lines.push(duration_line("Duration", duration));
+                    lines.push(Line::from(vec![
+                        Span::styled("Opens  ", theme::secondary()),
+                        Span::styled(format_project_timestamp(completion, now), theme::primary_value()),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled("Remaining  ", theme::secondary()),
+                        Span::styled(compact_duration(remaining), theme::primary_value()),
+                    ]));
+                    lines.push(progress_line("Progress", progress));
+                }
+            }
+        }
+        InfrastructureProjectStatus::Open => {
+            lines.push(Line::styled("OPEN", theme::table_header()));
+            if let Some(value) = project.timeline.completed_at {
                 lines.push(Line::from(vec![
-                    Span::styled("Time remaining  ", theme::secondary()),
-                    Span::styled(format::duration(remaining), theme::primary_value()),
+                    Span::styled("Opened  ", theme::secondary()),
+                    Span::styled(format_project_timestamp(value, now), theme::primary_value()),
                 ]));
             }
         }
-        _ => {}
-    }
-
-    if project.timeline.construction_started_at.is_none() {
-        if let Some(value) = project.timeline.planned_completion_at {
-            lines.push(absolute_timestamp_line("Expected opening", value));
+        InfrastructureProjectStatus::Cancelled => {
+            lines.push(Line::styled("CANCELLED", theme::table_header()));
+            if let Some(value) = project.timeline.cancelled_at {
+                lines.push(timestamp_line("Cancelled", value, now));
+            }
         }
-    }
-    if let Some(value) = project.timeline.completed_at {
-        lines.push(absolute_timestamp_line("Opened", value));
-    }
-    if let Some(value) = project.timeline.cancelled_at {
-        lines.push(timestamp_line("Cancelled", value, now));
     }
 }
 
@@ -775,10 +840,17 @@ fn timestamp_line(label: &str, timestamp: UtcSeconds, now: UtcSeconds) -> Line<'
     ])
 }
 
+fn value_line(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}  "), theme::secondary()),
+        Span::styled(value.to_string(), theme::primary_value()),
+    ])
+}
+
 fn schedule_line(label: &str, timestamp: UtcSeconds, now: UtcSeconds) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label}  "), theme::secondary()),
-        Span::styled(format_utc_timestamp(timestamp), theme::primary_value()),
+        Span::styled(format_project_timestamp(timestamp, now), theme::primary_value()),
         Span::styled(" · ", theme::secondary()),
         Span::styled(relative_time(timestamp, now), theme::primary_value()),
     ])
@@ -787,26 +859,45 @@ fn schedule_line(label: &str, timestamp: UtcSeconds, now: UtcSeconds) -> Line<'s
 fn duration_line(label: &str, seconds: u64) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label}  "), theme::secondary()),
-        Span::styled(format::duration(seconds), theme::primary_value()),
+        Span::styled(compact_duration(seconds), theme::primary_value()),
     ])
 }
 
-fn absolute_timestamp_line(label: &str, timestamp: UtcSeconds) -> Line<'static> {
+fn progress_line(label: &str, percent: u8) -> Line<'static> {
+    let percent = percent.min(100);
+    let filled = usize::from(percent).saturating_mul(10).saturating_add(50) / 100;
+    let empty = 10usize.saturating_sub(filled);
     Line::from(vec![
         Span::styled(format!("{label}  "), theme::secondary()),
-        Span::styled(format_utc_timestamp(timestamp), theme::primary_value()),
+        Span::styled("█".repeat(filled), theme::warning()),
+        Span::styled("░".repeat(empty), theme::secondary()),
+        Span::styled(format!("  {percent}%"), theme::primary_value()),
     ])
 }
 
-fn format_utc_timestamp(timestamp: UtcSeconds) -> String {
+fn format_project_timestamp(timestamp: UtcSeconds, now: UtcSeconds) -> String {
+    let (year, month, day, hour, minute) = utc_date_time(timestamp);
+    let (now_year, now_month, now_day, _, _) = utc_date_time(now);
+    let timestamp_day = timestamp.unix_seconds().div_euclid(86_400);
+    let now_day_index = now.unix_seconds().div_euclid(86_400);
+
+    if (year, month, day) == (now_year, now_month, now_day) {
+        format!("Today {hour:02}:{minute:02} UTC")
+    } else if timestamp_day == now_day_index.saturating_add(1) {
+        format!("Tomorrow {hour:02}:{minute:02} UTC")
+    } else {
+        format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
+    }
+}
+
+fn utc_date_time(timestamp: UtcSeconds) -> (i64, i64, i64, i64, i64) {
     let unix = timestamp.unix_seconds();
     let days = unix.div_euclid(86_400);
     let seconds_of_day = unix.rem_euclid(86_400);
     let (year, month, day) = civil_date_from_unix_days(days);
     let hour = seconds_of_day / 3_600;
     let minute = (seconds_of_day % 3_600) / 60;
-    let second = seconds_of_day % 60;
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+    (year, month, day, hour, minute)
 }
 
 fn civil_date_from_unix_days(days: i64) -> (i64, i64, i64) {
@@ -834,9 +925,37 @@ fn relative_time(timestamp: UtcSeconds, now: UtcSeconds) -> String {
     }
     let seconds = delta.unsigned_abs();
     if delta > 0 {
-        format!("in {}", format::duration(seconds))
+        format!("in {}", compact_duration(seconds))
     } else {
-        format!("{} ago", format::duration(seconds))
+        format!("{} ago", compact_duration(seconds))
+    }
+}
+
+fn compact_duration(seconds: u64) -> String {
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+
+    let total_minutes = seconds / 60;
+    if total_minutes < 60 {
+        return format!("{total_minutes}m");
+    }
+
+    let total_hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    if total_hours < 24 {
+        if minutes == 0 {
+            return format!("{total_hours}h");
+        }
+        return format!("{total_hours}h {minutes}m");
+    }
+
+    let days = total_hours / 24;
+    let hours = total_hours % 24;
+    if hours == 0 {
+        format!("{days}d")
+    } else {
+        format!("{days}d {hours}h")
     }
 }
 
@@ -919,7 +1038,7 @@ mod tests {
         sim::{authority::advance_infrastructure_planning, world::create_new_game},
     };
 
-    use super::{ProjectSelection, format_utc_timestamp, render};
+    use super::{ProjectSelection, compact_duration, format_project_timestamp, render};
 
     #[test]
     fn authority_render_exposes_budget_and_project_pipeline() {
@@ -941,15 +1060,14 @@ mod tests {
 
 
     #[test]
-    fn formats_authority_timestamps_as_exact_utc_times() {
+    fn formats_project_times_without_seconds() {
+        let now = UtcSeconds::from_unix_seconds(1_700_000_000);
         assert_eq!(
-            format_utc_timestamp(UtcSeconds::from_unix_seconds(0)),
-            "1970-01-01 00:00:00 UTC"
+            format_project_timestamp(UtcSeconds::from_unix_seconds(1_700_003_600), now),
+            "Today 23:13 UTC"
         );
-        assert_eq!(
-            format_utc_timestamp(UtcSeconds::from_unix_seconds(1_700_000_000)),
-            "2023-11-14 22:13:20 UTC"
-        );
+        assert_eq!(compact_duration(8_110), "2h 15m");
+        assert_eq!(compact_duration(42), "42s");
     }
 
     #[test]
