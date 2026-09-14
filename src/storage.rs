@@ -32,10 +32,10 @@ use crate::{
         JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre, OriginDestinationDemand,
         PassengerArrivalRate, PassengerCapacity, PassengerService, PlannedRailLine,
         PlannedRailStation, PlayerCompany, RailAuthority, RailAuthorityFinances, RailLine,
-        RailLineId, RailNetwork,
-        RailStation, RailStationId, RailwayRegistration, Region, ServiceId, Settlement, SettlementId,
-        SpeedKilometresPerHour, SpeedMetresPerSecond, TrackCount, Train, TrainId, TrainModelId,
-        TrainNickname, TrainStatus, UtcSeconds, VehicleKeeperMark,
+        RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
+        ServiceId, Settlement, SettlementId, SpeedKilometresPerHour, SpeedMetresPerSecond,
+        TrackCount, Train, TrainId, TrainModelId, TrainNickname, TrainStatus, UtcSeconds,
+        VehicleKeeperMark,
     },
     sim::{
         services::{path_between_stations, service_path_for_stops},
@@ -741,7 +741,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 | 17 => {},
+        16 | 17 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -1831,7 +1831,9 @@ fn migrate_v14_to_v15(connection: &Connection, path: &Path) -> Result<(), SaveSl
                 [],
                 |row| row.get(0),
             )
-            .map_err(|source| db_error("inspect Rail Lines during v15 migration in", path, source))?;
+            .map_err(|source| {
+                db_error("inspect Rail Lines during v15 migration in", path, source)
+            })?;
 
         if rail_lines_exist != 0 {
             let rate = crate::model::PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE
@@ -1851,7 +1853,9 @@ fn migrate_v14_to_v15(connection: &Connection, path: &Path) -> Result<(), SaveSl
                      WHERE singleton = 1",
                     params![rate],
                 )
-                .map_err(|source| db_error("seed infrastructure maintenance reserve in", path, source))?;
+                .map_err(|source| {
+                    db_error("seed infrastructure maintenance reserve in", path, source)
+                })?;
         }
 
         connection
@@ -1891,7 +1895,13 @@ fn migrate_v15_to_v16(connection: &Connection, path: &Path) -> Result<(), SaveSl
                 [],
                 |row| row.get(0),
             )
-            .map_err(|source| db_error("inspect financial history during v16 migration in", path, source))?;
+            .map_err(|source| {
+                db_error(
+                    "inspect financial history during v16 migration in",
+                    path,
+                    source,
+                )
+            })?;
         if financials_exist != 0 {
             let historical_access_fees: i64 = connection
                 .query_row(
@@ -1901,7 +1911,13 @@ fn migrate_v15_to_v16(connection: &Connection, path: &Path) -> Result<(), SaveSl
                     |row| row.get(0),
                 )
                 .optional()
-                .map_err(|source| db_error("read historical access fees during v16 migration from", path, source))?
+                .map_err(|source| {
+                    db_error(
+                        "read historical access fees during v16 migration from",
+                        path,
+                        source,
+                    )
+                })?
                 .unwrap_or(0);
             connection
                 .execute(
@@ -1911,7 +1927,13 @@ fn migrate_v15_to_v16(connection: &Connection, path: &Path) -> Result<(), SaveSl
                      WHERE singleton = 1",
                     params![historical_access_fees],
                 )
-                .map_err(|source| db_error("credit historical access fees to Rail Authority in", path, source))?;
+                .map_err(|source| {
+                    db_error(
+                        "credit historical access fees to Rail Authority in",
+                        path,
+                        source,
+                    )
+                })?;
         }
 
         connection
@@ -2305,7 +2327,11 @@ fn migrate_v16_to_v17(connection: &Connection, path: &Path) -> Result<(), SaveSl
                 )
                 .map_err(|source| db_error("commit UUID migration for", path, source))?;
             let violation: Option<String> = connection
-                .query_row("SELECT table FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0))
+                .query_row(
+                    "SELECT table FROM pragma_foreign_key_check LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
                 .optional()
                 .map_err(|source| db_error("verify UUID migration for", path, source))?;
             if violation.is_some() {
@@ -2337,7 +2363,13 @@ fn migrate_v17_to_v18(connection: &Connection, path: &Path) -> Result<(), SaveSl
                 [],
                 |row| row.get(0),
             )
-            .map_err(|source| db_error("inspect Rail Authority construction capacity in", path, source))?;
+            .map_err(|source| {
+                db_error(
+                    "inspect Rail Authority construction capacity in",
+                    path,
+                    source,
+                )
+            })?;
         if has_capacity_column == 0 {
             connection
                 .execute(
@@ -2346,7 +2378,9 @@ fn migrate_v17_to_v18(connection: &Connection, path: &Path) -> Result<(), SaveSl
                      CHECK (rail_authority_construction_capacity > 0)",
                     [],
                 )
-                .map_err(|source| db_error("add Rail Authority construction capacity to", path, source))?;
+                .map_err(|source| {
+                    db_error("add Rail Authority construction capacity to", path, source)
+                })?;
         }
         connection
             .pragma_update(None, "user_version", 18_u32)
@@ -2428,20 +2462,22 @@ fn insert_state(
             ],
         )
         .map_err(|source| db_error("write game metadata to", path, source))?;
-    transaction.execute(
-        "INSERT INTO region(
+    transaction
+        .execute(
+            "INSERT INTO region(
              singleton, name, registration_code, registration_mark, population,
              rail_authority_name, rail_authority_construction_capacity
          ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            &state.region.name,
-            i64::from(state.region.railway_registration.numeric_code),
-            &state.region.railway_registration.mark,
-            db(state.region.population, "Region Population")?,
-            &state.region.rail_authority.name,
-            i64::from(state.region.rail_authority.construction_capacity),
-        ],
-    ).map_err(|source| db_error("write Region to", path, source))?;
+            params![
+                &state.region.name,
+                i64::from(state.region.railway_registration.numeric_code),
+                &state.region.railway_registration.mark,
+                db(state.region.population, "Region Population")?,
+                &state.region.rail_authority.name,
+                i64::from(state.region.rail_authority.construction_capacity),
+            ],
+        )
+        .map_err(|source| db_error("write Region to", path, source))?;
 
     let authority_finances = &state.region.rail_authority.finances;
     transaction
@@ -2498,23 +2534,25 @@ fn insert_state(
             ConstructionDifficulty::Moderate => "moderate",
             ConstructionDifficulty::High => "high",
         };
-        transaction.execute(
-            "INSERT INTO rail_lines(
+        transaction
+            .execute(
+                "INSERT INTO rail_lines(
                  id, sequence, first_station_id, second_station_id, distance_metres,
                  speed_limit_kmh, track_count, electrification, construction_difficulty
              ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                line.id.to_string(),
-                i64::try_from(sequence).unwrap_or(i64::MAX),
-                line.first_station_id.to_string(),
-                line.second_station_id.to_string(),
-                db(line.distance.metres(), "Rail Line distance")?,
-                i64::from(line.speed_limit.kilometres_per_hour()),
-                i64::from(line.track_count.tracks()),
-                electrification,
-                construction_difficulty,
-            ],
-        ).map_err(|source| db_error("write Rail Lines to", path, source))?;
+                params![
+                    line.id.to_string(),
+                    i64::try_from(sequence).unwrap_or(i64::MAX),
+                    line.first_station_id.to_string(),
+                    line.second_station_id.to_string(),
+                    db(line.distance.metres(), "Rail Line distance")?,
+                    i64::from(line.speed_limit.kilometres_per_hour()),
+                    i64::from(line.track_count.tracks()),
+                    electrification,
+                    construction_difficulty,
+                ],
+            )
+            .map_err(|source| db_error("write Rail Lines to", path, source))?;
     }
 
     for (sequence, project) in state
@@ -2681,16 +2719,14 @@ fn insert_infrastructure_project(
     let (kind, target_speed_limit_kmh, target_track_count) = match &project.kind {
         InfrastructureProjectKind::NewLine { .. } => ("new_line", None, None),
         InfrastructureProjectKind::SpeedUpgrade {
-            target_speed_limit,
-            ..
+            target_speed_limit, ..
         } => (
             "speed_upgrade",
             Some(i64::from(target_speed_limit.kilometres_per_hour())),
             None,
         ),
         InfrastructureProjectKind::DoubleTracking {
-            target_track_count,
-            ..
+            target_track_count, ..
         } => (
             "double_tracking",
             None,
@@ -2858,10 +2894,17 @@ fn load_infrastructure_projects(
         path,
         |row| {
             let timestamp = |index: usize| -> rusqlite::Result<Option<UtcSeconds>> {
-                Ok(row.get::<_, Option<i64>>(index)?.map(UtcSeconds::from_unix_seconds))
+                Ok(row
+                    .get::<_, Option<i64>>(index)?
+                    .map(UtcSeconds::from_unix_seconds))
             };
             Ok(PersistedProject {
-                id: row_domain_id(row, 0, "Infrastructure Project ID", InfrastructureProjectId::parse)?,
+                id: row_domain_id(
+                    row,
+                    0,
+                    "Infrastructure Project ID",
+                    InfrastructureProjectId::parse,
+                )?,
                 kind: row.get(1)?,
                 status: row.get(2)?,
                 timeline: InfrastructureProjectTimeline {
@@ -2891,12 +2934,20 @@ fn load_infrastructure_projects(
         path,
         |row| {
             Ok((
-                row_domain_id(row, 0, "Infrastructure Project ID", InfrastructureProjectId::parse)?,
+                row_domain_id(
+                    row,
+                    0,
+                    "Infrastructure Project ID",
+                    InfrastructureProjectId::parse,
+                )?,
                 row_domain_id(row, 1, "Rail Line ID", RailLineId::parse)?,
             ))
         },
     )? {
-        line_targets.entry(project_id).or_default().push(rail_line_id);
+        line_targets
+            .entry(project_id)
+            .or_default()
+            .push(rail_line_id);
     }
 
     let mut station_targets: HashMap<InfrastructureProjectId, Vec<RailStationId>> = HashMap::new();
@@ -2907,7 +2958,12 @@ fn load_infrastructure_projects(
         path,
         |row| {
             Ok((
-                row_domain_id(row, 0, "Infrastructure Project ID", InfrastructureProjectId::parse)?,
+                row_domain_id(
+                    row,
+                    0,
+                    "Infrastructure Project ID",
+                    InfrastructureProjectId::parse,
+                )?,
                 row_domain_id(row, 1, "Rail Station ID", RailStationId::parse)?,
             ))
         },
@@ -2927,7 +2983,12 @@ fn load_infrastructure_projects(
         path,
         |row| {
             Ok((
-                row_domain_id(row, 0, "Infrastructure Project ID", InfrastructureProjectId::parse)?,
+                row_domain_id(
+                    row,
+                    0,
+                    "Infrastructure Project ID",
+                    InfrastructureProjectId::parse,
+                )?,
                 PlannedRailStation {
                     id: row_domain_id(row, 1, "planned Rail Station ID", RailStationId::parse)?,
                     settlement_id: row_domain_id(row, 2, "Settlement ID", SettlementId::parse)?,
@@ -2935,7 +2996,10 @@ fn load_infrastructure_projects(
             ))
         },
     )? {
-        planned_stations.entry(project_id).or_default().push(station);
+        planned_stations
+            .entry(project_id)
+            .or_default()
+            .push(station);
     }
 
     let mut planned_lines: HashMap<InfrastructureProjectId, Vec<PlannedRailLine>> = HashMap::new();
@@ -2958,7 +3022,12 @@ fn load_infrastructure_projects(
                 _ => return Err(rusqlite::Error::InvalidQuery),
             };
             Ok((
-                row_domain_id(row, 0, "Infrastructure Project ID", InfrastructureProjectId::parse)?,
+                row_domain_id(
+                    row,
+                    0,
+                    "Infrastructure Project ID",
+                    InfrastructureProjectId::parse,
+                )?,
                 PlannedRailLine {
                     id: row_domain_id(row, 1, "planned Rail Line ID", RailLineId::parse)?,
                     first_station_id: row_domain_id(
@@ -3320,10 +3389,9 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
             .prepare("SELECT station_id FROM service_stops WHERE service_id = ?1 ORDER BY sequence")
             .map_err(|source| db_error("prepare Passenger Service stop query for", path, source))?;
         let stop_rows = stop_statement
-            .query_map(
-                params![service.id.to_string()],
-                |row| row.get::<_, String>(0),
-            )
+            .query_map(params![service.id.to_string()], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|source| db_error("read Passenger Service stops from", path, source))?;
         for row in stop_rows {
             let station =
@@ -3340,17 +3408,16 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
             )
             .map_err(|source| db_error("prepare Passenger Service path query for", path, source))?;
         let rows = statement
-            .query_map(
-                params![service.id.to_string()],
-                |row| row.get::<_, String>(0),
-            )
+            .query_map(params![service.id.to_string()], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|source| db_error("read Passenger Service path from", path, source))?;
         for row in rows {
             let line =
                 row.map_err(|source| db_error("read Passenger Service path from", path, source))?;
-            service.rail_line_ids.push(
-                RailLineId::parse(&line).map_err(|_| invalid_value(path, "Rail Line ID"))?,
-            );
+            service
+                .rail_line_ids
+                .push(RailLineId::parse(&line).map_err(|_| invalid_value(path, "Rail Line ID"))?);
         }
     }
 
@@ -3361,7 +3428,12 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         |row| {
             Ok(OriginDestinationDemand {
                 origin_station_id: row_domain_id(row, 0, "Demand origin", RailStationId::parse)?,
-                destination_station_id: row_domain_id(row, 1, "Demand destination", RailStationId::parse)?,
+                destination_station_id: row_domain_id(
+                    row,
+                    1,
+                    "Demand destination",
+                    RailStationId::parse,
+                )?,
                 waiting_passengers: u32::try_from(row.get::<_, i64>(2)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 passenger_arrival_rate_per_hour: PassengerArrivalRate::new(row.get(3)?)
@@ -3385,7 +3457,12 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                 service_id: row_domain_id(row, 1, "Passenger Service ID", ServiceId::parse)?,
                 train_id: row_domain_id(row, 2, "Train ID", TrainId::parse)?,
                 origin_station_id: row_domain_id(row, 3, "Journey origin", RailStationId::parse)?,
-                destination_station_id: row_domain_id(row, 4, "Journey destination", RailStationId::parse)?,
+                destination_station_id: row_domain_id(
+                    row,
+                    4,
+                    "Journey destination",
+                    RailStationId::parse,
+                )?,
                 passengers_carried: u32::try_from(row.get::<_, i64>(5)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 fare: Money::from_cents(row.get(6)?),
@@ -3413,28 +3490,25 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                 db_error("prepare Journey passenger group query for", path, source)
             })?;
         let rows = statement
-            .query_map(
-                params![journey.id.to_string()],
-                |row| {
-                    Ok(JourneyPassengerGroup {
-                        origin_station_id: row_domain_id(
-                            row,
-                            0,
-                            "Journey passenger origin",
-                            RailStationId::parse,
-                        )?,
-                        destination_station_id: row_domain_id(
-                            row,
-                            1,
-                            "Journey passenger destination",
-                            RailStationId::parse,
-                        )?,
-                        passengers: u32::try_from(row.get::<_, i64>(2)?)
-                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        fare: Money::from_cents(row.get(3)?),
-                    })
-                },
-            )
+            .query_map(params![journey.id.to_string()], |row| {
+                Ok(JourneyPassengerGroup {
+                    origin_station_id: row_domain_id(
+                        row,
+                        0,
+                        "Journey passenger origin",
+                        RailStationId::parse,
+                    )?,
+                    destination_station_id: row_domain_id(
+                        row,
+                        1,
+                        "Journey passenger destination",
+                        RailStationId::parse,
+                    )?,
+                    passengers: u32::try_from(row.get::<_, i64>(2)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    fare: Money::from_cents(row.get(3)?),
+                })
+            })
             .map_err(|source| db_error("read Journey passenger groups from", path, source))?;
         for row in rows {
             journey.passenger_groups.push(
@@ -3464,8 +3538,18 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
             fuel_cost: Money::from_cents(row.get(3)?),
             train_id: optional_row_domain_id(row, 4, "Journey receipt Train ID", TrainId::parse)?,
             train_model_name: row.get(5)?,
-            origin_station_id: optional_row_domain_id(row, 6, "Journey receipt origin", RailStationId::parse)?,
-            destination_station_id: optional_row_domain_id(row, 7, "Journey receipt destination", RailStationId::parse)?,
+            origin_station_id: optional_row_domain_id(
+                row,
+                6,
+                "Journey receipt origin",
+                RailStationId::parse,
+            )?,
+            destination_station_id: optional_row_domain_id(
+                row,
+                7,
+                "Journey receipt destination",
+                RailStationId::parse,
+            )?,
             passengers_carried: optional_row_u32(row, 8, "Journey receipt passengers")?,
             passenger_capacity: optional_row_u32(row, 9, "Journey receipt passenger capacity")?,
             completed_at: row
@@ -4188,9 +4272,7 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
     Ok(())
 }
 
-fn validate_rail_authority_finances(
-    authority: &RailAuthority,
-) -> Result<(), SaveValidationError> {
+fn validate_rail_authority_finances(authority: &RailAuthority) -> Result<(), SaveValidationError> {
     if authority.construction_capacity == 0 {
         return Err(SaveValidationError::InvalidValue {
             field: "Rail Authority construction capacity",
@@ -4238,8 +4320,6 @@ fn validate_infrastructure_projects(
     station_ids: &HashSet<RailStationId>,
     line_ids: &HashSet<RailLineId>,
 ) -> Result<(), SaveValidationError> {
-
-
     let project_ids = unique_ids(
         authority
             .infrastructure_projects
@@ -4252,7 +4332,6 @@ fn validate_infrastructure_projects(
             kind: "Infrastructure Project",
         });
     }
-
 
     let mut reserved_station_ids = HashSet::new();
     let mut reserved_line_ids = HashSet::new();
@@ -4328,7 +4407,10 @@ fn validate_infrastructure_projects(
                         field: "Infrastructure Project Rail Lines",
                     });
                 }
-                unique_ids(rail_line_ids.iter().copied(), "Infrastructure Project Rail Line")?;
+                unique_ids(
+                    rail_line_ids.iter().copied(),
+                    "Infrastructure Project Rail Line",
+                )?;
                 if rail_line_ids.iter().any(|id| !line_ids.contains(id)) {
                     return Err(SaveValidationError::DanglingReference {
                         field: "Infrastructure Project Rail Line",
@@ -4360,9 +4442,7 @@ fn validate_infrastructure_projects(
         }
         if authority.infrastructure_projects[index + 1..]
             .iter()
-            .any(|other| {
-                other.status.is_under_construction() && project.conflicts_with(other)
-            })
+            .any(|other| other.status.is_under_construction() && project.conflicts_with(other))
         {
             return Err(SaveValidationError::ImpossibleState {
                 reason: "conflicting Infrastructure Projects are simultaneously under construction",
@@ -5158,8 +5238,7 @@ mod tests {
         assert_eq!(
             validate_game_state(&state),
             Err(SaveValidationError::ImpossibleState {
-                reason:
-                    "conflicting Infrastructure Projects are simultaneously under construction",
+                reason: "conflicting Infrastructure Projects are simultaneously under construction",
             })
         );
     }
@@ -5694,7 +5773,12 @@ mod tests {
         assert_eq!(version, SAVE_VERSION);
         assert_eq!(
             finances,
-            (crate::model::PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.cents(), 0, 0, 0)
+            (
+                crate::model::PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.cents(),
+                0,
+                0,
+                0
+            )
         );
     }
 
@@ -5792,13 +5876,17 @@ mod tests {
             .query_row("SELECT id FROM rail_lines", [], |row| row.get(0))
             .unwrap();
         let project_id: String = connection
-            .query_row("SELECT id FROM infrastructure_projects", [], |row| row.get(0))
+            .query_row("SELECT id FROM infrastructure_projects", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let journey_train_id: String = connection
             .query_row("SELECT train_id FROM active_journeys", [], |row| row.get(0))
             .unwrap();
         let foreign_key_violations: i64 = connection
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
             .unwrap();
 
         for id in [&train_id, &line_id, &project_id] {

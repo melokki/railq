@@ -417,7 +417,6 @@ pub fn find_or_create_service_between_settlements(
     find_or_create_service(state, first_station_id, second_station_id)
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::{

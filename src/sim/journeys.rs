@@ -175,7 +175,6 @@ pub fn dispatch_journey(
     Ok(journey_id)
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -238,7 +237,11 @@ mod tests {
         );
         assert_eq!(state.financials.fuel_costs, quote.fuel_cost);
         assert_eq!(
-            state.region.rail_authority.finances.infrastructure_access_fee_revenue,
+            state
+                .region
+                .rail_authority
+                .finances
+                .infrastructure_access_fee_revenue,
             quote.infrastructure_access_fee
         );
         assert_eq!(

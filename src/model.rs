@@ -67,8 +67,8 @@ macro_rules! domain_id {
             /// identity; the suffix is display metadata only.
             pub fn new_v4_with_suffix(suffix: u64) -> Self {
                 let random = Uuid::new_v4().as_u128();
-                let payload = (random & !((1_u128 << 62) - 1))
-                    | u128::from(suffix & ((1_u64 << 62) - 1));
+                let payload =
+                    (random & !((1_u128 << 62) - 1)) | u128::from(suffix & ((1_u64 << 62) - 1));
                 Self::from_v4_bits(payload)
             }
 
@@ -84,10 +84,7 @@ macro_rules! domain_id {
             /// [`Self::new_v4`] instead.
             pub const fn new(value: u64) -> Self {
                 Self(Uuid::from_u128(
-                    (($namespace as u128) << 96)
-                        | (4_u128 << 76)
-                        | (2_u128 << 62)
-                        | value as u128,
+                    (($namespace as u128) << 96) | (4_u128 << 76) | (2_u128 << 62) | value as u128,
                 ))
             }
 
@@ -183,7 +180,10 @@ macro_rules! domain_id {
                         self.visit_str(&value)
                     }
 
-                    fn visit_newtype_struct<D2>(self, deserializer: D2) -> Result<Self::Value, D2::Error>
+                    fn visit_newtype_struct<D2>(
+                        self,
+                        deserializer: D2,
+                    ) -> Result<Self::Value, D2::Error>
                     where
                         D2: Deserializer<'de>,
                     {
@@ -662,11 +662,12 @@ impl DistanceMetres {
             .ok_or(CalculationError::Overflow {
                 operation: "speed-limited journey duration",
             })?;
-        let denominator = u64::from(speed_limit.0)
-            .checked_mul(1_000)
-            .ok_or(CalculationError::Overflow {
-                operation: "speed-limited journey duration",
-            })?;
+        let denominator =
+            u64::from(speed_limit.0)
+                .checked_mul(1_000)
+                .ok_or(CalculationError::Overflow {
+                    operation: "speed-limited journey duration",
+                })?;
         let seconds = numerator / denominator;
         let has_fractional_second = numerator % denominator != 0;
         let seconds = if has_fractional_second {
@@ -998,17 +999,13 @@ impl InfrastructureProjectKind {
         }
 
         match (self, other) {
-            (
-                Self::NewLine { planned_lines, .. },
-                Self::StationUpgrade { rail_station_ids },
-            )
-            | (
-                Self::StationUpgrade { rail_station_ids },
-                Self::NewLine { planned_lines, .. },
-            ) => planned_lines.iter().any(|line| {
-                rail_station_ids.contains(&line.first_station_id)
-                    || rail_station_ids.contains(&line.second_station_id)
-            }),
+            (Self::NewLine { planned_lines, .. }, Self::StationUpgrade { rail_station_ids })
+            | (Self::StationUpgrade { rail_station_ids }, Self::NewLine { planned_lines, .. }) => {
+                planned_lines.iter().any(|line| {
+                    rail_station_ids.contains(&line.first_station_id)
+                        || rail_station_ids.contains(&line.second_station_id)
+                })
+            }
             _ => false,
         }
     }
@@ -1764,7 +1761,9 @@ mod tests {
         finances.receive_regional_public_allocation().unwrap();
         assert_eq!(
             finances.treasury,
-            PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.checked_mul(2).unwrap()
+            PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION
+                .checked_mul(2)
+                .unwrap()
         );
     }
 

@@ -246,7 +246,6 @@ fn select_settlement_names(random: &mut ChaCha8Rng) -> [&'static str; SETTLEMENT
         .expect("the seeded settlement name pool must contain ten names")
 }
 
-
 fn rail_line(
     id: RailLineId,
     first_station_id: RailStationId,

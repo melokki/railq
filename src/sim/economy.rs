@@ -341,12 +341,8 @@ pub(crate) fn duration_between_service_stops(
     second_stop_index: usize,
     train_speed: SpeedMetresPerSecond,
 ) -> Result<DurationSeconds, EconomyError> {
-    let line_ids = line_ids_between_service_stops(
-        state,
-        service,
-        first_stop_index,
-        second_stop_index,
-    )?;
+    let line_ids =
+        line_ids_between_service_stops(state, service, first_stop_index, second_stop_index)?;
     duration_for_lines(state, &line_ids, train_speed)
 }
 
@@ -356,12 +352,8 @@ pub(crate) fn distance_between_service_stops(
     first_stop_index: usize,
     second_stop_index: usize,
 ) -> Result<DistanceMetres, EconomyError> {
-    let line_ids = line_ids_between_service_stops(
-        state,
-        service,
-        first_stop_index,
-        second_stop_index,
-    )?;
+    let line_ids =
+        line_ids_between_service_stops(state, service, first_stop_index, second_stop_index)?;
     distance_for_lines(state, &line_ids)
 }
 
@@ -527,8 +519,7 @@ mod tests {
                                 first_station_id: ORIGIN,
                                 second_station_id: RailStationId::new(2),
                                 distance: DistanceMetres::new(1_000).unwrap(),
-                                speed_limit: crate::model::SpeedKilometresPerHour::new(70)
-                                    .unwrap(),
+                                speed_limit: crate::model::SpeedKilometresPerHour::new(70).unwrap(),
                                 track_count: crate::model::TrackCount::SINGLE,
                                 electrification: crate::model::Electrification::None,
                                 construction_difficulty:
@@ -539,8 +530,7 @@ mod tests {
                                 first_station_id: RailStationId::new(2),
                                 second_station_id: DESTINATION,
                                 distance: DistanceMetres::new(501).unwrap(),
-                                speed_limit: crate::model::SpeedKilometresPerHour::new(70)
-                                    .unwrap(),
+                                speed_limit: crate::model::SpeedKilometresPerHour::new(70).unwrap(),
                                 track_count: crate::model::TrackCount::SINGLE,
                                 electrification: crate::model::Electrification::None,
                                 construction_difficulty:
