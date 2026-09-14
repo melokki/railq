@@ -548,6 +548,7 @@ mod tests {
                             },
                         ],
                     },
+                    finances: crate::model::RailAuthorityFinances::default(),
                     infrastructure_projects: vec![],
                     next_infrastructure_project_id: 1,
                 },

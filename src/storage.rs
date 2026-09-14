@@ -31,7 +31,8 @@ use crate::{
         InfrastructureProjectStatus, InfrastructureProjectTimeline, Journey, JourneyId,
         JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre, OriginDestinationDemand,
         PassengerArrivalRate, PassengerCapacity, PassengerService, PlannedRailLine,
-        PlannedRailStation, PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork,
+        PlannedRailStation, PlayerCompany, RailAuthority, RailAuthorityFinances, RailLine,
+        RailLineId, RailNetwork,
         RailStation, RailStationId, RailwayRegistration, Region, ServiceId, Settlement, SettlementId,
         SpeedKilometresPerHour, SpeedMetresPerSecond, TrackCount, Train, TrainId, TrainModelId,
         TrainNickname, TrainStatus, UtcSeconds, VehicleKeeperMark,
@@ -43,7 +44,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 12;
+pub const SAVE_VERSION: u32 = 13;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -381,6 +382,13 @@ CREATE TABLE IF NOT EXISTS region (
     rail_authority_name TEXT NOT NULL,
     next_infrastructure_project_id INTEGER NOT NULL CHECK (next_infrastructure_project_id > 0)
 );
+CREATE TABLE IF NOT EXISTS rail_authority_finances (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+    maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+    committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+    carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0)
+);
 CREATE TABLE IF NOT EXISTS settlements (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -587,6 +595,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v9_to_v10(connection, path)?;
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
         }
         2 => {
             migrate_v2_to_v3(connection, path)?;
@@ -599,6 +608,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v9_to_v10(connection, path)?;
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
         }
         3 => {
             migrate_v3_to_v4(connection, path)?;
@@ -610,6 +620,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v9_to_v10(connection, path)?;
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
         }
         4 => {
             migrate_v4_to_v5(connection, path)?;
@@ -620,6 +631,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v9_to_v10(connection, path)?;
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
         }
         5 => {
             migrate_v5_to_v6(connection, path)?;
@@ -629,6 +641,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v9_to_v10(connection, path)?;
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
         }
         6 => {
             migrate_v6_to_v7(connection, path)?;
@@ -637,6 +650,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v9_to_v10(connection, path)?;
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
         }
         7 => {
             migrate_v7_to_v8(connection, path)?;
@@ -644,23 +658,31 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v9_to_v10(connection, path)?;
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
         }
         8 => {
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
         }
         9 => {
             migrate_v9_to_v10(connection, path)?;
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
         }
         10 => {
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
         }
-        11 => migrate_v11_to_v12(connection, path)?,
+        11 => {
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+        }
+        12 => migrate_v12_to_v13(connection, path)?,
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -1632,7 +1654,7 @@ fn migrate_v11_to_v12(connection: &Connection, path: &Path) -> Result<(), SaveSl
             )
             .map_err(|source| db_error("add infrastructure project persistence to", path, source))?;
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 12_u32)
             .map_err(|source| db_error("write v12 schema version to", path, source))?;
         Ok(())
     })();
@@ -1641,6 +1663,44 @@ fn migrate_v11_to_v12(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v11 to v12 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v12_to_v13(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v12 to v13 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0)
+                 );
+                 INSERT INTO rail_authority_finances(
+                     singleton, treasury_cents, maintenance_reserve_cents,
+                     committed_investment_cents, carried_over_funds_cents
+                 ) VALUES(1, 0, 0, 0, 0);",
+            )
+            .map_err(|source| db_error("add Rail Authority finances to", path, source))?;
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v13 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v12 to v13 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -1680,6 +1740,7 @@ fn clear_state(
          DELETE FROM infrastructure_project_rail_stations;
          DELETE FROM infrastructure_project_rail_lines;
          DELETE FROM infrastructure_projects;
+         DELETE FROM rail_authority_finances;
          DELETE FROM rail_lines;
          DELETE FROM rail_stations;
          DELETE FROM settlements;
@@ -1727,6 +1788,22 @@ fn insert_state(
             )?
         ],
     ).map_err(|source| db_error("write Region to", path, source))?;
+
+    let authority_finances = &state.region.rail_authority.finances;
+    transaction
+        .execute(
+            "INSERT INTO rail_authority_finances(
+                 singleton, treasury_cents, maintenance_reserve_cents,
+                 committed_investment_cents, carried_over_funds_cents
+             ) VALUES(1, ?1, ?2, ?3, ?4)",
+            params![
+                authority_finances.treasury.cents(),
+                authority_finances.maintenance_reserve.cents(),
+                authority_finances.committed_investment.cents(),
+                authority_finances.carried_over_funds.cents(),
+            ],
+        )
+        .map_err(|source| db_error("write Rail Authority finances to", path, source))?;
 
     for settlement in &state.region.settlements {
         transaction
@@ -2389,6 +2466,23 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         )
         .map_err(|source| db_error("read Region from", path, source))?;
 
+    let (authority_treasury, maintenance_reserve, committed_investment, carried_over_funds):
+        (i64, i64, i64, i64) = connection
+        .query_row(
+            "SELECT treasury_cents, maintenance_reserve_cents, committed_investment_cents,
+                    carried_over_funds_cents
+             FROM rail_authority_finances WHERE singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|source| db_error("read Rail Authority finances from", path, source))?;
+    let rail_authority_finances = RailAuthorityFinances {
+        treasury: Money::from_cents(authority_treasury),
+        maintenance_reserve: Money::from_cents(maintenance_reserve),
+        committed_investment: Money::from_cents(committed_investment),
+        carried_over_funds: Money::from_cents(carried_over_funds),
+    };
+
     let settlements = query_all(
         connection,
         "SELECT id, name, population FROM settlements ORDER BY id",
@@ -2703,6 +2797,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                     rail_stations,
                     rail_lines,
                 },
+                finances: rail_authority_finances,
                 infrastructure_projects,
                 next_infrastructure_project_id: from_db_u64(
                     next_infrastructure_project_id,
@@ -3216,6 +3311,7 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
         &station_ids,
         &line_ids,
     )?;
+    validate_rail_authority_finances(&state.region.rail_authority)?;
 
     let mut service_distances = HashMap::new();
     let service_ids = unique_ids(
@@ -3347,6 +3443,37 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
             &station_ids,
             &service_distances,
         )?;
+    }
+
+    Ok(())
+}
+
+fn validate_rail_authority_finances(
+    authority: &RailAuthority,
+) -> Result<(), SaveValidationError> {
+    let finances = &authority.finances;
+    if finances.treasury.cents() < 0
+        || finances.maintenance_reserve.cents() < 0
+        || finances.committed_investment.cents() < 0
+        || finances.carried_over_funds.cents() < 0
+    {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Rail Authority financial amount",
+        });
+    }
+
+    let earmarked = finances
+        .maintenance_reserve
+        .checked_add(finances.committed_investment)?;
+    if earmarked > finances.treasury {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Rail Authority earmarks exceed its treasury",
+        });
+    }
+    if finances.carried_over_funds > finances.treasury {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Rail Authority carry-over exceeds its treasury",
+        });
     }
 
     Ok(())
@@ -4144,7 +4271,13 @@ mod tests {
     fn sqlite_round_trips_all_current_operating_state() {
         let directory = TestDirectory::new();
         let slot = SaveSlot::open(directory.save_path()).unwrap();
-        let state = active_game();
+        let mut state = active_game();
+        state.region.rail_authority.finances = RailAuthorityFinances {
+            treasury: Money::from_cents(9_000_000),
+            maintenance_reserve: Money::from_cents(1_500_000),
+            committed_investment: Money::from_cents(2_000_000),
+            carried_over_funds: Money::from_cents(750_000),
+        };
 
         slot.save(&state).unwrap();
 
@@ -4702,6 +4835,46 @@ mod tests {
         assert_eq!(registration_code, 67);
         assert_eq!(registration_mark, "VA");
         assert_eq!(company_vkm, "OMP");
+    }
+
+    #[test]
+    fn v12_schema_migrates_rail_authority_finances_with_safe_defaults() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE region (
+                     singleton INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     registration_code INTEGER NOT NULL,
+                     registration_mark TEXT NOT NULL,
+                     population INTEGER NOT NULL,
+                     rail_authority_name TEXT NOT NULL,
+                     next_infrastructure_project_id INTEGER NOT NULL
+                 );
+                 INSERT INTO region VALUES(1, 'Federation of Varelia', 67, 'VA', 1000, 'Varelia Rail Authority', 1);
+                 PRAGMA user_version = 12;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let finances: (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT treasury_cents, maintenance_reserve_cents, committed_investment_cents,
+                        carried_over_funds_cents
+                 FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(finances, (0, 0, 0, 0));
     }
 
     #[test]

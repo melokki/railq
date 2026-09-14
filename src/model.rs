@@ -925,11 +925,38 @@ fn ids_overlap<T: Eq>(left: &[T], right: &[T]) -> bool {
     left.iter().any(|id| right.contains(id))
 }
 
+/// The public funds controlled by a Rail Authority.
+///
+/// `treasury` is the total cash held by the Authority. Maintenance and
+/// committed investment are earmarks inside that treasury; the remainder is
+/// available for future infrastructure projects. `carried_over_funds` records
+/// the portion brought forward from an earlier budget cycle once fiscal
+/// periods are introduced.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RailAuthorityFinances {
+    pub treasury: Money,
+    pub maintenance_reserve: Money,
+    pub committed_investment: Money,
+    pub carried_over_funds: Money,
+}
+
+impl RailAuthorityFinances {
+    /// Money that is neither reserved for maintenance nor committed to an
+    /// approved infrastructure project.
+    pub fn uncommitted_investment(&self) -> Result<Money, CalculationError> {
+        self.treasury
+            .checked_sub(self.maintenance_reserve)?
+            .checked_sub(self.committed_investment)
+    }
+}
+
 /// The public owner of a Region's Rail Network.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RailAuthority {
     pub name: String,
     pub rail_network: RailNetwork,
+    #[serde(default)]
+    pub finances: RailAuthorityFinances,
     #[serde(default)]
     pub infrastructure_projects: Vec<InfrastructureProject>,
     #[serde(default = "default_next_infrastructure_project_id")]
@@ -1460,6 +1487,21 @@ mod tests {
     }
 
     #[test]
+    fn rail_authority_finances_expose_uncommitted_investment() {
+        let finances = RailAuthorityFinances {
+            treasury: Money::from_cents(1_000_000),
+            maintenance_reserve: Money::from_cents(200_000),
+            committed_investment: Money::from_cents(350_000),
+            carried_over_funds: Money::from_cents(100_000),
+        };
+
+        assert_eq!(
+            finances.uncommitted_investment().unwrap(),
+            Money::from_cents(450_000)
+        );
+    }
+
+    #[test]
     fn rail_authority_only_reports_active_construction_as_a_blocker() {
         let timeline = InfrastructureProjectTimeline {
             requested_at: UtcSeconds::from_unix_seconds(1),
@@ -1502,6 +1544,7 @@ mod tests {
         let authority = RailAuthority {
             name: "Test Authority".into(),
             rail_network: RailNetwork::default(),
+            finances: RailAuthorityFinances::default(),
             infrastructure_projects: vec![approved, blocker.clone()],
             next_infrastructure_project_id: 4,
         };
@@ -1740,6 +1783,7 @@ mod tests {
                         }],
                         rail_lines: vec![],
                     },
+                    finances: RailAuthorityFinances::default(),
                     infrastructure_projects: vec![],
                     next_infrastructure_project_id: 1,
                 },
@@ -1796,6 +1840,7 @@ mod tests {
         let authority = RailAuthority {
             name: "Varelia Rail Authority".into(),
             rail_network: RailNetwork::default(),
+            finances: RailAuthorityFinances::default(),
             infrastructure_projects: vec![],
             next_infrastructure_project_id: 1,
         };
