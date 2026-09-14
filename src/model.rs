@@ -1232,6 +1232,26 @@ impl RailAuthority {
             .saturating_sub(self.reserved_construction_count())
     }
 
+    /// Maximum number of projects the Authority actively finances at once.
+    ///
+    /// Keeping a small funding pipeline prevents every approved proposal from
+    /// becoming a permanently half-funded project when public cash is tight.
+    /// The provisional rule keeps two funding projects per construction slot.
+    pub fn funding_pipeline_capacity(&self) -> u32 {
+        self.construction_capacity.max(1).saturating_mul(2)
+    }
+
+    /// Number of projects currently occupying the active funding pipeline.
+    pub fn active_funding_count(&self) -> u32 {
+        u32::try_from(
+            self.infrastructure_projects
+                .iter()
+                .filter(|project| project.status == InfrastructureProjectStatus::Funding)
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+    }
+
     /// Whether a fully funded project can reserve a construction slot.
     pub fn can_schedule_construction(&self, candidate: &InfrastructureProject) -> bool {
         self.construction_slots_remaining() > 0

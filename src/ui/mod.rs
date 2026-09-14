@@ -761,7 +761,7 @@ impl Shell {
             {
                 self.fleet_selection.handle_key(key.code, state);
             }
-            KeyCode::Char('c' | 'C') if self.active_view == View::Authority => {
+            KeyCode::Char('f' | 'F') if self.active_view == View::Authority => {
                 match self.authority_project_selection.selected_project_id(state) {
                     Some(project_id) => match authority::ContributionReview::start(state, project_id) {
                         Ok(review) => {
@@ -2083,9 +2083,9 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
                 .and_then(|project_id| authority::ContributionReview::start(state, project_id).ok())
                 .is_some();
             items.push(if can_contribute {
-                FooterShortcut::enabled("C", "Contribute")
+                FooterShortcut::enabled("F", "Contribute")
             } else {
-                FooterShortcut::disabled("C", "Contribute")
+                FooterShortcut::disabled("F", "Contribute")
             });
             items
         }
@@ -2484,7 +2484,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                 "Current · Rail Authority".into(),
                 "↑↓ / jk Select infrastructure project".into(),
                 "PgUp / PgDn Scroll project pipeline".into(),
-                "c Contribute to selected project while it is in Funding".into(),
+                "f Contribute to selected project while it is in Funding".into(),
                 String::new(),
                 "The Authority controls public infrastructure; operator contributions are optional.".into(),
             ]);

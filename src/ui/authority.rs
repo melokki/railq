@@ -677,7 +677,7 @@ fn append_timeline(
         }
         InfrastructureProjectStatus::Approved => {
             lines.push(Line::styled("APPROVED", theme::table_header()));
-            lines.push(value_line("Next", "Funding"));
+            lines.push(value_line("Next", "Awaiting funding slot"));
         }
         InfrastructureProjectStatus::Deferred => {
             lines.push(Line::styled("DEFERRED", theme::table_header()));
@@ -961,7 +961,7 @@ fn project_next(project: &InfrastructureProject, now: UtcSeconds) -> String {
         InfrastructureProjectStatus::Requested => "Review pending".into(),
         InfrastructureProjectStatus::UnderReview => "Decision pending".into(),
         InfrastructureProjectStatus::Proposed => "Approval pending".into(),
-        InfrastructureProjectStatus::Approved => "Funding pending".into(),
+        InfrastructureProjectStatus::Approved => "Awaiting funding slot".into(),
         InfrastructureProjectStatus::Deferred => "No action".into(),
         InfrastructureProjectStatus::Funding => project
             .funding

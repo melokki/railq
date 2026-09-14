@@ -259,14 +259,53 @@ pub fn advance_infrastructure_planning(
     Ok(())
 }
 
-/// Moves approved projects into Funding and commits currently available
-/// Authority investment funds in approval order. Partial funding is allowed;
-/// a project remains in Funding until later budget income closes the gap.
+/// Moves approved projects into the active Funding pipeline and commits
+/// currently available Authority investment funds in approval order. Partial
+/// funding is allowed, but only a small number of projects are actively funded
+/// at once; later approved projects remain Approved until a funding slot opens.
 pub fn advance_project_funding(
     region: &mut Region,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
     let authority = &mut region.rail_authority;
+    let funding_capacity = authority.funding_pipeline_capacity();
+
+    // Older saves may already contain many zero-funded projects in Funding
+    // from the previous unlimited pipeline. Return only untouched excess
+    // projects to Approved; never demote anything that already received public
+    // or operator money.
+    let mut existing_funding = authority
+        .infrastructure_projects
+        .iter()
+        .enumerate()
+        .filter(|(_, project)| project.status == InfrastructureProjectStatus::Funding)
+        .map(|(index, project)| {
+            (
+                index,
+                project
+                    .timeline
+                    .approved_at
+                    .unwrap_or(project.timeline.requested_at),
+                project.id,
+            )
+        })
+        .collect::<Vec<_>>();
+    existing_funding.sort_by_key(|(_, approved_at, id)| (*approved_at, *id));
+
+    let mut retained = 0_u32;
+    for (index, _, _) in existing_funding {
+        let project = &authority.infrastructure_projects[index];
+        let has_funding = project.funding.authority_committed > Money::ZERO
+            || project.funding.operator_contributed > Money::ZERO
+            || project.timeline.funding_completed_at.is_some();
+        if retained < funding_capacity || has_funding {
+            retained = retained.saturating_add(1);
+        } else {
+            authority.infrastructure_projects[index].status = InfrastructureProjectStatus::Approved;
+        }
+    }
+
+    let mut active_funding = authority.active_funding_count();
     let mut indices = (0..authority.infrastructure_projects.len()).collect::<Vec<_>>();
     indices.sort_by_key(|&index| {
         let project = &authority.infrastructure_projects[index];
@@ -282,7 +321,11 @@ pub fn advance_project_funding(
     for index in indices {
         if authority.infrastructure_projects[index].status == InfrastructureProjectStatus::Approved
         {
+            if active_funding >= funding_capacity {
+                continue;
+            }
             authority.infrastructure_projects[index].status = InfrastructureProjectStatus::Funding;
+            active_funding = active_funding.saturating_add(1);
         }
         if authority.infrastructure_projects[index].status != InfrastructureProjectStatus::Funding {
             continue;
@@ -1149,6 +1192,79 @@ mod tests {
         assert_eq!(project.timeline.funding_completed_at, None);
         assert_eq!(region.rail_authority.finances.committed_investment, partial);
         assert!(project.funding.funding_gap().unwrap() > Money::ZERO);
+    }
+
+    #[test]
+    fn funding_pipeline_keeps_excess_approved_projects_out_of_funding() {
+        let mut region = generate_region(71);
+        let candidates = evaluate_connection_candidates(&region, 71).unwrap();
+        let now = UtcSeconds::from_unix_seconds(9_000);
+        region.rail_authority.construction_capacity = 1;
+        region.rail_authority.finances.treasury = Money::ZERO;
+        region.rail_authority.finances.maintenance_reserve = Money::ZERO;
+
+        region.rail_authority.infrastructure_projects = candidates
+            .into_iter()
+            .take(4)
+            .enumerate()
+            .map(|(offset, candidate)| {
+                let requested = UtcSeconds::from_unix_seconds(9_000 + offset as i64);
+                let mut project = project_from_candidate(candidate, requested);
+                project.status = InfrastructureProjectStatus::Approved;
+                project.timeline.approved_at = Some(requested);
+                project
+            })
+            .collect();
+
+        advance_project_funding(&mut region, now).unwrap();
+
+        assert_eq!(region.rail_authority.funding_pipeline_capacity(), 2);
+        assert_eq!(region.rail_authority.active_funding_count(), 2);
+        assert_eq!(
+            region
+                .rail_authority
+                .infrastructure_projects
+                .iter()
+                .filter(|project| project.status == InfrastructureProjectStatus::Approved)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn funding_pipeline_demotes_only_untouched_excess_legacy_projects() {
+        let mut region = generate_region(73);
+        let candidates = evaluate_connection_candidates(&region, 73).unwrap();
+        let now = UtcSeconds::from_unix_seconds(10_000);
+        region.rail_authority.construction_capacity = 1;
+        region.rail_authority.finances.treasury = Money::ZERO;
+        region.rail_authority.finances.maintenance_reserve = Money::ZERO;
+
+        let mut projects = candidates
+            .into_iter()
+            .take(4)
+            .enumerate()
+            .map(|(offset, candidate)| {
+                let requested = UtcSeconds::from_unix_seconds(10_000 + offset as i64);
+                let mut project = project_from_candidate(candidate, requested);
+                project.status = InfrastructureProjectStatus::Funding;
+                project.timeline.approved_at = Some(requested);
+                project
+            })
+            .collect::<Vec<_>>();
+        projects[2].funding.operator_contributed = Money::from_cents(100);
+        region.rail_authority.infrastructure_projects = projects;
+
+        advance_project_funding(&mut region, now).unwrap();
+
+        assert_eq!(
+            region.rail_authority.infrastructure_projects[2].status,
+            InfrastructureProjectStatus::Funding
+        );
+        assert_eq!(
+            region.rail_authority.infrastructure_projects[3].status,
+            InfrastructureProjectStatus::Approved
+        );
     }
 
     #[test]
