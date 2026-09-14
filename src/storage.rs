@@ -3483,6 +3483,22 @@ fn validate_infrastructure_projects(
         }
     }
 
+    for (index, project) in authority.infrastructure_projects.iter().enumerate() {
+        if !project.status.is_under_construction() {
+            continue;
+        }
+        if authority.infrastructure_projects[index + 1..]
+            .iter()
+            .any(|other| {
+                other.status.is_under_construction() && project.conflicts_with(other)
+            })
+        {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "conflicting Infrastructure Projects are simultaneously under construction",
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -4223,6 +4239,92 @@ mod tests {
         slot.save(&state).unwrap();
 
         assert_eq!(slot.load().unwrap(), Some(state));
+    }
+
+    #[test]
+    fn validation_rejects_conflicting_projects_under_construction() {
+        let mut state = active_game();
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(2_000),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        state.region.rail_authority.infrastructure_projects = vec![
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(1),
+                kind: InfrastructureProjectKind::SpeedUpgrade {
+                    rail_line_ids: vec![RailLineId::new(1)],
+                    target_speed_limit: SpeedKilometresPerHour::new(100).unwrap(),
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline: timeline.clone(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(2),
+                kind: InfrastructureProjectKind::Electrification {
+                    rail_line_ids: vec![RailLineId::new(1)],
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline,
+            },
+        ];
+        state.region.rail_authority.next_infrastructure_project_id = 3;
+
+        assert_eq!(
+            validate_game_state(&state),
+            Err(SaveValidationError::ImpossibleState {
+                reason:
+                    "conflicting Infrastructure Projects are simultaneously under construction",
+            })
+        );
+    }
+
+    #[test]
+    fn validation_allows_parallel_construction_on_disjoint_rail_lines() {
+        let mut state = active_game();
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(2_000),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        state.region.rail_authority.infrastructure_projects = vec![
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(1),
+                kind: InfrastructureProjectKind::SpeedUpgrade {
+                    rail_line_ids: vec![RailLineId::new(1)],
+                    target_speed_limit: SpeedKilometresPerHour::new(100).unwrap(),
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline: timeline.clone(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(2),
+                kind: InfrastructureProjectKind::Renewal {
+                    rail_line_ids: vec![RailLineId::new(2)],
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline,
+            },
+        ];
+        state.region.rail_authority.next_infrastructure_project_id = 3;
+
+        assert_eq!(validate_game_state(&state), Ok(()));
     }
 
     #[test]

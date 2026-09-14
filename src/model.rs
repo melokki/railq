@@ -836,6 +836,95 @@ pub struct InfrastructureProject {
     pub timeline: InfrastructureProjectTimeline,
 }
 
+impl InfrastructureProjectStatus {
+    /// Whether this project currently occupies construction capacity on its scope.
+    pub const fn is_under_construction(self) -> bool {
+        matches!(self, Self::Construction)
+    }
+}
+
+impl InfrastructureProjectKind {
+    /// Whether two projects compete for the same physical infrastructure.
+    ///
+    /// This deliberately models only conflicts RailQ can reason about today:
+    /// shared existing Rail Lines, shared Station upgrades, and a Station
+    /// upgrade on an endpoint where a New Line is being attached. More
+    /// detailed work-site and possession conflicts belong to later simulation
+    /// layers.
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        if let (Some(left), Some(right)) = (self.rail_line_targets(), other.rail_line_targets()) {
+            if ids_overlap(left, right) {
+                return true;
+            }
+        }
+
+        if let (Some(left), Some(right)) =
+            (self.rail_station_targets(), other.rail_station_targets())
+        {
+            if ids_overlap(left, right) {
+                return true;
+            }
+        }
+
+        match (self, other) {
+            (
+                Self::NewLine { planned_lines, .. },
+                Self::StationUpgrade { rail_station_ids },
+            )
+            | (
+                Self::StationUpgrade { rail_station_ids },
+                Self::NewLine { planned_lines, .. },
+            ) => planned_lines.iter().any(|line| {
+                rail_station_ids.contains(&line.first_station_id)
+                    || rail_station_ids.contains(&line.second_station_id)
+            }),
+            _ => false,
+        }
+    }
+
+    fn rail_line_targets(&self) -> Option<&[RailLineId]> {
+        match self {
+            Self::SpeedUpgrade { rail_line_ids, .. }
+            | Self::DoubleTracking { rail_line_ids, .. }
+            | Self::Electrification { rail_line_ids }
+            | Self::Renewal { rail_line_ids } => Some(rail_line_ids),
+            Self::NewLine { .. } | Self::StationUpgrade { .. } => None,
+        }
+    }
+
+    fn rail_station_targets(&self) -> Option<&[RailStationId]> {
+        match self {
+            Self::StationUpgrade { rail_station_ids } => Some(rail_station_ids),
+            _ => None,
+        }
+    }
+}
+
+impl InfrastructureProject {
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        self.kind.conflicts_with(&other.kind)
+    }
+}
+
+impl RailAuthority {
+    /// Finds an active construction project that prevents `candidate` from
+    /// starting work on the same infrastructure.
+    pub fn blocking_construction_project(
+        &self,
+        candidate: &InfrastructureProject,
+    ) -> Option<&InfrastructureProject> {
+        self.infrastructure_projects.iter().find(|project| {
+            project.id != candidate.id
+                && project.status.is_under_construction()
+                && project.conflicts_with(candidate)
+        })
+    }
+}
+
+fn ids_overlap<T: Eq>(left: &[T], right: &[T]) -> bool {
+    left.iter().any(|id| right.contains(id))
+}
+
 /// The public owner of a Region's Rail Network.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RailAuthority {
@@ -1321,6 +1410,107 @@ mod tests {
     use std::{any::TypeId, collections::HashSet};
 
     use super::*;
+
+    #[test]
+    fn infrastructure_projects_conflict_when_they_target_the_same_rail_line() {
+        let speed_upgrade = InfrastructureProjectKind::SpeedUpgrade {
+            rail_line_ids: vec![RailLineId::new(1)],
+            target_speed_limit: SpeedKilometresPerHour::new(100).unwrap(),
+        };
+        let electrification = InfrastructureProjectKind::Electrification {
+            rail_line_ids: vec![RailLineId::new(1)],
+        };
+        let unrelated_renewal = InfrastructureProjectKind::Renewal {
+            rail_line_ids: vec![RailLineId::new(2)],
+        };
+
+        assert!(speed_upgrade.conflicts_with(&electrification));
+        assert!(electrification.conflicts_with(&speed_upgrade));
+        assert!(!speed_upgrade.conflicts_with(&unrelated_renewal));
+    }
+
+    #[test]
+    fn station_upgrade_conflicts_with_new_line_work_at_the_same_station() {
+        let new_line = InfrastructureProjectKind::NewLine {
+            planned_stations: vec![PlannedRailStation {
+                id: RailStationId::new(5),
+                settlement_id: SettlementId::new(5),
+            }],
+            planned_lines: vec![PlannedRailLine {
+                id: RailLineId::new(4),
+                first_station_id: RailStationId::new(2),
+                second_station_id: RailStationId::new(5),
+                distance: DistanceMetres::new(12_000).unwrap(),
+                speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
+                track_count: TrackCount::SINGLE,
+                electrification: Electrification::None,
+                construction_difficulty: ConstructionDifficulty::Moderate,
+            }],
+        };
+        let same_station = InfrastructureProjectKind::StationUpgrade {
+            rail_station_ids: vec![RailStationId::new(2)],
+        };
+        let different_station = InfrastructureProjectKind::StationUpgrade {
+            rail_station_ids: vec![RailStationId::new(3)],
+        };
+
+        assert!(new_line.conflicts_with(&same_station));
+        assert!(same_station.conflicts_with(&new_line));
+        assert!(!new_line.conflicts_with(&different_station));
+    }
+
+    #[test]
+    fn rail_authority_only_reports_active_construction_as_a_blocker() {
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(1),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        let blocker = InfrastructureProject {
+            id: InfrastructureProjectId::new(1),
+            kind: InfrastructureProjectKind::SpeedUpgrade {
+                rail_line_ids: vec![RailLineId::new(1)],
+                target_speed_limit: SpeedKilometresPerHour::new(100).unwrap(),
+            },
+            status: InfrastructureProjectStatus::Construction,
+            timeline: timeline.clone(),
+        };
+        let approved = InfrastructureProject {
+            id: InfrastructureProjectId::new(2),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![RailLineId::new(1)],
+            },
+            status: InfrastructureProjectStatus::Approved,
+            timeline: timeline.clone(),
+        };
+        let candidate = InfrastructureProject {
+            id: InfrastructureProjectId::new(3),
+            kind: InfrastructureProjectKind::Electrification {
+                rail_line_ids: vec![RailLineId::new(1)],
+            },
+            status: InfrastructureProjectStatus::Scheduled,
+            timeline,
+        };
+        let authority = RailAuthority {
+            name: "Test Authority".into(),
+            rail_network: RailNetwork::default(),
+            infrastructure_projects: vec![approved, blocker.clone()],
+            next_infrastructure_project_id: 4,
+        };
+
+        assert_eq!(
+            authority.blocking_construction_project(&candidate),
+            Some(&blocker)
+        );
+    }
 
     #[test]
     fn domain_ids_are_distinct_value_types() {
