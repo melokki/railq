@@ -15,7 +15,7 @@ use crate::{
     },
     sim::{
         demand::replenish_directional_demand,
-        economy::{EconomyError, distance_between_service_stops, quote_boarding_at_stop},
+        economy::{EconomyError, duration_between_service_stops, quote_boarding_at_stop},
     },
 };
 
@@ -378,9 +378,13 @@ fn process_stop_arrival(
     .ok_or(AdvanceTimeError::InvalidServiceProgress {
         journey_id: journey_snapshot.id,
     })?;
-    let next_leg_distance =
-        distance_between_service_stops(state, &service, arrival_stop_index, next_leg_stop_index)?;
-    let next_leg_duration = next_leg_distance.journey_duration(train_model.speed())?;
+    let next_leg_duration = duration_between_service_stops(
+        state,
+        &service,
+        arrival_stop_index,
+        next_leg_stop_index,
+        train_model.speed(),
+    )?;
     let next_arrival = journey_snapshot.arrives_at.checked_add(next_leg_duration)?;
 
     let funds = state.player_company.funds.checked_add(credited_now)?;

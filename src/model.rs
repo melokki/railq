@@ -491,7 +491,7 @@ impl DistanceMetres {
         self.0
     }
 
-    /// Calculates a Journey duration, rounding a partial second up.
+    /// Calculates a Journey duration at a Train speed, rounding a partial second up.
     pub fn journey_duration(
         self,
         speed: SpeedMetresPerSecond,
@@ -506,6 +506,44 @@ impl DistanceMetres {
             seconds
         };
         Ok(DurationSeconds(seconds))
+    }
+
+    /// Calculates Journey time while respecting both Train and infrastructure speeds.
+    ///
+    /// Train models store metres per second while Rail Lines store familiar railway
+    /// limits in kilometres per hour. Computing both durations independently avoids
+    /// lossy integer conversion between those units; the slower capability is simply
+    /// the one that produces the longer duration.
+    pub fn journey_duration_with_speed_limit(
+        self,
+        train_speed: SpeedMetresPerSecond,
+        speed_limit: SpeedKilometresPerHour,
+    ) -> Result<DurationSeconds, CalculationError> {
+        let train_duration = self.journey_duration(train_speed)?;
+
+        let numerator = self
+            .0
+            .checked_mul(3_600)
+            .ok_or(CalculationError::Overflow {
+                operation: "speed-limited journey duration",
+            })?;
+        let denominator = u64::from(speed_limit.0)
+            .checked_mul(1_000)
+            .ok_or(CalculationError::Overflow {
+                operation: "speed-limited journey duration",
+            })?;
+        let seconds = numerator / denominator;
+        let has_fractional_second = numerator % denominator != 0;
+        let seconds = if has_fractional_second {
+            seconds.checked_add(1).ok_or(CalculationError::Overflow {
+                operation: "speed-limited journey duration",
+            })?
+        } else {
+            seconds
+        };
+        let infrastructure_duration = DurationSeconds(seconds);
+
+        Ok(train_duration.max(infrastructure_duration))
     }
 }
 
@@ -1281,6 +1319,28 @@ mod tests {
                 .journey_duration(speed)
                 .unwrap(),
             DurationSeconds::from_seconds(2)
+        );
+
+        let fast_train = SpeedMetresPerSecond::new(33).unwrap();
+        assert_eq!(
+            DistanceMetres::new(1_000)
+                .unwrap()
+                .journey_duration_with_speed_limit(
+                    fast_train,
+                    SpeedKilometresPerHour::new(70).unwrap(),
+                )
+                .unwrap(),
+            DurationSeconds::from_seconds(52)
+        );
+        assert_eq!(
+            DistanceMetres::new(1_000)
+                .unwrap()
+                .journey_duration_with_speed_limit(
+                    fast_train,
+                    SpeedKilometresPerHour::new(160).unwrap(),
+                )
+                .unwrap(),
+            DurationSeconds::from_seconds(31)
         );
 
         let rate = MoneyPerKilometre::new(1).unwrap();
