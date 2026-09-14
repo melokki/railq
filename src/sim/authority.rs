@@ -43,9 +43,6 @@ pub struct ConnectionCandidateScore {
     pub total: i32,
 }
 
-const MIN_ESTIMATED_DISTANCE_METRES: u64 = 15_000;
-const ESTIMATED_DISTANCE_SPREAD_METRES: u64 = 70_001;
-
 // Provisional real-time planning cadence. These values are intentionally kept
 // local to the Authority simulation until the first progression playtest.
 const REQUEST_QUEUE_DELAY: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
@@ -641,7 +638,7 @@ pub fn evaluate_connection_candidates(
                 .map(|station| {
                     (
                         station.id,
-                        estimated_connection_distance(world_seed, settlement.id, station.id),
+                        geographic_connection_distance(region, settlement.id, station.id),
                     )
                 })
                 .min_by_key(|(station_id, distance)| (*distance, *station_id))
@@ -682,17 +679,35 @@ pub fn evaluate_connection_candidates(
     Ok(candidates)
 }
 
-fn estimated_connection_distance(
-    world_seed: u64,
+fn geographic_connection_distance(
+    region: &Region,
     settlement_id: SettlementId,
     station_id: RailStationId,
 ) -> DistanceMetres {
-    let variation = mix_seed(
-        world_seed ^ settlement_id.get().rotate_left(17) ^ station_id.get().rotate_left(39),
-    ) % ESTIMATED_DISTANCE_SPREAD_METRES;
-    let metres = MIN_ESTIMATED_DISTANCE_METRES + variation;
-    DistanceMetres::new(i64::try_from(metres).expect("provisional distance fits i64"))
-        .expect("provisional connection distance is positive")
+    let settlement = region
+        .settlements
+        .iter()
+        .find(|settlement| settlement.id == settlement_id)
+        .expect("connection candidate Settlement belongs to the Region");
+    let station = region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .find(|station| station.id == station_id)
+        .expect("connection candidate Rail Station belongs to the Region");
+    let station_settlement = region
+        .settlements
+        .iter()
+        .find(|candidate| candidate.id == station.settlement_id)
+        .expect("Rail Station Settlement belongs to the Region");
+
+    let dx = i64::from(settlement.position.x) - i64::from(station_settlement.position.x);
+    let dy = i64::from(settlement.position.y) - i64::from(station_settlement.position.y);
+    let squared_km = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
+    let kilometres = (squared_km as f64).sqrt().ceil().max(1.0) as i64;
+    DistanceMetres::new(kilometres.saturating_mul(1_000))
+        .expect("distinct Settlement coordinates produce a positive connection distance")
 }
 
 fn estimated_construction_difficulty(
