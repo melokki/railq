@@ -995,6 +995,14 @@ impl InfrastructureProjectStatus {
     pub const fn is_under_construction(self) -> bool {
         matches!(self, Self::Construction)
     }
+
+    /// Whether this project has reserved one of the Authority's construction slots.
+    ///
+    /// Scheduled work reserves capacity before crews mobilise so another project
+    /// cannot be promised the same slot in the meantime.
+    pub const fn reserves_construction_capacity(self) -> bool {
+        matches!(self, Self::Scheduled | Self::Construction)
+    }
 }
 
 impl InfrastructureProjectKind {
@@ -1082,17 +1090,45 @@ impl RailAuthority {
         .unwrap_or(u32::MAX)
     }
 
-    /// Remaining major-project construction slots.
-    pub fn construction_slots_remaining(&self) -> u32 {
-        self.construction_capacity
-            .saturating_sub(self.active_construction_count())
+    /// Number of projects that have reserved a construction slot, including
+    /// projects whose crews are scheduled but have not mobilised yet.
+    pub fn reserved_construction_count(&self) -> u32 {
+        u32::try_from(
+            self.infrastructure_projects
+                .iter()
+                .filter(|project| project.status.reserves_construction_capacity())
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
     }
 
-    /// Whether an additional project could start construction right now.
-    ///
-    /// Scheduling is introduced later; this method only combines the two
-    /// constraints already modeled: global Authority capacity and physical
-    /// project conflicts.
+    /// Finds scheduled or active construction that conflicts with `candidate`.
+    pub fn blocking_reserved_project(
+        &self,
+        candidate: &InfrastructureProject,
+    ) -> Option<&InfrastructureProject> {
+        self.infrastructure_projects.iter().find(|project| {
+            project.id != candidate.id
+                && project.status.reserves_construction_capacity()
+                && project.conflicts_with(candidate)
+        })
+    }
+
+    /// Remaining major-project construction slots in the active works programme.
+    pub fn construction_slots_remaining(&self) -> u32 {
+        self.construction_capacity
+            .saturating_sub(self.reserved_construction_count())
+    }
+
+    /// Whether a fully funded project can reserve a construction slot.
+    pub fn can_schedule_construction(&self, candidate: &InfrastructureProject) -> bool {
+        self.construction_slots_remaining() > 0
+            && self.blocking_reserved_project(candidate).is_none()
+    }
+
+    /// Whether an additional, not-yet-scheduled project could start construction
+    /// right now. Scheduled projects already own their reserved slot and are
+    /// handled by the construction-start lifecycle.
     pub fn can_start_construction(&self, candidate: &InfrastructureProject) -> bool {
         self.construction_slots_remaining() > 0
             && self.blocking_construction_project(candidate).is_none()

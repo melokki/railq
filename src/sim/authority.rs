@@ -2,8 +2,8 @@
 //!
 //! Candidate evaluation and the early Rail Authority planning lifecycle.
 //!
-//! This layer currently advances projects through public funding. Scheduling,
-//! construction, and opening are introduced by later batches.
+//! This layer currently advances projects through public funding and
+//! construction scheduling. Construction and opening are introduced later.
 
 use crate::model::{
     CalculationError, ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
@@ -48,6 +48,9 @@ const ESTIMATED_DISTANCE_SPREAD_METRES: u64 = 70_001;
 const REQUEST_QUEUE_DELAY: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
 const REVIEW_DURATION: DurationSeconds = DurationSeconds::from_seconds(30 * 60);
 const PROPOSAL_DURATION: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
+// A small mobilisation window keeps Scheduled visible as a real lifecycle
+// state while reserving scarce construction capacity before work begins.
+const CONSTRUCTION_MOBILISATION_DELAY: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
 
 /// Advances the early planning lifecycle and opens the next highest-ranked
 /// connection request when the planning desk is free.
@@ -149,6 +152,54 @@ pub fn advance_project_funding(
         if project.funding.is_fully_funded() && project.timeline.funding_completed_at.is_none() {
             project.timeline.funding_completed_at = Some(now);
         }
+    }
+
+    Ok(())
+}
+
+
+/// Reserves available construction capacity for fully funded projects in
+/// funding-completion order. Projects that cannot reserve a slot remain in
+/// `Funding`, even when their financial gap is already zero.
+pub fn advance_project_scheduling(
+    region: &mut Region,
+    now: UtcSeconds,
+) -> Result<(), CalculationError> {
+    loop {
+        let next_index = {
+            let authority = &region.rail_authority;
+            let mut candidates = authority
+                .infrastructure_projects
+                .iter()
+                .enumerate()
+                .filter(|(_, project)| {
+                    project.status == InfrastructureProjectStatus::Funding
+                        && project.funding.is_fully_funded()
+                        && project.timeline.funding_completed_at.is_some()
+                        && authority.can_schedule_construction(project)
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(|(_, project)| {
+                (
+                    project
+                        .timeline
+                        .funding_completed_at
+                        .or(project.timeline.approved_at)
+                        .unwrap_or(project.timeline.requested_at),
+                    project.id,
+                )
+            });
+            candidates.first().map(|(index, _)| *index)
+        };
+
+        let Some(index) = next_index else {
+            break;
+        };
+
+        let scheduled_start = now.checked_add(CONSTRUCTION_MOBILISATION_DELAY)?;
+        let project = &mut region.rail_authority.infrastructure_projects[index];
+        project.status = InfrastructureProjectStatus::Scheduled;
+        project.timeline.scheduled_start_at = Some(scheduled_start);
     }
 
     Ok(())
@@ -486,8 +537,8 @@ mod tests {
     };
 
     use super::{
-        advance_infrastructure_planning, advance_project_funding, estimated_connection_cost,
-        evaluate_connection_candidates,
+        advance_infrastructure_planning, advance_project_funding, advance_project_scheduling,
+        estimated_connection_cost, evaluate_connection_candidates,
     };
 
     #[test]
@@ -725,6 +776,70 @@ mod tests {
         assert_eq!(project.timeline.funding_completed_at, None);
         assert_eq!(region.rail_authority.finances.committed_investment, partial);
         assert!(project.funding.funding_gap().unwrap() > Money::ZERO);
+    }
+
+    #[test]
+    fn fully_funded_project_reserves_available_construction_capacity() {
+        let mut region = generate_region(11);
+        let candidate = evaluate_connection_candidates(&region, 11).unwrap()[0].clone();
+        let now = UtcSeconds::from_unix_seconds(12_000);
+        let mut project = project_from_candidate(candidate, now);
+        project.status = InfrastructureProjectStatus::Funding;
+        project.funding.authority_committed = project.funding.estimated_cost;
+        project.timeline.funding_completed_at = Some(now);
+        region.rail_authority.infrastructure_projects = vec![project];
+
+        advance_project_scheduling(&mut region, now).unwrap();
+
+        let project = &region.rail_authority.infrastructure_projects[0];
+        assert_eq!(project.status, InfrastructureProjectStatus::Scheduled);
+        assert_eq!(
+            project.timeline.scheduled_start_at,
+            Some(UtcSeconds::from_unix_seconds(12_000 + 15 * 60))
+        );
+        assert_eq!(region.rail_authority.reserved_construction_count(), 1);
+        assert_eq!(region.rail_authority.construction_slots_remaining(), 0);
+    }
+
+    #[test]
+    fn fully_funded_project_waits_when_capacity_is_already_reserved() {
+        let mut region = generate_region(13);
+        let candidates = evaluate_connection_candidates(&region, 13).unwrap();
+        let now = UtcSeconds::from_unix_seconds(20_000);
+
+        let mut first = project_from_candidate(candidates[0].clone(), now);
+        first.status = InfrastructureProjectStatus::Funding;
+        first.funding.authority_committed = first.funding.estimated_cost;
+        first.timeline.funding_completed_at = Some(now);
+
+        let later = UtcSeconds::from_unix_seconds(20_001);
+        let mut second = project_from_candidate(candidates[1].clone(), later);
+        second.status = InfrastructureProjectStatus::Funding;
+        second.funding.authority_committed = second.funding.estimated_cost;
+        second.timeline.funding_completed_at = Some(later);
+
+        region.rail_authority.construction_capacity = 1;
+        region.rail_authority.infrastructure_projects = vec![second, first];
+
+        advance_project_scheduling(&mut region, now).unwrap();
+
+        let scheduled = region
+            .rail_authority
+            .infrastructure_projects
+            .iter()
+            .filter(|project| project.status == InfrastructureProjectStatus::Scheduled)
+            .collect::<Vec<_>>();
+        assert_eq!(scheduled.len(), 1);
+        assert_eq!(scheduled[0].timeline.funding_completed_at, Some(now));
+        assert_eq!(
+            region
+                .rail_authority
+                .infrastructure_projects
+                .iter()
+                .filter(|project| project.status == InfrastructureProjectStatus::Funding)
+                .count(),
+            1
+        );
     }
 
 }

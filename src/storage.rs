@@ -4403,6 +4403,11 @@ fn validate_rail_authority_finances(authority: &RailAuthority) -> Result<(), Sav
             reason: "Rail Authority active construction exceeds its capacity",
         });
     }
+    if authority.reserved_construction_count() > authority.construction_capacity {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Rail Authority scheduled and active construction exceeds its capacity",
+        });
+    }
 
     let finances = &authority.finances;
     if finances.treasury.cents() < 0
@@ -4580,15 +4585,28 @@ fn validate_infrastructure_projects(
     }
 
     for (index, project) in authority.infrastructure_projects.iter().enumerate() {
-        if !project.status.is_under_construction() {
+        if project.status == InfrastructureProjectStatus::Scheduled {
+            if !project.funding.is_fully_funded()
+                || project.timeline.funding_completed_at.is_none()
+                || project.timeline.scheduled_start_at.is_none()
+            {
+                return Err(SaveValidationError::ImpossibleState {
+                    reason: "scheduled Infrastructure Project is not fully funded and scheduled",
+                });
+            }
+        }
+
+        if !project.status.reserves_construction_capacity() {
             continue;
         }
         if authority.infrastructure_projects[index + 1..]
             .iter()
-            .any(|other| other.status.is_under_construction() && project.conflicts_with(other))
+            .any(|other| {
+                other.status.reserves_construction_capacity() && project.conflicts_with(other)
+            })
         {
             return Err(SaveValidationError::ImpossibleState {
-                reason: "conflicting Infrastructure Projects are simultaneously under construction",
+                reason: "conflicting Infrastructure Projects reserve construction at the same time",
             });
         }
     }
