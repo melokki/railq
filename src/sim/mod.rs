@@ -1,5 +1,6 @@
 //! Pure RailQ simulation behavior.
 
+pub mod authority;
 pub mod demand;
 pub mod economy;
 pub mod finance;
