@@ -38,6 +38,7 @@ use crate::{
         VehicleKeeperMark, WorldPosition,
     },
     sim::{
+        demand::waiting_passenger_cap,
         services::{path_between_stations, service_path_for_stops},
         world::{
             railway_registration_for_existing_region, settlement_positions_for_existing_region,
@@ -4832,10 +4833,7 @@ fn validate_demand(
                 reason: "duplicate directional Passenger Demand pool",
             });
         }
-        let cap = (u128::from(demand.passenger_arrival_rate_per_hour.passengers_per_hour())
-            * u128::from(state.rules.demand.cap_duration.seconds())
-            / 3_600)
-            .min(u128::from(u32::MAX)) as u32;
+        let cap = waiting_passenger_cap(state, demand);
         if demand.waiting_passengers > cap {
             return Err(SaveValidationError::InvalidValue {
                 field: "Waiting Passengers above demand cap",

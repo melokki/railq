@@ -30,7 +30,10 @@ use crate::{
         GameState, Journey, JourneyId, Money, RailStation, RailStationId, Settlement, SettlementId,
         Train, TrainId, TrainStatus, UtcSeconds,
     },
-    sim::services::path_between_stations,
+    sim::{
+        demand::effective_arrival_rate_per_hour,
+        services::path_between_stations,
+    },
     ui::theme,
 };
 
@@ -393,7 +396,7 @@ fn render_location_inspector(
                 (
                     station_name(state, pool.destination_station_id),
                     pool.waiting_passengers,
-                    pool.passenger_arrival_rate_per_hour.passengers_per_hour(),
+                    effective_arrival_rate_per_hour(state, pool),
                 )
             })
             .collect::<Vec<_>>();
@@ -2435,7 +2438,7 @@ fn render_station_inspector(
                     Span::raw(format!(
                         "{} waiting · +{}/h",
                         pool.waiting_passengers,
-                        pool.passenger_arrival_rate_per_hour.passengers_per_hour()
+                        effective_arrival_rate_per_hour(state, pool)
                     )),
                 ])),
                 None => lines.push(Line::from(vec![
