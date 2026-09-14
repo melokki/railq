@@ -5,6 +5,8 @@
 //! This layer currently advances projects through public funding, scheduling,
 //! and fixed-duration construction. Opening is introduced later.
 
+use std::{error::Error, fmt};
+
 use crate::model::{
     CalculationError, ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
     InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
@@ -59,6 +61,87 @@ const NEW_LINE_BASE_CONSTRUCTION_DURATION: DurationSeconds =
 const LOW_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 2 * 60;
 const MODERATE_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 3 * 60;
 const HIGH_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 4 * 60;
+
+/// Why an explicit Rail Authority project action cannot be completed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InfrastructureProjectActionError {
+    ProjectNotFound { project_id: InfrastructureProjectId },
+    CannotCancel {
+        project_id: InfrastructureProjectId,
+        status: InfrastructureProjectStatus,
+    },
+    Calculation(CalculationError),
+}
+
+impl fmt::Display for InfrastructureProjectActionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProjectNotFound { project_id } => {
+                write!(formatter, "Infrastructure Project {} was not found", project_id.uuid())
+            }
+            Self::CannotCancel { project_id, status } => write!(
+                formatter,
+                "Infrastructure Project {} cannot be cancelled while {status:?}",
+                project_id.uuid()
+            ),
+            Self::Calculation(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for InfrastructureProjectActionError {}
+
+impl From<CalculationError> for InfrastructureProjectActionError {
+    fn from(error: CalculationError) -> Self {
+        Self::Calculation(error)
+    }
+}
+
+/// Cancels a project before physical construction starts and releases any
+/// Authority investment commitment back to the uncommitted budget.
+///
+/// Construction and completed projects are intentionally terminal here. Future
+/// operator contributions will reuse this path to refund their earmarked funds.
+pub fn cancel_infrastructure_project(
+    region: &mut Region,
+    project_id: InfrastructureProjectId,
+    now: UtcSeconds,
+) -> Result<(), InfrastructureProjectActionError> {
+    let authority = &mut region.rail_authority;
+    let index = authority
+        .infrastructure_projects
+        .iter()
+        .position(|project| project.id == project_id)
+        .ok_or(InfrastructureProjectActionError::ProjectNotFound { project_id })?;
+
+    let status = authority.infrastructure_projects[index].status;
+    if matches!(
+        status,
+        InfrastructureProjectStatus::Construction
+            | InfrastructureProjectStatus::Open
+            | InfrastructureProjectStatus::Cancelled
+    ) {
+        return Err(InfrastructureProjectActionError::CannotCancel {
+            project_id,
+            status,
+        });
+    }
+
+    let authority_committed = authority.infrastructure_projects[index]
+        .funding
+        .authority_committed;
+    authority.finances.committed_investment = authority
+        .finances
+        .committed_investment
+        .checked_sub(authority_committed)?;
+
+    let project = &mut authority.infrastructure_projects[index];
+    project.funding.authority_committed = Money::ZERO;
+    project.status = InfrastructureProjectStatus::Cancelled;
+    project.timeline.cancelled_at = Some(now);
+
+    Ok(())
+}
 
 /// Advances the early planning lifecycle and opens the next highest-ranked
 /// connection request when the planning desk is free.
@@ -615,16 +698,17 @@ mod tests {
 
     use crate::{
         model::{
-            ConstructionDifficulty, DistanceMetres, DurationSeconds, InfrastructureProjectKind,
-            InfrastructureProjectStatus, Money, UtcSeconds,
+            ConstructionDifficulty, DistanceMetres, DurationSeconds, InfrastructureProjectId,
+            InfrastructureProjectKind, InfrastructureProjectStatus, Money, UtcSeconds,
         },
         sim::world::generate_region,
     };
 
     use super::{
         advance_infrastructure_planning, advance_project_construction, advance_project_funding,
-        advance_project_scheduling, estimated_connection_cost, evaluate_connection_candidates,
-        new_line_construction_duration, project_from_candidate,
+        advance_project_scheduling, cancel_infrastructure_project, estimated_connection_cost,
+        evaluate_connection_candidates, new_line_construction_duration, project_from_candidate,
+        InfrastructureProjectActionError,
     };
 
     #[test]
@@ -990,6 +1074,94 @@ mod tests {
         let project = &region.rail_authority.infrastructure_projects[0];
         assert_eq!(project.timeline.construction_started_at, Some(scheduled_start));
         assert_eq!(project.timeline.planned_completion_at, Some(expected_completion));
+    }
+
+    #[test]
+    fn cancelling_funded_project_releases_authority_commitment() {
+        let mut region = generate_region(23);
+        let candidate = evaluate_connection_candidates(&region, 23).unwrap()[0].clone();
+        let now = UtcSeconds::from_unix_seconds(50_000);
+        let mut project = project_from_candidate(candidate, now);
+        project.status = InfrastructureProjectStatus::Funding;
+        let committed = project.funding.estimated_cost;
+        project.funding.authority_committed = committed;
+        let project_id = project.id;
+        region.rail_authority.finances.committed_investment = committed;
+        region.rail_authority.infrastructure_projects = vec![project];
+
+        cancel_infrastructure_project(
+            &mut region,
+            project_id,
+            UtcSeconds::from_unix_seconds(50_100),
+        )
+        .unwrap();
+
+        let project = &region.rail_authority.infrastructure_projects[0];
+        assert_eq!(project.status, InfrastructureProjectStatus::Cancelled);
+        assert_eq!(
+            project.timeline.cancelled_at,
+            Some(UtcSeconds::from_unix_seconds(50_100))
+        );
+        assert_eq!(region.rail_authority.finances.committed_investment, Money::ZERO);
+        assert_eq!(project.funding.authority_committed, Money::ZERO);
+    }
+
+    #[test]
+    fn cancelling_scheduled_project_releases_construction_capacity() {
+        let mut region = generate_region(29);
+        let candidate = evaluate_connection_candidates(&region, 29).unwrap()[0].clone();
+        let now = UtcSeconds::from_unix_seconds(60_000);
+        let mut project = project_from_candidate(candidate, now);
+        project.status = InfrastructureProjectStatus::Scheduled;
+        project.timeline.scheduled_start_at = Some(UtcSeconds::from_unix_seconds(61_000));
+        project.funding.authority_committed = project.funding.estimated_cost;
+        let committed = project.funding.authority_committed;
+        let project_id = project.id;
+        region.rail_authority.finances.committed_investment = committed;
+        region.rail_authority.construction_capacity = 1;
+        region.rail_authority.infrastructure_projects = vec![project];
+
+        assert_eq!(region.rail_authority.construction_slots_remaining(), 0);
+        cancel_infrastructure_project(&mut region, project_id, now).unwrap();
+        assert_eq!(region.rail_authority.construction_slots_remaining(), 1);
+    }
+
+    #[test]
+    fn construction_project_cannot_be_cancelled() {
+        let mut region = generate_region(31);
+        let candidate = evaluate_connection_candidates(&region, 31).unwrap()[0].clone();
+        let now = UtcSeconds::from_unix_seconds(70_000);
+        let mut project = project_from_candidate(candidate, now);
+        project.status = InfrastructureProjectStatus::Construction;
+        let project_id = project.id;
+        region.rail_authority.infrastructure_projects = vec![project];
+
+        assert_eq!(
+            cancel_infrastructure_project(&mut region, project_id, now),
+            Err(InfrastructureProjectActionError::CannotCancel {
+                project_id,
+                status: InfrastructureProjectStatus::Construction,
+            })
+        );
+        assert_eq!(
+            region.rail_authority.infrastructure_projects[0].status,
+            InfrastructureProjectStatus::Construction
+        );
+    }
+
+    #[test]
+    fn cancelling_unknown_project_is_rejected() {
+        let mut region = generate_region(37);
+        let project_id = InfrastructureProjectId::new_v4();
+
+        assert_eq!(
+            cancel_infrastructure_project(
+                &mut region,
+                project_id,
+                UtcSeconds::from_unix_seconds(80_000),
+            ),
+            Err(InfrastructureProjectActionError::ProjectNotFound { project_id })
+        );
     }
 
 }
