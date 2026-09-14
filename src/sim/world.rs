@@ -142,6 +142,8 @@ pub fn generate_region(seed: u64) -> Region {
                 rail_stations,
                 rail_lines,
             },
+            infrastructure_projects: vec![],
+            next_infrastructure_project_id: 1,
         },
     }
 }
@@ -282,6 +284,8 @@ mod tests {
         assert_eq!(region.settlements.len(), SETTLEMENT_COUNT);
         assert_eq!(network.rail_stations.len(), CONNECTED_SETTLEMENT_COUNT);
         assert_eq!(network.rail_lines.len(), 3);
+        assert!(region.rail_authority.infrastructure_projects.is_empty());
+        assert_eq!(region.rail_authority.next_infrastructure_project_id, 1);
         assert_eq!(
             network
                 .rail_lines

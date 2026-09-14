@@ -89,6 +89,10 @@ domain_id!(
     "The identity of a Passenger Service owned by the Player Company."
 );
 domain_id!(JourneyId, "The identity of one physical Train movement.");
+domain_id!(
+    InfrastructureProjectId,
+    "The identity of one Rail Authority infrastructure project."
+);
 
 /// Stable identity of one immutable Train model in the central catalogue.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -735,11 +739,116 @@ pub struct Settlement {
     pub population: u64,
 }
 
+/// Current lifecycle stage of a Rail Authority infrastructure project.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum InfrastructureProjectStatus {
+    Requested,
+    UnderReview,
+    Proposed,
+    Approved,
+    Deferred,
+    Funding,
+    Scheduled,
+    Construction,
+    Open,
+    Cancelled,
+}
+
+/// Lifecycle timestamps recorded as an infrastructure project advances.
+///
+/// Only `requested_at` is required when a project is created. Later batches
+/// own the transition rules that populate the optional milestones.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InfrastructureProjectTimeline {
+    pub requested_at: UtcSeconds,
+    pub review_started_at: Option<UtcSeconds>,
+    pub proposed_at: Option<UtcSeconds>,
+    pub approved_at: Option<UtcSeconds>,
+    pub funding_completed_at: Option<UtcSeconds>,
+    pub scheduled_start_at: Option<UtcSeconds>,
+    pub construction_started_at: Option<UtcSeconds>,
+    pub planned_completion_at: Option<UtcSeconds>,
+    pub completed_at: Option<UtcSeconds>,
+    pub deferred_at: Option<UtcSeconds>,
+    pub cancelled_at: Option<UtcSeconds>,
+}
+
+/// One Rail Station reserved by a planned New Line project.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PlannedRailStation {
+    pub id: RailStationId,
+    pub settlement_id: SettlementId,
+}
+
+/// One physical Rail Line segment reserved by a planned New Line project.
+///
+/// Endpoints may reference either existing Rail Stations or Stations reserved
+/// in the same project. Carrying the complete capabilities here lets opening a
+/// project later materialize exactly the infrastructure that was approved.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PlannedRailLine {
+    pub id: RailLineId,
+    pub first_station_id: RailStationId,
+    pub second_station_id: RailStationId,
+    pub distance: DistanceMetres,
+    pub speed_limit: SpeedKilometresPerHour,
+    pub track_count: TrackCount,
+    pub electrification: Electrification,
+    pub construction_difficulty: ConstructionDifficulty,
+}
+
+/// Physical scope and intended outcome of a Rail Authority project.
+///
+/// Only `NewLine` receives simulation behaviour in the first Authority phase;
+/// the other variants are modeled now so later modernization work reuses the
+/// same project and persistence framework.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum InfrastructureProjectKind {
+    NewLine {
+        planned_stations: Vec<PlannedRailStation>,
+        planned_lines: Vec<PlannedRailLine>,
+    },
+    SpeedUpgrade {
+        rail_line_ids: Vec<RailLineId>,
+        target_speed_limit: SpeedKilometresPerHour,
+    },
+    DoubleTracking {
+        rail_line_ids: Vec<RailLineId>,
+        target_track_count: TrackCount,
+    },
+    Electrification {
+        rail_line_ids: Vec<RailLineId>,
+    },
+    Renewal {
+        rail_line_ids: Vec<RailLineId>,
+    },
+    StationUpgrade {
+        rail_station_ids: Vec<RailStationId>,
+    },
+}
+
+/// One public infrastructure proposal tracked by the Rail Authority.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InfrastructureProject {
+    pub id: InfrastructureProjectId,
+    pub kind: InfrastructureProjectKind,
+    pub status: InfrastructureProjectStatus,
+    pub timeline: InfrastructureProjectTimeline,
+}
+
 /// The public owner of a Region's Rail Network.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RailAuthority {
     pub name: String,
     pub rail_network: RailNetwork,
+    #[serde(default)]
+    pub infrastructure_projects: Vec<InfrastructureProject>,
+    #[serde(default = "default_next_infrastructure_project_id")]
+    pub next_infrastructure_project_id: u64,
+}
+
+const fn default_next_infrastructure_project_id() -> u64 {
+    1
 }
 
 /// The physical infrastructure owned by a Rail Authority.
@@ -1441,6 +1550,8 @@ mod tests {
                         }],
                         rail_lines: vec![],
                     },
+                    infrastructure_projects: vec![],
+                    next_infrastructure_project_id: 1,
                 },
             },
             player_company: PlayerCompany {
@@ -1495,6 +1606,8 @@ mod tests {
         let authority = RailAuthority {
             name: "Varelia Rail Authority".into(),
             rail_network: RailNetwork::default(),
+            infrastructure_projects: vec![],
+            next_infrastructure_project_id: 1,
         };
         let company = PlayerCompany {
             name: "Alden Passenger".into(),

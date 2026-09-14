@@ -548,6 +548,8 @@ mod tests {
                             },
                         ],
                     },
+                    infrastructure_projects: vec![],
+                    next_infrastructure_project_id: 1,
                 },
             },
             player_company: PlayerCompany {
