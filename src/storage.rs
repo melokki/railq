@@ -4472,8 +4472,13 @@ fn validate_infrastructure_projects(
                 reason: "Infrastructure Project commitment exceeds estimated cost",
             });
         }
-        total_project_commitments = total_project_commitments
-            .checked_add(project.funding.authority_committed)?;
+        if !matches!(
+            project.status,
+            InfrastructureProjectStatus::Open | InfrastructureProjectStatus::Cancelled
+        ) {
+            total_project_commitments = total_project_commitments
+                .checked_add(project.funding.authority_committed)?;
+        }
     }
     if total_project_commitments > authority.finances.committed_investment {
         return Err(SaveValidationError::ImpossibleState {
@@ -5471,6 +5476,39 @@ mod tests {
                 funding: InfrastructureProjectFunding::default(),
             },
         ];
+        assert_eq!(validate_game_state(&state), Ok(()));
+    }
+
+    #[test]
+    fn validation_allows_open_project_to_keep_historical_authority_commitment() {
+        let mut state = active_game();
+        let historical_commitment = Money::from_cents(250_000);
+        state.region.rail_authority.finances.committed_investment = Money::ZERO;
+        state.region.rail_authority.infrastructure_projects = vec![InfrastructureProject {
+            id: InfrastructureProjectId::new_v4(),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![state.region.rail_authority.rail_network.rail_lines[0].id],
+            },
+            status: InfrastructureProjectStatus::Open,
+            timeline: InfrastructureProjectTimeline {
+                requested_at: UtcSeconds::from_unix_seconds(1_000),
+                review_started_at: Some(UtcSeconds::from_unix_seconds(1_100)),
+                proposed_at: Some(UtcSeconds::from_unix_seconds(1_200)),
+                approved_at: Some(UtcSeconds::from_unix_seconds(1_300)),
+                funding_completed_at: Some(UtcSeconds::from_unix_seconds(1_400)),
+                scheduled_start_at: Some(UtcSeconds::from_unix_seconds(1_500)),
+                construction_started_at: Some(UtcSeconds::from_unix_seconds(1_600)),
+                planned_completion_at: Some(UtcSeconds::from_unix_seconds(1_700)),
+                completed_at: Some(UtcSeconds::from_unix_seconds(1_700)),
+                deferred_at: None,
+                cancelled_at: None,
+            },
+            funding: InfrastructureProjectFunding {
+                estimated_cost: historical_commitment,
+                authority_committed: historical_commitment,
+            },
+        }];
+
         assert_eq!(validate_game_state(&state), Ok(()));
     }
 

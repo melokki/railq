@@ -12,7 +12,8 @@ use crate::model::{
     InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
     InfrastructureProjectKind,
     InfrastructureProjectStatus, InfrastructureProjectTimeline, Money, MoneyPerKilometre,
-    PlannedRailLine, PlannedRailStation, RailLineId, RailStationId, Region, SettlementId,
+    PlannedRailLine, PlannedRailStation, RailLine, RailLineId, RailStation, RailStationId, Region,
+    SettlementId,
     SpeedKilometresPerHour, TrackCount, UtcSeconds,
 };
 
@@ -327,6 +328,112 @@ pub fn advance_project_construction(
         project.status = InfrastructureProjectStatus::Construction;
         project.timeline.construction_started_at = Some(scheduled_start);
         project.timeline.planned_completion_at = Some(planned_completion);
+    }
+
+    Ok(())
+}
+
+
+/// Opens completed New Line projects and materialises their approved Stations
+/// and physical Rail Lines into the public network.
+///
+/// Completion uses the project's locked `planned_completion_at` timestamp so
+/// reopening RailQ after an offline gap produces the same opening time as
+/// keeping the game running. Authority commitments become spent public money
+/// at opening; the historical project keeps its original funding record.
+pub fn open_completed_infrastructure_projects(
+    region: &mut Region,
+    now: UtcSeconds,
+) -> Result<(), CalculationError> {
+    let due_indices = region
+        .rail_authority
+        .infrastructure_projects
+        .iter()
+        .enumerate()
+        .filter_map(|(index, project)| {
+            if project.status != InfrastructureProjectStatus::Construction {
+                return None;
+            }
+            let completion = project.timeline.planned_completion_at?;
+            (completion <= now).then_some(index)
+        })
+        .collect::<Vec<_>>();
+
+    for index in due_indices {
+        let (planned_stations, planned_lines, completion, authority_committed) = {
+            let project = &region.rail_authority.infrastructure_projects[index];
+            let InfrastructureProjectKind::NewLine {
+                planned_stations,
+                planned_lines,
+            } = &project.kind
+            else {
+                continue;
+            };
+
+            (
+                planned_stations.clone(),
+                planned_lines.clone(),
+                project
+                    .timeline
+                    .planned_completion_at
+                    .expect("due construction project has a completion timestamp"),
+                project.funding.authority_committed,
+            )
+        };
+
+        {
+            let network = &mut region.rail_authority.rail_network;
+            for station in planned_stations {
+                if !network
+                    .rail_stations
+                    .iter()
+                    .any(|existing| existing.id == station.id)
+                {
+                    network.rail_stations.push(RailStation {
+                        id: station.id,
+                        settlement_id: station.settlement_id,
+                    });
+                }
+            }
+
+            for line in planned_lines {
+                if !network
+                    .rail_lines
+                    .iter()
+                    .any(|existing| existing.id == line.id)
+                {
+                    network.rail_lines.push(RailLine {
+                        id: line.id,
+                        first_station_id: line.first_station_id,
+                        second_station_id: line.second_station_id,
+                        distance: line.distance,
+                        speed_limit: line.speed_limit,
+                        track_count: line.track_count,
+                        electrification: line.electrification,
+                        construction_difficulty: line.construction_difficulty,
+                    });
+                }
+            }
+        }
+
+        region.rail_authority.finances.treasury = region
+            .rail_authority
+            .finances
+            .treasury
+            .checked_sub(authority_committed)?;
+        region.rail_authority.finances.committed_investment = region
+            .rail_authority
+            .finances
+            .committed_investment
+            .checked_sub(authority_committed)?;
+        region
+            .rail_authority
+            .finances
+            .refresh_maintenance_reserve(&region.rail_authority.rail_network)?;
+
+        let project = &mut region.rail_authority.infrastructure_projects[index];
+        project.status = InfrastructureProjectStatus::Open;
+        project.timeline.completed_at = Some(completion);
     }
 
     Ok(())
@@ -707,7 +814,8 @@ mod tests {
     use super::{
         advance_infrastructure_planning, advance_project_construction, advance_project_funding,
         advance_project_scheduling, cancel_infrastructure_project, estimated_connection_cost,
-        evaluate_connection_candidates, new_line_construction_duration, project_from_candidate,
+        evaluate_connection_candidates, new_line_construction_duration,
+        open_completed_infrastructure_projects, project_from_candidate,
         InfrastructureProjectActionError,
     };
 
@@ -1074,6 +1182,98 @@ mod tests {
         let project = &region.rail_authority.infrastructure_projects[0];
         assert_eq!(project.timeline.construction_started_at, Some(scheduled_start));
         assert_eq!(project.timeline.planned_completion_at, Some(expected_completion));
+    }
+
+
+    #[test]
+    fn completed_new_line_materialises_network_and_spends_commitment_once() {
+        let mut region = generate_region(41);
+        let candidate = evaluate_connection_candidates(&region, 41).unwrap()[0].clone();
+        let completion = UtcSeconds::from_unix_seconds(90_000);
+        let mut project = project_from_candidate(candidate, UtcSeconds::from_unix_seconds(80_000));
+        project.status = InfrastructureProjectStatus::Construction;
+        project.timeline.construction_started_at = Some(UtcSeconds::from_unix_seconds(85_000));
+        project.timeline.planned_completion_at = Some(completion);
+        project.funding.authority_committed = project.funding.estimated_cost;
+        let committed = project.funding.authority_committed;
+        let (planned_station, planned_line) = match &project.kind {
+            InfrastructureProjectKind::NewLine {
+                planned_stations,
+                planned_lines,
+            } => (planned_stations[0].clone(), planned_lines[0].clone()),
+            _ => panic!("connection candidate must become a New Line project"),
+        };
+        let station_count = region.rail_authority.rail_network.rail_stations.len();
+        let line_count = region.rail_authority.rail_network.rail_lines.len();
+        region.rail_authority.finances.treasury = committed
+            .checked_add(Money::from_cents(50_000_000))
+            .unwrap();
+        region.rail_authority.finances.committed_investment = committed;
+        region.rail_authority.infrastructure_projects = vec![project];
+        let treasury_before = region.rail_authority.finances.treasury;
+
+        open_completed_infrastructure_projects(
+            &mut region,
+            UtcSeconds::from_unix_seconds(completion.unix_seconds() - 1),
+        )
+        .unwrap();
+        assert_eq!(region.rail_authority.rail_network.rail_stations.len(), station_count);
+        assert_eq!(region.rail_authority.rail_network.rail_lines.len(), line_count);
+
+        open_completed_infrastructure_projects(
+            &mut region,
+            UtcSeconds::from_unix_seconds(completion.unix_seconds() + 3_600),
+        )
+        .unwrap();
+
+        let opened = &region.rail_authority.infrastructure_projects[0];
+        assert_eq!(opened.status, InfrastructureProjectStatus::Open);
+        assert_eq!(opened.timeline.completed_at, Some(completion));
+        assert_eq!(region.rail_authority.rail_network.rail_stations.len(), station_count + 1);
+        assert_eq!(region.rail_authority.rail_network.rail_lines.len(), line_count + 1);
+        assert!(region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .iter()
+            .any(|station| station.id == planned_station.id
+                && station.settlement_id == planned_station.settlement_id));
+        assert!(region
+            .rail_authority
+            .rail_network
+            .rail_lines
+            .iter()
+            .any(|line| line.id == planned_line.id
+                && line.first_station_id == planned_line.first_station_id
+                && line.second_station_id == planned_line.second_station_id
+                && line.distance == planned_line.distance
+                && line.speed_limit == planned_line.speed_limit
+                && line.track_count == planned_line.track_count
+                && line.electrification == planned_line.electrification));
+        assert_eq!(
+            region.rail_authority.finances.treasury,
+            treasury_before.checked_sub(committed).unwrap()
+        );
+        assert_eq!(region.rail_authority.finances.committed_investment, Money::ZERO);
+        assert_eq!(
+            region.rail_authority.finances.maintenance_reserve,
+            region
+                .rail_authority
+                .rail_network
+                .provisional_maintenance_reserve()
+                .unwrap()
+        );
+
+        // Reconciliation remains idempotent after the project is Open.
+        let treasury_after_open = region.rail_authority.finances.treasury;
+        open_completed_infrastructure_projects(
+            &mut region,
+            UtcSeconds::from_unix_seconds(completion.unix_seconds() + 7_200),
+        )
+        .unwrap();
+        assert_eq!(region.rail_authority.rail_network.rail_stations.len(), station_count + 1);
+        assert_eq!(region.rail_authority.rail_network.rail_lines.len(), line_count + 1);
+        assert_eq!(region.rail_authority.finances.treasury, treasury_after_open);
     }
 
     #[test]
