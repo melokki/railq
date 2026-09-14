@@ -78,7 +78,7 @@ domain_id!(
 );
 domain_id!(
     RailLineId,
-    "The identity of a Rail Line in the Rail Network."
+    "The stable identity of one physical Rail Line segment in the Rail Network."
 );
 domain_id!(
     TrainId,
@@ -389,6 +389,87 @@ impl SpeedMetresPerSecond {
     }
 }
 
+/// A positive infrastructure speed limit stored as whole kilometres per hour.
+///
+/// Rail infrastructure uses km/h because public line-speed upgrades are
+/// expressed in familiar railway increments such as 70, 100, and 120 km/h.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SpeedKilometresPerHour(u16);
+
+impl SpeedKilometresPerHour {
+    pub fn new(kilometres_per_hour: i64) -> Result<Self, ValidationError> {
+        let kilometres_per_hour =
+            u16::try_from(kilometres_per_hour).map_err(|_| ValidationError::OutOfRange {
+                unit: "speed in kilometres per hour",
+            })?;
+        if kilometres_per_hour == 0 {
+            return Err(ValidationError::NonPositive {
+                unit: "speed in kilometres per hour",
+            });
+        }
+        Ok(Self(kilometres_per_hour))
+    }
+
+    pub const fn kilometres_per_hour(self) -> u16 {
+        self.0
+    }
+}
+
+/// Number of parallel running tracks on one physical Rail Line segment.
+///
+/// The first gameplay upgrades use one or two tracks, while the value object
+/// deliberately supports larger future junction/corridor layouts.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TrackCount(u8);
+
+impl TrackCount {
+    pub const SINGLE: Self = Self(1);
+    pub const DOUBLE: Self = Self(2);
+
+    pub fn new(tracks: i64) -> Result<Self, ValidationError> {
+        let tracks = u8::try_from(tracks).map_err(|_| ValidationError::OutOfRange {
+            unit: "track count",
+        })?;
+        if tracks == 0 {
+            return Err(ValidationError::NonPositive {
+                unit: "track count",
+            });
+        }
+        Ok(Self(tracks))
+    }
+
+    pub const fn tracks(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for TrackCount {
+    fn default() -> Self {
+        Self::SINGLE
+    }
+}
+
+/// Whether a physical Rail Line segment currently provides electric traction.
+///
+/// Voltage/current systems are intentionally deferred until they add useful
+/// fleet gameplay; the infrastructure only needs electrified vs not yet.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Electrification {
+    #[default]
+    None,
+    Electric,
+}
+
+/// Coarse physical difficulty used by future Authority project cost/duration
+/// estimates. It is deliberately not a terrain simulation.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ConstructionDifficulty {
+    Low,
+    #[default]
+    Moderate,
+    High,
+}
+
 /// A positive physical distance stored as integer metres.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DistanceMetres(u64);
@@ -543,6 +624,8 @@ macro_rules! deserialize_validated_positive {
 
 deserialize_validated_positive!(PassengerCapacity, i64);
 deserialize_validated_positive!(SpeedMetresPerSecond, i64);
+deserialize_validated_positive!(SpeedKilometresPerHour, i64);
+deserialize_validated_positive!(TrackCount, i64);
 deserialize_validated_positive!(DistanceMetres, i64);
 deserialize_validated_positive!(MoneyPerKilometre, i64);
 deserialize_validated_positive!(PassengerArrivalRate, i64);
@@ -635,13 +718,28 @@ pub struct RailStation {
     pub settlement_id: SettlementId,
 }
 
-/// A physical connection between two Rail Stations.
+/// One stable physical Rail Line segment between two Rail Stations.
+///
+/// `RailLineId` already acts as the stable segment identity needed by future
+/// Authority projects, so RailQ does not introduce a second parallel ID type.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RailLine {
     pub id: RailLineId,
     pub first_station_id: RailStationId,
     pub second_station_id: RailStationId,
     pub distance: DistanceMetres,
+    #[serde(default = "default_rail_line_speed_limit")]
+    pub speed_limit: SpeedKilometresPerHour,
+    #[serde(default)]
+    pub track_count: TrackCount,
+    #[serde(default)]
+    pub electrification: Electrification,
+    #[serde(default)]
+    pub construction_difficulty: ConstructionDifficulty,
+}
+
+fn default_rail_line_speed_limit() -> SpeedKilometresPerHour {
+    SpeedKilometresPerHour::new(70).expect("RailQ's default Rail Line speed limit is valid")
 }
 
 /// A 2–5 letter Vehicle Keeper Mark (VKM) used to identify the Player Company.
@@ -1146,6 +1244,14 @@ mod tests {
             ));
             assert!(matches!(
                 SpeedMetresPerSecond::new(value),
+                Err(ValidationError::NonPositive { .. }) | Err(ValidationError::OutOfRange { .. })
+            ));
+            assert!(matches!(
+                SpeedKilometresPerHour::new(value),
+                Err(ValidationError::NonPositive { .. }) | Err(ValidationError::OutOfRange { .. })
+            ));
+            assert!(matches!(
+                TrackCount::new(value),
                 Err(ValidationError::NonPositive { .. }) | Err(ValidationError::OutOfRange { .. })
             ));
             assert!(matches!(

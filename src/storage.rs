@@ -25,13 +25,14 @@ use crate::{
     balance::BalanceConfig,
     catalog::{TrainModel, model_for_train, train_catalogue},
     model::{
-        CalculationError, DemandRules, DistanceMetres, DurationSeconds, EuropeanVehicleNumber,
-        Financials, Fleet, GameRules, GameState, Journey, JourneyId, JourneyPassengerGroup,
-        JourneyReceipt, Money, MoneyPerKilometre, OriginDestinationDemand, PassengerArrivalRate,
-        PassengerCapacity, PassengerService, PlayerCompany, RailAuthority, RailLine, RailLineId,
-        RailNetwork, RailStation, RailStationId, RailwayRegistration, Region, ServiceId,
-        Settlement, SettlementId, SpeedMetresPerSecond, Train, TrainId, TrainModelId,
-        TrainNickname, TrainStatus, UtcSeconds, VehicleKeeperMark,
+        CalculationError, ConstructionDifficulty, DemandRules, DistanceMetres, DurationSeconds,
+        Electrification, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState, Journey,
+        JourneyId, JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre,
+        OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
+        PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork, RailStation, RailStationId,
+        RailwayRegistration, Region, ServiceId, Settlement, SettlementId, SpeedKilometresPerHour,
+        SpeedMetresPerSecond, TrackCount, Train, TrainId, TrainModelId, TrainNickname, TrainStatus,
+        UtcSeconds, VehicleKeeperMark,
     },
     sim::{
         services::{path_between_stations, service_path_for_stops},
@@ -40,7 +41,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 10;
+pub const SAVE_VERSION: u32 = 11;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -390,7 +391,11 @@ CREATE TABLE IF NOT EXISTS rail_lines (
     id INTEGER PRIMARY KEY,
     first_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
     second_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
-    distance_metres INTEGER NOT NULL
+    distance_metres INTEGER NOT NULL,
+    speed_limit_kmh INTEGER NOT NULL CHECK (speed_limit_kmh > 0),
+    track_count INTEGER NOT NULL CHECK (track_count > 0),
+    electrification TEXT NOT NULL CHECK (electrification IN ('none', 'electric')),
+    construction_difficulty TEXT NOT NULL CHECK (construction_difficulty IN ('low', 'moderate', 'high'))
 );
 CREATE TABLE IF NOT EXISTS company (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -527,6 +532,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
         }
         2 => {
             migrate_v2_to_v3(connection, path)?;
@@ -537,6 +543,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
         }
         3 => {
             migrate_v3_to_v4(connection, path)?;
@@ -546,6 +553,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
         }
         4 => {
             migrate_v4_to_v5(connection, path)?;
@@ -554,6 +562,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
         }
         5 => {
             migrate_v5_to_v6(connection, path)?;
@@ -561,23 +570,31 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
         }
         6 => {
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
         }
         7 => {
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
         }
         8 => {
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
         }
-        9 => migrate_v9_to_v10(connection, path)?,
+        9 => {
+            migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
+        }
+        10 => migrate_v10_to_v11(connection, path)?,
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -1440,7 +1457,7 @@ fn migrate_v9_to_v10(connection: &Connection, path: &Path) -> Result<(), SaveSlo
         }
 
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 10_u32)
             .map_err(|source| db_error("write v10 schema version to", path, source))?;
         Ok(())
     })();
@@ -1449,6 +1466,37 @@ fn migrate_v9_to_v10(connection: &Connection, path: &Path) -> Result<(), SaveSlo
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v9 to v10 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v10_to_v11(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v10 to v11 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE rail_lines ADD COLUMN speed_limit_kmh INTEGER NOT NULL DEFAULT 70 CHECK (speed_limit_kmh > 0);
+                 ALTER TABLE rail_lines ADD COLUMN track_count INTEGER NOT NULL DEFAULT 1 CHECK (track_count > 0);
+                 ALTER TABLE rail_lines ADD COLUMN electrification TEXT NOT NULL DEFAULT 'none' CHECK (electrification IN ('none', 'electric'));
+                 ALTER TABLE rail_lines ADD COLUMN construction_difficulty TEXT NOT NULL DEFAULT 'moderate' CHECK (construction_difficulty IN ('low', 'moderate', 'high'));",
+            )
+            .map_err(|source| db_error("add Rail Line capabilities to", path, source))?;
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v11 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v10 to v11 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -1550,9 +1598,30 @@ fn insert_state(
             .map_err(|source| db_error("write Rail Stations to", path, source))?;
     }
     for line in &network.rail_lines {
+        let electrification = match line.electrification {
+            Electrification::None => "none",
+            Electrification::Electric => "electric",
+        };
+        let construction_difficulty = match line.construction_difficulty {
+            ConstructionDifficulty::Low => "low",
+            ConstructionDifficulty::Moderate => "moderate",
+            ConstructionDifficulty::High => "high",
+        };
         transaction.execute(
-            "INSERT INTO rail_lines(id, first_station_id, second_station_id, distance_metres) VALUES(?1, ?2, ?3, ?4)",
-            params![db(line.id.get(), "Rail Line ID")?, db(line.first_station_id.get(), "Rail Station ID")?, db(line.second_station_id.get(), "Rail Station ID")?, db(line.distance.metres(), "Rail Line distance")?],
+            "INSERT INTO rail_lines(
+                 id, first_station_id, second_station_id, distance_metres,
+                 speed_limit_kmh, track_count, electrification, construction_difficulty
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                db(line.id.get(), "Rail Line ID")?,
+                db(line.first_station_id.get(), "Rail Station ID")?,
+                db(line.second_station_id.get(), "Rail Station ID")?,
+                db(line.distance.metres(), "Rail Line distance")?,
+                i64::from(line.speed_limit.kilometres_per_hour()),
+                i64::from(line.track_count.tracks()),
+                electrification,
+                construction_difficulty,
+            ],
         ).map_err(|source| db_error("write Rail Lines to", path, source))?;
     }
 
@@ -1756,15 +1825,34 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
     )?;
     let rail_lines = query_all(
         connection,
-        "SELECT id, first_station_id, second_station_id, distance_metres FROM rail_lines ORDER BY id",
+        "SELECT id, first_station_id, second_station_id, distance_metres,
+                speed_limit_kmh, track_count, electrification, construction_difficulty
+         FROM rail_lines ORDER BY id",
         path,
         |row| {
+            let electrification = match row.get::<_, String>(6)?.as_str() {
+                "none" => Electrification::None,
+                "electric" => Electrification::Electric,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            let construction_difficulty = match row.get::<_, String>(7)?.as_str() {
+                "low" => ConstructionDifficulty::Low,
+                "moderate" => ConstructionDifficulty::Moderate,
+                "high" => ConstructionDifficulty::High,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
             Ok(RailLine {
                 id: RailLineId::new(row_u64(row, 0, "Rail Line ID")?),
                 first_station_id: RailStationId::new(row_u64(row, 1, "Rail Station ID")?),
                 second_station_id: RailStationId::new(row_u64(row, 2, "Rail Station ID")?),
                 distance: DistanceMetres::new(row.get(3)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                speed_limit: SpeedKilometresPerHour::new(row.get(4)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                track_count: TrackCount::new(row.get(5)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                electrification,
+                construction_difficulty,
             })
         },
     )?;
@@ -3685,6 +3773,42 @@ mod tests {
         assert_eq!(registration_code, 67);
         assert_eq!(registration_mark, "VA");
         assert_eq!(company_vkm, "OMP");
+    }
+
+    #[test]
+    fn v10_schema_migrates_rail_line_capabilities_with_safe_defaults() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_lines (
+                     id INTEGER PRIMARY KEY,
+                     first_station_id INTEGER NOT NULL,
+                     second_station_id INTEGER NOT NULL,
+                     distance_metres INTEGER NOT NULL
+                 );
+                 INSERT INTO rail_lines VALUES(1, 1, 2, 42000);
+                 PRAGMA user_version = 10;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let capabilities: (i64, i64, String, String) = connection
+            .query_row(
+                "SELECT speed_limit_kmh, track_count, electrification, construction_difficulty
+                 FROM rail_lines WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(capabilities, (70, 1, "none".into(), "moderate".into()));
     }
 
     #[test]

@@ -8,9 +8,10 @@ use rand_chacha::{
 use crate::{
     balance::BalanceConfig,
     model::{
-        DemandRules, Financials, Fleet, GameRules, GameState, Money, PlayerCompany, RailAuthority,
-        RailLine, RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
-        Settlement, SettlementId, UtcSeconds, VehicleKeeperMark,
+        ConstructionDifficulty, DemandRules, Electrification, Financials, Fleet, GameRules,
+        GameState, Money, PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork,
+        RailStation, RailStationId, RailwayRegistration, Region, Settlement, SettlementId,
+        SpeedKilometresPerHour, TrackCount, UtcSeconds, VehicleKeeperMark,
     },
     sim::demand::seed_directional_demand,
 };
@@ -233,6 +234,11 @@ fn rail_line(
         second_station_id: RailStationId::new(second_station_id),
         distance: crate::model::DistanceMetres::new(distance_metres)
             .expect("the fixed starter Rail Line distance must be positive"),
+        speed_limit: SpeedKilometresPerHour::new(70)
+            .expect("the starter Rail Line speed limit must be positive"),
+        track_count: TrackCount::SINGLE,
+        electrification: Electrification::None,
+        construction_difficulty: ConstructionDifficulty::Moderate,
     }
 }
 
@@ -296,6 +302,12 @@ mod tests {
                 .iter()
                 .any(|line| line.distance.metres() == 10_000)
         );
+        assert!(network.rail_lines.iter().all(|line| {
+            line.speed_limit.kilometres_per_hour() == 70
+                && line.track_count == TrackCount::SINGLE
+                && line.electrification == Electrification::None
+                && line.construction_difficulty == ConstructionDifficulty::Moderate
+        }));
     }
 
     #[test]

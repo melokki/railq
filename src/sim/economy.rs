@@ -478,12 +478,24 @@ mod tests {
                                 first_station_id: ORIGIN,
                                 second_station_id: RailStationId::new(2),
                                 distance: DistanceMetres::new(1_000).unwrap(),
+                                speed_limit: crate::model::SpeedKilometresPerHour::new(70)
+                                    .unwrap(),
+                                track_count: crate::model::TrackCount::SINGLE,
+                                electrification: crate::model::Electrification::None,
+                                construction_difficulty:
+                                    crate::model::ConstructionDifficulty::Moderate,
                             },
                             RailLine {
                                 id: SECOND_LINE,
                                 first_station_id: RailStationId::new(2),
                                 second_station_id: DESTINATION,
                                 distance: DistanceMetres::new(501).unwrap(),
+                                speed_limit: crate::model::SpeedKilometresPerHour::new(70)
+                                    .unwrap(),
+                                track_count: crate::model::TrackCount::SINGLE,
+                                electrification: crate::model::Electrification::None,
+                                construction_difficulty:
+                                    crate::model::ConstructionDifficulty::Moderate,
                             },
                         ],
                     },
