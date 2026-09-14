@@ -4596,6 +4596,27 @@ fn validate_infrastructure_projects(
             }
         }
 
+        if project.status == InfrastructureProjectStatus::Construction {
+            let (Some(scheduled_start), Some(construction_started), Some(planned_completion)) = (
+                project.timeline.scheduled_start_at,
+                project.timeline.construction_started_at,
+                project.timeline.planned_completion_at,
+            ) else {
+                return Err(SaveValidationError::ImpossibleState {
+                    reason: "Infrastructure Project under construction is missing construction timestamps",
+                });
+            };
+            if !project.funding.is_fully_funded()
+                || project.timeline.funding_completed_at.is_none()
+                || construction_started < scheduled_start
+                || planned_completion <= construction_started
+            {
+                return Err(SaveValidationError::ImpossibleState {
+                    reason: "Infrastructure Project has an invalid construction lifecycle",
+                });
+            }
+        }
+
         if !project.status.reserves_construction_capacity() {
             continue;
         }
