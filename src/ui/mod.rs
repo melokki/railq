@@ -40,6 +40,7 @@ use crate::{
     },
 };
 
+pub mod authority;
 pub mod company;
 pub mod dispatch;
 pub mod fleet;
@@ -57,7 +58,7 @@ pub const ARRIVAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MINIMUM_COLUMNS: u16 = 64;
 const MINIMUM_ROWS: u16 = 16;
 
-/// The four primary views in the RailQ terminal shell.
+/// The five primary views in the RailQ terminal shell.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum View {
     /// The Rail Network overview and operational home.
@@ -69,6 +70,8 @@ pub enum View {
     Company,
     /// The Train catalogue and purchase flow.
     BuyTrains,
+    /// The public Rail Authority infrastructure programme.
+    Authority,
 }
 
 impl View {
@@ -78,6 +81,7 @@ impl View {
             Self::Trains => "Trains",
             Self::Company => "Company",
             Self::BuyTrains => "Market",
+            Self::Authority => "Authority",
         }
     }
 
@@ -87,6 +91,7 @@ impl View {
             Self::Trains => '2',
             Self::BuyTrains => '3',
             Self::Company => '4',
+            Self::Authority => '5',
         }
     }
 }
@@ -200,7 +205,7 @@ struct PendingAction {
     funds_before: Money,
 }
 
-/// Presentation-only state shared by the four primary views.
+/// Presentation-only state shared by the five primary views.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Shell {
     active_view: View,
@@ -216,6 +221,7 @@ pub struct Shell {
     fleet_split_visible: bool,
     market_flow: Option<market::MarketFlow>,
     market_selection: market::CatalogueSelection,
+    authority_project_selection: authority::ProjectSelection,
     company_receipt_selection: company::ReceiptSelection,
     company_receipt_details_open: bool,
     company_recovery_selection: company::RecoverySelection,
@@ -248,6 +254,7 @@ impl Shell {
             fleet_split_visible: false,
             market_flow: None,
             market_selection: market::CatalogueSelection::default(),
+            authority_project_selection: authority::ProjectSelection::default(),
             company_receipt_selection: company::ReceiptSelection::default(),
             company_receipt_details_open: false,
             company_recovery_selection: company::RecoverySelection::default(),
@@ -621,6 +628,10 @@ impl Shell {
                 self.active_view = View::BuyTrains;
                 self.services_open = false;
             }
+            KeyCode::Char('5' | 'a' | 'A') => {
+                self.active_view = View::Authority;
+                self.services_open = false;
+            }
             KeyCode::Enter if self.active_view == View::Company => {
                 if self.company_receipt_selection.has_selection(state) {
                     self.company_receipt_details_open = true;
@@ -721,6 +732,15 @@ impl Shell {
                 if self.active_view == View::Trains =>
             {
                 self.fleet_selection.handle_key(key.code, state);
+            }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K')
+                if self.active_view == View::Authority =>
+            {
+                self.authority_project_selection.handle_key(key.code, state);
             }
             KeyCode::Char('w' | 'W') if self.active_view == View::Map => {
                 self.world_details_visible = true;
@@ -1425,7 +1445,13 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         header_area,
     );
 
-    let views = [View::Map, View::Trains, View::BuyTrains, View::Company];
+    let views = [
+        View::Map,
+        View::Trains,
+        View::BuyTrains,
+        View::Company,
+        View::Authority,
+    ];
     let selected = views
         .iter()
         .position(|view| *view == shell.active_view)
@@ -1503,6 +1529,14 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         } else {
             market::render_dashboard(frame, content_area, state, &mut shell.market_selection);
         }
+    } else if shell.active_view == View::Authority && !is_bankrupt(state) {
+        authority::render_dashboard(
+            frame,
+            content_area,
+            state,
+            now,
+            &mut shell.authority_project_selection,
+        );
     } else {
         let content = if is_bankrupt(state) {
             bankruptcy_text(false)
@@ -1515,6 +1549,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
                     None => market::render(state),
                 },
                 View::Company => company::render(state),
+                View::Authority => authority::render(state, now),
             }
         };
         frame.render_widget(
@@ -1942,6 +1977,24 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             });
             items
         }
+    } else if shell.active_view == View::Authority {
+        if state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .is_empty()
+        {
+            vec![FooterShortcut::disabled("↑↓", "Project")]
+        } else {
+            let mut items = vec![FooterShortcut::enabled(
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Project",
+            )];
+            if wide {
+                items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
+            }
+            items
+        }
     } else if shell.active_view == View::BuyTrains {
         if let Some(flow) = &shell.market_flow {
             if flow.is_selecting_delivery() {
@@ -2092,6 +2145,7 @@ fn tab_label(view: View, compact: bool) -> String {
         (View::Trains, true) => "Trn",
         (View::BuyTrains, true) => "Mkt",
         (View::Company, true) => "Co",
+        (View::Authority, true) => "Auth",
         (View::Trains, false) => "Trains",
         (View::BuyTrains, false) => "Market",
         _ => view.label(),
@@ -2114,8 +2168,8 @@ const HELP_PAGE_STEP: usize = 5;
 fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     let mut lines = vec![
         "Navigation".into(),
-        "1 Map   2 Trains   3 Market   4 Company".into(),
-        "m / t / b / c also switch workspaces".into(),
+        "1 Map   2 Trains   3 Market   4 Company   5 Authority".into(),
+        "m / t / b / c / a also switch workspaces".into(),
         String::new(),
     ];
 
@@ -2209,7 +2263,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         lines.extend([
             "Current · Journey Receipt".into(),
             "Esc Back to Journey history".into(),
-            "1–4 Switch workspace".into(),
+            "1–5 Switch workspace".into(),
         ]);
         return lines;
     }
@@ -2330,6 +2384,15 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                     lines.push("r Review available financial recovery routes".into());
                 }
             }
+        }
+        View::Authority => {
+            lines.extend([
+                "Current · Rail Authority".into(),
+                "↑↓ / jk Select infrastructure project".into(),
+                "PgUp / PgDn Scroll project pipeline".into(),
+                String::new(),
+                "This workspace is read-only: the Authority controls public infrastructure.".into(),
+            ]);
         }
     }
 
@@ -2758,7 +2821,7 @@ mod tests {
     };
 
     #[test]
-    fn routes_the_four_primary_views_by_number_and_keeps_letter_aliases() {
+    fn routes_the_five_primary_views_by_number_and_keeps_letter_aliases() {
         let mut shell = Shell::new();
         let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
@@ -2767,10 +2830,12 @@ mod tests {
             ('4', View::Company),
             ('3', View::BuyTrains),
             ('1', View::Map),
+            ('5', View::Authority),
             ('t', View::Trains),
             ('c', View::Company),
             ('b', View::BuyTrains),
             ('m', View::Map),
+            ('a', View::Authority),
         ] {
             assert_eq!(
                 shell.handle_key(

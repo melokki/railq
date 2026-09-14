@@ -192,6 +192,7 @@ struct OperationalLine {
     first_settlement_id: SettlementId,
     second_settlement_id: SettlementId,
     distance_metres: u64,
+    track_count: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -326,6 +327,10 @@ fn operational_network_block(state: &GameState, width: u16) -> Block<'static> {
                 Span::styled("station", theme::secondary()),
                 Span::styled("   ○ ", theme::secondary()),
                 Span::styled("settlement", theme::secondary()),
+                Span::styled("   ─ ", theme::secondary()),
+                Span::styled("single", theme::secondary()),
+                Span::styled("   ═ ", theme::secondary()),
+                Span::styled("double", theme::secondary()),
                 Span::styled("   ▶ ", theme::warning()),
                 Span::styled("train ", theme::secondary()),
             ])
@@ -515,143 +520,31 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
         .iter()
         .map(|station| (station.id, station))
         .collect::<BTreeMap<_, _>>();
-    let mut adjacency = network
+    let station_by_settlement = network
         .rail_stations
         .iter()
-        .map(|station| (station.id, Vec::<(RailStationId, u64)>::new()))
+        .map(|station| (station.settlement_id, station.id))
         .collect::<BTreeMap<_, _>>();
-    for line in &network.rail_lines {
-        adjacency
-            .entry(line.first_station_id)
-            .or_default()
-            .push((line.second_station_id, line.distance.metres()));
-        adjacency
-            .entry(line.second_station_id)
-            .or_default()
-            .push((line.first_station_id, line.distance.metres()));
-    }
-    for neighbours in adjacency.values_mut() {
-        neighbours.sort_by_key(|(station_id, _)| *station_id);
-    }
 
-    let mut station_positions = BTreeMap::<RailStationId, (i32, i32)>::new();
-    if let Some(root) = network.rail_stations.iter().max_by_key(|station| {
-        (
-            adjacency.get(&station.id).map_or(0, Vec::len),
-            Reverse(station.id),
-        )
-    }) {
-        station_positions.insert(root.id, (0, 0));
-        let directions = [
-            MapDirection::Left,
-            MapDirection::Right,
-            MapDirection::Down,
-            MapDirection::Up,
-        ];
-        let mut queue = VecDeque::new();
-        for (index, (neighbour, metres)) in
-            adjacency.get(&root.id).into_iter().flatten().enumerate()
-        {
-            let direction = directions[index % directions.len()];
-            let length = directional_line_length(*metres, direction);
-            let position = offset_point((0, 0), direction, length);
-            station_positions.entry(*neighbour).or_insert(position);
-            queue.push_back((*neighbour, root.id, direction));
-        }
-
-        while let Some((station_id, parent_id, direction)) = queue.pop_front() {
-            let origin = station_positions
-                .get(&station_id)
-                .copied()
-                .unwrap_or((0, 0));
-            let children = adjacency
-                .get(&station_id)
-                .into_iter()
-                .flatten()
-                .filter(|(candidate, _)| *candidate != parent_id)
-                .cloned()
-                .collect::<Vec<_>>();
-            for (index, (child, metres)) in children.into_iter().enumerate() {
-                if station_positions.contains_key(&child) {
-                    continue;
-                }
-                let child_direction = if index == 0 {
-                    direction
-                } else if index % 2 == 1 {
-                    turn_clockwise(direction)
-                } else {
-                    turn_counter_clockwise(direction)
-                };
-                let position = offset_point(
-                    origin,
-                    child_direction,
-                    directional_line_length(metres, child_direction),
-                );
-                station_positions.insert(child, position);
-                queue.push_back((child, station_id, child_direction));
-            }
-        }
-    }
-
-    let mut places = network
-        .rail_stations
-        .iter()
-        .filter_map(|station| {
-            let settlement = state
-                .region
-                .settlements
-                .iter()
-                .find(|settlement| settlement.id == station.settlement_id)?;
-            let (x, y) = station_positions
-                .get(&station.id)
-                .copied()
-                .unwrap_or((0, 0));
-            Some(OperationalPlace {
-                settlement_id: settlement.id,
-                station_id: Some(station.id),
-                name: settlement.name.clone(),
-                x,
-                y,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let connected = network
-        .rail_stations
-        .iter()
-        .map(|station| station.settlement_id)
-        .collect::<BTreeSet<_>>();
-    let unconnected = state
+    let places = state
         .region
         .settlements
         .iter()
-        .filter(|settlement| !connected.contains(&settlement.id))
-        .collect::<Vec<_>>();
-
-    let min_connected_x = places.iter().map(|place| place.x).min().unwrap_or(-8);
-    let max_connected_x = places.iter().map(|place| place.x).max().unwrap_or(8);
-    let min_connected_y = places.iter().map(|place| place.y).min().unwrap_or(0);
-    let max_connected_y = places.iter().map(|place| place.y).max().unwrap_or(0);
-    let row_width = (max_connected_x - min_connected_x).max(34);
-    let columns = 3_i32;
-    let spacing = (row_width / (columns - 1)).max(13);
-    let left = -spacing;
-    for (index, settlement) in unconnected.into_iter().enumerate() {
-        let row = i32::try_from(index / usize::try_from(columns).unwrap_or(3)).unwrap_or(0);
-        let column = i32::try_from(index % usize::try_from(columns).unwrap_or(3)).unwrap_or(0);
-        let y = if row % 2 == 0 {
-            min_connected_y - 5 - (row / 2) * 4
-        } else {
-            max_connected_y + 5 + (row / 2) * 4
-        };
-        places.push(OperationalPlace {
+        .map(|settlement| OperationalPlace {
             settlement_id: settlement.id,
-            station_id: None,
+            station_id: station_by_settlement.get(&settlement.id).copied(),
             name: settlement.name.clone(),
-            x: left + column * spacing,
-            y,
-        });
-    }
+            x: settlement.position.x,
+            // Terminal cells are roughly twice as tall as they are wide.
+            // Compress world-space Y only for presentation so geography stays
+            // visually proportional while the persisted coordinates remain
+            // simulation-grade kilometres.
+            y: settlement
+                .position
+                .y
+                .div_euclid(TERMINAL_CELL_HEIGHT_TO_WIDTH),
+        })
+        .collect::<Vec<_>>();
 
     let lines = network
         .rail_lines
@@ -663,58 +556,12 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
                 first_settlement_id: first.settlement_id,
                 second_settlement_id: second.settlement_id,
                 distance_metres: line.distance.metres(),
+                track_count: line.track_count.tracks(),
             })
         })
         .collect();
 
     Some(OperationalLayout { places, lines })
-}
-
-fn visual_line_length(distance_metres: u64) -> i32 {
-    let kilometres = (distance_metres.max(1) as f64) / 1_000.0;
-    // Preserve visible distance differences without letting long corridors
-    // dominate the whole terminal. Short links get enough room for labels.
-    (4.0 + kilometres.sqrt() * 1.25).round().clamp(8.0, 26.0) as i32
-}
-
-fn directional_line_length(distance_metres: u64, direction: MapDirection) -> i32 {
-    let visual_units = visual_line_length(distance_metres);
-    match direction {
-        MapDirection::Left | MapDirection::Right => visual_units,
-        MapDirection::Up | MapDirection::Down => {
-            // Terminal cells are roughly twice as tall as they are wide.
-            // Use fewer rows for vertical links so physical on-screen length
-            // remains comparable with a horizontal link of the same distance.
-            (visual_units / TERMINAL_CELL_HEIGHT_TO_WIDTH).max(4)
-        }
-    }
-}
-
-fn offset_point((x, y): (i32, i32), direction: MapDirection, distance: i32) -> (i32, i32) {
-    match direction {
-        MapDirection::Left => (x - distance, y),
-        MapDirection::Right => (x + distance, y),
-        MapDirection::Up => (x, y - distance),
-        MapDirection::Down => (x, y + distance),
-    }
-}
-
-const fn turn_clockwise(direction: MapDirection) -> MapDirection {
-    match direction {
-        MapDirection::Left => MapDirection::Up,
-        MapDirection::Right => MapDirection::Down,
-        MapDirection::Up => MapDirection::Right,
-        MapDirection::Down => MapDirection::Left,
-    }
-}
-
-const fn turn_counter_clockwise(direction: MapDirection) -> MapDirection {
-    match direction {
-        MapDirection::Left => MapDirection::Down,
-        MapDirection::Right => MapDirection::Up,
-        MapDirection::Up => MapDirection::Left,
-        MapDirection::Down => MapDirection::Right,
-    }
 }
 
 fn render_map_rows(
@@ -729,6 +576,7 @@ fn render_map_rows(
     let mut grid = vec![vec![MapCell::default(); width]; height];
     let mut rail_mask = vec![vec![0_u8; width]; height];
     let mut rail_accent = vec![vec![false; width]; height];
+    let mut rail_double = vec![vec![false; width]; height];
 
     let min_x = layout.places.iter().map(|place| place.x).min().unwrap_or(0) - 2;
     let max_x = layout.places.iter().map(|place| place.x).max().unwrap_or(0) + 2;
@@ -781,14 +629,22 @@ fn render_map_rows(
         let accent = selected.is_some_and(|selected_id| {
             selected_id == line.first_settlement_id || selected_id == line.second_settlement_id
         });
-        draw_orthogonal_rail(&mut rail_mask, &mut rail_accent, start, end, accent);
+        draw_orthogonal_rail(
+            &mut rail_mask,
+            &mut rail_accent,
+            &mut rail_double,
+            start,
+            end,
+            accent,
+            line.track_count >= 2,
+        );
     }
 
     for y in 0..height {
         for x in 0..width {
             if rail_mask[y][x] != 0 {
                 grid[y][x] = MapCell {
-                    ch: rail_glyph(rail_mask[y][x], rail_accent[y][x]),
+                    ch: rail_glyph(rail_mask[y][x], rail_accent[y][x], rail_double[y][x]),
                     ink: if rail_accent[y][x] {
                         MapInk::RailAccent
                     } else {
@@ -815,6 +671,11 @@ fn render_map_rows(
         put_cell(&mut grid, x, y, marker, ink);
     }
 
+    let place_positions = layout
+        .places
+        .iter()
+        .map(|place| (place.settlement_id, screen_position(place)))
+        .collect::<BTreeMap<_, _>>();
     let station_positions = layout
         .places
         .iter()
@@ -841,12 +702,15 @@ fn render_map_rows(
     for place in label_places {
         let (x, y) = screen_position(place);
         let label = map_place_label(place, selected);
+        let preferred_direction =
+            preferred_label_direction(place, &label, &layout.places, &place_positions, selected);
         place_map_label(
             &mut grid,
             x,
             y,
             &label,
             place_ink(place, selected, &adjacent),
+            preferred_direction,
         );
     }
 
@@ -1183,21 +1047,81 @@ fn place_link_distance_label(
     }
 }
 
+fn preferred_label_direction(
+    place: &OperationalPlace,
+    label: &str,
+    places: &[OperationalPlace],
+    positions: &BTreeMap<SettlementId, (i32, i32)>,
+    selected: Option<SettlementId>,
+) -> Option<MapDirection> {
+    let &(x, y) = positions.get(&place.settlement_id)?;
+    let own_width = i32::try_from(label.chars().count()).unwrap_or(i32::MAX);
+
+    places
+        .iter()
+        .filter(|other| other.settlement_id != place.settlement_id)
+        .filter_map(|other| {
+            let &(other_x, other_y) = positions.get(&other.settlement_id)?;
+            let other_label = map_place_label(other, selected);
+            let other_width = i32::try_from(other_label.chars().count()).unwrap_or(i32::MAX);
+            let dx = other_x - x;
+            let dy = other_y - y;
+            let horizontal = dx.abs() >= dy.abs();
+            let crowded = if horizontal {
+                dy.abs() <= 2 && dx.abs() <= ((own_width + other_width) / 2 + 6).max(12)
+            } else {
+                dx.abs() <= 3 && dy.abs() <= 6
+            };
+            crowded.then_some((dx.abs() + dy.abs(), dx, dy))
+        })
+        .min_by_key(|(distance, _, _)| *distance)
+        .map(|(_, dx, dy)| {
+            if dx.abs() >= dy.abs() {
+                if dx > 0 {
+                    MapDirection::Left
+                } else {
+                    MapDirection::Right
+                }
+            } else if dy > 0 {
+                MapDirection::Up
+            } else {
+                MapDirection::Down
+            }
+        })
+}
+
 fn place_map_label(
     grid: &mut [Vec<MapCell>],
     marker_x: i32,
     marker_y: i32,
     text: &str,
     ink: MapInk,
+    preferred_direction: Option<MapDirection>,
 ) {
     let label_width = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
     let centered_x = marker_x - label_width / 2;
-    let candidates = [
-        (centered_x, marker_y - 1),
-        (centered_x, marker_y + 1),
-        (marker_x + 2, marker_y),
-        (marker_x - label_width - 2, marker_y),
-    ];
+    let position_for = |direction| match direction {
+        MapDirection::Up => (centered_x, marker_y - 1),
+        MapDirection::Down => (centered_x, marker_y + 1),
+        MapDirection::Right => (marker_x + 2, marker_y),
+        MapDirection::Left => (marker_x - label_width - 2, marker_y),
+    };
+
+    let mut candidates = Vec::with_capacity(4);
+    if let Some(direction) = preferred_direction {
+        candidates.push(position_for(direction));
+    }
+    for direction in [
+        MapDirection::Up,
+        MapDirection::Down,
+        MapDirection::Right,
+        MapDirection::Left,
+    ] {
+        let candidate = position_for(direction);
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
 
     if let Some((x, y)) = candidates
         .into_iter()
@@ -1238,21 +1162,25 @@ fn can_place_text(grid: &[Vec<MapCell>], x: i32, y: i32, text: &str) -> bool {
 fn draw_orthogonal_rail(
     masks: &mut [Vec<u8>],
     accents: &mut [Vec<bool>],
+    doubles: &mut [Vec<bool>],
     start: (i32, i32),
     end: (i32, i32),
     accent: bool,
+    double_track: bool,
 ) {
     let corner = (end.0, start.1);
-    draw_segment(masks, accents, start, corner, accent);
-    draw_segment(masks, accents, corner, end, accent);
+    draw_segment(masks, accents, doubles, start, corner, accent, double_track);
+    draw_segment(masks, accents, doubles, corner, end, accent, double_track);
 }
 
 fn draw_segment(
     masks: &mut [Vec<u8>],
     accents: &mut [Vec<bool>],
+    doubles: &mut [Vec<bool>],
     start: (i32, i32),
     end: (i32, i32),
     accent: bool,
+    double_track: bool,
 ) {
     let (mut x, mut y) = start;
     while (x, y) != end {
@@ -1265,7 +1193,7 @@ fn draw_segment(
         } else {
             (x, y - 1)
         };
-        add_rail_connection(masks, accents, (x, y), next, accent);
+        add_rail_connection(masks, accents, doubles, (x, y), next, accent, double_track);
         x = next.0;
         y = next.1;
     }
@@ -1274,9 +1202,11 @@ fn draw_segment(
 fn add_rail_connection(
     masks: &mut [Vec<u8>],
     accents: &mut [Vec<bool>],
+    doubles: &mut [Vec<bool>],
     from: (i32, i32),
     to: (i32, i32),
     accent: bool,
+    double_track: bool,
 ) {
     let (from_bit, to_bit) = match (to.0 - from.0, to.1 - from.1) {
         (1, 0) => (RAIL_RIGHT, RAIL_LEFT),
@@ -1285,16 +1215,26 @@ fn add_rail_connection(
         (0, -1) => (RAIL_UP, RAIL_DOWN),
         _ => return,
     };
-    add_rail_bit(masks, accents, from, from_bit, accent);
-    add_rail_bit(masks, accents, to, to_bit, accent);
+    add_rail_bit(
+        masks,
+        accents,
+        doubles,
+        from,
+        from_bit,
+        accent,
+        double_track,
+    );
+    add_rail_bit(masks, accents, doubles, to, to_bit, accent, double_track);
 }
 
 fn add_rail_bit(
     masks: &mut [Vec<u8>],
     accents: &mut [Vec<bool>],
+    doubles: &mut [Vec<bool>],
     (x, y): (i32, i32),
     bit: u8,
     accent: bool,
+    double_track: bool,
 ) {
     let (Ok(x), Ok(y)) = (usize::try_from(x), usize::try_from(y)) else {
         return;
@@ -1313,13 +1253,42 @@ fn add_rail_bit(
             }
         }
     }
+    if double_track {
+        if let Some(row) = doubles.get_mut(y) {
+            if let Some(value) = row.get_mut(x) {
+                *value = true;
+            }
+        }
+    }
 }
 
-fn rail_glyph(mask: u8, accent: bool) -> char {
-    if accent {
+fn rail_glyph(mask: u8, accent: bool, double_track: bool) -> char {
+    if double_track {
+        double_rail_glyph(mask)
+    } else if accent {
         heavy_rail_glyph(mask)
     } else {
         light_rail_glyph(mask)
+    }
+}
+
+fn double_rail_glyph(mask: u8) -> char {
+    match mask {
+        m if m == (RAIL_LEFT | RAIL_RIGHT) => '═',
+        m if m == (RAIL_UP | RAIL_DOWN) => '║',
+        m if m == (RAIL_RIGHT | RAIL_DOWN) => '╔',
+        m if m == (RAIL_LEFT | RAIL_DOWN) => '╗',
+        m if m == (RAIL_RIGHT | RAIL_UP) => '╚',
+        m if m == (RAIL_LEFT | RAIL_UP) => '╝',
+        m if m == (RAIL_LEFT | RAIL_RIGHT | RAIL_DOWN) => '╦',
+        m if m == (RAIL_LEFT | RAIL_RIGHT | RAIL_UP) => '╩',
+        m if m == (RAIL_UP | RAIL_DOWN | RAIL_RIGHT) => '╠',
+        m if m == (RAIL_UP | RAIL_DOWN | RAIL_LEFT) => '╣',
+        m if m == (RAIL_LEFT | RAIL_RIGHT | RAIL_UP | RAIL_DOWN) => '╬',
+        m if m & (RAIL_LEFT | RAIL_RIGHT) != 0 && m & (RAIL_UP | RAIL_DOWN) != 0 => '╬',
+        m if m & (RAIL_LEFT | RAIL_RIGHT) != 0 => '═',
+        m if m & (RAIL_UP | RAIL_DOWN) != 0 => '║',
+        _ => '·',
     }
 }
 
@@ -2976,8 +2945,9 @@ mod tests {
     #[test]
     fn selected_routes_use_heavy_rail_while_background_routes_stay_light() {
         let horizontal = RAIL_LEFT | RAIL_RIGHT;
-        assert_eq!(rail_glyph(horizontal, false), '─');
-        assert_eq!(rail_glyph(horizontal, true), '━');
+        assert_eq!(rail_glyph(horizontal, false, false), '─');
+        assert_eq!(rail_glyph(horizontal, true, false), '━');
+        assert_eq!(rail_glyph(horizontal, false, true), '═');
     }
 
     #[test]

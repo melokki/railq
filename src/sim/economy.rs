@@ -10,7 +10,7 @@ use crate::{
     catalog::model_for_train,
     model::{
         CalculationError, DistanceMetres, DurationSeconds, GameState, Money, PassengerService,
-        RailLineId, RailStationId, ServiceId, TrainId, TrainStatus,
+        RailLineId, RailStationId, ServiceId, SpeedMetresPerSecond, TrainId, TrainStatus,
     },
     sim::services::path_between_stations,
 };
@@ -207,7 +207,6 @@ pub fn quote_journey(
     }
 
     let distance = distance_for_lines(state, &service.rail_line_ids)?;
-    let first_leg_distance = distance_between_service_stops(state, service, 0, 1)?;
     let boarding_groups = quote_boarding_at_stop(
         state,
         service,
@@ -243,7 +242,8 @@ pub fn quote_journey(
     let operating_cost = infrastructure_access_fee.checked_add(fuel_cost)?;
     let journey_profitability = operating_revenue.checked_sub(operating_cost)?;
     let duration = service_duration(state, service, train_model.speed())?;
-    let first_leg_duration = first_leg_distance.journey_duration(train_model.speed())?;
+    let first_leg_duration =
+        duration_between_service_stops(state, service, 0, 1, train_model.speed())?;
     let cash_after_cost = state.player_company.funds.checked_sub(operating_cost)?;
 
     Ok(JourneyQuote {
@@ -329,20 +329,21 @@ pub(crate) fn quote_boarding_at_stop(
 fn service_duration(
     state: &GameState,
     service: &PassengerService,
-    speed: crate::model::SpeedMetresPerSecond,
+    train_speed: SpeedMetresPerSecond,
 ) -> Result<DurationSeconds, EconomyError> {
-    let mut seconds = 0_u64;
-    for first_stop_index in 0..service.stop_station_ids.len().saturating_sub(1) {
-        let leg_distance =
-            distance_between_service_stops(state, service, first_stop_index, first_stop_index + 1)?;
-        let leg_seconds = leg_distance.journey_duration(speed)?.seconds();
-        seconds = seconds
-            .checked_add(leg_seconds)
-            .ok_or(CalculationError::Overflow {
-                operation: "Service journey duration",
-            })?;
-    }
-    Ok(DurationSeconds::from_seconds(seconds))
+    duration_for_lines(state, &service.rail_line_ids, train_speed)
+}
+
+pub(crate) fn duration_between_service_stops(
+    state: &GameState,
+    service: &PassengerService,
+    first_stop_index: usize,
+    second_stop_index: usize,
+    train_speed: SpeedMetresPerSecond,
+) -> Result<DurationSeconds, EconomyError> {
+    let line_ids =
+        line_ids_between_service_stops(state, service, first_stop_index, second_stop_index)?;
+    duration_for_lines(state, &line_ids, train_speed)
 }
 
 pub(crate) fn distance_between_service_stops(
@@ -351,6 +352,17 @@ pub(crate) fn distance_between_service_stops(
     first_stop_index: usize,
     second_stop_index: usize,
 ) -> Result<DistanceMetres, EconomyError> {
+    let line_ids =
+        line_ids_between_service_stops(state, service, first_stop_index, second_stop_index)?;
+    distance_for_lines(state, &line_ids)
+}
+
+fn line_ids_between_service_stops(
+    state: &GameState,
+    service: &PassengerService,
+    first_stop_index: usize,
+    second_stop_index: usize,
+) -> Result<Vec<RailLineId>, EconomyError> {
     let Some(&first_station_id) = service.stop_station_ids.get(first_stop_index) else {
         return Err(EconomyError::InvalidServiceStops {
             service_id: service.id,
@@ -361,15 +373,44 @@ pub(crate) fn distance_between_service_stops(
             service_id: service.id,
         });
     };
-    let line_ids = path_between_stations(
+    path_between_stations(
         &state.region.rail_authority.rail_network,
         first_station_id,
         second_station_id,
     )
     .map_err(|_| EconomyError::InvalidServiceStops {
         service_id: service.id,
-    })?;
-    distance_for_lines(state, &line_ids)
+    })
+}
+
+fn duration_for_lines(
+    state: &GameState,
+    rail_line_ids: &[RailLineId],
+    train_speed: SpeedMetresPerSecond,
+) -> Result<DurationSeconds, EconomyError> {
+    let mut seconds = 0_u64;
+    for rail_line_id in rail_line_ids {
+        let rail_line = state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_lines
+            .iter()
+            .find(|line| line.id == *rail_line_id)
+            .ok_or(EconomyError::RailLineNotFound {
+                rail_line_id: *rail_line_id,
+            })?;
+        let segment_seconds = rail_line
+            .distance
+            .journey_duration_with_speed_limit(train_speed, rail_line.speed_limit)?
+            .seconds();
+        seconds = seconds
+            .checked_add(segment_seconds)
+            .ok_or(CalculationError::Overflow {
+                operation: "Service journey duration",
+            })?;
+    }
+    Ok(DurationSeconds::from_seconds(seconds))
 }
 
 fn distance_for_lines(
@@ -443,16 +484,19 @@ mod tests {
                         id: crate::model::SettlementId::new(1),
                         name: "Origin".into(),
                         population: 1,
+                        position: crate::model::WorldPosition::default(),
                     },
                     Settlement {
                         id: crate::model::SettlementId::new(2),
                         name: "Middle".into(),
                         population: 1,
+                        position: crate::model::WorldPosition::default(),
                     },
                     Settlement {
                         id: crate::model::SettlementId::new(3),
                         name: "Destination".into(),
                         population: 1,
+                        position: crate::model::WorldPosition::default(),
                     },
                 ],
                 rail_authority: RailAuthority {
@@ -478,15 +522,28 @@ mod tests {
                                 first_station_id: ORIGIN,
                                 second_station_id: RailStationId::new(2),
                                 distance: DistanceMetres::new(1_000).unwrap(),
+                                speed_limit: crate::model::SpeedKilometresPerHour::new(70).unwrap(),
+                                track_count: crate::model::TrackCount::SINGLE,
+                                electrification: crate::model::Electrification::None,
+                                construction_difficulty:
+                                    crate::model::ConstructionDifficulty::Moderate,
                             },
                             RailLine {
                                 id: SECOND_LINE,
                                 first_station_id: RailStationId::new(2),
                                 second_station_id: DESTINATION,
                                 distance: DistanceMetres::new(501).unwrap(),
+                                speed_limit: crate::model::SpeedKilometresPerHour::new(70).unwrap(),
+                                track_count: crate::model::TrackCount::SINGLE,
+                                electrification: crate::model::Electrification::None,
+                                construction_difficulty:
+                                    crate::model::ConstructionDifficulty::Moderate,
                             },
                         ],
                     },
+                    finances: crate::model::RailAuthorityFinances::default(),
+                    construction_capacity: crate::model::PROVISIONAL_CONSTRUCTION_CAPACITY,
+                    infrastructure_projects: vec![],
                 },
             },
             player_company: PlayerCompany {
@@ -496,6 +553,7 @@ mod tests {
                 ),
                 funds: Money::from_cents(10_000),
                 fleet: Fleet {
+                    next_train_display_number: 2,
                     trains: vec![Train {
                         id: TRAIN_ID,
                         evn: crate::model::EuropeanVehicleNumber::generate(95, 99, 701, 1).unwrap(),
@@ -504,7 +562,6 @@ mod tests {
                         model_id: crate::model::TrainModelId::new("helvetra-r70"),
                         original_purchase_price: Money::from_cents(5_000),
                     }],
-                    next_train_id: TRAIN_ID.get() + 1,
                     next_evn_unit_by_model: [(crate::model::TrainModelId::new("helvetra-r70"), 2)]
                         .into_iter()
                         .collect(),
@@ -560,8 +617,27 @@ mod tests {
         assert_eq!(quote.fuel_cost, Money::from_cents(58));
         assert_eq!(quote.operating_cost, Money::from_cents(66));
         assert_eq!(quote.journey_profitability, Money::from_cents(-15));
-        assert_eq!(quote.duration, DurationSeconds::from_seconds(47));
+        assert_eq!(quote.duration, DurationSeconds::from_seconds(78));
+        assert_eq!(quote.first_leg_duration, DurationSeconds::from_seconds(78));
         assert_eq!(quote.cash_after_cost, Money::from_cents(9_934));
+    }
+
+    #[test]
+    fn journey_duration_uses_each_rail_lines_speed_limit() {
+        let mut state = fixture();
+        state.player_company.passenger_services[0].stop_station_ids =
+            vec![ORIGIN, RailStationId::new(2), DESTINATION];
+        state.region.rail_authority.rail_network.rail_lines[0].speed_limit =
+            crate::model::SpeedKilometresPerHour::new(160).unwrap();
+        state.region.rail_authority.rail_network.rail_lines[1].speed_limit =
+            crate::model::SpeedKilometresPerHour::new(70).unwrap();
+
+        let quote = quote_journey(&state, TRAIN_ID, SERVICE_ID).unwrap();
+
+        // The 1,000 m first segment is Train-limited: ceil(1000 / 33) = 31 s.
+        // The 501 m second segment is line-limited at 70 km/h: 26 s.
+        assert_eq!(quote.duration, DurationSeconds::from_seconds(57));
+        assert_eq!(quote.first_leg_duration, DurationSeconds::from_seconds(31));
     }
 
     #[test]

@@ -256,17 +256,28 @@ pub fn create_service(
         });
     }
 
-    let service_id = next_service_id(&state.player_company.passenger_services)?;
+    let service_id = ServiceId::new_v4();
+    let service_name = next_service_name(&state.player_company.passenger_services);
     state
         .player_company
         .passenger_services
         .push(PassengerService {
             id: service_id,
-            name: format!("R{}", service_id.get()),
+            name: service_name,
             stop_station_ids,
             rail_line_ids,
         });
     Ok(service_id)
+}
+
+fn next_service_name(services: &[PassengerService]) -> String {
+    let next = services
+        .iter()
+        .filter_map(|service| service.name.strip_prefix('R')?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    format!("R{next}")
 }
 
 /// Updates the ordered stop pattern of an unused Passenger Service while
@@ -404,17 +415,6 @@ pub fn find_or_create_service_between_settlements(
         })?;
 
     find_or_create_service(state, first_station_id, second_station_id)
-}
-
-fn next_service_id(passenger_services: &[PassengerService]) -> Result<ServiceId, ServiceError> {
-    passenger_services
-        .iter()
-        .map(|service| service.id.get())
-        .max()
-        .unwrap_or(0)
-        .checked_add(1)
-        .map(ServiceId::new)
-        .ok_or(ServiceError::ServiceIdExhausted)
 }
 
 #[cfg(test)]

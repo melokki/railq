@@ -8,6 +8,7 @@
 use std::{collections::BTreeMap, error::Error, fmt};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use uuid::Uuid;
 
 use crate::balance::BalanceConfig;
 
@@ -50,45 +51,179 @@ impl fmt::Display for CalculationError {
 impl Error for CalculationError {}
 
 macro_rules! domain_id {
-    ($name:ident, $description:literal) => {
+    ($name:ident, $description:literal, $namespace:expr) => {
         #[doc = $description]
-        #[derive(
-            Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-        )]
-        pub struct $name(u64);
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        pub struct $name(Uuid);
 
         impl $name {
-            /// Creates an ID allocated by its owning collection.
-            pub const fn new(value: u64) -> Self {
+            /// Creates a fresh UUID v4 identity for a new persisted entity.
+            pub fn new_v4() -> Self {
+                Self(Uuid::new_v4())
+            }
+
+            /// Creates a UUID v4 while preserving a small numeric suffix for
+            /// compact player-facing labels. The UUID remains the persisted
+            /// identity; the suffix is display metadata only.
+            pub fn new_v4_with_suffix(suffix: u64) -> Self {
+                let random = Uuid::new_v4().as_u128();
+                let payload =
+                    (random & !((1_u128 << 62) - 1)) | u128::from(suffix & ((1_u64 << 62) - 1));
+                Self::from_v4_bits(payload)
+            }
+
+            /// Creates a UUID identity from an already validated UUID.
+            pub const fn from_uuid(value: Uuid) -> Self {
                 Self(value)
             }
 
-            /// Returns the stored identifier value.
-            pub const fn get(self) -> u64 {
+            /// Deterministic UUID-v4-shaped constructor used by seeded world
+            /// generation and compact test fixtures.
+            ///
+            /// Production entities that are not world-seeded should use
+            /// [`Self::new_v4`] instead.
+            pub const fn new(value: u64) -> Self {
+                Self(Uuid::from_u128(
+                    (($namespace as u128) << 96) | (4_u128 << 76) | (2_u128 << 62) | value as u128,
+                ))
+            }
+
+            /// Creates a UUID v4 identity from 122 random payload bits.
+            /// Version and RFC 4122 variant bits are normalized here so seeded
+            /// world generation remains reproducible while persisted IDs are
+            /// still UUID v4 values.
+            pub const fn from_v4_bits(value: u128) -> Self {
+                let value = (value & !(0xf_u128 << 76) & !(0x3_u128 << 62))
+                    | (4_u128 << 76)
+                    | (2_u128 << 62);
+                Self(Uuid::from_u128(value))
+            }
+
+            /// Returns the UUID stored by this identity.
+            pub const fn uuid(self) -> Uuid {
                 self.0
+            }
+
+            /// Returns whether this identity uses the UUID v4 + RFC 4122 variant layout.
+            pub const fn is_v4(self) -> bool {
+                let value = self.0.as_u128();
+                ((value >> 76) & 0x0f) == 4 && ((value >> 62) & 0x03) == 2
+            }
+
+            /// Returns a compact numeric suffix used only by legacy UI labels
+            /// and deterministic fixtures. Persistence must use [`Self::uuid`].
+            pub const fn get(self) -> u64 {
+                (self.0.as_u128() & ((1_u128 << 62) - 1)) as u64
+            }
+
+            pub fn parse(value: &str) -> Result<Self, uuid::Error> {
+                Uuid::parse_str(value).map(Self)
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_newtype_struct(stringify!($name), &self.0)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                struct DomainIdVisitor;
+
+                impl<'de> de::Visitor<'de> for DomainIdVisitor {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str("a UUID or legacy positive integer ID")
+                    }
+
+                    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        Ok($name::new(value))
+                    }
+
+                    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        let value = u64::try_from(value)
+                            .map_err(|_| E::custom("legacy ID must be non-negative"))?;
+                        Ok($name::new(value))
+                    }
+
+                    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        $name::parse(value).map_err(E::custom)
+                    }
+
+                    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        self.visit_str(&value)
+                    }
+
+                    fn visit_newtype_struct<D2>(
+                        self,
+                        deserializer: D2,
+                    ) -> Result<Self::Value, D2::Error>
+                    where
+                        D2: Deserializer<'de>,
+                    {
+                        deserializer.deserialize_any(self)
+                    }
+                }
+
+                deserializer.deserialize_newtype_struct(stringify!($name), DomainIdVisitor)
             }
         }
     };
 }
 
-domain_id!(SettlementId, "The identity of a Settlement in a Region.");
+domain_id!(SettlementId, "The identity of a Settlement in a Region.", 1);
 domain_id!(
     RailStationId,
-    "The identity of a Rail Station in the Rail Network."
+    "The identity of a Rail Station in the Rail Network.",
+    2
 );
 domain_id!(
     RailLineId,
-    "The identity of a Rail Line in the Rail Network."
+    "The stable identity of one physical Rail Line segment in the Rail Network.",
+    3
 );
 domain_id!(
     TrainId,
-    "The identity of a Train owned by the Player Company."
+    "The identity of a Train owned by the Player Company.",
+    5
 );
 domain_id!(
     ServiceId,
-    "The identity of a Passenger Service owned by the Player Company."
+    "The identity of a Passenger Service owned by the Player Company.",
+    6
 );
-domain_id!(JourneyId, "The identity of one physical Train movement.");
+domain_id!(JourneyId, "The identity of one physical Train movement.", 7);
+domain_id!(
+    InfrastructureProjectId,
+    "The identity of one Rail Authority infrastructure project.",
+    4
+);
 
 /// Stable identity of one immutable Train model in the central catalogue.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -389,6 +524,87 @@ impl SpeedMetresPerSecond {
     }
 }
 
+/// A positive infrastructure speed limit stored as whole kilometres per hour.
+///
+/// Rail infrastructure uses km/h because public line-speed upgrades are
+/// expressed in familiar railway increments such as 70, 100, and 120 km/h.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SpeedKilometresPerHour(u16);
+
+impl SpeedKilometresPerHour {
+    pub fn new(kilometres_per_hour: i64) -> Result<Self, ValidationError> {
+        let kilometres_per_hour =
+            u16::try_from(kilometres_per_hour).map_err(|_| ValidationError::OutOfRange {
+                unit: "speed in kilometres per hour",
+            })?;
+        if kilometres_per_hour == 0 {
+            return Err(ValidationError::NonPositive {
+                unit: "speed in kilometres per hour",
+            });
+        }
+        Ok(Self(kilometres_per_hour))
+    }
+
+    pub const fn kilometres_per_hour(self) -> u16 {
+        self.0
+    }
+}
+
+/// Number of parallel running tracks on one physical Rail Line segment.
+///
+/// The first gameplay upgrades use one or two tracks, while the value object
+/// deliberately supports larger future junction/corridor layouts.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TrackCount(u8);
+
+impl TrackCount {
+    pub const SINGLE: Self = Self(1);
+    pub const DOUBLE: Self = Self(2);
+
+    pub fn new(tracks: i64) -> Result<Self, ValidationError> {
+        let tracks = u8::try_from(tracks).map_err(|_| ValidationError::OutOfRange {
+            unit: "track count",
+        })?;
+        if tracks == 0 {
+            return Err(ValidationError::NonPositive {
+                unit: "track count",
+            });
+        }
+        Ok(Self(tracks))
+    }
+
+    pub const fn tracks(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for TrackCount {
+    fn default() -> Self {
+        Self::SINGLE
+    }
+}
+
+/// Whether a physical Rail Line segment currently provides electric traction.
+///
+/// Voltage/current systems are intentionally deferred until they add useful
+/// fleet gameplay; the infrastructure only needs electrified vs not yet.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Electrification {
+    #[default]
+    None,
+    Electric,
+}
+
+/// Coarse physical difficulty used by future Authority project cost/duration
+/// estimates. It is deliberately not a terrain simulation.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ConstructionDifficulty {
+    Low,
+    #[default]
+    Moderate,
+    High,
+}
+
 /// A positive physical distance stored as integer metres.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DistanceMetres(u64);
@@ -410,7 +626,7 @@ impl DistanceMetres {
         self.0
     }
 
-    /// Calculates a Journey duration, rounding a partial second up.
+    /// Calculates a Journey duration at a Train speed, rounding a partial second up.
     pub fn journey_duration(
         self,
         speed: SpeedMetresPerSecond,
@@ -425,6 +641,45 @@ impl DistanceMetres {
             seconds
         };
         Ok(DurationSeconds(seconds))
+    }
+
+    /// Calculates Journey time while respecting both Train and infrastructure speeds.
+    ///
+    /// Train models store metres per second while Rail Lines store familiar railway
+    /// limits in kilometres per hour. Computing both durations independently avoids
+    /// lossy integer conversion between those units; the slower capability is simply
+    /// the one that produces the longer duration.
+    pub fn journey_duration_with_speed_limit(
+        self,
+        train_speed: SpeedMetresPerSecond,
+        speed_limit: SpeedKilometresPerHour,
+    ) -> Result<DurationSeconds, CalculationError> {
+        let train_duration = self.journey_duration(train_speed)?;
+
+        let numerator = self
+            .0
+            .checked_mul(3_600)
+            .ok_or(CalculationError::Overflow {
+                operation: "speed-limited journey duration",
+            })?;
+        let denominator =
+            u64::from(speed_limit.0)
+                .checked_mul(1_000)
+                .ok_or(CalculationError::Overflow {
+                    operation: "speed-limited journey duration",
+                })?;
+        let seconds = numerator / denominator;
+        let has_fractional_second = numerator % denominator != 0;
+        let seconds = if has_fractional_second {
+            seconds.checked_add(1).ok_or(CalculationError::Overflow {
+                operation: "speed-limited journey duration",
+            })?
+        } else {
+            seconds
+        };
+        let infrastructure_duration = DurationSeconds(seconds);
+
+        Ok(train_duration.max(infrastructure_duration))
     }
 }
 
@@ -543,6 +798,8 @@ macro_rules! deserialize_validated_positive {
 
 deserialize_validated_positive!(PassengerCapacity, i64);
 deserialize_validated_positive!(SpeedMetresPerSecond, i64);
+deserialize_validated_positive!(SpeedKilometresPerHour, i64);
+deserialize_validated_positive!(TrackCount, i64);
 deserialize_validated_positive!(DistanceMetres, i64);
 deserialize_validated_positive!(MoneyPerKilometre, i64);
 deserialize_validated_positive!(PassengerArrivalRate, i64);
@@ -606,12 +863,403 @@ impl RailwayRegistration {
     }
 }
 
+/// Stable geographical position inside the generated Region.
+///
+/// Coordinates are world-space kilometres, not terminal cells. The UI may
+/// scale them to any terminal size while simulation systems can derive
+/// consistent physical distances from the same geography.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WorldPosition {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl WorldPosition {
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+}
+
 /// A populated place in a Region, with or without railway access.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Settlement {
     pub id: SettlementId,
     pub name: String,
     pub population: u64,
+    #[serde(default)]
+    pub position: WorldPosition,
+}
+
+/// Current lifecycle stage of a Rail Authority infrastructure project.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum InfrastructureProjectStatus {
+    Requested,
+    UnderReview,
+    Proposed,
+    Approved,
+    Deferred,
+    Funding,
+    Scheduled,
+    Construction,
+    Open,
+    Cancelled,
+}
+
+/// Lifecycle timestamps recorded as an infrastructure project advances.
+///
+/// Only `requested_at` is required when a project is created. Later batches
+/// own the transition rules that populate the optional milestones.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InfrastructureProjectTimeline {
+    pub requested_at: UtcSeconds,
+    pub review_started_at: Option<UtcSeconds>,
+    pub proposed_at: Option<UtcSeconds>,
+    pub approved_at: Option<UtcSeconds>,
+    pub funding_completed_at: Option<UtcSeconds>,
+    pub scheduled_start_at: Option<UtcSeconds>,
+    pub construction_started_at: Option<UtcSeconds>,
+    pub planned_completion_at: Option<UtcSeconds>,
+    pub completed_at: Option<UtcSeconds>,
+    pub deferred_at: Option<UtcSeconds>,
+    pub cancelled_at: Option<UtcSeconds>,
+}
+
+/// Financial commitment state for one public infrastructure project.
+///
+/// Player/operator contributions are introduced later. For now the Authority
+/// can reserve part or all of the estimated cost from its investment budget.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InfrastructureProjectFunding {
+    pub estimated_cost: Money,
+    pub authority_committed: Money,
+}
+
+impl InfrastructureProjectFunding {
+    pub fn funding_gap(&self) -> Result<Money, CalculationError> {
+        self.estimated_cost.checked_sub(self.authority_committed)
+    }
+
+    pub fn is_fully_funded(&self) -> bool {
+        self.authority_committed >= self.estimated_cost
+    }
+}
+
+/// One Rail Station reserved by a planned New Line project.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PlannedRailStation {
+    pub id: RailStationId,
+    pub settlement_id: SettlementId,
+}
+
+/// One physical Rail Line segment reserved by a planned New Line project.
+///
+/// Endpoints may reference either existing Rail Stations or Stations reserved
+/// in the same project. Carrying the complete capabilities here lets opening a
+/// project later materialize exactly the infrastructure that was approved.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PlannedRailLine {
+    pub id: RailLineId,
+    pub first_station_id: RailStationId,
+    pub second_station_id: RailStationId,
+    pub distance: DistanceMetres,
+    pub speed_limit: SpeedKilometresPerHour,
+    pub track_count: TrackCount,
+    pub electrification: Electrification,
+    pub construction_difficulty: ConstructionDifficulty,
+}
+
+/// Physical scope and intended outcome of a Rail Authority project.
+///
+/// Only `NewLine` receives simulation behaviour in the first Authority phase;
+/// the other variants are modeled now so later modernization work reuses the
+/// same project and persistence framework.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum InfrastructureProjectKind {
+    NewLine {
+        planned_stations: Vec<PlannedRailStation>,
+        planned_lines: Vec<PlannedRailLine>,
+    },
+    SpeedUpgrade {
+        rail_line_ids: Vec<RailLineId>,
+        target_speed_limit: SpeedKilometresPerHour,
+    },
+    DoubleTracking {
+        rail_line_ids: Vec<RailLineId>,
+        target_track_count: TrackCount,
+    },
+    Electrification {
+        rail_line_ids: Vec<RailLineId>,
+    },
+    Renewal {
+        rail_line_ids: Vec<RailLineId>,
+    },
+    StationUpgrade {
+        rail_station_ids: Vec<RailStationId>,
+    },
+}
+
+/// One public infrastructure proposal tracked by the Rail Authority.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InfrastructureProject {
+    pub id: InfrastructureProjectId,
+    pub kind: InfrastructureProjectKind,
+    pub status: InfrastructureProjectStatus,
+    pub timeline: InfrastructureProjectTimeline,
+    #[serde(default)]
+    pub funding: InfrastructureProjectFunding,
+}
+
+impl InfrastructureProjectStatus {
+    /// Whether this project currently occupies construction capacity on its scope.
+    pub const fn is_under_construction(self) -> bool {
+        matches!(self, Self::Construction)
+    }
+
+    /// Whether this project has reserved one of the Authority's construction slots.
+    ///
+    /// Scheduled work reserves capacity before crews mobilise so another project
+    /// cannot be promised the same slot in the meantime.
+    pub const fn reserves_construction_capacity(self) -> bool {
+        matches!(self, Self::Scheduled | Self::Construction)
+    }
+}
+
+impl InfrastructureProjectKind {
+    /// Whether two projects compete for the same physical infrastructure.
+    ///
+    /// This deliberately models only conflicts RailQ can reason about today:
+    /// shared existing Rail Lines, shared Station upgrades, and a Station
+    /// upgrade on an endpoint where a New Line is being attached. More
+    /// detailed work-site and possession conflicts belong to later simulation
+    /// layers.
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        if let (Some(left), Some(right)) = (self.rail_line_targets(), other.rail_line_targets()) {
+            if ids_overlap(left, right) {
+                return true;
+            }
+        }
+
+        if let (Some(left), Some(right)) =
+            (self.rail_station_targets(), other.rail_station_targets())
+        {
+            if ids_overlap(left, right) {
+                return true;
+            }
+        }
+
+        match (self, other) {
+            (Self::NewLine { planned_lines, .. }, Self::StationUpgrade { rail_station_ids })
+            | (Self::StationUpgrade { rail_station_ids }, Self::NewLine { planned_lines, .. }) => {
+                planned_lines.iter().any(|line| {
+                    rail_station_ids.contains(&line.first_station_id)
+                        || rail_station_ids.contains(&line.second_station_id)
+                })
+            }
+            _ => false,
+        }
+    }
+
+    fn rail_line_targets(&self) -> Option<&[RailLineId]> {
+        match self {
+            Self::SpeedUpgrade { rail_line_ids, .. }
+            | Self::DoubleTracking { rail_line_ids, .. }
+            | Self::Electrification { rail_line_ids }
+            | Self::Renewal { rail_line_ids } => Some(rail_line_ids),
+            Self::NewLine { .. } | Self::StationUpgrade { .. } => None,
+        }
+    }
+
+    fn rail_station_targets(&self) -> Option<&[RailStationId]> {
+        match self {
+            Self::StationUpgrade { rail_station_ids } => Some(rail_station_ids),
+            _ => None,
+        }
+    }
+}
+
+impl InfrastructureProject {
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        self.kind.conflicts_with(&other.kind)
+    }
+}
+
+impl RailAuthority {
+    /// Finds an active construction project that prevents `candidate` from
+    /// starting work on the same infrastructure.
+    pub fn blocking_construction_project(
+        &self,
+        candidate: &InfrastructureProject,
+    ) -> Option<&InfrastructureProject> {
+        self.infrastructure_projects.iter().find(|project| {
+            project.id != candidate.id
+                && project.status.is_under_construction()
+                && project.conflicts_with(candidate)
+        })
+    }
+
+    /// Number of major infrastructure projects currently occupying Authority
+    /// construction capacity.
+    pub fn active_construction_count(&self) -> u32 {
+        u32::try_from(
+            self.infrastructure_projects
+                .iter()
+                .filter(|project| project.status.is_under_construction())
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+    }
+
+    /// Number of projects that have reserved a construction slot, including
+    /// projects whose crews are scheduled but have not mobilised yet.
+    pub fn reserved_construction_count(&self) -> u32 {
+        u32::try_from(
+            self.infrastructure_projects
+                .iter()
+                .filter(|project| project.status.reserves_construction_capacity())
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+    }
+
+    /// Finds scheduled or active construction that conflicts with `candidate`.
+    pub fn blocking_reserved_project(
+        &self,
+        candidate: &InfrastructureProject,
+    ) -> Option<&InfrastructureProject> {
+        self.infrastructure_projects.iter().find(|project| {
+            project.id != candidate.id
+                && project.status.reserves_construction_capacity()
+                && project.conflicts_with(candidate)
+        })
+    }
+
+    /// Remaining major-project construction slots in the active works programme.
+    pub fn construction_slots_remaining(&self) -> u32 {
+        self.construction_capacity
+            .saturating_sub(self.reserved_construction_count())
+    }
+
+    /// Whether a fully funded project can reserve a construction slot.
+    pub fn can_schedule_construction(&self, candidate: &InfrastructureProject) -> bool {
+        self.construction_slots_remaining() > 0
+            && self.blocking_reserved_project(candidate).is_none()
+    }
+
+    /// Whether an additional, not-yet-scheduled project could start construction
+    /// right now. Scheduled projects already own their reserved slot and are
+    /// handled by the construction-start lifecycle.
+    pub fn can_start_construction(&self, candidate: &InfrastructureProject) -> bool {
+        self.construction_slots_remaining() > 0
+            && self.blocking_construction_project(candidate).is_none()
+    }
+}
+
+fn ids_overlap<T: Eq>(left: &[T], right: &[T]) -> bool {
+    left.iter().any(|id| right.contains(id))
+}
+
+/// The public funds controlled by a Rail Authority.
+///
+/// `treasury` is the total cash held by the Authority. Maintenance and
+/// committed investment are earmarks inside that treasury; the remainder is
+/// available for future infrastructure projects. `carried_over_funds` records
+/// the portion brought forward from an earlier budget cycle once fiscal
+/// periods are introduced.
+pub const PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION: Money = Money::from_cents(10_000_000);
+/// Provisional maintenance reserve per physical track-kilometre and budget cycle.
+///
+/// This is deliberately a simple balancing value until RailQ models actual
+/// infrastructure condition and renewal work.
+pub const PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE: MoneyPerKilometre =
+    MoneyPerKilometre(25_000);
+
+/// Maximum number of major infrastructure projects the Authority can have
+/// under construction at the same time in the initial simulation.
+pub const PROVISIONAL_CONSTRUCTION_CAPACITY: u32 = 1;
+
+const fn default_construction_capacity() -> u32 {
+    PROVISIONAL_CONSTRUCTION_CAPACITY
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RailAuthorityFinances {
+    pub treasury: Money,
+    pub maintenance_reserve: Money,
+    pub committed_investment: Money,
+    pub carried_over_funds: Money,
+    #[serde(default = "default_regional_public_allocation")]
+    pub regional_public_allocation: Money,
+    #[serde(default)]
+    pub infrastructure_access_fee_revenue: Money,
+}
+
+const fn default_regional_public_allocation() -> Money {
+    PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION
+}
+
+impl Default for RailAuthorityFinances {
+    fn default() -> Self {
+        Self {
+            treasury: Money::ZERO,
+            maintenance_reserve: Money::ZERO,
+            committed_investment: Money::ZERO,
+            carried_over_funds: Money::ZERO,
+            regional_public_allocation: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
+            infrastructure_access_fee_revenue: Money::ZERO,
+        }
+    }
+}
+
+impl RailAuthorityFinances {
+    /// Creates the initial Authority budget with the first recurring public
+    /// allocation already deposited.
+    pub fn with_initial_public_allocation() -> Self {
+        Self {
+            treasury: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
+            ..Self::default()
+        }
+    }
+
+    /// Deposits one regional public-allocation cycle into the Authority
+    /// treasury. Fiscal timing is intentionally introduced later.
+    pub fn receive_regional_public_allocation(&mut self) -> Result<Money, CalculationError> {
+        self.treasury = self.treasury.checked_add(self.regional_public_allocation)?;
+        Ok(self.regional_public_allocation)
+    }
+
+    /// Records an infrastructure access fee paid by the passenger operator
+    /// and deposits it into the Rail Authority treasury.
+    pub fn receive_infrastructure_access_fee(
+        &mut self,
+        amount: Money,
+    ) -> Result<(), CalculationError> {
+        let treasury = self.treasury.checked_add(amount)?;
+        let revenue = self.infrastructure_access_fee_revenue.checked_add(amount)?;
+        self.treasury = treasury;
+        self.infrastructure_access_fee_revenue = revenue;
+        Ok(())
+    }
+
+    /// Reserves as much of the current maintenance requirement as the
+    /// uncommitted treasury can support. Detailed degradation/renewal costs
+    /// are intentionally deferred to the later infrastructure-condition phase.
+    pub fn refresh_maintenance_reserve(
+        &mut self,
+        network: &RailNetwork,
+    ) -> Result<Money, CalculationError> {
+        let required = network.provisional_maintenance_reserve()?;
+        let available_after_commitments = self.treasury.checked_sub(self.committed_investment)?;
+        self.maintenance_reserve = required.min(available_after_commitments);
+        Ok(self.maintenance_reserve)
+    }
+
+    /// Money that is neither reserved for maintenance nor committed to an
+    /// approved infrastructure project.
+    pub fn uncommitted_investment(&self) -> Result<Money, CalculationError> {
+        self.treasury
+            .checked_sub(self.maintenance_reserve)?
+            .checked_sub(self.committed_investment)
+    }
 }
 
 /// The public owner of a Region's Rail Network.
@@ -619,6 +1267,12 @@ pub struct Settlement {
 pub struct RailAuthority {
     pub name: String,
     pub rail_network: RailNetwork,
+    #[serde(default)]
+    pub finances: RailAuthorityFinances,
+    #[serde(default = "default_construction_capacity")]
+    pub construction_capacity: u32,
+    #[serde(default)]
+    pub infrastructure_projects: Vec<InfrastructureProject>,
 }
 
 /// The physical infrastructure owned by a Rail Authority.
@@ -628,6 +1282,20 @@ pub struct RailNetwork {
     pub rail_lines: Vec<RailLine>,
 }
 
+impl RailNetwork {
+    /// Calculates the provisional reserve needed to maintain the current
+    /// physical network. Double-track sections count twice because they
+    /// contain twice as much running track to maintain.
+    pub fn provisional_maintenance_reserve(&self) -> Result<Money, CalculationError> {
+        self.rail_lines.iter().try_fold(Money::ZERO, |total, line| {
+            let single_track = PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE
+                .checked_charge(line.distance)?;
+            let line_reserve = single_track.checked_mul(u64::from(line.track_count.tracks()))?;
+            total.checked_add(line_reserve)
+        })
+    }
+}
+
 /// A facility providing one Settlement access to the Rail Network.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RailStation {
@@ -635,13 +1303,28 @@ pub struct RailStation {
     pub settlement_id: SettlementId,
 }
 
-/// A physical connection between two Rail Stations.
+/// One stable physical Rail Line segment between two Rail Stations.
+///
+/// `RailLineId` already acts as the stable segment identity needed by future
+/// Authority projects, so RailQ does not introduce a second parallel ID type.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RailLine {
     pub id: RailLineId,
     pub first_station_id: RailStationId,
     pub second_station_id: RailStationId,
     pub distance: DistanceMetres,
+    #[serde(default = "default_rail_line_speed_limit")]
+    pub speed_limit: SpeedKilometresPerHour,
+    #[serde(default)]
+    pub track_count: TrackCount,
+    #[serde(default)]
+    pub electrification: Electrification,
+    #[serde(default)]
+    pub construction_difficulty: ConstructionDifficulty,
+}
+
+fn default_rail_line_speed_limit() -> SpeedKilometresPerHour {
+    SpeedKilometresPerHour::new(70).expect("RailQ's default Rail Line speed limit is valid")
 }
 
 /// A 2–5 letter Vehicle Keeper Mark (VKM) used to identify the Player Company.
@@ -827,9 +1510,10 @@ pub struct PlayerCompany {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Fleet {
     pub trains: Vec<Train>,
-    /// Next lifetime internal Train identity. Internal IDs are never reused.
-    #[serde(default = "default_next_train_id")]
-    pub next_train_id: u64,
+    /// Next compact display number for an owned Train. This is not the Train
+    /// identity; persisted Train IDs are UUID v4 values.
+    #[serde(default = "default_next_train_display_number")]
+    pub next_train_display_number: u64,
     /// Next EVN unit number to allocate for each persistent Train model.
     ///
     /// Values are one-based; 1000 means the model's 001–999 allocation is
@@ -838,7 +1522,7 @@ pub struct Fleet {
     pub next_evn_unit_by_model: BTreeMap<TrainModelId, u16>,
 }
 
-const fn default_next_train_id() -> u64 {
+const fn default_next_train_display_number() -> u64 {
     1
 }
 
@@ -846,7 +1530,7 @@ impl Default for Fleet {
     fn default() -> Self {
         Self {
             trains: Vec::new(),
-            next_train_id: default_next_train_id(),
+            next_train_display_number: default_next_train_display_number(),
             next_evn_unit_by_model: BTreeMap::new(),
         }
     }
@@ -1078,6 +1762,313 @@ mod tests {
     use super::*;
 
     #[test]
+    fn infrastructure_projects_conflict_when_they_target_the_same_rail_line() {
+        let speed_upgrade = InfrastructureProjectKind::SpeedUpgrade {
+            rail_line_ids: vec![RailLineId::new(1)],
+            target_speed_limit: SpeedKilometresPerHour::new(100).unwrap(),
+        };
+        let electrification = InfrastructureProjectKind::Electrification {
+            rail_line_ids: vec![RailLineId::new(1)],
+        };
+        let unrelated_renewal = InfrastructureProjectKind::Renewal {
+            rail_line_ids: vec![RailLineId::new(2)],
+        };
+
+        assert!(speed_upgrade.conflicts_with(&electrification));
+        assert!(electrification.conflicts_with(&speed_upgrade));
+        assert!(!speed_upgrade.conflicts_with(&unrelated_renewal));
+    }
+
+    #[test]
+    fn station_upgrade_conflicts_with_new_line_work_at_the_same_station() {
+        let new_line = InfrastructureProjectKind::NewLine {
+            planned_stations: vec![PlannedRailStation {
+                id: RailStationId::new(5),
+                settlement_id: SettlementId::new(5),
+            }],
+            planned_lines: vec![PlannedRailLine {
+                id: RailLineId::new(4),
+                first_station_id: RailStationId::new(2),
+                second_station_id: RailStationId::new(5),
+                distance: DistanceMetres::new(12_000).unwrap(),
+                speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
+                track_count: TrackCount::SINGLE,
+                electrification: Electrification::None,
+                construction_difficulty: ConstructionDifficulty::Moderate,
+            }],
+        };
+        let same_station = InfrastructureProjectKind::StationUpgrade {
+            rail_station_ids: vec![RailStationId::new(2)],
+        };
+        let different_station = InfrastructureProjectKind::StationUpgrade {
+            rail_station_ids: vec![RailStationId::new(3)],
+        };
+
+        assert!(new_line.conflicts_with(&same_station));
+        assert!(same_station.conflicts_with(&new_line));
+        assert!(!new_line.conflicts_with(&different_station));
+    }
+
+    #[test]
+    fn rail_authority_finances_expose_uncommitted_investment() {
+        let finances = RailAuthorityFinances {
+            treasury: Money::from_cents(1_000_000),
+            maintenance_reserve: Money::from_cents(200_000),
+            committed_investment: Money::from_cents(350_000),
+            carried_over_funds: Money::from_cents(100_000),
+            regional_public_allocation: Money::from_cents(500_000),
+            infrastructure_access_fee_revenue: Money::ZERO,
+        };
+
+        assert_eq!(
+            finances.uncommitted_investment().unwrap(),
+            Money::from_cents(450_000)
+        );
+    }
+
+    #[test]
+    fn regional_public_allocation_is_recurring_revenue() {
+        let mut finances = RailAuthorityFinances::default();
+        assert_eq!(finances.treasury, Money::ZERO);
+
+        let received = finances.receive_regional_public_allocation().unwrap();
+        assert_eq!(received, PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION);
+        assert_eq!(finances.treasury, PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION);
+
+        finances.receive_regional_public_allocation().unwrap();
+        assert_eq!(
+            finances.treasury,
+            PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION
+                .checked_mul(2)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn infrastructure_access_fees_are_authority_revenue() {
+        let mut finances = RailAuthorityFinances::with_initial_public_allocation();
+        let before = finances.treasury;
+        let fee = Money::from_cents(42_500);
+
+        finances.receive_infrastructure_access_fee(fee).unwrap();
+
+        assert_eq!(finances.treasury, before.checked_add(fee).unwrap());
+        assert_eq!(finances.infrastructure_access_fee_revenue, fee);
+    }
+
+    #[test]
+    fn maintenance_reserve_scales_with_track_kilometres() {
+        let network = RailNetwork {
+            rail_stations: vec![],
+            rail_lines: vec![
+                RailLine {
+                    id: RailLineId::new(1),
+                    first_station_id: RailStationId::new(1),
+                    second_station_id: RailStationId::new(2),
+                    distance: DistanceMetres::new(10_000).unwrap(),
+                    speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
+                    track_count: TrackCount::SINGLE,
+                    electrification: Electrification::None,
+                    construction_difficulty: ConstructionDifficulty::Moderate,
+                },
+                RailLine {
+                    id: RailLineId::new(2),
+                    first_station_id: RailStationId::new(2),
+                    second_station_id: RailStationId::new(3),
+                    distance: DistanceMetres::new(5_000).unwrap(),
+                    speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
+                    track_count: TrackCount::DOUBLE,
+                    electrification: Electrification::None,
+                    construction_difficulty: ConstructionDifficulty::Moderate,
+                },
+            ],
+        };
+
+        assert_eq!(
+            network.provisional_maintenance_reserve().unwrap(),
+            Money::from_cents(500_000)
+        );
+    }
+
+    #[test]
+    fn maintenance_reserve_never_overcommits_the_treasury() {
+        let network = RailNetwork {
+            rail_stations: vec![],
+            rail_lines: vec![RailLine {
+                id: RailLineId::new(1),
+                first_station_id: RailStationId::new(1),
+                second_station_id: RailStationId::new(2),
+                distance: DistanceMetres::new(100_000).unwrap(),
+                speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
+                track_count: TrackCount::SINGLE,
+                electrification: Electrification::None,
+                construction_difficulty: ConstructionDifficulty::Moderate,
+            }],
+        };
+        let mut finances = RailAuthorityFinances {
+            treasury: Money::from_cents(1_000_000),
+            maintenance_reserve: Money::ZERO,
+            committed_investment: Money::from_cents(250_000),
+            carried_over_funds: Money::ZERO,
+            regional_public_allocation: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
+            infrastructure_access_fee_revenue: Money::ZERO,
+        };
+
+        assert_eq!(
+            finances.refresh_maintenance_reserve(&network).unwrap(),
+            Money::from_cents(750_000)
+        );
+    }
+
+    #[test]
+    fn rail_authority_only_reports_active_construction_as_a_blocker() {
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(1),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        let blocker = InfrastructureProject {
+            id: InfrastructureProjectId::new(1),
+            kind: InfrastructureProjectKind::SpeedUpgrade {
+                rail_line_ids: vec![RailLineId::new(1)],
+                target_speed_limit: SpeedKilometresPerHour::new(100).unwrap(),
+            },
+            status: InfrastructureProjectStatus::Construction,
+            timeline: timeline.clone(),
+            funding: InfrastructureProjectFunding::default(),
+        };
+        let approved = InfrastructureProject {
+            id: InfrastructureProjectId::new(2),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![RailLineId::new(1)],
+            },
+            status: InfrastructureProjectStatus::Approved,
+            timeline: timeline.clone(),
+            funding: InfrastructureProjectFunding::default(),
+        };
+        let candidate = InfrastructureProject {
+            id: InfrastructureProjectId::new(3),
+            kind: InfrastructureProjectKind::Electrification {
+                rail_line_ids: vec![RailLineId::new(1)],
+            },
+            status: InfrastructureProjectStatus::Scheduled,
+            timeline,
+            funding: InfrastructureProjectFunding::default(),
+        };
+        let authority = RailAuthority {
+            name: "Test Authority".into(),
+            rail_network: RailNetwork::default(),
+            finances: RailAuthorityFinances::default(),
+            construction_capacity: PROVISIONAL_CONSTRUCTION_CAPACITY,
+            infrastructure_projects: vec![approved, blocker.clone()],
+        };
+
+        assert_eq!(
+            authority.blocking_construction_project(&candidate),
+            Some(&blocker)
+        );
+    }
+
+    #[test]
+    fn construction_capacity_blocks_unrelated_projects_when_all_slots_are_used() {
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(1),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        let active = InfrastructureProject {
+            id: InfrastructureProjectId::new(10),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![RailLineId::new(1)],
+            },
+            status: InfrastructureProjectStatus::Construction,
+            timeline: timeline.clone(),
+            funding: InfrastructureProjectFunding::default(),
+        };
+        let unrelated = InfrastructureProject {
+            id: InfrastructureProjectId::new(11),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![RailLineId::new(2)],
+            },
+            status: InfrastructureProjectStatus::Scheduled,
+            timeline,
+            funding: InfrastructureProjectFunding::default(),
+        };
+        let authority = RailAuthority {
+            name: "Test Authority".into(),
+            rail_network: RailNetwork::default(),
+            finances: RailAuthorityFinances::default(),
+            construction_capacity: 1,
+            infrastructure_projects: vec![active],
+        };
+
+        assert_eq!(authority.active_construction_count(), 1);
+        assert_eq!(authority.construction_slots_remaining(), 0);
+        assert!(!authority.can_start_construction(&unrelated));
+    }
+
+    #[test]
+    fn spare_capacity_allows_non_conflicting_construction() {
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(1),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        let active = InfrastructureProject {
+            id: InfrastructureProjectId::new(20),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![RailLineId::new(1)],
+            },
+            status: InfrastructureProjectStatus::Construction,
+            timeline: timeline.clone(),
+            funding: InfrastructureProjectFunding::default(),
+        };
+        let unrelated = InfrastructureProject {
+            id: InfrastructureProjectId::new(21),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![RailLineId::new(2)],
+            },
+            status: InfrastructureProjectStatus::Scheduled,
+            timeline,
+            funding: InfrastructureProjectFunding::default(),
+        };
+        let authority = RailAuthority {
+            name: "Test Authority".into(),
+            rail_network: RailNetwork::default(),
+            finances: RailAuthorityFinances::default(),
+            construction_capacity: 2,
+            infrastructure_projects: vec![active],
+        };
+
+        assert_eq!(authority.construction_slots_remaining(), 1);
+        assert!(authority.can_start_construction(&unrelated));
+    }
+
+    #[test]
     fn domain_ids_are_distinct_value_types() {
         let ids = [
             TypeId::of::<SettlementId>(),
@@ -1149,6 +2140,14 @@ mod tests {
                 Err(ValidationError::NonPositive { .. }) | Err(ValidationError::OutOfRange { .. })
             ));
             assert!(matches!(
+                SpeedKilometresPerHour::new(value),
+                Err(ValidationError::NonPositive { .. }) | Err(ValidationError::OutOfRange { .. })
+            ));
+            assert!(matches!(
+                TrackCount::new(value),
+                Err(ValidationError::NonPositive { .. }) | Err(ValidationError::OutOfRange { .. })
+            ));
+            assert!(matches!(
                 DistanceMetres::new(value),
                 Err(ValidationError::NonPositive { .. }) | Err(ValidationError::OutOfRange { .. })
             ));
@@ -1175,6 +2174,28 @@ mod tests {
                 .journey_duration(speed)
                 .unwrap(),
             DurationSeconds::from_seconds(2)
+        );
+
+        let fast_train = SpeedMetresPerSecond::new(33).unwrap();
+        assert_eq!(
+            DistanceMetres::new(1_000)
+                .unwrap()
+                .journey_duration_with_speed_limit(
+                    fast_train,
+                    SpeedKilometresPerHour::new(70).unwrap(),
+                )
+                .unwrap(),
+            DurationSeconds::from_seconds(52)
+        );
+        assert_eq!(
+            DistanceMetres::new(1_000)
+                .unwrap()
+                .journey_duration_with_speed_limit(
+                    fast_train,
+                    SpeedKilometresPerHour::new(160).unwrap(),
+                )
+                .unwrap(),
+            DurationSeconds::from_seconds(31)
         );
 
         let rate = MoneyPerKilometre::new(1).unwrap();
@@ -1265,6 +2286,7 @@ mod tests {
                     id: settlement_id,
                     name: "Alden".into(),
                     population: 1_000,
+                    position: crate::model::WorldPosition::default(),
                 }],
                 rail_authority: RailAuthority {
                     name: "Varelia Rail Authority".into(),
@@ -1275,6 +2297,9 @@ mod tests {
                         }],
                         rail_lines: vec![],
                     },
+                    finances: RailAuthorityFinances::default(),
+                    construction_capacity: PROVISIONAL_CONSTRUCTION_CAPACITY,
+                    infrastructure_projects: vec![],
                 },
             },
             player_company: PlayerCompany {
@@ -1284,6 +2309,7 @@ mod tests {
                 ),
                 funds: Money::from_cents(10_000),
                 fleet: Fleet {
+                    next_train_display_number: 2,
                     trains: vec![Train {
                         id: train_id,
                         evn: EuropeanVehicleNumber::generate(95, 67, 701, 1).unwrap(),
@@ -1292,7 +2318,6 @@ mod tests {
                         model_id: TrainModelId::new("helvetra-r70"),
                         original_purchase_price: Money::from_cents(5_000),
                     }],
-                    next_train_id: train_id.get() + 1,
                     next_evn_unit_by_model: [(TrainModelId::new("helvetra-r70"), 2)]
                         .into_iter()
                         .collect(),
@@ -1329,6 +2354,9 @@ mod tests {
         let authority = RailAuthority {
             name: "Varelia Rail Authority".into(),
             rail_network: RailNetwork::default(),
+            finances: RailAuthorityFinances::default(),
+            construction_capacity: PROVISIONAL_CONSTRUCTION_CAPACITY,
+            infrastructure_projects: vec![],
         };
         let company = PlayerCompany {
             name: "Alden Passenger".into(),

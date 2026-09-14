@@ -114,7 +114,7 @@ pub fn dispatch_journey(
         demand_deductions.push((demand_index, remaining));
     }
 
-    let journey_id = next_journey_id(state)?;
+    let journey_id = JourneyId::new_v4();
     let arrives_at = departed_at.checked_add(quote.first_leg_duration)?;
     let funds_after_departure = state
         .player_company
@@ -125,6 +125,9 @@ pub fn dispatch_journey(
         .infrastructure_access_fees
         .checked_add(quote.infrastructure_access_fee)?;
     let fuel_costs_after_departure = state.financials.fuel_costs.checked_add(quote.fuel_cost)?;
+    let mut authority_finances_after_departure = state.region.rail_authority.finances.clone();
+    authority_finances_after_departure
+        .receive_infrastructure_access_fee(quote.infrastructure_access_fee)?;
     let train_index = state
         .player_company
         .fleet
@@ -138,6 +141,7 @@ pub fn dispatch_journey(
     state.player_company.funds = funds_after_departure;
     state.financials.infrastructure_access_fees = access_fees_after_departure;
     state.financials.fuel_costs = fuel_costs_after_departure;
+    state.region.rail_authority.finances = authority_finances_after_departure;
     for (index, remaining) in demand_deductions {
         state.origin_destination_demand[index].waiting_passengers = remaining;
     }
@@ -169,25 +173,6 @@ pub fn dispatch_journey(
         arrives_at,
     });
     Ok(journey_id)
-}
-
-fn next_journey_id(state: &GameState) -> Result<JourneyId, DispatchError> {
-    state
-        .active_journeys
-        .iter()
-        .map(|journey| journey.id.get())
-        .chain(
-            state
-                .financials
-                .recent_journey_receipts
-                .iter()
-                .map(|receipt| receipt.journey_id.get()),
-        )
-        .max()
-        .unwrap_or(0)
-        .checked_add(1)
-        .map(JourneyId::new)
-        .ok_or(DispatchError::JourneyIdExhausted)
 }
 
 #[cfg(test)]
@@ -237,6 +222,7 @@ mod tests {
         let (mut state, train_id, service_id) = prepared_game();
         let quote = quote_journey(&state, train_id, service_id).unwrap();
         let waiting_before = state.origin_destination_demand[0].waiting_passengers;
+        let authority_treasury_before = state.region.rail_authority.finances.treasury;
 
         let journey_id = dispatch_journey(&mut state, train_id, service_id, DEPARTED_AT).unwrap();
 
@@ -250,6 +236,20 @@ mod tests {
             quote.infrastructure_access_fee
         );
         assert_eq!(state.financials.fuel_costs, quote.fuel_cost);
+        assert_eq!(
+            state
+                .region
+                .rail_authority
+                .finances
+                .infrastructure_access_fee_revenue,
+            quote.infrastructure_access_fee
+        );
+        assert_eq!(
+            state.region.rail_authority.finances.treasury,
+            authority_treasury_before
+                .checked_add(quote.infrastructure_access_fee)
+                .unwrap()
+        );
         assert_eq!(
             state.player_company.fleet.trains[0].status,
             TrainStatus::Travelling { journey_id }
@@ -314,8 +314,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(first_journey.get(), 1);
-        assert_eq!(second_journey.get(), 2);
+        assert_ne!(first_journey, second_journey);
         assert_eq!(
             state.financials.recent_journey_receipts[0].journey_id,
             first_journey

@@ -143,9 +143,9 @@ pub fn purchase_train(
     }
 
     let funds_after_purchase = state.player_company.funds.checked_sub(purchase_price)?;
-    let train_id = next_train_id(&state.player_company.fleet)?;
-    let next_train_id = train_id
-        .get()
+    let display_number = state.player_company.fleet.next_train_display_number;
+    let train_id = TrainId::new_v4_with_suffix(display_number);
+    let next_display_number = display_number
         .checked_add(1)
         .ok_or(FleetError::TrainIdExhausted)?;
     let evn_unit_number = state
@@ -168,7 +168,7 @@ pub fn purchase_train(
     let train = purchased_train(train_id, evn, delivery_station_id, catalogue_train);
 
     state.player_company.funds = funds_after_purchase;
-    state.player_company.fleet.next_train_id = next_train_id;
+    state.player_company.fleet.next_train_display_number = next_display_number;
     state
         .player_company
         .fleet
@@ -244,14 +244,6 @@ fn purchased_train(
     }
 }
 
-fn next_train_id(fleet: &crate::model::Fleet) -> Result<TrainId, FleetError> {
-    let next = fleet.next_train_id;
-    if next == 0 {
-        return Err(FleetError::TrainIdExhausted);
-    }
-    Ok(TrainId::new(next))
-}
-
 fn resale_proceeds(train: &Train) -> Result<Money, FleetError> {
     if train.original_purchase_price.cents() <= 0 {
         return Err(FleetError::InvalidOriginalPurchasePrice { train_id: train.id });
@@ -291,7 +283,6 @@ mod tests {
 
         assert_eq!(state.player_company.funds, Money::ZERO);
         assert_eq!(state.player_company.fleet.trains.len(), 1);
-        assert_eq!(state.player_company.fleet.next_train_id, train_id.get() + 1);
         assert_eq!(
             state
                 .player_company
@@ -395,7 +386,6 @@ mod tests {
             model_id: TrainModelId::new("helvetra-r70"),
             original_purchase_price: Money::from_cents(101),
         });
-        state.player_company.fleet.next_train_id = train_id.get() + 1;
         state
             .player_company
             .fleet
@@ -420,7 +410,7 @@ mod tests {
         let second = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
         let second_evn = state.player_company.fleet.trains[0].evn.clone();
 
-        assert!(second.get() > first.get());
+        assert_ne!(second, first);
         assert_ne!(first_evn, second_evn);
     }
 

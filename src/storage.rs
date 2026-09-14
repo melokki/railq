@@ -25,22 +25,28 @@ use crate::{
     balance::BalanceConfig,
     catalog::{TrainModel, model_for_train, train_catalogue},
     model::{
-        CalculationError, DemandRules, DistanceMetres, DurationSeconds, EuropeanVehicleNumber,
-        Financials, Fleet, GameRules, GameState, Journey, JourneyId, JourneyPassengerGroup,
-        JourneyReceipt, Money, MoneyPerKilometre, OriginDestinationDemand, PassengerArrivalRate,
-        PassengerCapacity, PassengerService, PlayerCompany, RailAuthority, RailLine, RailLineId,
-        RailNetwork, RailStation, RailStationId, RailwayRegistration, Region, ServiceId,
-        Settlement, SettlementId, SpeedMetresPerSecond, Train, TrainId, TrainModelId,
-        TrainNickname, TrainStatus, UtcSeconds, VehicleKeeperMark,
+        CalculationError, ConstructionDifficulty, DemandRules, DistanceMetres, DurationSeconds,
+        Electrification, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState,
+        InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
+        InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline,
+        Journey, JourneyId, JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre,
+        OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
+        PlannedRailLine, PlannedRailStation, PlayerCompany, RailAuthority, RailAuthorityFinances,
+        RailLine, RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
+        ServiceId, Settlement, SettlementId, SpeedKilometresPerHour, SpeedMetresPerSecond,
+        TrackCount, Train, TrainId, TrainModelId, TrainNickname, TrainStatus, UtcSeconds,
+        VehicleKeeperMark, WorldPosition,
     },
     sim::{
         services::{path_between_stations, service_path_for_stops},
-        world::railway_registration_for_existing_region,
+        world::{
+            railway_registration_for_existing_region, settlement_positions_for_existing_region,
+        },
     },
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 10;
+pub const SAVE_VERSION: u32 = 20;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -375,36 +381,109 @@ CREATE TABLE IF NOT EXISTS region (
     registration_code INTEGER NOT NULL CHECK (registration_code BETWEEN 10 AND 99),
     registration_mark TEXT NOT NULL,
     population INTEGER NOT NULL,
-    rail_authority_name TEXT NOT NULL
+    rail_authority_name TEXT NOT NULL,
+    rail_authority_construction_capacity INTEGER NOT NULL DEFAULT 1 CHECK (rail_authority_construction_capacity > 0)
+);
+CREATE TABLE IF NOT EXISTS rail_authority_finances (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+    maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+    committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+    carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
+    regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0),
+    infrastructure_access_fee_revenue_cents INTEGER NOT NULL CHECK (infrastructure_access_fee_revenue_cents >= 0)
 );
 CREATE TABLE IF NOT EXISTS settlements (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    population INTEGER NOT NULL
+    population INTEGER NOT NULL,
+    world_x INTEGER NOT NULL,
+    world_y INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS rail_stations (
-    id INTEGER PRIMARY KEY,
-    settlement_id INTEGER NOT NULL REFERENCES settlements(id)
+    id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE,
+    settlement_id TEXT NOT NULL REFERENCES settlements(id)
 );
 CREATE TABLE IF NOT EXISTS rail_lines (
-    id INTEGER PRIMARY KEY,
-    first_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
-    second_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
-    distance_metres INTEGER NOT NULL
+    id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE,
+    first_station_id TEXT NOT NULL REFERENCES rail_stations(id),
+    second_station_id TEXT NOT NULL REFERENCES rail_stations(id),
+    distance_metres INTEGER NOT NULL,
+    speed_limit_kmh INTEGER NOT NULL CHECK (speed_limit_kmh > 0),
+    track_count INTEGER NOT NULL CHECK (track_count > 0),
+    electrification TEXT NOT NULL CHECK (electrification IN ('none', 'electric')),
+    construction_difficulty TEXT NOT NULL CHECK (construction_difficulty IN ('low', 'moderate', 'high'))
+);
+CREATE TABLE IF NOT EXISTS infrastructure_projects (
+    id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('new_line', 'speed_upgrade', 'double_tracking', 'electrification', 'renewal', 'station_upgrade')),
+    status TEXT NOT NULL CHECK (status IN ('requested', 'under_review', 'proposed', 'approved', 'deferred', 'funding', 'scheduled', 'construction', 'open', 'cancelled')),
+    estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0),
+    authority_committed_cents INTEGER NOT NULL DEFAULT 0 CHECK (authority_committed_cents >= 0),
+    requested_at INTEGER NOT NULL,
+    review_started_at INTEGER,
+    proposed_at INTEGER,
+    approved_at INTEGER,
+    funding_completed_at INTEGER,
+    scheduled_start_at INTEGER,
+    construction_started_at INTEGER,
+    planned_completion_at INTEGER,
+    completed_at INTEGER,
+    deferred_at INTEGER,
+    cancelled_at INTEGER,
+    target_speed_limit_kmh INTEGER CHECK (target_speed_limit_kmh IS NULL OR target_speed_limit_kmh > 0),
+    target_track_count INTEGER CHECK (target_track_count IS NULL OR target_track_count > 0)
+);
+CREATE TABLE IF NOT EXISTS infrastructure_project_rail_lines (
+    project_id TEXT NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    rail_line_id TEXT NOT NULL REFERENCES rail_lines(id),
+    PRIMARY KEY (project_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS infrastructure_project_rail_stations (
+    project_id TEXT NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    rail_station_id TEXT NOT NULL REFERENCES rail_stations(id),
+    PRIMARY KEY (project_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS infrastructure_project_planned_stations (
+    project_id TEXT NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    station_id TEXT NOT NULL UNIQUE,
+    settlement_id TEXT NOT NULL REFERENCES settlements(id),
+    PRIMARY KEY (project_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS infrastructure_project_planned_lines (
+    project_id TEXT NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    line_id TEXT NOT NULL UNIQUE,
+    first_station_id TEXT NOT NULL,
+    second_station_id TEXT NOT NULL,
+    distance_metres INTEGER NOT NULL CHECK (distance_metres > 0),
+    speed_limit_kmh INTEGER NOT NULL CHECK (speed_limit_kmh > 0),
+    track_count INTEGER NOT NULL CHECK (track_count > 0),
+    electrification TEXT NOT NULL CHECK (electrification IN ('none', 'electric')),
+    construction_difficulty TEXT NOT NULL CHECK (construction_difficulty IN ('low', 'moderate', 'high')),
+    PRIMARY KEY (project_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS company (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     name TEXT NOT NULL,
     vkm TEXT NOT NULL CHECK (length(vkm) BETWEEN 2 AND 5) CHECK (vkm NOT GLOB '*[^A-Z]*'),
     funds_cents INTEGER NOT NULL,
-    next_train_id INTEGER NOT NULL CHECK (next_train_id > 0)
+    next_train_display_number INTEGER NOT NULL CHECK (next_train_display_number > 0)
 );
 CREATE TABLE IF NOT EXISTS trains (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE,
     evn TEXT NOT NULL UNIQUE CHECK (length(evn) = 12) CHECK (evn NOT GLOB '*[^0-9]*'),
     nickname TEXT CHECK (nickname IS NULL OR length(trim(nickname)) BETWEEN 1 AND 32),
     status_kind TEXT NOT NULL CHECK (status_kind IN ('ready', 'travelling')),
-    status_ref_id INTEGER NOT NULL,
+    status_ref_id TEXT NOT NULL,
     model_id TEXT NOT NULL,
     original_purchase_price_cents INTEGER NOT NULL
 );
@@ -413,35 +492,38 @@ CREATE TABLE IF NOT EXISTS train_model_sequences (
     next_unit_number INTEGER NOT NULL CHECK (next_unit_number BETWEEN 1 AND 1000)
 );
 CREATE TABLE IF NOT EXISTS passenger_services (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE,
     name TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS service_stops (
-    service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
+    service_id TEXT NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
     sequence INTEGER NOT NULL,
-    station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    station_id TEXT NOT NULL REFERENCES rail_stations(id),
     PRIMARY KEY (service_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS service_lines (
-    service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
+    service_id TEXT NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
     sequence INTEGER NOT NULL,
-    rail_line_id INTEGER NOT NULL REFERENCES rail_lines(id),
+    rail_line_id TEXT NOT NULL REFERENCES rail_lines(id),
     PRIMARY KEY (service_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS origin_destination_demand (
-    origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
-    destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    origin_station_id TEXT NOT NULL REFERENCES rail_stations(id),
+    destination_station_id TEXT NOT NULL REFERENCES rail_stations(id),
+    sequence INTEGER NOT NULL UNIQUE,
     waiting_passengers INTEGER NOT NULL,
     passenger_arrival_rate_per_hour INTEGER NOT NULL,
     fractional_passenger_seconds INTEGER NOT NULL,
     PRIMARY KEY (origin_station_id, destination_station_id)
 );
 CREATE TABLE IF NOT EXISTS active_journeys (
-    id INTEGER PRIMARY KEY,
-    service_id INTEGER NOT NULL REFERENCES passenger_services(id),
-    train_id INTEGER NOT NULL REFERENCES trains(id),
-    origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
-    destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE,
+    service_id TEXT NOT NULL REFERENCES passenger_services(id),
+    train_id TEXT NOT NULL REFERENCES trains(id),
+    origin_station_id TEXT NOT NULL REFERENCES rail_stations(id),
+    destination_station_id TEXT NOT NULL REFERENCES rail_stations(id),
     passengers_carried INTEGER NOT NULL,
     fare_cents INTEGER NOT NULL,
     operating_revenue_cents INTEGER NOT NULL,
@@ -453,10 +535,10 @@ CREATE TABLE IF NOT EXISTS active_journeys (
     arrives_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS journey_passenger_groups (
-    journey_id INTEGER NOT NULL REFERENCES active_journeys(id) ON DELETE CASCADE,
+    journey_id TEXT NOT NULL REFERENCES active_journeys(id) ON DELETE CASCADE,
     sequence INTEGER NOT NULL,
-    origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
-    destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    origin_station_id TEXT NOT NULL REFERENCES rail_stations(id),
+    destination_station_id TEXT NOT NULL REFERENCES rail_stations(id),
     passengers INTEGER NOT NULL,
     fare_cents INTEGER NOT NULL,
     PRIMARY KEY (journey_id, sequence)
@@ -468,14 +550,14 @@ CREATE TABLE IF NOT EXISTS financials (
     fuel_costs_cents INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS journey_receipts (
-    journey_id INTEGER PRIMARY KEY,
+    journey_id TEXT PRIMARY KEY,
     revenue_cents INTEGER NOT NULL,
     infrastructure_access_fee_cents INTEGER NOT NULL,
     fuel_cost_cents INTEGER NOT NULL,
-    train_id INTEGER,
+    train_id TEXT,
     train_model_name TEXT,
-    origin_station_id INTEGER,
-    destination_station_id INTEGER,
+    origin_station_id TEXT,
+    destination_station_id TEXT,
     passengers_carried INTEGER,
     passenger_capacity INTEGER,
     completed_at INTEGER
@@ -527,6 +609,12 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         2 => {
             migrate_v2_to_v3(connection, path)?;
@@ -537,6 +625,12 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         3 => {
             migrate_v3_to_v4(connection, path)?;
@@ -546,6 +640,12 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         4 => {
             migrate_v4_to_v5(connection, path)?;
@@ -554,6 +654,12 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         5 => {
             migrate_v5_to_v6(connection, path)?;
@@ -561,23 +667,87 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         6 => {
             migrate_v6_to_v7(connection, path)?;
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         7 => {
             migrate_v7_to_v8(connection, path)?;
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         8 => {
             migrate_v8_to_v9(connection, path)?;
             migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
-        9 => migrate_v9_to_v10(connection, path)?,
+        9 => {
+            migrate_v9_to_v10(connection, path)?;
+            migrate_v10_to_v11(connection, path)?;
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
+        }
+        10 => {
+            migrate_v10_to_v11(connection, path)?;
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
+        }
+        11 => {
+            migrate_v11_to_v12(connection, path)?;
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
+        }
+        12 => {
+            migrate_v12_to_v13(connection, path)?;
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
+        }
+        13 => {
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
+        }
+        14 => {
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
+        }
+        15 => migrate_v15_to_v16(connection, path)?,
+        16 | 17 | 18 | 19 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -593,6 +763,25 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
                 source: Box::new(SaveCodecError::UnsupportedVersion { found }),
             });
         }
+    }
+
+    let mut current_version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|source| db_error("read migrated schema version from", path, source))?;
+    if current_version == 16 {
+        migrate_v16_to_v17(connection, path)?;
+        current_version = 17;
+    }
+    if current_version == 17 {
+        migrate_v17_to_v18(connection, path)?;
+        current_version = 18;
+    }
+    if current_version == 18 {
+        migrate_v18_to_v19(connection, path)?;
+        current_version = 19;
+    }
+    if current_version == 19 {
+        migrate_v19_to_v20(connection, path)?;
     }
     Ok(())
 }
@@ -651,7 +840,7 @@ fn migrate_v1_to_v2(connection: &Connection, path: &Path) -> Result<(), SaveSlot
              CREATE TABLE trains (
                  id INTEGER PRIMARY KEY,
                  status_kind TEXT NOT NULL CHECK (status_kind IN ('ready', 'travelling')),
-                 status_ref_id INTEGER NOT NULL,
+                 status_ref_id TEXT NOT NULL,
                  model_id TEXT NOT NULL,
                  original_purchase_price_cents INTEGER NOT NULL
              );",
@@ -778,15 +967,15 @@ fn migrate_v2_to_v3(connection: &Connection, path: &Path) -> Result<(), SaveSlot
                  name TEXT NOT NULL
              );
              CREATE TABLE service_stops (
-                 service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
+                 service_id TEXT NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
                  sequence INTEGER NOT NULL,
-                 station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+                 station_id TEXT NOT NULL REFERENCES rail_stations(id),
                  PRIMARY KEY (service_id, sequence)
              );
              CREATE TABLE service_lines (
-                 service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
+                 service_id TEXT NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
                  sequence INTEGER NOT NULL,
-                 rail_line_id INTEGER NOT NULL REFERENCES rail_lines(id),
+                 rail_line_id TEXT NOT NULL REFERENCES rail_lines(id),
                  PRIMARY KEY (service_id, sequence)
              );
              CREATE TABLE active_journeys (
@@ -880,7 +1069,7 @@ fn migrate_v3_to_v4(connection: &Connection, path: &Path) -> Result<(), SaveSlot
              ALTER TABLE active_journeys ADD COLUMN credited_revenue_cents INTEGER NOT NULL DEFAULT 0;
              ALTER TABLE active_journeys ADD COLUMN current_stop_index INTEGER NOT NULL DEFAULT 0;
              CREATE TABLE journey_passenger_groups (
-                 journey_id INTEGER NOT NULL REFERENCES active_journeys(id) ON DELETE CASCADE,
+                 journey_id TEXT NOT NULL REFERENCES active_journeys(id) ON DELETE CASCADE,
                  sequence INTEGER NOT NULL,
                  origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
                  destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
@@ -1334,7 +1523,7 @@ fn migrate_v9_to_v10(connection: &Connection, path: &Path) -> Result<(), SaveSlo
     let migration = (|| -> Result<(), SaveSlotError> {
         let mut statement = connection
             .prepare(
-                "SELECT id, evn, model_id
+                "SELECT CAST(id AS TEXT), evn, model_id
                  FROM trains
                  WHERE model_id IN ('local-70', 'express-120')
                  ORDER BY id",
@@ -1353,7 +1542,7 @@ fn migrate_v9_to_v10(connection: &Connection, path: &Path) -> Result<(), SaveSlo
                 source,
             )
         })? {
-            let train_id: i64 = row
+            let train_id: String = row
                 .get(0)
                 .map_err(|source| db_error("decode v9 Train ID from", path, source))?;
             let old_evn: String = row
@@ -1391,7 +1580,7 @@ fn migrate_v9_to_v10(connection: &Connection, path: &Path) -> Result<(), SaveSlo
         for (train_id, evn, model_id) in migrated_trains {
             connection
                 .execute(
-                    "UPDATE trains SET evn = ?1, model_id = ?2 WHERE id = ?3",
+                    "UPDATE trains SET evn = ?1, model_id = ?2 WHERE CAST(id AS TEXT) = ?3",
                     params![evn.as_str(), model_id, train_id],
                 )
                 .map_err(|source| db_error("write migrated v10 Train to", path, source))?;
@@ -1440,7 +1629,7 @@ fn migrate_v9_to_v10(connection: &Connection, path: &Path) -> Result<(), SaveSlo
         }
 
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 10_u32)
             .map_err(|source| db_error("write v10 schema version to", path, source))?;
         Ok(())
     })();
@@ -1449,6 +1638,965 @@ fn migrate_v9_to_v10(connection: &Connection, path: &Path) -> Result<(), SaveSlo
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v9 to v10 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v10_to_v11(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v10 to v11 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE rail_lines ADD COLUMN speed_limit_kmh INTEGER NOT NULL DEFAULT 70 CHECK (speed_limit_kmh > 0);
+                 ALTER TABLE rail_lines ADD COLUMN track_count INTEGER NOT NULL DEFAULT 1 CHECK (track_count > 0);
+                 ALTER TABLE rail_lines ADD COLUMN electrification TEXT NOT NULL DEFAULT 'none' CHECK (electrification IN ('none', 'electric'));
+                 ALTER TABLE rail_lines ADD COLUMN construction_difficulty TEXT NOT NULL DEFAULT 'moderate' CHECK (construction_difficulty IN ('low', 'moderate', 'high'));",
+            )
+            .map_err(|source| db_error("add Rail Line capabilities to", path, source))?;
+        connection
+            .pragma_update(None, "user_version", 11_u32)
+            .map_err(|source| db_error("write v11 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v10 to v11 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v11_to_v12(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v11 to v12 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE region ADD COLUMN next_infrastructure_project_id INTEGER NOT NULL DEFAULT 1 CHECK (next_infrastructure_project_id > 0);
+                 CREATE TABLE infrastructure_projects (
+                     id INTEGER PRIMARY KEY,
+                     kind TEXT NOT NULL CHECK (kind IN ('new_line', 'speed_upgrade', 'double_tracking', 'electrification', 'renewal', 'station_upgrade')),
+                     status TEXT NOT NULL CHECK (status IN ('requested', 'under_review', 'proposed', 'approved', 'deferred', 'funding', 'scheduled', 'construction', 'open', 'cancelled')),
+                     requested_at INTEGER NOT NULL,
+                     review_started_at INTEGER,
+                     proposed_at INTEGER,
+                     approved_at INTEGER,
+                     funding_completed_at INTEGER,
+                     scheduled_start_at INTEGER,
+                     construction_started_at INTEGER,
+                     planned_completion_at INTEGER,
+                     completed_at INTEGER,
+                     deferred_at INTEGER,
+                     cancelled_at INTEGER,
+                     target_speed_limit_kmh INTEGER CHECK (target_speed_limit_kmh IS NULL OR target_speed_limit_kmh > 0),
+                     target_track_count INTEGER CHECK (target_track_count IS NULL OR target_track_count > 0)
+                 );
+                 CREATE TABLE infrastructure_project_rail_lines (
+                     project_id TEXT NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+                     sequence INTEGER NOT NULL,
+                     rail_line_id TEXT NOT NULL REFERENCES rail_lines(id),
+                     PRIMARY KEY (project_id, sequence)
+                 );
+                 CREATE TABLE infrastructure_project_rail_stations (
+                     project_id TEXT NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+                     sequence INTEGER NOT NULL,
+                     rail_station_id TEXT NOT NULL REFERENCES rail_stations(id),
+                     PRIMARY KEY (project_id, sequence)
+                 );
+                 CREATE TABLE infrastructure_project_planned_stations (
+                     project_id TEXT NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+                     sequence INTEGER NOT NULL,
+                     station_id INTEGER NOT NULL UNIQUE,
+                     settlement_id INTEGER NOT NULL REFERENCES settlements(id),
+                     PRIMARY KEY (project_id, sequence)
+                 );
+                 CREATE TABLE infrastructure_project_planned_lines (
+                     project_id TEXT NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+                     sequence INTEGER NOT NULL,
+                     line_id INTEGER NOT NULL UNIQUE,
+                     first_station_id INTEGER NOT NULL,
+                     second_station_id INTEGER NOT NULL,
+                     distance_metres INTEGER NOT NULL CHECK (distance_metres > 0),
+                     speed_limit_kmh INTEGER NOT NULL CHECK (speed_limit_kmh > 0),
+                     track_count INTEGER NOT NULL CHECK (track_count > 0),
+                     electrification TEXT NOT NULL CHECK (electrification IN ('none', 'electric')),
+                     construction_difficulty TEXT NOT NULL CHECK (construction_difficulty IN ('low', 'moderate', 'high')),
+                     PRIMARY KEY (project_id, sequence)
+                 );",
+            )
+            .map_err(|source| db_error("add infrastructure project persistence to", path, source))?;
+        connection
+            .pragma_update(None, "user_version", 12_u32)
+            .map_err(|source| db_error("write v12 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v11 to v12 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v12_to_v13(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v12 to v13 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0)
+                 );
+                 INSERT INTO rail_authority_finances(
+                     singleton, treasury_cents, maintenance_reserve_cents,
+                     committed_investment_cents, carried_over_funds_cents
+                 ) VALUES(1, 0, 0, 0, 0);",
+            )
+            .map_err(|source| db_error("add Rail Authority finances to", path, source))?;
+        connection
+            .pragma_update(None, "user_version", 13_u32)
+            .map_err(|source| db_error("write v13 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v12 to v13 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v13_to_v14(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v13 to v14 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let allocation = crate::model::PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.cents();
+        connection
+            .execute(
+                "ALTER TABLE rail_authority_finances
+                 ADD COLUMN regional_public_allocation_cents INTEGER NOT NULL DEFAULT 0
+                 CHECK (regional_public_allocation_cents >= 0)",
+                [],
+            )
+            .map_err(|source| db_error("add regional public allocation to", path, source))?;
+        connection
+            .execute(
+                "UPDATE rail_authority_finances
+                 SET regional_public_allocation_cents = ?1,
+                     treasury_cents = treasury_cents + ?1
+                 WHERE singleton = 1",
+                params![allocation],
+            )
+            .map_err(|source| db_error("seed regional public allocation in", path, source))?;
+        connection
+            .pragma_update(None, "user_version", 14_u32)
+            .map_err(|source| db_error("write v14 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v13 to v14 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v14_to_v15(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v14 to v15 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let rail_lines_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'rail_lines'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error("inspect Rail Lines during v15 migration in", path, source)
+            })?;
+
+        if rail_lines_exist != 0 {
+            let rate = crate::model::PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE
+                .cents_per_kilometre();
+            let rate = i64::try_from(rate)
+                .expect("the provisional maintenance reserve rate fits SQLite INTEGER");
+            connection
+                .execute(
+                    "UPDATE rail_authority_finances
+                     SET maintenance_reserve_cents = MIN(
+                         treasury_cents - committed_investment_cents,
+                         COALESCE((
+                             SELECT SUM((((distance_metres * ?1) + 999) / 1000) * track_count)
+                             FROM rail_lines
+                         ), 0)
+                     )
+                     WHERE singleton = 1",
+                    params![rate],
+                )
+                .map_err(|source| {
+                    db_error("seed infrastructure maintenance reserve in", path, source)
+                })?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 15_u32)
+            .map_err(|source| db_error("write v15 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v14 to v15 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v15_to_v16(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v15 to v16 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE rail_authority_finances
+                 ADD COLUMN infrastructure_access_fee_revenue_cents INTEGER NOT NULL DEFAULT 0
+                 CHECK (infrastructure_access_fee_revenue_cents >= 0);",
+            )
+            .map_err(|source| db_error("add Authority access-fee revenue to", path, source))?;
+
+        let financials_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'financials'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "inspect financial history during v16 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        if financials_exist != 0 {
+            let historical_access_fees: i64 = connection
+                .query_row(
+                    "SELECT COALESCE(infrastructure_access_fees_cents, 0)
+                     FROM financials WHERE singleton = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|source| {
+                    db_error(
+                        "read historical access fees during v16 migration from",
+                        path,
+                        source,
+                    )
+                })?
+                .unwrap_or(0);
+            connection
+                .execute(
+                    "UPDATE rail_authority_finances
+                     SET infrastructure_access_fee_revenue_cents = ?1,
+                         treasury_cents = treasury_cents + ?1
+                     WHERE singleton = 1",
+                    params![historical_access_fees],
+                )
+                .map_err(|source| {
+                    db_error(
+                        "credit historical access fees to Rail Authority in",
+                        path,
+                        source,
+                    )
+                })?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 16_u32)
+            .map_err(|source| db_error("write v16 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v15 to v16 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+const V16_IDENTITY_TABLES_COMPAT_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS region (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    name TEXT NOT NULL,
+    registration_code INTEGER NOT NULL,
+    registration_mark TEXT NOT NULL,
+    population INTEGER NOT NULL,
+    rail_authority_name TEXT NOT NULL,
+    next_infrastructure_project_id INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS settlements (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    population INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rail_stations (
+    id INTEGER PRIMARY KEY,
+    settlement_id INTEGER NOT NULL REFERENCES settlements(id)
+);
+CREATE TABLE IF NOT EXISTS rail_lines (
+    id INTEGER PRIMARY KEY,
+    first_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    second_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    distance_metres INTEGER NOT NULL,
+    speed_limit_kmh INTEGER NOT NULL DEFAULT 70,
+    track_count INTEGER NOT NULL DEFAULT 1,
+    electrification TEXT NOT NULL DEFAULT 'none',
+    construction_difficulty TEXT NOT NULL DEFAULT 'moderate'
+);
+CREATE TABLE IF NOT EXISTS infrastructure_projects (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requested_at INTEGER NOT NULL,
+    review_started_at INTEGER,
+    proposed_at INTEGER,
+    approved_at INTEGER,
+    funding_completed_at INTEGER,
+    scheduled_start_at INTEGER,
+    construction_started_at INTEGER,
+    planned_completion_at INTEGER,
+    completed_at INTEGER,
+    deferred_at INTEGER,
+    cancelled_at INTEGER,
+    target_speed_limit_kmh INTEGER,
+    target_track_count INTEGER
+);
+CREATE TABLE IF NOT EXISTS infrastructure_project_rail_lines (
+    project_id INTEGER NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    rail_line_id INTEGER NOT NULL REFERENCES rail_lines(id),
+    PRIMARY KEY (project_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS infrastructure_project_rail_stations (
+    project_id INTEGER NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    rail_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    PRIMARY KEY (project_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS infrastructure_project_planned_stations (
+    project_id INTEGER NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    station_id INTEGER NOT NULL UNIQUE,
+    settlement_id INTEGER NOT NULL REFERENCES settlements(id),
+    PRIMARY KEY (project_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS infrastructure_project_planned_lines (
+    project_id INTEGER NOT NULL REFERENCES infrastructure_projects(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    line_id INTEGER NOT NULL UNIQUE,
+    first_station_id INTEGER NOT NULL,
+    second_station_id INTEGER NOT NULL,
+    distance_metres INTEGER NOT NULL,
+    speed_limit_kmh INTEGER NOT NULL,
+    track_count INTEGER NOT NULL,
+    electrification TEXT NOT NULL,
+    construction_difficulty TEXT NOT NULL,
+    PRIMARY KEY (project_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS company (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    name TEXT NOT NULL,
+    vkm TEXT NOT NULL DEFAULT 'RQP',
+    funds_cents INTEGER NOT NULL,
+    next_train_id INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS trains (
+    id INTEGER PRIMARY KEY,
+    evn TEXT NOT NULL UNIQUE,
+    nickname TEXT,
+    status_kind TEXT NOT NULL,
+    status_ref_id INTEGER NOT NULL,
+    model_id TEXT NOT NULL,
+    original_purchase_price_cents INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS passenger_services (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS service_stops (
+    service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    PRIMARY KEY (service_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS service_lines (
+    service_id INTEGER NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    rail_line_id INTEGER NOT NULL REFERENCES rail_lines(id),
+    PRIMARY KEY (service_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS origin_destination_demand (
+    origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    waiting_passengers INTEGER NOT NULL,
+    passenger_arrival_rate_per_hour INTEGER NOT NULL,
+    fractional_passenger_seconds INTEGER NOT NULL,
+    PRIMARY KEY (origin_station_id, destination_station_id)
+);
+CREATE TABLE IF NOT EXISTS active_journeys (
+    id INTEGER PRIMARY KEY,
+    service_id INTEGER NOT NULL REFERENCES passenger_services(id),
+    train_id INTEGER NOT NULL REFERENCES trains(id),
+    origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    passengers_carried INTEGER NOT NULL,
+    fare_cents INTEGER NOT NULL,
+    operating_revenue_cents INTEGER NOT NULL,
+    credited_revenue_cents INTEGER NOT NULL DEFAULT 0,
+    infrastructure_access_fee_cents INTEGER NOT NULL,
+    fuel_cost_cents INTEGER NOT NULL,
+    current_stop_index INTEGER NOT NULL DEFAULT 1,
+    departed_at INTEGER NOT NULL,
+    arrives_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS journey_passenger_groups (
+    journey_id INTEGER NOT NULL REFERENCES active_journeys(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    origin_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    destination_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+    passengers INTEGER NOT NULL,
+    fare_cents INTEGER NOT NULL,
+    PRIMARY KEY (journey_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS journey_receipts (
+    journey_id INTEGER PRIMARY KEY,
+    revenue_cents INTEGER NOT NULL,
+    infrastructure_access_fee_cents INTEGER NOT NULL,
+    fuel_cost_cents INTEGER NOT NULL,
+    train_id INTEGER,
+    train_model_name TEXT,
+    origin_station_id INTEGER,
+    destination_station_id INTEGER,
+    passengers_carried INTEGER,
+    passenger_capacity INTEGER,
+    completed_at INTEGER
+);
+"#;
+
+fn migrate_v16_to_v17(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch(V16_IDENTITY_TABLES_COMPAT_SCHEMA)
+        .map_err(|source| db_error("prepare v16 UUID migration tables in", path, source))?;
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             PRAGMA legacy_alter_table = ON;
+             BEGIN IMMEDIATE;
+             ALTER TABLE region RENAME TO region_v16;
+             ALTER TABLE settlements RENAME TO settlements_v16;
+             ALTER TABLE rail_stations RENAME TO rail_stations_v16;
+             ALTER TABLE rail_lines RENAME TO rail_lines_v16;
+             ALTER TABLE infrastructure_projects RENAME TO infrastructure_projects_v16;
+             ALTER TABLE infrastructure_project_rail_lines RENAME TO infrastructure_project_rail_lines_v16;
+             ALTER TABLE infrastructure_project_rail_stations RENAME TO infrastructure_project_rail_stations_v16;
+             ALTER TABLE infrastructure_project_planned_stations RENAME TO infrastructure_project_planned_stations_v16;
+             ALTER TABLE infrastructure_project_planned_lines RENAME TO infrastructure_project_planned_lines_v16;
+             ALTER TABLE company RENAME TO company_v16;
+             ALTER TABLE trains RENAME TO trains_v16;
+             ALTER TABLE passenger_services RENAME TO passenger_services_v16;
+             ALTER TABLE service_stops RENAME TO service_stops_v16;
+             ALTER TABLE service_lines RENAME TO service_lines_v16;
+             ALTER TABLE origin_destination_demand RENAME TO origin_destination_demand_v16;
+             ALTER TABLE active_journeys RENAME TO active_journeys_v16;
+             ALTER TABLE journey_passenger_groups RENAME TO journey_passenger_groups_v16;
+             ALTER TABLE journey_receipts RENAME TO journey_receipts_v16;",
+        )
+        .map_err(|source| db_error("begin UUID migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(SCHEMA)
+            .map_err(|source| db_error("create UUID schema in", path, source))?;
+
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO region(singleton, name, registration_code, registration_mark, population, rail_authority_name)
+                SELECT singleton, name, registration_code, registration_mark, population, rail_authority_name
+                FROM region_v16;
+
+                INSERT INTO settlements(id, sequence, name, population)
+                SELECT printf('00000001-0000-4000-8000-%012x', id), id, name, population
+                FROM settlements_v16;
+
+                INSERT INTO rail_stations(id, sequence, settlement_id)
+                SELECT printf('00000002-0000-4000-8000-%012x', id), id,
+                       printf('00000001-0000-4000-8000-%012x', settlement_id)
+                FROM rail_stations_v16;
+
+                INSERT INTO rail_lines(id, sequence, first_station_id, second_station_id, distance_metres,
+                                       speed_limit_kmh, track_count, electrification, construction_difficulty)
+                SELECT printf('00000003-0000-4000-8000-%012x', id), id,
+                       printf('00000002-0000-4000-8000-%012x', first_station_id),
+                       printf('00000002-0000-4000-8000-%012x', second_station_id),
+                       distance_metres, speed_limit_kmh, track_count, electrification, construction_difficulty
+                FROM rail_lines_v16;
+
+                INSERT INTO infrastructure_projects(
+                    id, sequence, kind, status, requested_at, review_started_at, proposed_at, approved_at,
+                    funding_completed_at, scheduled_start_at, construction_started_at,
+                    planned_completion_at, completed_at, deferred_at, cancelled_at,
+                    target_speed_limit_kmh, target_track_count
+                )
+                SELECT printf('00000004-0000-4000-8000-%012x', id), id, kind, status, requested_at,
+                       review_started_at, proposed_at, approved_at, funding_completed_at,
+                       scheduled_start_at, construction_started_at, planned_completion_at,
+                       completed_at, deferred_at, cancelled_at, target_speed_limit_kmh,
+                       target_track_count
+                FROM infrastructure_projects_v16;
+
+                INSERT INTO infrastructure_project_rail_lines(project_id, sequence, rail_line_id)
+                SELECT printf('00000004-0000-4000-8000-%012x', project_id), sequence,
+                       printf('00000003-0000-4000-8000-%012x', rail_line_id)
+                FROM infrastructure_project_rail_lines_v16;
+
+                INSERT INTO infrastructure_project_rail_stations(project_id, sequence, rail_station_id)
+                SELECT printf('00000004-0000-4000-8000-%012x', project_id), sequence,
+                       printf('00000002-0000-4000-8000-%012x', rail_station_id)
+                FROM infrastructure_project_rail_stations_v16;
+
+                INSERT INTO infrastructure_project_planned_stations(project_id, sequence, station_id, settlement_id)
+                SELECT printf('00000004-0000-4000-8000-%012x', project_id), sequence,
+                       printf('00000002-0000-4000-8000-%012x', station_id),
+                       printf('00000001-0000-4000-8000-%012x', settlement_id)
+                FROM infrastructure_project_planned_stations_v16;
+
+                INSERT INTO infrastructure_project_planned_lines(
+                    project_id, sequence, line_id, first_station_id, second_station_id,
+                    distance_metres, speed_limit_kmh, track_count, electrification, construction_difficulty
+                )
+                SELECT printf('00000004-0000-4000-8000-%012x', project_id), sequence,
+                       printf('00000003-0000-4000-8000-%012x', line_id),
+                       printf('00000002-0000-4000-8000-%012x', first_station_id),
+                       printf('00000002-0000-4000-8000-%012x', second_station_id),
+                       distance_metres, speed_limit_kmh, track_count, electrification, construction_difficulty
+                FROM infrastructure_project_planned_lines_v16;
+
+                INSERT INTO company(singleton, name, vkm, funds_cents, next_train_display_number)
+                SELECT singleton, name, vkm, funds_cents, next_train_id FROM company_v16;
+
+                INSERT INTO trains(id, sequence, evn, nickname, status_kind, status_ref_id, model_id, original_purchase_price_cents)
+                SELECT printf('00000005-0000-4000-8000-%012x', id), id, evn, nickname, status_kind,
+                       CASE status_kind
+                           WHEN 'ready' THEN printf('00000002-0000-4000-8000-%012x', status_ref_id)
+                           ELSE printf('00000007-0000-4000-8000-%012x', status_ref_id)
+                       END,
+                       model_id, original_purchase_price_cents
+                FROM trains_v16;
+
+                INSERT INTO passenger_services(id, sequence, name)
+                SELECT printf('00000006-0000-4000-8000-%012x', id), id, name
+                FROM passenger_services_v16;
+
+                INSERT INTO service_stops(service_id, sequence, station_id)
+                SELECT printf('00000006-0000-4000-8000-%012x', service_id), sequence,
+                       printf('00000002-0000-4000-8000-%012x', station_id)
+                FROM service_stops_v16;
+
+                INSERT INTO service_lines(service_id, sequence, rail_line_id)
+                SELECT printf('00000006-0000-4000-8000-%012x', service_id), sequence,
+                       printf('00000003-0000-4000-8000-%012x', rail_line_id)
+                FROM service_lines_v16;
+
+                INSERT INTO origin_destination_demand(
+                    origin_station_id, destination_station_id, sequence, waiting_passengers,
+                    passenger_arrival_rate_per_hour, fractional_passenger_seconds
+                )
+                SELECT printf('00000002-0000-4000-8000-%012x', origin_station_id),
+                       printf('00000002-0000-4000-8000-%012x', destination_station_id),
+                       ROW_NUMBER() OVER (ORDER BY origin_station_id, destination_station_id) - 1,
+                       waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds
+                FROM origin_destination_demand_v16;
+
+                INSERT INTO active_journeys(
+                    id, sequence, service_id, train_id, origin_station_id, destination_station_id,
+                    passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents,
+                    infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index,
+                    departed_at, arrives_at
+                )
+                SELECT printf('00000007-0000-4000-8000-%012x', id), id,
+                       printf('00000006-0000-4000-8000-%012x', service_id),
+                       printf('00000005-0000-4000-8000-%012x', train_id),
+                       printf('00000002-0000-4000-8000-%012x', origin_station_id),
+                       printf('00000002-0000-4000-8000-%012x', destination_station_id),
+                       passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents,
+                       infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index,
+                       departed_at, arrives_at
+                FROM active_journeys_v16;
+
+                INSERT INTO journey_passenger_groups(
+                    journey_id, sequence, origin_station_id, destination_station_id, passengers, fare_cents
+                )
+                SELECT printf('00000007-0000-4000-8000-%012x', journey_id), sequence,
+                       printf('00000002-0000-4000-8000-%012x', origin_station_id),
+                       printf('00000002-0000-4000-8000-%012x', destination_station_id),
+                       passengers, fare_cents
+                FROM journey_passenger_groups_v16;
+
+                INSERT INTO journey_receipts(
+                    journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents,
+                    train_id, train_model_name, origin_station_id, destination_station_id,
+                    passengers_carried, passenger_capacity, completed_at
+                )
+                SELECT printf('00000007-0000-4000-8000-%012x', journey_id), revenue_cents,
+                       infrastructure_access_fee_cents, fuel_cost_cents,
+                       CASE WHEN train_id IS NULL THEN NULL ELSE printf('00000005-0000-4000-8000-%012x', train_id) END,
+                       train_model_name,
+                       CASE WHEN origin_station_id IS NULL THEN NULL ELSE printf('00000002-0000-4000-8000-%012x', origin_station_id) END,
+                       CASE WHEN destination_station_id IS NULL THEN NULL ELSE printf('00000002-0000-4000-8000-%012x', destination_station_id) END,
+                       passengers_carried, passenger_capacity, completed_at
+                FROM journey_receipts_v16;
+
+                DROP TABLE journey_passenger_groups_v16;
+                DROP TABLE active_journeys_v16;
+                DROP TABLE origin_destination_demand_v16;
+                DROP TABLE service_lines_v16;
+                DROP TABLE service_stops_v16;
+                DROP TABLE passenger_services_v16;
+                DROP TABLE trains_v16;
+                DROP TABLE company_v16;
+                DROP TABLE infrastructure_project_planned_lines_v16;
+                DROP TABLE infrastructure_project_planned_stations_v16;
+                DROP TABLE infrastructure_project_rail_stations_v16;
+                DROP TABLE infrastructure_project_rail_lines_v16;
+                DROP TABLE infrastructure_projects_v16;
+                DROP TABLE rail_lines_v16;
+                DROP TABLE rail_stations_v16;
+                DROP TABLE settlements_v16;
+                DROP TABLE region_v16;
+                DROP TABLE journey_receipts_v16;
+
+                CREATE INDEX IF NOT EXISTS idx_active_journeys_arrival ON active_journeys(arrives_at);
+                CREATE INDEX IF NOT EXISTS idx_receipts_completed_at ON journey_receipts(completed_at);
+                "#,
+            )
+            .map_err(|source| db_error("migrate entity IDs to UUID v4 in", path, source))?;
+
+        connection
+            .pragma_update(None, "user_version", 17_u32)
+            .map_err(|source| db_error("write v17 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => {
+            connection
+                .execute_batch(
+                    "COMMIT;
+                     PRAGMA legacy_alter_table = OFF;
+                     PRAGMA foreign_keys = ON;",
+                )
+                .map_err(|source| db_error("commit UUID migration for", path, source))?;
+            let violation: Option<String> = connection
+                .query_row(
+                    "SELECT table FROM pragma_foreign_key_check LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|source| db_error("verify UUID migration for", path, source))?;
+            if violation.is_some() {
+                return Err(invalid_value(path, "foreign keys after UUID migration"));
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "ROLLBACK;
+                 PRAGMA legacy_alter_table = OFF;
+                 PRAGMA foreign_keys = ON;",
+            );
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v17_to_v18(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v17 to v18 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let has_capacity_column: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('region')
+                 WHERE name = 'rail_authority_construction_capacity'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "inspect Rail Authority construction capacity in",
+                    path,
+                    source,
+                )
+            })?;
+        if has_capacity_column == 0 {
+            connection
+                .execute(
+                    "ALTER TABLE region
+                     ADD COLUMN rail_authority_construction_capacity INTEGER NOT NULL DEFAULT 1
+                     CHECK (rail_authority_construction_capacity > 0)",
+                    [],
+                )
+                .map_err(|source| {
+                    db_error("add Rail Authority construction capacity to", path, source)
+                })?;
+        }
+        connection
+            .pragma_update(None, "user_version", 18_u32)
+            .map_err(|source| db_error("write v18 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v17 to v18 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v18_to_v19(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v18 to v19 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let project_table_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'infrastructure_projects'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect Infrastructure Project table in", path, source))?;
+
+        if project_table_exists != 0 {
+            let has_estimated_cost: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('infrastructure_projects')
+                     WHERE name = 'estimated_cost_cents'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|source| db_error("inspect project estimated cost in", path, source))?;
+            if has_estimated_cost == 0 {
+                connection
+                    .execute(
+                        "ALTER TABLE infrastructure_projects
+                         ADD COLUMN estimated_cost_cents INTEGER NOT NULL DEFAULT 0
+                         CHECK (estimated_cost_cents >= 0)",
+                        [],
+                    )
+                    .map_err(|source| db_error("add project estimated cost to", path, source))?;
+            }
+
+            let has_authority_commitment: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('infrastructure_projects')
+                     WHERE name = 'authority_committed_cents'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|source| {
+                    db_error("inspect project Authority commitment in", path, source)
+                })?;
+            if has_authority_commitment == 0 {
+                connection
+                    .execute(
+                        "ALTER TABLE infrastructure_projects
+                         ADD COLUMN authority_committed_cents INTEGER NOT NULL DEFAULT 0
+                         CHECK (authority_committed_cents >= 0)",
+                        [],
+                    )
+                    .map_err(|source| {
+                        db_error("add project Authority commitment to", path, source)
+                    })?;
+            }
+
+            let planned_lines_exist: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'table' AND name = 'infrastructure_project_planned_lines'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|source| db_error("inspect planned Rail Line table in", path, source))?;
+            if planned_lines_exist != 0 {
+                connection
+                    .execute_batch(
+                        "UPDATE infrastructure_projects
+                         SET estimated_cost_cents = COALESCE((
+                             SELECT SUM(
+                                 ((pl.distance_metres * CASE pl.construction_difficulty
+                                     WHEN 'low' THEN 120000
+                                     WHEN 'moderate' THEN 160000
+                                     WHEN 'high' THEN 220000
+                                     ELSE 160000
+                                 END) + 999) / 1000
+                             )
+                             FROM infrastructure_project_planned_lines pl
+                             WHERE pl.project_id = infrastructure_projects.id
+                         ), 0)
+                         WHERE kind = 'new_line' AND estimated_cost_cents = 0;",
+                    )
+                    .map_err(|source| {
+                        db_error("backfill project estimated cost in", path, source)
+                    })?;
+            }
+        }
+
+        connection
+            .pragma_update(None, "user_version", 19_u32)
+            .map_err(|source| db_error("write v19 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v18 to v19 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v19_to_v20(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v19 to v20 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE settlements ADD COLUMN world_x INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE settlements ADD COLUMN world_y INTEGER NOT NULL DEFAULT 0;",
+            )
+            .map_err(|source| db_error("add Settlement coordinates to", path, source))?;
+
+        let world_seed_text: String = connection
+            .query_row(
+                "SELECT world_seed FROM game_meta WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "read world seed for Settlement coordinate migration from",
+                    path,
+                    source,
+                )
+            })?;
+        let world_seed =
+            world_seed_text
+                .parse::<u64>()
+                .map_err(|_| SaveSlotError::InvalidSave {
+                    path: path.to_path_buf(),
+                    source: Box::new(SaveCodecError::InvalidValue {
+                        field: "World Seed",
+                    }),
+                })?;
+        let settlement_count: usize = connection
+            .query_row("SELECT COUNT(*) FROM settlements", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|source| {
+                db_error(
+                    "count Settlements for coordinate migration in",
+                    path,
+                    source,
+                )
+            })?
+            .try_into()
+            .map_err(|_| SaveSlotError::InvalidSave {
+                path: path.to_path_buf(),
+                source: Box::new(SaveCodecError::InvalidValue {
+                    field: "Settlement Count",
+                }),
+            })?;
+        let positions = settlement_positions_for_existing_region(world_seed, settlement_count);
+        for (sequence, position) in positions.into_iter().enumerate() {
+            connection
+                .execute(
+                    "UPDATE settlements SET world_x = ?1, world_y = ?2 WHERE sequence = ?3",
+                    params![
+                        position.x,
+                        position.y,
+                        i64::try_from(sequence).unwrap_or(i64::MAX)
+                    ],
+                )
+                .map_err(|source| db_error("backfill Settlement coordinates in", path, source))?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 20_u32)
+            .map_err(|source| db_error("write v20 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v19 to v20 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -1483,6 +2631,12 @@ fn clear_state(
          DELETE FROM financials;
          DELETE FROM game_rules;
          DELETE FROM company;
+         DELETE FROM infrastructure_project_planned_lines;
+         DELETE FROM infrastructure_project_planned_stations;
+         DELETE FROM infrastructure_project_rail_stations;
+         DELETE FROM infrastructure_project_rail_lines;
+         DELETE FROM infrastructure_projects;
+         DELETE FROM rail_authority_finances;
          DELETE FROM rail_lines;
          DELETE FROM rail_stations;
          DELETE FROM settlements;
@@ -1513,58 +2667,124 @@ fn insert_state(
             ],
         )
         .map_err(|source| db_error("write game metadata to", path, source))?;
-    transaction.execute(
-        "INSERT INTO region(singleton, name, registration_code, registration_mark, population, rail_authority_name)
-         VALUES(1, ?1, ?2, ?3, ?4, ?5)",
-        params![
-            &state.region.name,
-            i64::from(state.region.railway_registration.numeric_code),
-            &state.region.railway_registration.mark,
-            db(state.region.population, "Region Population")?,
-            &state.region.rail_authority.name
-        ],
-    ).map_err(|source| db_error("write Region to", path, source))?;
+    transaction
+        .execute(
+            "INSERT INTO region(
+             singleton, name, registration_code, registration_mark, population,
+             rail_authority_name, rail_authority_construction_capacity
+         ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                &state.region.name,
+                i64::from(state.region.railway_registration.numeric_code),
+                &state.region.railway_registration.mark,
+                db(state.region.population, "Region Population")?,
+                &state.region.rail_authority.name,
+                i64::from(state.region.rail_authority.construction_capacity),
+            ],
+        )
+        .map_err(|source| db_error("write Region to", path, source))?;
 
-    for settlement in &state.region.settlements {
+    let authority_finances = &state.region.rail_authority.finances;
+    transaction
+        .execute(
+            "INSERT INTO rail_authority_finances(
+                 singleton, treasury_cents, maintenance_reserve_cents,
+                 committed_investment_cents, carried_over_funds_cents,
+                 regional_public_allocation_cents, infrastructure_access_fee_revenue_cents
+             ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                authority_finances.treasury.cents(),
+                authority_finances.maintenance_reserve.cents(),
+                authority_finances.committed_investment.cents(),
+                authority_finances.carried_over_funds.cents(),
+                authority_finances.regional_public_allocation.cents(),
+                authority_finances.infrastructure_access_fee_revenue.cents(),
+            ],
+        )
+        .map_err(|source| db_error("write Rail Authority finances to", path, source))?;
+
+    for (sequence, settlement) in state.region.settlements.iter().enumerate() {
         transaction
             .execute(
-                "INSERT INTO settlements(id, name, population) VALUES(?1, ?2, ?3)",
+                "INSERT INTO settlements(id, sequence, name, population, world_x, world_y) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    db(settlement.id.get(), "Settlement ID")?,
+                    settlement.id.to_string(),
+                    i64::try_from(sequence).unwrap_or(i64::MAX),
                     &settlement.name,
-                    db(settlement.population, "Settlement Population")?
+                    db(settlement.population, "Settlement Population")?,
+                    settlement.position.x,
+                    settlement.position.y
                 ],
             )
             .map_err(|source| db_error("write Settlements to", path, source))?;
     }
     let network = &state.region.rail_authority.rail_network;
-    for station in &network.rail_stations {
+    for (sequence, station) in network.rail_stations.iter().enumerate() {
         transaction
             .execute(
-                "INSERT INTO rail_stations(id, settlement_id) VALUES(?1, ?2)",
+                "INSERT INTO rail_stations(id, sequence, settlement_id) VALUES(?1, ?2, ?3)",
                 params![
-                    db(station.id.get(), "Rail Station ID")?,
-                    db(station.settlement_id.get(), "Settlement ID")?
+                    station.id.to_string(),
+                    i64::try_from(sequence).unwrap_or(i64::MAX),
+                    station.settlement_id.to_string()
                 ],
             )
             .map_err(|source| db_error("write Rail Stations to", path, source))?;
     }
-    for line in &network.rail_lines {
-        transaction.execute(
-            "INSERT INTO rail_lines(id, first_station_id, second_station_id, distance_metres) VALUES(?1, ?2, ?3, ?4)",
-            params![db(line.id.get(), "Rail Line ID")?, db(line.first_station_id.get(), "Rail Station ID")?, db(line.second_station_id.get(), "Rail Station ID")?, db(line.distance.metres(), "Rail Line distance")?],
-        ).map_err(|source| db_error("write Rail Lines to", path, source))?;
+    for (sequence, line) in network.rail_lines.iter().enumerate() {
+        let electrification = match line.electrification {
+            Electrification::None => "none",
+            Electrification::Electric => "electric",
+        };
+        let construction_difficulty = match line.construction_difficulty {
+            ConstructionDifficulty::Low => "low",
+            ConstructionDifficulty::Moderate => "moderate",
+            ConstructionDifficulty::High => "high",
+        };
+        transaction
+            .execute(
+                "INSERT INTO rail_lines(
+                 id, sequence, first_station_id, second_station_id, distance_metres,
+                 speed_limit_kmh, track_count, electrification, construction_difficulty
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    line.id.to_string(),
+                    i64::try_from(sequence).unwrap_or(i64::MAX),
+                    line.first_station_id.to_string(),
+                    line.second_station_id.to_string(),
+                    db(line.distance.metres(), "Rail Line distance")?,
+                    i64::from(line.speed_limit.kilometres_per_hour()),
+                    i64::from(line.track_count.tracks()),
+                    electrification,
+                    construction_difficulty,
+                ],
+            )
+            .map_err(|source| db_error("write Rail Lines to", path, source))?;
+    }
+
+    for (sequence, project) in state
+        .region
+        .rail_authority
+        .infrastructure_projects
+        .iter()
+        .enumerate()
+    {
+        insert_infrastructure_project(transaction, sequence, project, path)?;
     }
 
     transaction
         .execute(
-            "INSERT INTO company(singleton, name, vkm, funds_cents, next_train_id)
+            "INSERT INTO company(singleton, name, vkm, funds_cents, next_train_display_number)
          VALUES(1, ?1, ?2, ?3, ?4)",
             params![
                 &state.player_company.name,
                 state.player_company.vehicle_keeper_mark.as_str(),
                 state.player_company.funds.cents(),
-                db(state.player_company.fleet.next_train_id, "next Train ID")?
+                to_db_u64(
+                    state.player_company.fleet.next_train_display_number,
+                    "next Train display number",
+                    path,
+                )?,
             ],
         )
         .map_err(|source| db_error("write Player Company to", path, source))?;
@@ -1578,63 +2798,68 @@ fn insert_state(
             .map_err(|source| db_error("write EVN model sequences to", path, source))?;
     }
 
-    for train in &state.player_company.fleet.trains {
+    for (sequence, train) in state.player_company.fleet.trains.iter().enumerate() {
         let (status_kind, status_ref_id) = match train.status {
-            TrainStatus::Ready { at } => ("ready", at.get()),
-            TrainStatus::Travelling { journey_id } => ("travelling", journey_id.get()),
+            TrainStatus::Ready { at } => ("ready", at.to_string()),
+            TrainStatus::Travelling { journey_id } => ("travelling", journey_id.to_string()),
         };
         transaction.execute(
-            "INSERT INTO trains(id, evn, nickname, status_kind, status_ref_id, model_id, original_purchase_price_cents)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO trains(id, sequence, evn, nickname, status_kind, status_ref_id, model_id, original_purchase_price_cents)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                db(train.id.get(), "Train ID")?, train.evn.as_str(),
+                train.id.to_string(), i64::try_from(sequence).unwrap_or(i64::MAX), train.evn.as_str(),
                 train.nickname.as_ref().map(TrainNickname::as_str), status_kind,
-                db(status_ref_id, "Train status reference")?, train.model_id.as_str(),
+                status_ref_id, train.model_id.as_str(),
                 train.original_purchase_price.cents()
             ],
         ).map_err(|source| db_error("write Trains to", path, source))?;
     }
 
-    for service in &state.player_company.passenger_services {
+    for (sequence, service) in state.player_company.passenger_services.iter().enumerate() {
         transaction
             .execute(
-                "INSERT INTO passenger_services(id, name) VALUES(?1, ?2)",
-                params![db(service.id.get(), "Passenger Service ID")?, &service.name],
+                "INSERT INTO passenger_services(id, sequence, name) VALUES(?1, ?2, ?3)",
+                params![
+                    service.id.to_string(),
+                    i64::try_from(sequence).unwrap_or(i64::MAX),
+                    &service.name
+                ],
             )
             .map_err(|source| db_error("write Passenger Services to", path, source))?;
         for (sequence, station_id) in service.stop_station_ids.iter().enumerate() {
             transaction.execute(
                 "INSERT INTO service_stops(service_id, sequence, station_id) VALUES(?1, ?2, ?3)",
-                params![db(service.id.get(), "Passenger Service ID")?, i64::try_from(sequence).unwrap_or(i64::MAX), db(station_id.get(), "Rail Station ID")?],
+                params![service.id.to_string(), i64::try_from(sequence).unwrap_or(i64::MAX), station_id.to_string()],
             ).map_err(|source| db_error("write Passenger Service stops to", path, source))?;
         }
         for (sequence, line_id) in service.rail_line_ids.iter().enumerate() {
             transaction.execute(
                 "INSERT INTO service_lines(service_id, sequence, rail_line_id) VALUES(?1, ?2, ?3)",
-                params![db(service.id.get(), "Passenger Service ID")?, i64::try_from(sequence).unwrap_or(i64::MAX), db(line_id.get(), "Rail Line ID")?],
+                params![service.id.to_string(), i64::try_from(sequence).unwrap_or(i64::MAX), line_id.to_string()],
             ).map_err(|source| db_error("write Passenger Service paths to", path, source))?;
         }
     }
 
-    for demand in &state.origin_destination_demand {
+    for (sequence, demand) in state.origin_destination_demand.iter().enumerate() {
         transaction.execute(
-            "INSERT INTO origin_destination_demand(origin_station_id, destination_station_id, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds)
-             VALUES(?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO origin_destination_demand(origin_station_id, destination_station_id, sequence, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
             params![
-                db(demand.origin_station_id.get(), "Demand origin")?, db(demand.destination_station_id.get(), "Demand destination")?,
+                demand.origin_station_id.to_string(), demand.destination_station_id.to_string(),
+                i64::try_from(sequence).unwrap_or(i64::MAX),
                 i64::from(demand.waiting_passengers), i64::from(demand.passenger_arrival_rate_per_hour.passengers_per_hour()),
                 db(demand.fractional_passenger_seconds, "Demand fractional passenger seconds")?
             ],
         ).map_err(|source| db_error("write Passenger Demand to", path, source))?;
     }
 
-    for journey in &state.active_journeys {
+    for (sequence, journey) in state.active_journeys.iter().enumerate() {
         transaction.execute(
-            "INSERT INTO active_journeys(id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO active_journeys(id, sequence, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
-                db(journey.id.get(), "Journey ID")?, db(journey.service_id.get(), "Passenger Service ID")?, db(journey.train_id.get(), "Train ID")?,
-                db(journey.origin_station_id.get(), "Journey origin")?, db(journey.destination_station_id.get(), "Journey destination")?, i64::from(journey.passengers_carried),
+                journey.id.to_string(), i64::try_from(sequence).unwrap_or(i64::MAX), journey.service_id.to_string(), journey.train_id.to_string(),
+                journey.origin_station_id.to_string(), journey.destination_station_id.to_string(), i64::from(journey.passengers_carried),
                 journey.fare.cents(), journey.operating_revenue.cents(), journey.credited_revenue.cents(),
                 journey.infrastructure_access_fee.cents(), journey.fuel_cost.cents(),
                 i64::try_from(journey.current_stop_index).map_err(|_| SaveSlotError::InvalidSave {
@@ -1650,10 +2875,10 @@ fn insert_state(
                 "INSERT INTO journey_passenger_groups(journey_id, sequence, origin_station_id, destination_station_id, passengers, fare_cents)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    db(journey.id.get(), "Journey ID")?,
+                    journey.id.to_string(),
                     i64::try_from(sequence).unwrap_or(i64::MAX),
-                    db(group.origin_station_id.get(), "Journey passenger origin")?,
-                    db(group.destination_station_id.get(), "Journey passenger destination")?,
+                    group.origin_station_id.to_string(),
+                    group.destination_station_id.to_string(),
                     i64::from(group.passengers),
                     group.fare.cents(),
                 ],
@@ -1670,10 +2895,10 @@ fn insert_state(
             "INSERT OR REPLACE INTO journey_receipts(journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
-                db(receipt.journey_id.get(), "Journey receipt ID")?, receipt.revenue.cents(), receipt.infrastructure_access_fee.cents(), receipt.fuel_cost.cents(),
-                optional_id(receipt.train_id.map(TrainId::get), "Journey receipt Train ID", path)?, receipt.train_model_name.as_deref(),
-                optional_id(receipt.origin_station_id.map(RailStationId::get), "Journey receipt origin", path)?,
-                optional_id(receipt.destination_station_id.map(RailStationId::get), "Journey receipt destination", path)?,
+                receipt.journey_id.to_string(), receipt.revenue.cents(), receipt.infrastructure_access_fee.cents(), receipt.fuel_cost.cents(),
+                receipt.train_id.map(|id| id.to_string()), receipt.train_model_name.as_deref(),
+                receipt.origin_station_id.map(|id| id.to_string()),
+                receipt.destination_station_id.map(|id| id.to_string()),
                 receipt.passengers_carried.map(i64::from), receipt.passenger_capacity.map(i64::from), receipt.completed_at.map(UtcSeconds::unix_seconds)
             ],
         ).map_err(|source| db_error("write Journey receipts to", path, source))?;
@@ -1692,6 +2917,476 @@ fn insert_state(
     Ok(())
 }
 
+fn insert_infrastructure_project(
+    transaction: &Transaction<'_>,
+    sequence: usize,
+    project: &InfrastructureProject,
+    path: &Path,
+) -> Result<(), SaveSlotError> {
+    let (kind, target_speed_limit_kmh, target_track_count) = match &project.kind {
+        InfrastructureProjectKind::NewLine { .. } => ("new_line", None, None),
+        InfrastructureProjectKind::SpeedUpgrade {
+            target_speed_limit, ..
+        } => (
+            "speed_upgrade",
+            Some(i64::from(target_speed_limit.kilometres_per_hour())),
+            None,
+        ),
+        InfrastructureProjectKind::DoubleTracking {
+            target_track_count, ..
+        } => (
+            "double_tracking",
+            None,
+            Some(i64::from(target_track_count.tracks())),
+        ),
+        InfrastructureProjectKind::Electrification { .. } => ("electrification", None, None),
+        InfrastructureProjectKind::Renewal { .. } => ("renewal", None, None),
+        InfrastructureProjectKind::StationUpgrade { .. } => ("station_upgrade", None, None),
+    };
+    let status = match project.status {
+        InfrastructureProjectStatus::Requested => "requested",
+        InfrastructureProjectStatus::UnderReview => "under_review",
+        InfrastructureProjectStatus::Proposed => "proposed",
+        InfrastructureProjectStatus::Approved => "approved",
+        InfrastructureProjectStatus::Deferred => "deferred",
+        InfrastructureProjectStatus::Funding => "funding",
+        InfrastructureProjectStatus::Scheduled => "scheduled",
+        InfrastructureProjectStatus::Construction => "construction",
+        InfrastructureProjectStatus::Open => "open",
+        InfrastructureProjectStatus::Cancelled => "cancelled",
+    };
+    let timeline = &project.timeline;
+    transaction
+        .execute(
+            "INSERT INTO infrastructure_projects(
+                 id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
+                 requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
+                 scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
+                 deferred_at, cancelled_at, target_speed_limit_kmh, target_track_count
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            params![
+                project.id.to_string(),
+                i64::try_from(sequence).unwrap_or(i64::MAX),
+                kind,
+                status,
+                project.funding.estimated_cost.cents(),
+                project.funding.authority_committed.cents(),
+                timeline.requested_at.unix_seconds(),
+                timeline.review_started_at.map(UtcSeconds::unix_seconds),
+                timeline.proposed_at.map(UtcSeconds::unix_seconds),
+                timeline.approved_at.map(UtcSeconds::unix_seconds),
+                timeline.funding_completed_at.map(UtcSeconds::unix_seconds),
+                timeline.scheduled_start_at.map(UtcSeconds::unix_seconds),
+                timeline.construction_started_at.map(UtcSeconds::unix_seconds),
+                timeline.planned_completion_at.map(UtcSeconds::unix_seconds),
+                timeline.completed_at.map(UtcSeconds::unix_seconds),
+                timeline.deferred_at.map(UtcSeconds::unix_seconds),
+                timeline.cancelled_at.map(UtcSeconds::unix_seconds),
+                target_speed_limit_kmh,
+                target_track_count,
+            ],
+        )
+        .map_err(|source| db_error("write infrastructure projects to", path, source))?;
+
+    match &project.kind {
+        InfrastructureProjectKind::NewLine {
+            planned_stations,
+            planned_lines,
+        } => {
+            for (sequence, station) in planned_stations.iter().enumerate() {
+                transaction
+                    .execute(
+                        "INSERT INTO infrastructure_project_planned_stations(
+                             project_id, sequence, station_id, settlement_id
+                         ) VALUES(?1, ?2, ?3, ?4)",
+                        params![
+                            project.id.to_string(),
+                            i64::try_from(sequence).unwrap_or(i64::MAX),
+                            station.id.to_string(),
+                            station.settlement_id.to_string(),
+                        ],
+                    )
+                    .map_err(|source| db_error("write planned Rail Stations to", path, source))?;
+            }
+            for (sequence, line) in planned_lines.iter().enumerate() {
+                let electrification = match line.electrification {
+                    Electrification::None => "none",
+                    Electrification::Electric => "electric",
+                };
+                let construction_difficulty = match line.construction_difficulty {
+                    ConstructionDifficulty::Low => "low",
+                    ConstructionDifficulty::Moderate => "moderate",
+                    ConstructionDifficulty::High => "high",
+                };
+                transaction
+                    .execute(
+                        "INSERT INTO infrastructure_project_planned_lines(
+                             project_id, sequence, line_id, first_station_id, second_station_id,
+                             distance_metres, speed_limit_kmh, track_count, electrification,
+                             construction_difficulty
+                         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        params![
+                            project.id.to_string(),
+                            i64::try_from(sequence).unwrap_or(i64::MAX),
+                            line.id.to_string(),
+                            line.first_station_id.to_string(),
+                            line.second_station_id.to_string(),
+                            to_db_u64(line.distance.metres(), "planned Rail Line distance", path)?,
+                            i64::from(line.speed_limit.kilometres_per_hour()),
+                            i64::from(line.track_count.tracks()),
+                            electrification,
+                            construction_difficulty,
+                        ],
+                    )
+                    .map_err(|source| db_error("write planned Rail Lines to", path, source))?;
+            }
+        }
+        InfrastructureProjectKind::SpeedUpgrade { rail_line_ids, .. }
+        | InfrastructureProjectKind::DoubleTracking { rail_line_ids, .. }
+        | InfrastructureProjectKind::Electrification { rail_line_ids }
+        | InfrastructureProjectKind::Renewal { rail_line_ids } => {
+            for (sequence, rail_line_id) in rail_line_ids.iter().enumerate() {
+                transaction
+                    .execute(
+                        "INSERT INTO infrastructure_project_rail_lines(project_id, sequence, rail_line_id)
+                         VALUES(?1, ?2, ?3)",
+                        params![
+                            project.id.to_string(),
+                            i64::try_from(sequence).unwrap_or(i64::MAX),
+                            rail_line_id.to_string(),
+                        ],
+                    )
+                    .map_err(|source| db_error("write infrastructure project Rail Lines to", path, source))?;
+            }
+        }
+        InfrastructureProjectKind::StationUpgrade { rail_station_ids } => {
+            for (sequence, rail_station_id) in rail_station_ids.iter().enumerate() {
+                transaction
+                    .execute(
+                        "INSERT INTO infrastructure_project_rail_stations(project_id, sequence, rail_station_id)
+                         VALUES(?1, ?2, ?3)",
+                        params![
+                            project.id.to_string(),
+                            i64::try_from(sequence).unwrap_or(i64::MAX),
+                            rail_station_id.to_string(),
+                        ],
+                    )
+                    .map_err(|source| db_error("write infrastructure project Rail Stations to", path, source))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn load_infrastructure_projects(
+    connection: &Connection,
+    path: &Path,
+) -> Result<Vec<InfrastructureProject>, SaveSlotError> {
+    #[derive(Debug)]
+    struct PersistedProject {
+        id: InfrastructureProjectId,
+        kind: String,
+        status: String,
+        funding: InfrastructureProjectFunding,
+        timeline: InfrastructureProjectTimeline,
+        target_speed_limit_kmh: Option<i64>,
+        target_track_count: Option<i64>,
+    }
+
+    let rows = query_all(
+        connection,
+        "SELECT id, kind, status, estimated_cost_cents, authority_committed_cents,
+                requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
+                scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
+                deferred_at, cancelled_at, target_speed_limit_kmh, target_track_count
+         FROM infrastructure_projects ORDER BY sequence",
+        path,
+        |row| {
+            let timestamp = |index: usize| -> rusqlite::Result<Option<UtcSeconds>> {
+                Ok(row
+                    .get::<_, Option<i64>>(index)?
+                    .map(UtcSeconds::from_unix_seconds))
+            };
+            Ok(PersistedProject {
+                id: row_domain_id(
+                    row,
+                    0,
+                    "Infrastructure Project ID",
+                    InfrastructureProjectId::parse,
+                )?,
+                kind: row.get(1)?,
+                status: row.get(2)?,
+                funding: InfrastructureProjectFunding {
+                    estimated_cost: Money::from_cents(row.get(3)?),
+                    authority_committed: Money::from_cents(row.get(4)?),
+                },
+                timeline: InfrastructureProjectTimeline {
+                    requested_at: UtcSeconds::from_unix_seconds(row.get(5)?),
+                    review_started_at: timestamp(6)?,
+                    proposed_at: timestamp(7)?,
+                    approved_at: timestamp(8)?,
+                    funding_completed_at: timestamp(9)?,
+                    scheduled_start_at: timestamp(10)?,
+                    construction_started_at: timestamp(11)?,
+                    planned_completion_at: timestamp(12)?,
+                    completed_at: timestamp(13)?,
+                    deferred_at: timestamp(14)?,
+                    cancelled_at: timestamp(15)?,
+                },
+                target_speed_limit_kmh: row.get(16)?,
+                target_track_count: row.get(17)?,
+            })
+        },
+    )?;
+
+    let mut line_targets: HashMap<InfrastructureProjectId, Vec<RailLineId>> = HashMap::new();
+    for (project_id, rail_line_id) in query_all(
+        connection,
+        "SELECT project_id, rail_line_id
+         FROM infrastructure_project_rail_lines ORDER BY project_id, sequence",
+        path,
+        |row| {
+            Ok((
+                row_domain_id(
+                    row,
+                    0,
+                    "Infrastructure Project ID",
+                    InfrastructureProjectId::parse,
+                )?,
+                row_domain_id(row, 1, "Rail Line ID", RailLineId::parse)?,
+            ))
+        },
+    )? {
+        line_targets
+            .entry(project_id)
+            .or_default()
+            .push(rail_line_id);
+    }
+
+    let mut station_targets: HashMap<InfrastructureProjectId, Vec<RailStationId>> = HashMap::new();
+    for (project_id, rail_station_id) in query_all(
+        connection,
+        "SELECT project_id, rail_station_id
+         FROM infrastructure_project_rail_stations ORDER BY project_id, sequence",
+        path,
+        |row| {
+            Ok((
+                row_domain_id(
+                    row,
+                    0,
+                    "Infrastructure Project ID",
+                    InfrastructureProjectId::parse,
+                )?,
+                row_domain_id(row, 1, "Rail Station ID", RailStationId::parse)?,
+            ))
+        },
+    )? {
+        station_targets
+            .entry(project_id)
+            .or_default()
+            .push(rail_station_id);
+    }
+
+    let mut planned_stations: HashMap<InfrastructureProjectId, Vec<PlannedRailStation>> =
+        HashMap::new();
+    for (project_id, station) in query_all(
+        connection,
+        "SELECT project_id, station_id, settlement_id
+         FROM infrastructure_project_planned_stations ORDER BY project_id, sequence",
+        path,
+        |row| {
+            Ok((
+                row_domain_id(
+                    row,
+                    0,
+                    "Infrastructure Project ID",
+                    InfrastructureProjectId::parse,
+                )?,
+                PlannedRailStation {
+                    id: row_domain_id(row, 1, "planned Rail Station ID", RailStationId::parse)?,
+                    settlement_id: row_domain_id(row, 2, "Settlement ID", SettlementId::parse)?,
+                },
+            ))
+        },
+    )? {
+        planned_stations
+            .entry(project_id)
+            .or_default()
+            .push(station);
+    }
+
+    let mut planned_lines: HashMap<InfrastructureProjectId, Vec<PlannedRailLine>> = HashMap::new();
+    for (project_id, line) in query_all(
+        connection,
+        "SELECT project_id, line_id, first_station_id, second_station_id, distance_metres,
+                speed_limit_kmh, track_count, electrification, construction_difficulty
+         FROM infrastructure_project_planned_lines ORDER BY project_id, sequence",
+        path,
+        |row| {
+            let electrification = match row.get::<_, String>(7)?.as_str() {
+                "none" => Electrification::None,
+                "electric" => Electrification::Electric,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            let construction_difficulty = match row.get::<_, String>(8)?.as_str() {
+                "low" => ConstructionDifficulty::Low,
+                "moderate" => ConstructionDifficulty::Moderate,
+                "high" => ConstructionDifficulty::High,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            Ok((
+                row_domain_id(
+                    row,
+                    0,
+                    "Infrastructure Project ID",
+                    InfrastructureProjectId::parse,
+                )?,
+                PlannedRailLine {
+                    id: row_domain_id(row, 1, "planned Rail Line ID", RailLineId::parse)?,
+                    first_station_id: row_domain_id(
+                        row,
+                        2,
+                        "planned Rail Line endpoint",
+                        RailStationId::parse,
+                    )?,
+                    second_station_id: row_domain_id(
+                        row,
+                        3,
+                        "planned Rail Line endpoint",
+                        RailStationId::parse,
+                    )?,
+                    distance: DistanceMetres::new(row.get(4)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    speed_limit: SpeedKilometresPerHour::new(row.get(5)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    track_count: TrackCount::new(row.get(6)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    electrification,
+                    construction_difficulty,
+                },
+            ))
+        },
+    )? {
+        planned_lines.entry(project_id).or_default().push(line);
+    }
+
+    let mut projects = Vec::with_capacity(rows.len());
+    for row in rows {
+        let status = match row.status.as_str() {
+            "requested" => InfrastructureProjectStatus::Requested,
+            "under_review" => InfrastructureProjectStatus::UnderReview,
+            "proposed" => InfrastructureProjectStatus::Proposed,
+            "approved" => InfrastructureProjectStatus::Approved,
+            "deferred" => InfrastructureProjectStatus::Deferred,
+            "funding" => InfrastructureProjectStatus::Funding,
+            "scheduled" => InfrastructureProjectStatus::Scheduled,
+            "construction" => InfrastructureProjectStatus::Construction,
+            "open" => InfrastructureProjectStatus::Open,
+            "cancelled" => InfrastructureProjectStatus::Cancelled,
+            _ => return Err(invalid_value(path, "Infrastructure Project status")),
+        };
+        let kind = match row.kind.as_str() {
+            "new_line" => {
+                if row.target_speed_limit_kmh.is_some()
+                    || row.target_track_count.is_some()
+                    || line_targets.contains_key(&row.id)
+                    || station_targets.contains_key(&row.id)
+                {
+                    return Err(invalid_value(path, "New Line project payload"));
+                }
+                InfrastructureProjectKind::NewLine {
+                    planned_stations: planned_stations.remove(&row.id).unwrap_or_default(),
+                    planned_lines: planned_lines.remove(&row.id).unwrap_or_default(),
+                }
+            }
+            "speed_upgrade" => {
+                if row.target_track_count.is_some()
+                    || planned_stations.contains_key(&row.id)
+                    || planned_lines.contains_key(&row.id)
+                    || station_targets.contains_key(&row.id)
+                {
+                    return Err(invalid_value(path, "Speed Upgrade project payload"));
+                }
+                let target_speed_limit = SpeedKilometresPerHour::new(
+                    row.target_speed_limit_kmh
+                        .ok_or_else(|| invalid_value(path, "Speed Upgrade target speed"))?,
+                )
+                .map_err(|_| invalid_value(path, "Speed Upgrade target speed"))?;
+                InfrastructureProjectKind::SpeedUpgrade {
+                    rail_line_ids: line_targets.remove(&row.id).unwrap_or_default(),
+                    target_speed_limit,
+                }
+            }
+            "double_tracking" => {
+                if row.target_speed_limit_kmh.is_some()
+                    || planned_stations.contains_key(&row.id)
+                    || planned_lines.contains_key(&row.id)
+                    || station_targets.contains_key(&row.id)
+                {
+                    return Err(invalid_value(path, "Double Tracking project payload"));
+                }
+                let target_track_count = TrackCount::new(
+                    row.target_track_count
+                        .ok_or_else(|| invalid_value(path, "Double Tracking target tracks"))?,
+                )
+                .map_err(|_| invalid_value(path, "Double Tracking target tracks"))?;
+                InfrastructureProjectKind::DoubleTracking {
+                    rail_line_ids: line_targets.remove(&row.id).unwrap_or_default(),
+                    target_track_count,
+                }
+            }
+            "electrification" | "renewal" => {
+                if row.target_speed_limit_kmh.is_some()
+                    || row.target_track_count.is_some()
+                    || planned_stations.contains_key(&row.id)
+                    || planned_lines.contains_key(&row.id)
+                    || station_targets.contains_key(&row.id)
+                {
+                    return Err(invalid_value(path, "Rail Line project payload"));
+                }
+                let rail_line_ids = line_targets.remove(&row.id).unwrap_or_default();
+                if row.kind == "electrification" {
+                    InfrastructureProjectKind::Electrification { rail_line_ids }
+                } else {
+                    InfrastructureProjectKind::Renewal { rail_line_ids }
+                }
+            }
+            "station_upgrade" => {
+                if row.target_speed_limit_kmh.is_some()
+                    || row.target_track_count.is_some()
+                    || planned_stations.contains_key(&row.id)
+                    || planned_lines.contains_key(&row.id)
+                    || line_targets.contains_key(&row.id)
+                {
+                    return Err(invalid_value(path, "Station Upgrade project payload"));
+                }
+                InfrastructureProjectKind::StationUpgrade {
+                    rail_station_ids: station_targets.remove(&row.id).unwrap_or_default(),
+                }
+            }
+            _ => return Err(invalid_value(path, "Infrastructure Project kind")),
+        };
+        projects.push(InfrastructureProject {
+            id: row.id,
+            kind,
+            status,
+            timeline: row.timeline,
+            funding: row.funding,
+        });
+    }
+
+    if !line_targets.is_empty()
+        || !station_targets.is_empty()
+        || !planned_stations.is_empty()
+        || !planned_lines.is_empty()
+    {
+        return Err(invalid_value(path, "orphan infrastructure project payload"));
+    }
+
+    Ok(projects)
+}
+
 fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>, SaveSlotError> {
     let meta = connection
         .query_row(
@@ -1708,16 +3403,18 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         .parse::<u64>()
         .map_err(|_| invalid_value(path, "world seed"))?;
 
-    let (region_name, registration_code, registration_mark, region_population, authority_name): (
-        String,
-        i64,
-        String,
-        i64,
-        String,
-    ) = connection
+    let (
+        region_name,
+        registration_code,
+        registration_mark,
+        region_population,
+        authority_name,
+        authority_construction_capacity,
+    ): (String, i64, String, i64, String, i64) = connection
         .query_row(
-            "SELECT name, registration_code, registration_mark, population, rail_authority_name
-                 FROM region WHERE singleton = 1",
+            "SELECT name, registration_code, registration_mark, population, rail_authority_name,
+                    rail_authority_construction_capacity
+             FROM region WHERE singleton = 1",
             [],
             |row| {
                 Ok((
@@ -1726,56 +3423,114 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             },
         )
         .map_err(|source| db_error("read Region from", path, source))?;
 
+    let (
+        authority_treasury,
+        maintenance_reserve,
+        committed_investment,
+        carried_over_funds,
+        regional_public_allocation,
+        infrastructure_access_fee_revenue,
+    ): (i64, i64, i64, i64, i64, i64) = connection
+        .query_row(
+            "SELECT treasury_cents, maintenance_reserve_cents, committed_investment_cents,
+                    carried_over_funds_cents, regional_public_allocation_cents,
+                    infrastructure_access_fee_revenue_cents
+             FROM rail_authority_finances WHERE singleton = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .map_err(|source| db_error("read Rail Authority finances from", path, source))?;
+    let rail_authority_finances = RailAuthorityFinances {
+        treasury: Money::from_cents(authority_treasury),
+        maintenance_reserve: Money::from_cents(maintenance_reserve),
+        committed_investment: Money::from_cents(committed_investment),
+        carried_over_funds: Money::from_cents(carried_over_funds),
+        regional_public_allocation: Money::from_cents(regional_public_allocation),
+        infrastructure_access_fee_revenue: Money::from_cents(infrastructure_access_fee_revenue),
+    };
+
     let settlements = query_all(
         connection,
-        "SELECT id, name, population FROM settlements ORDER BY id",
+        "SELECT id, name, population, world_x, world_y FROM settlements ORDER BY sequence",
         path,
         |row| {
             Ok(Settlement {
-                id: SettlementId::new(row_u64(row, 0, "Settlement ID")?),
+                id: row_domain_id(row, 0, "Settlement ID", SettlementId::parse)?,
                 name: row.get(1)?,
                 population: row_u64(row, 2, "Settlement Population")?,
+                position: WorldPosition::new(row.get(3)?, row.get(4)?),
             })
         },
     )?;
     let rail_stations = query_all(
         connection,
-        "SELECT id, settlement_id FROM rail_stations ORDER BY id",
+        "SELECT id, settlement_id FROM rail_stations ORDER BY sequence",
         path,
         |row| {
             Ok(RailStation {
-                id: RailStationId::new(row_u64(row, 0, "Rail Station ID")?),
-                settlement_id: SettlementId::new(row_u64(row, 1, "Settlement ID")?),
+                id: row_domain_id(row, 0, "Rail Station ID", RailStationId::parse)?,
+                settlement_id: row_domain_id(row, 1, "Settlement ID", SettlementId::parse)?,
             })
         },
     )?;
     let rail_lines = query_all(
         connection,
-        "SELECT id, first_station_id, second_station_id, distance_metres FROM rail_lines ORDER BY id",
+        "SELECT id, first_station_id, second_station_id, distance_metres,
+                speed_limit_kmh, track_count, electrification, construction_difficulty
+         FROM rail_lines ORDER BY sequence",
         path,
         |row| {
+            let electrification = match row.get::<_, String>(6)?.as_str() {
+                "none" => Electrification::None,
+                "electric" => Electrification::Electric,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            let construction_difficulty = match row.get::<_, String>(7)?.as_str() {
+                "low" => ConstructionDifficulty::Low,
+                "moderate" => ConstructionDifficulty::Moderate,
+                "high" => ConstructionDifficulty::High,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
             Ok(RailLine {
-                id: RailLineId::new(row_u64(row, 0, "Rail Line ID")?),
-                first_station_id: RailStationId::new(row_u64(row, 1, "Rail Station ID")?),
-                second_station_id: RailStationId::new(row_u64(row, 2, "Rail Station ID")?),
+                id: row_domain_id(row, 0, "Rail Line ID", RailLineId::parse)?,
+                first_station_id: row_domain_id(row, 1, "Rail Station ID", RailStationId::parse)?,
+                second_station_id: row_domain_id(row, 2, "Rail Station ID", RailStationId::parse)?,
                 distance: DistanceMetres::new(row.get(3)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                speed_limit: SpeedKilometresPerHour::new(row.get(4)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                track_count: TrackCount::new(row.get(5)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                electrification,
+                construction_difficulty,
             })
         },
     )?;
 
-    let (company_name, company_vkm, company_funds, next_train_id): (String, String, i64, i64) =
-        connection
-            .query_row(
-                "SELECT name, vkm, funds_cents, next_train_id FROM company WHERE singleton = 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
+    let infrastructure_projects = load_infrastructure_projects(connection, path)?;
+
+    let (company_name, company_vkm, company_funds, next_train_display_number):
+        (String, String, i64, i64) = connection
+        .query_row(
+            "SELECT name, vkm, funds_cents, next_train_display_number FROM company WHERE singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
             .map_err(|source| db_error("read Player Company from", path, source))?;
     let company_vkm = VehicleKeeperMark::parse(&company_vkm)
         .map_err(|_| invalid_value(path, "Player Company VKM"))?;
@@ -1796,7 +3551,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
 
     let trains = query_all(
         connection,
-        "SELECT id, evn, nickname, status_kind, status_ref_id, model_id, original_purchase_price_cents FROM trains ORDER BY id",
+        "SELECT id, evn, nickname, status_kind, status_ref_id, model_id, original_purchase_price_cents FROM trains ORDER BY sequence",
         path,
         |row| {
             let evn_text: String = row.get(1)?;
@@ -1809,18 +3564,20 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                 })
                 .transpose()?;
             let status_kind: String = row.get(3)?;
-            let status_ref = row_u64(row, 4, "Train status reference")?;
+            let status_ref: String = row.get(4)?;
             let status = match status_kind.as_str() {
                 "ready" => TrainStatus::Ready {
-                    at: RailStationId::new(status_ref),
+                    at: RailStationId::parse(&status_ref)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 },
                 "travelling" => TrainStatus::Travelling {
-                    journey_id: JourneyId::new(status_ref),
+                    journey_id: JourneyId::parse(&status_ref)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 },
                 _ => return Err(rusqlite::Error::InvalidQuery),
             };
             Ok(Train {
-                id: TrainId::new(row_u64(row, 0, "Train ID")?),
+                id: row_domain_id(row, 0, "Train ID", TrainId::parse)?,
                 evn,
                 nickname,
                 status,
@@ -1832,11 +3589,11 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
 
     let mut services = query_all(
         connection,
-        "SELECT id, name FROM passenger_services ORDER BY id",
+        "SELECT id, name FROM passenger_services ORDER BY sequence",
         path,
         |row| {
             Ok(PassengerService {
-                id: ServiceId::new(row_u64(row, 0, "Passenger Service ID")?),
+                id: row_domain_id(row, 0, "Passenger Service ID", ServiceId::parse)?,
                 name: row.get(1)?,
                 stop_station_ids: Vec::new(),
                 rail_line_ids: Vec::new(),
@@ -1848,18 +3605,17 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
             .prepare("SELECT station_id FROM service_stops WHERE service_id = ?1 ORDER BY sequence")
             .map_err(|source| db_error("prepare Passenger Service stop query for", path, source))?;
         let stop_rows = stop_statement
-            .query_map(
-                params![to_db_u64(service.id.get(), "Passenger Service ID", path)?],
-                |row| row.get::<_, i64>(0),
-            )
+            .query_map(params![service.id.to_string()], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|source| db_error("read Passenger Service stops from", path, source))?;
         for row in stop_rows {
             let station =
                 row.map_err(|source| db_error("read Passenger Service stop from", path, source))?;
-            service.stop_station_ids.push(RailStationId::new(
-                from_db_u64(station, "Rail Station ID")
-                    .map_err(|field| invalid_value(path, field))?,
-            ));
+            service.stop_station_ids.push(
+                RailStationId::parse(&station)
+                    .map_err(|_| invalid_value(path, "Rail Station ID"))?,
+            );
         }
 
         let mut statement = connection
@@ -1868,28 +3624,32 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
             )
             .map_err(|source| db_error("prepare Passenger Service path query for", path, source))?;
         let rows = statement
-            .query_map(
-                params![to_db_u64(service.id.get(), "Passenger Service ID", path)?],
-                |row| row.get::<_, i64>(0),
-            )
+            .query_map(params![service.id.to_string()], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|source| db_error("read Passenger Service path from", path, source))?;
         for row in rows {
             let line =
                 row.map_err(|source| db_error("read Passenger Service path from", path, source))?;
-            service.rail_line_ids.push(RailLineId::new(
-                from_db_u64(line, "Rail Line ID").map_err(|field| invalid_value(path, field))?,
-            ));
+            service
+                .rail_line_ids
+                .push(RailLineId::parse(&line).map_err(|_| invalid_value(path, "Rail Line ID"))?);
         }
     }
 
     let demand = query_all(
         connection,
-        "SELECT origin_station_id, destination_station_id, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds FROM origin_destination_demand ORDER BY origin_station_id, destination_station_id",
+        "SELECT origin_station_id, destination_station_id, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds FROM origin_destination_demand ORDER BY sequence",
         path,
         |row| {
             Ok(OriginDestinationDemand {
-                origin_station_id: RailStationId::new(row_u64(row, 0, "Demand origin")?),
-                destination_station_id: RailStationId::new(row_u64(row, 1, "Demand destination")?),
+                origin_station_id: row_domain_id(row, 0, "Demand origin", RailStationId::parse)?,
+                destination_station_id: row_domain_id(
+                    row,
+                    1,
+                    "Demand destination",
+                    RailStationId::parse,
+                )?,
                 waiting_passengers: u32::try_from(row.get::<_, i64>(2)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 passenger_arrival_rate_per_hour: PassengerArrivalRate::new(row.get(3)?)
@@ -1905,15 +3665,20 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
 
     let mut active_journeys = query_all(
         connection,
-        "SELECT id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at FROM active_journeys ORDER BY id",
+        "SELECT id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at FROM active_journeys ORDER BY sequence",
         path,
         |row| {
             Ok(Journey {
-                id: JourneyId::new(row_u64(row, 0, "Journey ID")?),
-                service_id: ServiceId::new(row_u64(row, 1, "Passenger Service ID")?),
-                train_id: TrainId::new(row_u64(row, 2, "Train ID")?),
-                origin_station_id: RailStationId::new(row_u64(row, 3, "Journey origin")?),
-                destination_station_id: RailStationId::new(row_u64(row, 4, "Journey destination")?),
+                id: row_domain_id(row, 0, "Journey ID", JourneyId::parse)?,
+                service_id: row_domain_id(row, 1, "Passenger Service ID", ServiceId::parse)?,
+                train_id: row_domain_id(row, 2, "Train ID", TrainId::parse)?,
+                origin_station_id: row_domain_id(row, 3, "Journey origin", RailStationId::parse)?,
+                destination_station_id: row_domain_id(
+                    row,
+                    4,
+                    "Journey destination",
+                    RailStationId::parse,
+                )?,
                 passengers_carried: u32::try_from(row.get::<_, i64>(5)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 fare: Money::from_cents(row.get(6)?),
@@ -1941,26 +3706,25 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                 db_error("prepare Journey passenger group query for", path, source)
             })?;
         let rows = statement
-            .query_map(
-                params![to_db_u64(journey.id.get(), "Journey ID", path)?],
-                |row| {
-                    Ok(JourneyPassengerGroup {
-                        origin_station_id: RailStationId::new(row_u64(
-                            row,
-                            0,
-                            "Journey passenger origin",
-                        )?),
-                        destination_station_id: RailStationId::new(row_u64(
-                            row,
-                            1,
-                            "Journey passenger destination",
-                        )?),
-                        passengers: u32::try_from(row.get::<_, i64>(2)?)
-                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        fare: Money::from_cents(row.get(3)?),
-                    })
-                },
-            )
+            .query_map(params![journey.id.to_string()], |row| {
+                Ok(JourneyPassengerGroup {
+                    origin_station_id: row_domain_id(
+                        row,
+                        0,
+                        "Journey passenger origin",
+                        RailStationId::parse,
+                    )?,
+                    destination_station_id: row_domain_id(
+                        row,
+                        1,
+                        "Journey passenger destination",
+                        RailStationId::parse,
+                    )?,
+                    passengers: u32::try_from(row.get::<_, i64>(2)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    fare: Money::from_cents(row.get(3)?),
+                })
+            })
             .map_err(|source| db_error("read Journey passenger groups from", path, source))?;
         for row in rows {
             journey.passenger_groups.push(
@@ -1977,23 +3741,31 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
          FROM (
              SELECT journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at
              FROM journey_receipts
-             ORDER BY journey_id DESC
+             ORDER BY completed_at DESC, journey_id DESC
              LIMIT {RECENT_RECEIPT_LIMIT}
          )
-         ORDER BY journey_id"
+         ORDER BY completed_at, journey_id"
     );
     let receipts = query_all(connection, &receipt_sql, path, |row| {
         Ok(JourneyReceipt {
-            journey_id: JourneyId::new(row_u64(row, 0, "Journey receipt ID")?),
+            journey_id: row_domain_id(row, 0, "Journey receipt ID", JourneyId::parse)?,
             revenue: Money::from_cents(row.get(1)?),
             infrastructure_access_fee: Money::from_cents(row.get(2)?),
             fuel_cost: Money::from_cents(row.get(3)?),
-            train_id: optional_row_u64(row, 4, "Journey receipt Train ID")?.map(TrainId::new),
+            train_id: optional_row_domain_id(row, 4, "Journey receipt Train ID", TrainId::parse)?,
             train_model_name: row.get(5)?,
-            origin_station_id: optional_row_u64(row, 6, "Journey receipt origin")?
-                .map(RailStationId::new),
-            destination_station_id: optional_row_u64(row, 7, "Journey receipt destination")?
-                .map(RailStationId::new),
+            origin_station_id: optional_row_domain_id(
+                row,
+                6,
+                "Journey receipt origin",
+                RailStationId::parse,
+            )?,
+            destination_station_id: optional_row_domain_id(
+                row,
+                7,
+                "Journey receipt destination",
+                RailStationId::parse,
+            )?,
             passengers_carried: optional_row_u32(row, 8, "Journey receipt passengers")?,
             passenger_capacity: optional_row_u32(row, 9, "Journey receipt passenger capacity")?,
             completed_at: row
@@ -2024,6 +3796,10 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                     rail_stations,
                     rail_lines,
                 },
+                finances: rail_authority_finances,
+                construction_capacity: u32::try_from(authority_construction_capacity)
+                    .map_err(|_| invalid_value(path, "Rail Authority construction capacity"))?,
+                infrastructure_projects,
             },
         },
         player_company: PlayerCompany {
@@ -2032,8 +3808,11 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
             funds: Money::from_cents(company_funds),
             fleet: Fleet {
                 trains,
-                next_train_id: from_db_u64(next_train_id, "next Train ID")
-                    .map_err(|field| invalid_value(path, field))?,
+                next_train_display_number: from_db_u64(
+                    next_train_display_number,
+                    "next Train display number",
+                )
+                .map_err(|field| invalid_value(path, field))?,
                 next_evn_unit_by_model,
             },
             passenger_services: services,
@@ -2085,19 +3864,50 @@ fn to_db_u64(value: u64, field: &'static str, path: &Path) -> Result<i64, SaveSl
     i64::try_from(value).map_err(|_| invalid_value(path, field))
 }
 
-fn row_u64(row: &rusqlite::Row<'_>, index: usize, field: &'static str) -> rusqlite::Result<u64> {
-    let value: i64 = row.get(index)?;
-    u64::try_from(value).map_err(|_| conversion_error(index, field))
-}
-
-fn optional_row_u64(
+fn row_domain_id<T>(
     row: &rusqlite::Row<'_>,
     index: usize,
     field: &'static str,
-) -> rusqlite::Result<Option<u64>> {
-    row.get::<_, Option<i64>>(index)?
-        .map(|value| u64::try_from(value).map_err(|_| conversion_error(index, field)))
+    parse: impl FnOnce(&str) -> Result<T, uuid::Error>,
+) -> rusqlite::Result<T> {
+    let value: String = row.get(index)?;
+    parse(&value).map_err(|source| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{field}: {source}"),
+            )),
+        )
+    })
+}
+
+fn optional_row_domain_id<T>(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+    field: &'static str,
+    parse: impl Fn(&str) -> Result<T, uuid::Error>,
+) -> rusqlite::Result<Option<T>> {
+    row.get::<_, Option<String>>(index)?
+        .map(|value| {
+            parse(&value).map_err(|source| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    index,
+                    rusqlite::types::Type::Text,
+                    Box::new(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{field}: {source}"),
+                    )),
+                )
+            })
+        })
         .transpose()
+}
+
+fn row_u64(row: &rusqlite::Row<'_>, index: usize, field: &'static str) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(index)?;
+    u64::try_from(value).map_err(|_| conversion_error(index, field))
 }
 
 fn optional_row_u32(
@@ -2120,14 +3930,6 @@ fn conversion_error(index: usize, field: &'static str) -> rusqlite::Error {
 
 fn from_db_u64(value: i64, field: &'static str) -> Result<u64, &'static str> {
     u64::try_from(value).map_err(|_| field)
-}
-
-fn optional_id(
-    value: Option<u64>,
-    field: &'static str,
-    path: &Path,
-) -> Result<Option<i64>, SaveSlotError> {
-    value.map(|value| to_db_u64(value, field, path)).transpose()
 }
 
 fn db_error(action: &'static str, path: &Path, source: rusqlite::Error) -> SaveSlotError {
@@ -2339,7 +4141,7 @@ fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCodecError> {
             name: legacy.player_company.name,
             funds: legacy.player_company.funds,
             fleet: Fleet {
-                next_train_id: trains
+                next_train_display_number: trains
                     .iter()
                     .map(|train| train.id.get())
                     .max()
@@ -2451,7 +4253,7 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
         .region
         .settlements
         .iter()
-        .any(|settlement| settlement.id.get() == 0)
+        .any(|settlement| !settlement.id.is_v4())
     {
         return Err(SaveValidationError::InvalidId { kind: "Settlement" });
     }
@@ -2481,7 +4283,7 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
     if network
         .rail_stations
         .iter()
-        .any(|station| station.id.get() == 0)
+        .any(|station| !station.id.is_v4())
     {
         return Err(SaveValidationError::InvalidId {
             kind: "Rail Station",
@@ -2508,7 +4310,7 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
     }
 
     let line_ids = unique_ids(network.rail_lines.iter().map(|line| line.id), "Rail Line")?;
-    if network.rail_lines.iter().any(|line| line.id.get() == 0) {
+    if network.rail_lines.iter().any(|line| !line.id.is_v4()) {
         return Err(SaveValidationError::InvalidId { kind: "Rail Line" });
     }
     for line in &network.rail_lines {
@@ -2525,6 +4327,13 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
             });
         }
     }
+    validate_infrastructure_projects(
+        &state.region.rail_authority,
+        &settlement_ids,
+        &station_ids,
+        &line_ids,
+    )?;
+    validate_rail_authority_finances(&state.region.rail_authority)?;
 
     let mut service_distances = HashMap::new();
     let service_ids = unique_ids(
@@ -2539,7 +4348,7 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
         .player_company
         .passenger_services
         .iter()
-        .any(|service| service.id.get() == 0)
+        .any(|service| !service.id.is_v4())
     {
         return Err(SaveValidationError::InvalidId {
             kind: "Passenger Service",
@@ -2581,11 +4390,11 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
         .fleet
         .trains
         .iter()
-        .any(|train| train.id.get() == 0)
+        .any(|train| !train.id.is_v4())
     {
         return Err(SaveValidationError::InvalidId { kind: "Train" });
     }
-    let highest_owned_train_id = state
+    let highest_train_display_number = state
         .player_company
         .fleet
         .trains
@@ -2593,11 +4402,11 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
         .map(|train| train.id.get())
         .max()
         .unwrap_or(0);
-    if state.player_company.fleet.next_train_id == 0
-        || state.player_company.fleet.next_train_id <= highest_owned_train_id
+    if state.player_company.fleet.next_train_display_number == 0
+        || state.player_company.fleet.next_train_display_number <= highest_train_display_number
     {
         return Err(SaveValidationError::InvalidValue {
-            field: "next Train ID",
+            field: "next Train display number",
         });
     }
 
@@ -2636,7 +4445,7 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
     if state
         .active_journeys
         .iter()
-        .any(|journey| journey.id.get() == 0)
+        .any(|journey| !journey.id.is_v4())
     {
         return Err(SaveValidationError::InvalidId { kind: "Journey" });
     }
@@ -2656,6 +4465,254 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
             &station_ids,
             &service_distances,
         )?;
+    }
+
+    Ok(())
+}
+
+fn validate_rail_authority_finances(authority: &RailAuthority) -> Result<(), SaveValidationError> {
+    if authority.construction_capacity == 0 {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Rail Authority construction capacity",
+        });
+    }
+    if authority.active_construction_count() > authority.construction_capacity {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Rail Authority active construction exceeds its capacity",
+        });
+    }
+    if authority.reserved_construction_count() > authority.construction_capacity {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Rail Authority scheduled and active construction exceeds its capacity",
+        });
+    }
+
+    let finances = &authority.finances;
+    if finances.treasury.cents() < 0
+        || finances.maintenance_reserve.cents() < 0
+        || finances.committed_investment.cents() < 0
+        || finances.carried_over_funds.cents() < 0
+        || finances.regional_public_allocation.cents() < 0
+        || finances.infrastructure_access_fee_revenue.cents() < 0
+    {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Rail Authority financial amount",
+        });
+    }
+
+    let earmarked = finances
+        .maintenance_reserve
+        .checked_add(finances.committed_investment)?;
+    if earmarked > finances.treasury {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Rail Authority earmarks exceed its treasury",
+        });
+    }
+    if finances.carried_over_funds > finances.treasury {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Rail Authority carry-over exceeds its treasury",
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_infrastructure_projects(
+    authority: &RailAuthority,
+    settlement_ids: &HashSet<SettlementId>,
+    station_ids: &HashSet<RailStationId>,
+    line_ids: &HashSet<RailLineId>,
+) -> Result<(), SaveValidationError> {
+    let project_ids = unique_ids(
+        authority
+            .infrastructure_projects
+            .iter()
+            .map(|project| project.id),
+        "Infrastructure Project",
+    )?;
+    if project_ids.iter().any(|id| !id.is_v4()) {
+        return Err(SaveValidationError::InvalidId {
+            kind: "Infrastructure Project",
+        });
+    }
+
+    let mut total_project_commitments = Money::ZERO;
+    for project in &authority.infrastructure_projects {
+        if project.funding.estimated_cost.cents() < 0
+            || project.funding.authority_committed.cents() < 0
+        {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Infrastructure Project funding amount",
+            });
+        }
+        if project.funding.authority_committed > project.funding.estimated_cost {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Infrastructure Project commitment exceeds estimated cost",
+            });
+        }
+        if !matches!(
+            project.status,
+            InfrastructureProjectStatus::Open | InfrastructureProjectStatus::Cancelled
+        ) {
+            total_project_commitments =
+                total_project_commitments.checked_add(project.funding.authority_committed)?;
+        }
+    }
+    if total_project_commitments > authority.finances.committed_investment {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Infrastructure Project commitments exceed Authority committed investment",
+        });
+    }
+
+    let mut reserved_station_ids = HashSet::new();
+    let mut reserved_line_ids = HashSet::new();
+    for project in &authority.infrastructure_projects {
+        match &project.kind {
+            InfrastructureProjectKind::NewLine {
+                planned_stations,
+                planned_lines,
+            } => {
+                if planned_lines.is_empty() {
+                    return Err(SaveValidationError::InvalidValue {
+                        field: "New Line planned Rail Lines",
+                    });
+                }
+                let local_planned_station_ids = unique_ids(
+                    planned_stations.iter().map(|station| station.id),
+                    "planned Rail Station",
+                )?;
+                for station in planned_stations {
+                    if !station.id.is_v4()
+                        || (project.status != InfrastructureProjectStatus::Open
+                            && station_ids.contains(&station.id))
+                        || !reserved_station_ids.insert(station.id)
+                    {
+                        return Err(SaveValidationError::InvalidId {
+                            kind: "planned Rail Station",
+                        });
+                    }
+                    if !settlement_ids.contains(&station.settlement_id) {
+                        return Err(SaveValidationError::DanglingReference {
+                            field: "planned Rail Station Settlement",
+                        });
+                    }
+                }
+                unique_ids(
+                    planned_lines.iter().map(|line| line.id),
+                    "planned Rail Line",
+                )?;
+                for line in planned_lines {
+                    if !line.id.is_v4()
+                        || (project.status != InfrastructureProjectStatus::Open
+                            && line_ids.contains(&line.id))
+                        || !reserved_line_ids.insert(line.id)
+                    {
+                        return Err(SaveValidationError::InvalidId {
+                            kind: "planned Rail Line",
+                        });
+                    }
+                    let endpoint_exists = |station_id: RailStationId| {
+                        station_ids.contains(&station_id)
+                            || local_planned_station_ids.contains(&station_id)
+                    };
+                    if !endpoint_exists(line.first_station_id)
+                        || !endpoint_exists(line.second_station_id)
+                    {
+                        return Err(SaveValidationError::DanglingReference {
+                            field: "planned Rail Line endpoint",
+                        });
+                    }
+                    if line.first_station_id == line.second_station_id {
+                        return Err(SaveValidationError::ImpossibleState {
+                            reason: "a planned Rail Line has the same Rail Station at both endpoints",
+                        });
+                    }
+                }
+            }
+            InfrastructureProjectKind::SpeedUpgrade { rail_line_ids, .. }
+            | InfrastructureProjectKind::DoubleTracking { rail_line_ids, .. }
+            | InfrastructureProjectKind::Electrification { rail_line_ids }
+            | InfrastructureProjectKind::Renewal { rail_line_ids } => {
+                if rail_line_ids.is_empty() {
+                    return Err(SaveValidationError::InvalidValue {
+                        field: "Infrastructure Project Rail Lines",
+                    });
+                }
+                unique_ids(
+                    rail_line_ids.iter().copied(),
+                    "Infrastructure Project Rail Line",
+                )?;
+                if rail_line_ids.iter().any(|id| !line_ids.contains(id)) {
+                    return Err(SaveValidationError::DanglingReference {
+                        field: "Infrastructure Project Rail Line",
+                    });
+                }
+            }
+            InfrastructureProjectKind::StationUpgrade { rail_station_ids } => {
+                if rail_station_ids.is_empty() {
+                    return Err(SaveValidationError::InvalidValue {
+                        field: "Infrastructure Project Rail Stations",
+                    });
+                }
+                unique_ids(
+                    rail_station_ids.iter().copied(),
+                    "Infrastructure Project Rail Station",
+                )?;
+                if rail_station_ids.iter().any(|id| !station_ids.contains(id)) {
+                    return Err(SaveValidationError::DanglingReference {
+                        field: "Infrastructure Project Rail Station",
+                    });
+                }
+            }
+        }
+    }
+
+    for (index, project) in authority.infrastructure_projects.iter().enumerate() {
+        if project.status == InfrastructureProjectStatus::Scheduled {
+            if !project.funding.is_fully_funded()
+                || project.timeline.funding_completed_at.is_none()
+                || project.timeline.scheduled_start_at.is_none()
+            {
+                return Err(SaveValidationError::ImpossibleState {
+                    reason: "scheduled Infrastructure Project is not fully funded and scheduled",
+                });
+            }
+        }
+
+        if project.status == InfrastructureProjectStatus::Construction {
+            let (Some(scheduled_start), Some(construction_started), Some(planned_completion)) = (
+                project.timeline.scheduled_start_at,
+                project.timeline.construction_started_at,
+                project.timeline.planned_completion_at,
+            ) else {
+                return Err(SaveValidationError::ImpossibleState {
+                    reason: "Infrastructure Project under construction is missing construction timestamps",
+                });
+            };
+            if !project.funding.is_fully_funded()
+                || project.timeline.funding_completed_at.is_none()
+                || construction_started < scheduled_start
+                || planned_completion <= construction_started
+            {
+                return Err(SaveValidationError::ImpossibleState {
+                    reason: "Infrastructure Project has an invalid construction lifecycle",
+                });
+            }
+        }
+
+        if !project.status.reserves_construction_capacity() {
+            continue;
+        }
+        if authority.infrastructure_projects[index + 1..]
+            .iter()
+            .any(|other| {
+                other.status.reserves_construction_capacity() && project.conflicts_with(other)
+            })
+        {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "conflicting Infrastructure Projects reserve construction at the same time",
+            });
+        }
     }
 
     Ok(())
@@ -2815,7 +4872,7 @@ fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
         .collect::<HashSet<_>>();
     let mut receipt_ids = HashSet::new();
     for receipt in &state.financials.recent_journey_receipts {
-        if receipt.journey_id.get() == 0 || !receipt_ids.insert(receipt.journey_id) {
+        if !receipt.journey_id.is_v4() || !receipt_ids.insert(receipt.journey_id) {
             return Err(SaveValidationError::InvalidValue {
                 field: "Journey receipt ID",
             });
@@ -2869,7 +4926,7 @@ fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
             let capacity = receipt
                 .passenger_capacity
                 .expect("complete receipt context has capacity");
-            if train_id.get() == 0
+            if !train_id.is_v4()
                 || train_model_name.trim().is_empty()
                 || origin == destination
                 || !station_ids.contains(&origin)
@@ -3303,11 +5360,280 @@ mod tests {
     fn sqlite_round_trips_all_current_operating_state() {
         let directory = TestDirectory::new();
         let slot = SaveSlot::open(directory.save_path()).unwrap();
-        let state = active_game();
+        let mut state = active_game();
+        state.region.rail_authority.construction_capacity = 2;
+        state.region.rail_authority.finances = RailAuthorityFinances {
+            treasury: Money::from_cents(9_000_000),
+            maintenance_reserve: Money::from_cents(1_500_000),
+            committed_investment: Money::from_cents(2_000_000),
+            carried_over_funds: Money::from_cents(750_000),
+            regional_public_allocation: Money::from_cents(3_000_000),
+            infrastructure_access_fee_revenue: Money::from_cents(425_000),
+        };
 
         slot.save(&state).unwrap();
 
         assert_eq!(slot.load().unwrap(), Some(state));
+    }
+
+    #[test]
+    fn sqlite_round_trips_all_infrastructure_project_kinds() {
+        let directory = TestDirectory::new();
+        let slot = SaveSlot::open(directory.save_path()).unwrap();
+        let mut state = active_game();
+        let timeline = |requested_at| InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(requested_at),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        state.region.rail_authority.infrastructure_projects = vec![
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(1),
+                kind: InfrastructureProjectKind::NewLine {
+                    planned_stations: vec![PlannedRailStation {
+                        id: RailStationId::new(5),
+                        settlement_id: SettlementId::new(5),
+                    }],
+                    planned_lines: vec![PlannedRailLine {
+                        id: RailLineId::new(4),
+                        first_station_id: RailStationId::new(4),
+                        second_station_id: RailStationId::new(5),
+                        distance: DistanceMetres::new(12_000).unwrap(),
+                        speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
+                        track_count: TrackCount::SINGLE,
+                        electrification: Electrification::None,
+                        construction_difficulty: ConstructionDifficulty::Moderate,
+                    }],
+                },
+                status: InfrastructureProjectStatus::Requested,
+                timeline: timeline(2_000),
+                funding: InfrastructureProjectFunding::default(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(2),
+                kind: InfrastructureProjectKind::SpeedUpgrade {
+                    rail_line_ids: vec![RailLineId::new(1)],
+                    target_speed_limit: SpeedKilometresPerHour::new(100).unwrap(),
+                },
+                status: InfrastructureProjectStatus::UnderReview,
+                timeline: timeline(2_001),
+                funding: InfrastructureProjectFunding::default(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(3),
+                kind: InfrastructureProjectKind::DoubleTracking {
+                    rail_line_ids: vec![RailLineId::new(2)],
+                    target_track_count: TrackCount::DOUBLE,
+                },
+                status: InfrastructureProjectStatus::Proposed,
+                timeline: timeline(2_002),
+                funding: InfrastructureProjectFunding::default(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(4),
+                kind: InfrastructureProjectKind::Electrification {
+                    rail_line_ids: vec![RailLineId::new(3)],
+                },
+                status: InfrastructureProjectStatus::Approved,
+                timeline: timeline(2_003),
+                funding: InfrastructureProjectFunding::default(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(5),
+                kind: InfrastructureProjectKind::Renewal {
+                    rail_line_ids: vec![RailLineId::new(1)],
+                },
+                status: InfrastructureProjectStatus::Deferred,
+                timeline: timeline(2_004),
+                funding: InfrastructureProjectFunding::default(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(6),
+                kind: InfrastructureProjectKind::StationUpgrade {
+                    rail_station_ids: vec![RailStationId::new(1)],
+                },
+                status: InfrastructureProjectStatus::Funding,
+                timeline: timeline(2_005),
+                funding: InfrastructureProjectFunding::default(),
+            },
+        ];
+        slot.save(&state).unwrap();
+
+        assert_eq!(slot.load().unwrap(), Some(state));
+    }
+
+    #[test]
+    fn validation_rejects_conflicting_projects_under_construction() {
+        let mut state = active_game();
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(2_000),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        state.region.rail_authority.construction_capacity = 2;
+        state.region.rail_authority.infrastructure_projects = vec![
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(1),
+                kind: InfrastructureProjectKind::SpeedUpgrade {
+                    rail_line_ids: vec![RailLineId::new(1)],
+                    target_speed_limit: SpeedKilometresPerHour::new(100).unwrap(),
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline: timeline.clone(),
+                funding: InfrastructureProjectFunding::default(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(2),
+                kind: InfrastructureProjectKind::Electrification {
+                    rail_line_ids: vec![RailLineId::new(1)],
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline,
+                funding: InfrastructureProjectFunding::default(),
+            },
+        ];
+        assert_eq!(
+            validate_game_state(&state),
+            Err(SaveValidationError::ImpossibleState {
+                reason: "conflicting Infrastructure Projects are simultaneously under construction",
+            })
+        );
+    }
+
+    #[test]
+    fn validation_allows_parallel_construction_on_disjoint_rail_lines() {
+        let mut state = active_game();
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(2_000),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        state.region.rail_authority.construction_capacity = 2;
+        state.region.rail_authority.infrastructure_projects = vec![
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(1),
+                kind: InfrastructureProjectKind::SpeedUpgrade {
+                    rail_line_ids: vec![RailLineId::new(1)],
+                    target_speed_limit: SpeedKilometresPerHour::new(100).unwrap(),
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline: timeline.clone(),
+                funding: InfrastructureProjectFunding::default(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(2),
+                kind: InfrastructureProjectKind::Renewal {
+                    rail_line_ids: vec![RailLineId::new(2)],
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline,
+                funding: InfrastructureProjectFunding::default(),
+            },
+        ];
+        assert_eq!(validate_game_state(&state), Ok(()));
+    }
+
+    #[test]
+    fn validation_allows_open_project_to_keep_historical_authority_commitment() {
+        let mut state = active_game();
+        let historical_commitment = Money::from_cents(250_000);
+        state.region.rail_authority.finances.committed_investment = Money::ZERO;
+        state.region.rail_authority.infrastructure_projects = vec![InfrastructureProject {
+            id: InfrastructureProjectId::new_v4(),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![state.region.rail_authority.rail_network.rail_lines[0].id],
+            },
+            status: InfrastructureProjectStatus::Open,
+            timeline: InfrastructureProjectTimeline {
+                requested_at: UtcSeconds::from_unix_seconds(1_000),
+                review_started_at: Some(UtcSeconds::from_unix_seconds(1_100)),
+                proposed_at: Some(UtcSeconds::from_unix_seconds(1_200)),
+                approved_at: Some(UtcSeconds::from_unix_seconds(1_300)),
+                funding_completed_at: Some(UtcSeconds::from_unix_seconds(1_400)),
+                scheduled_start_at: Some(UtcSeconds::from_unix_seconds(1_500)),
+                construction_started_at: Some(UtcSeconds::from_unix_seconds(1_600)),
+                planned_completion_at: Some(UtcSeconds::from_unix_seconds(1_700)),
+                completed_at: Some(UtcSeconds::from_unix_seconds(1_700)),
+                deferred_at: None,
+                cancelled_at: None,
+            },
+            funding: InfrastructureProjectFunding {
+                estimated_cost: historical_commitment,
+                authority_committed: historical_commitment,
+            },
+        }];
+
+        assert_eq!(validate_game_state(&state), Ok(()));
+    }
+
+    #[test]
+    fn validation_rejects_more_active_projects_than_construction_capacity() {
+        let mut state = active_game();
+        state.region.rail_authority.construction_capacity = 1;
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(2_000),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        state.region.rail_authority.infrastructure_projects = vec![
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(101),
+                kind: InfrastructureProjectKind::Renewal {
+                    rail_line_ids: vec![RailLineId::new(1)],
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline: timeline.clone(),
+                funding: InfrastructureProjectFunding::default(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(102),
+                kind: InfrastructureProjectKind::Renewal {
+                    rail_line_ids: vec![RailLineId::new(2)],
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline,
+                funding: InfrastructureProjectFunding::default(),
+            },
+        ];
+
+        assert_eq!(
+            validate_game_state(&state),
+            Err(SaveValidationError::ImpossibleState {
+                reason: "Rail Authority active construction exceeds its capacity",
+            })
+        );
     }
 
     #[test]
@@ -3346,15 +5672,21 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        let train_id: String = connection
+            .query_row("SELECT id FROM trains LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        let station_id: String = connection
+            .query_row("SELECT id FROM rail_stations LIMIT 1", [], |row| row.get(0))
+            .unwrap();
         let model_id: String = connection
             .query_row("SELECT model_id FROM trains LIMIT 1", [], |row| row.get(0))
             .unwrap();
         let evn: String = connection
             .query_row("SELECT evn FROM trains LIMIT 1", [], |row| row.get(0))
             .unwrap();
-        let next_train_id: i64 = connection
+        let next_train_display_number: i64 = connection
             .query_row(
-                "SELECT next_train_id FROM company WHERE singleton = 1",
+                "SELECT next_train_display_number FROM company WHERE singleton = 1",
                 [],
                 |row| row.get(0),
             )
@@ -3373,12 +5705,17 @@ mod tests {
         assert!(passenger_group_count > 0);
         assert_eq!(state_blob_table, 0);
         assert_eq!(saved_catalogue_table, 0);
+        for id in [&train_id, &station_id] {
+            uuid::Uuid::parse_str(id).unwrap();
+            assert_eq!(&id[14..15], "4");
+            assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+        }
         assert_eq!(model_id, "helvetra-r70");
         let evn = EuropeanVehicleNumber::parse(&evn).unwrap();
         assert_eq!(evn.registration_code(), 67);
         assert_eq!(evn.series_code(), 701);
         assert_eq!(evn.unit_number(), 1);
-        assert_eq!(next_train_id, 2);
+        assert_eq!(next_train_display_number, 2);
         assert_eq!(next_unit_number, 2);
     }
 
@@ -3401,13 +5738,13 @@ mod tests {
         let old_express_evn = EuropeanVehicleNumber::generate(95, 67, 120, 1).unwrap();
         connection
             .execute(
-                "UPDATE trains SET model_id = 'local-70', evn = ?1 WHERE id = 1",
+                "UPDATE trains SET model_id = 'local-70', evn = ?1 WHERE model_id = 'helvetra-r70'",
                 params![old_local_evn.as_str()],
             )
             .unwrap();
         connection
             .execute(
-                "UPDATE trains SET model_id = 'express-120', evn = ?1 WHERE id = 2",
+                "UPDATE trains SET model_id = 'express-120', evn = ?1 WHERE model_id = 'veltrian-d121'",
                 params![old_express_evn.as_str()],
             )
             .unwrap();
@@ -3426,36 +5763,47 @@ mod tests {
         connection
             .pragma_update(None, "user_version", 9_u32)
             .unwrap();
-        drop(connection);
 
-        let slot = SaveSlot::open(&path).unwrap();
-        let state = slot.load().unwrap().unwrap();
+        // Exercise only the catalogue-ID migration here. The database was
+        // created with the current schema, so running the entire historical
+        // schema chain would intentionally try to re-add later columns.
+        migrate_v9_to_v10(&connection, &path).unwrap();
+
+        let migrated_models = query_all(
+            &connection,
+            "SELECT model_id, evn FROM trains ORDER BY evn",
+            &path,
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap();
         assert_eq!(
-            state
-                .player_company
-                .fleet
-                .trains
+            migrated_models
                 .iter()
-                .map(|train| (train.model_id.as_str(), train.evn.series_code()))
+                .map(|(model_id, evn)| {
+                    (
+                        model_id.as_str(),
+                        EuropeanVehicleNumber::parse(evn).unwrap().series_code(),
+                    )
+                })
                 .collect::<Vec<_>>(),
             vec![("helvetra-r70", 701), ("veltrian-d121", 721)]
         );
-        assert_eq!(
-            state
-                .player_company
-                .fleet
-                .next_evn_unit_by_model
-                .get(&TrainModelId::new("helvetra-r70")),
-            Some(&2)
-        );
-        assert_eq!(
-            state
-                .player_company
-                .fleet
-                .next_evn_unit_by_model
-                .get(&TrainModelId::new("veltrian-d121")),
-            Some(&2)
-        );
+        let local_next: i64 = connection
+            .query_row(
+                "SELECT next_unit_number FROM train_model_sequences WHERE model_id = 'helvetra-r70'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let express_next: i64 = connection
+            .query_row(
+                "SELECT next_unit_number FROM train_model_sequences WHERE model_id = 'veltrian-d121'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(local_next, 2);
+        assert_eq!(express_next, 2);
     }
 
     #[test]
@@ -3544,7 +5892,7 @@ mod tests {
                  CREATE TABLE trains (
                      id INTEGER PRIMARY KEY,
                      status_kind TEXT NOT NULL,
-                     status_ref_id INTEGER NOT NULL,
+                     status_ref_id TEXT NOT NULL,
                      model_name TEXT NOT NULL,
                      original_purchase_price_cents INTEGER NOT NULL,
                      passenger_capacity INTEGER NOT NULL,
@@ -3603,17 +5951,26 @@ mod tests {
         let version: u32 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
+        let migrated_train_id = "00000005-0000-4000-8000-000000000001";
+        let migrated_journey_id = "00000007-0000-4000-8000-000000000001";
+        let migrated_service_id = "00000006-0000-4000-8000-000000000001";
         let model_id: String = connection
-            .query_row("SELECT model_id FROM trains WHERE id = 1", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT model_id FROM trains WHERE id = ?1",
+                params![migrated_train_id],
+                |row| row.get(0),
+            )
             .unwrap();
         let evn: String = connection
-            .query_row("SELECT evn FROM trains WHERE id = 1", [], |row| row.get(0))
-            .unwrap();
-        let next_train_id: i64 = connection
             .query_row(
-                "SELECT next_train_id FROM company WHERE singleton = 1",
+                "SELECT evn FROM trains WHERE id = ?1",
+                params![migrated_train_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let next_train_display_number: i64 = connection
+            .query_row(
+                "SELECT next_train_display_number FROM company WHERE singleton = 1",
                 [],
                 |row| row.get(0),
             )
@@ -3633,24 +5990,24 @@ mod tests {
             )
             .unwrap();
 
-        let journey_train_id: i64 = connection
+        let journey_train_id: String = connection
             .query_row(
-                "SELECT train_id FROM active_journeys WHERE id = 1",
-                [],
+                "SELECT train_id FROM active_journeys WHERE id = ?1",
+                params![migrated_journey_id],
                 |row| row.get(0),
             )
             .unwrap();
         let service_name: String = connection
             .query_row(
-                "SELECT name FROM passenger_services WHERE id = 1",
-                [],
+                "SELECT name FROM passenger_services WHERE id = ?1",
+                params![migrated_service_id],
                 |row| row.get(0),
             )
             .unwrap();
         let service_stop_count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM service_stops WHERE service_id = 1",
-                [],
+                "SELECT COUNT(*) FROM service_stops WHERE service_id = ?1",
+                params![migrated_service_id],
                 |row| row.get(0),
             )
             .unwrap();
@@ -3675,16 +6032,452 @@ mod tests {
         assert_eq!(version, SAVE_VERSION);
         assert_eq!(model_id, "helvetra-r70");
         assert_eq!(evn, "956707010016");
-        assert_eq!(next_train_id, 2);
+        assert_eq!(next_train_display_number, 2);
         assert_eq!(next_unit_number, 2);
         assert_eq!(old_catalogue_exists, 0);
-        assert_eq!(journey_train_id, 1);
+        assert_eq!(journey_train_id, migrated_train_id);
         assert_eq!(service_name, "R1");
         assert_eq!(service_stop_count, 2);
         assert_eq!(foreign_key_violations, 0);
         assert_eq!(registration_code, 67);
         assert_eq!(registration_mark, "VA");
         assert_eq!(company_vkm, "OMP");
+    }
+
+    #[test]
+    fn v12_schema_migrates_rail_authority_finances_with_safe_defaults() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE region (
+                     singleton INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     registration_code INTEGER NOT NULL,
+                     registration_mark TEXT NOT NULL,
+                     population INTEGER NOT NULL,
+                     rail_authority_name TEXT NOT NULL,
+                     next_infrastructure_project_id INTEGER NOT NULL
+                 );
+                 INSERT INTO region VALUES(1, 'Federation of Varelia', 67, 'VA', 1000, 'Varelia Rail Authority', 1);
+                 PRAGMA user_version = 12;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let finances: (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT treasury_cents, maintenance_reserve_cents, committed_investment_cents,
+                        carried_over_funds_cents
+                 FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(
+            finances,
+            (
+                crate::model::PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.cents(),
+                0,
+                0,
+                0
+            )
+        );
+    }
+
+    #[test]
+    fn v17_schema_adds_rail_authority_construction_capacity() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE region (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     name TEXT NOT NULL,
+                     registration_code INTEGER NOT NULL,
+                     registration_mark TEXT NOT NULL,
+                     population INTEGER NOT NULL,
+                     rail_authority_name TEXT NOT NULL
+                 );
+                 INSERT INTO region VALUES(1, 'Federation of Varelia', 67, 'VA', 1000, 'Varelia Rail Authority');
+                 PRAGMA user_version = 17;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let capacity: i64 = connection
+            .query_row(
+                "SELECT rail_authority_construction_capacity FROM region WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(
+            capacity,
+            i64::from(crate::model::PROVISIONAL_CONSTRUCTION_CAPACITY)
+        );
+    }
+
+    #[test]
+    fn v16_schema_migrates_entity_ids_to_uuid_v4_text() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(V16_IDENTITY_TABLES_COMPAT_SCHEMA)
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO region VALUES(1, 'Federation of Varelia', 67, 'VA', 2000, 'Varelia Rail Authority', 2);
+                 INSERT INTO settlements VALUES(1, 'Alden', 1000);
+                 INSERT INTO settlements VALUES(2, 'Bellhaven', 1000);
+                 INSERT INTO rail_stations VALUES(1, 1);
+                 INSERT INTO rail_stations VALUES(2, 2);
+                 INSERT INTO rail_lines VALUES(1, 1, 2, 10000, 70, 1, 'none', 'moderate');
+                 INSERT INTO infrastructure_projects(
+                     id, kind, status, requested_at, target_speed_limit_kmh
+                 ) VALUES(1, 'speed_upgrade', 'requested', 1000, 100);
+                 INSERT INTO infrastructure_project_rail_lines VALUES(1, 0, 1);
+                 INSERT INTO company VALUES(1, 'One More Prime', 'OMP', 500000, 2);
+                 INSERT INTO trains VALUES(1, '956707010016', NULL, 'travelling', 1, 'helvetra-r70', 300000);
+                 INSERT INTO passenger_services VALUES(1, 'R1');
+                 INSERT INTO service_stops VALUES(1, 0, 1);
+                 INSERT INTO service_stops VALUES(1, 1, 2);
+                 INSERT INTO service_lines VALUES(1, 0, 1);
+                 INSERT INTO origin_destination_demand VALUES(1, 2, 10, 20, 0);
+                 INSERT INTO active_journeys(
+                     id, service_id, train_id, origin_station_id, destination_station_id,
+                     passengers_carried, fare_cents, operating_revenue_cents,
+                     credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents,
+                     current_stop_index, departed_at, arrives_at
+                 ) VALUES(1, 1, 1, 1, 2, 10, 1000, 1000, 0, 100, 50, 1, 1000, 1100);
+                 INSERT INTO journey_passenger_groups VALUES(1, 0, 1, 2, 10, 1000);
+                 INSERT INTO journey_receipts VALUES(1, 1000, 100, 50, 1, 'Helvetra R70', 1, 2, 10, 70, 1100);
+                 PRAGMA user_version = 16;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let train_id: String = connection
+            .query_row("SELECT id FROM trains", [], |row| row.get(0))
+            .unwrap();
+        let model_id: String = connection
+            .query_row("SELECT model_id FROM trains", [], |row| row.get(0))
+            .unwrap();
+        let line_id: String = connection
+            .query_row("SELECT id FROM rail_lines", [], |row| row.get(0))
+            .unwrap();
+        let project_id: String = connection
+            .query_row("SELECT id FROM infrastructure_projects", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let journey_train_id: String = connection
+            .query_row("SELECT train_id FROM active_journeys", [], |row| row.get(0))
+            .unwrap();
+        let foreign_key_violations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        for id in [&train_id, &line_id, &project_id] {
+            uuid::Uuid::parse_str(id).unwrap();
+            assert_eq!(&id[14..15], "4");
+            assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+        }
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(train_id, "00000005-0000-4000-8000-000000000001");
+        assert_eq!(line_id, "00000003-0000-4000-8000-000000000001");
+        assert_eq!(project_id, "00000004-0000-4000-8000-000000000001");
+        assert_eq!(journey_train_id, train_id);
+        assert_eq!(model_id, "helvetra-r70");
+        assert_eq!(foreign_key_violations, 0);
+    }
+
+    #[test]
+    fn v15_schema_credits_historical_access_fees_to_authority() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
+                     regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0)
+                 );
+                 INSERT INTO rail_authority_finances VALUES(1, 10000000, 500000, 0, 0, 10000000);
+                 CREATE TABLE financials (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     operating_revenue_cents INTEGER NOT NULL,
+                     infrastructure_access_fees_cents INTEGER NOT NULL,
+                     fuel_costs_cents INTEGER NOT NULL
+                 );
+                 INSERT INTO financials VALUES(1, 2000000, 325000, 175000);
+                 PRAGMA user_version = 15;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let (treasury, access_fee_revenue): (i64, i64) = connection
+            .query_row(
+                "SELECT treasury_cents, infrastructure_access_fee_revenue_cents
+                 FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(access_fee_revenue, 325_000);
+        assert_eq!(treasury, 10_325_000);
+    }
+
+    #[test]
+    fn v14_schema_seeds_network_sized_maintenance_reserve() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
+                     regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0)
+                 );
+                 INSERT INTO rail_authority_finances VALUES(1, 10000000, 0, 1000000, 0, 10000000);
+                 CREATE TABLE settlements (
+                     id INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     population INTEGER NOT NULL
+                 );
+                 INSERT INTO settlements VALUES(1, 'A', 1000);
+                 INSERT INTO settlements VALUES(2, 'B', 1000);
+                 INSERT INTO settlements VALUES(3, 'C', 1000);
+                 CREATE TABLE rail_stations (
+                     id INTEGER PRIMARY KEY,
+                     settlement_id INTEGER NOT NULL REFERENCES settlements(id)
+                 );
+                 INSERT INTO rail_stations VALUES(1, 1);
+                 INSERT INTO rail_stations VALUES(2, 2);
+                 INSERT INTO rail_stations VALUES(3, 3);
+                 CREATE TABLE rail_lines (
+                     id INTEGER PRIMARY KEY,
+                     first_station_id INTEGER NOT NULL,
+                     second_station_id INTEGER NOT NULL,
+                     distance_metres INTEGER NOT NULL,
+                     speed_limit_kmh INTEGER NOT NULL,
+                     track_count INTEGER NOT NULL,
+                     electrification TEXT NOT NULL,
+                     construction_difficulty TEXT NOT NULL
+                 );
+                 INSERT INTO rail_lines VALUES(1, 1, 2, 10000, 70, 1, 'none', 'moderate');
+                 INSERT INTO rail_lines VALUES(2, 2, 3, 5000, 70, 2, 'none', 'moderate');
+                 PRAGMA user_version = 14;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let reserve: i64 = connection
+            .query_row(
+                "SELECT maintenance_reserve_cents
+                 FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(reserve, 500_000);
+    }
+
+    #[test]
+    fn v13_schema_migrates_and_seeds_regional_public_allocation() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0)
+                 );
+                 INSERT INTO rail_authority_finances VALUES(1, 5000, 1000, 2000, 500);
+                 PRAGMA user_version = 13;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let (treasury, allocation): (i64, i64) = connection
+            .query_row(
+                "SELECT treasury_cents, regional_public_allocation_cents
+                 FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(
+            allocation,
+            crate::model::PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.cents()
+        );
+        assert_eq!(treasury, 5000 + allocation);
+    }
+
+    #[test]
+    fn v11_schema_migrates_infrastructure_project_persistence() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE region (
+                     singleton INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     registration_code INTEGER NOT NULL,
+                     registration_mark TEXT NOT NULL,
+                     population INTEGER NOT NULL,
+                     rail_authority_name TEXT NOT NULL
+                 );
+                 INSERT INTO region VALUES(1, 'Federation of Varelia', 67, 'VA', 1000, 'Varelia Rail Authority');
+                 CREATE TABLE settlements (
+                     id INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     population INTEGER NOT NULL
+                 );
+                 CREATE TABLE rail_stations (
+                     id INTEGER PRIMARY KEY,
+                     settlement_id INTEGER NOT NULL REFERENCES settlements(id)
+                 );
+                 CREATE TABLE rail_lines (
+                     id INTEGER PRIMARY KEY,
+                     first_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+                     second_station_id INTEGER NOT NULL REFERENCES rail_stations(id),
+                     distance_metres INTEGER NOT NULL,
+                     speed_limit_kmh INTEGER NOT NULL,
+                     track_count INTEGER NOT NULL,
+                     electrification TEXT NOT NULL,
+                     construction_difficulty TEXT NOT NULL
+                 );
+                 PRAGMA user_version = 11;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let project_table_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'infrastructure_projects'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(project_table_exists, 1);
+    }
+
+    #[test]
+    fn v10_schema_migrates_rail_line_capabilities_with_safe_defaults() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE region (
+                     singleton INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     registration_code INTEGER NOT NULL,
+                     registration_mark TEXT NOT NULL,
+                     population INTEGER NOT NULL,
+                     rail_authority_name TEXT NOT NULL
+                 );
+                 INSERT INTO region VALUES(1, 'Federation of Varelia', 67, 'VA', 1000, 'Varelia Rail Authority');
+                 CREATE TABLE settlements (
+                     id INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     population INTEGER NOT NULL
+                 );
+                 INSERT INTO settlements VALUES(1, 'A', 500);
+                 INSERT INTO settlements VALUES(2, 'B', 500);
+                 CREATE TABLE rail_stations (
+                     id INTEGER PRIMARY KEY,
+                     settlement_id INTEGER NOT NULL REFERENCES settlements(id)
+                 );
+                 INSERT INTO rail_stations VALUES(1, 1);
+                 INSERT INTO rail_stations VALUES(2, 2);
+                 CREATE TABLE rail_lines (
+                     id INTEGER PRIMARY KEY,
+                     first_station_id INTEGER NOT NULL,
+                     second_station_id INTEGER NOT NULL,
+                     distance_metres INTEGER NOT NULL
+                 );
+                 INSERT INTO rail_lines VALUES(1, 1, 2, 42000);
+                 PRAGMA user_version = 10;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let capabilities: (i64, i64, String, String) = connection
+            .query_row(
+                "SELECT speed_limit_kmh, track_count, electrification, construction_difficulty
+                 FROM rail_lines WHERE id = '00000003-0000-4000-8000-000000000001'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(capabilities, (70, 1, "none".into(), "moderate".into()));
     }
 
     #[test]
@@ -3699,7 +6492,7 @@ mod tests {
                 let model = model_for_train(train).unwrap();
                 LegacyTrainV1 {
                     id: train.id,
-                    status: train.status,
+                    status: train.status.clone(),
                     model_name: model.name().to_owned(),
                     original_purchase_price: train.original_purchase_price,
                     passenger_capacity: model.passenger_capacity(),

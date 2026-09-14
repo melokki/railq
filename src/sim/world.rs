@@ -8,9 +8,10 @@ use rand_chacha::{
 use crate::{
     balance::BalanceConfig,
     model::{
-        DemandRules, Financials, Fleet, GameRules, GameState, Money, PlayerCompany, RailAuthority,
-        RailLine, RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
-        Settlement, SettlementId, UtcSeconds, VehicleKeeperMark,
+        ConstructionDifficulty, DemandRules, Electrification, Financials, Fleet, GameRules,
+        GameState, Money, PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork,
+        RailStation, RailStationId, RailwayRegistration, Region, Settlement, SettlementId,
+        SpeedKilometresPerHour, TrackCount, UtcSeconds, VehicleKeeperMark, WorldPosition,
     },
     sim::demand::seed_directional_demand,
 };
@@ -98,6 +99,7 @@ pub fn generate_region(seed: u64) -> Region {
     let identity = REGION_IDENTITIES[(random.next_u64() as usize) % REGION_IDENTITIES.len()];
     let name = format!("{region_form} of {}", identity.name);
     let settlement_names = select_settlement_names(&mut random);
+    let settlement_positions = settlement_positions_for_existing_region(seed, SETTLEMENT_COUNT);
     let settlements = settlement_names
         .into_iter()
         .enumerate()
@@ -105,6 +107,7 @@ pub fn generate_region(seed: u64) -> Region {
             id: SettlementId::new((index + 1) as u64),
             name: settlement_name.to_owned(),
             population: 40_000 + random.next_u64() % 260_001,
+            position: settlement_positions[index],
         })
         .collect::<Vec<_>>();
     let population = settlements
@@ -120,12 +123,36 @@ pub fn generate_region(seed: u64) -> Region {
             id: RailStationId::new((index + 1) as u64),
             settlement_id: settlement.id,
         })
-        .collect();
+        .collect::<Vec<_>>();
     let rail_lines = vec![
-        rail_line(1, 1, 2, 10_000),
-        rail_line(2, 2, 3, 42_000),
-        rail_line(3, 2, 4, 31_000),
+        rail_line(
+            RailLineId::new(1),
+            rail_stations[0].id,
+            rail_stations[1].id,
+            10_000,
+        ),
+        rail_line(
+            RailLineId::new(2),
+            rail_stations[1].id,
+            rail_stations[2].id,
+            42_000,
+        ),
+        rail_line(
+            RailLineId::new(3),
+            rail_stations[1].id,
+            rail_stations[3].id,
+            31_000,
+        ),
     ];
+
+    let rail_network = RailNetwork {
+        rail_stations,
+        rail_lines,
+    };
+    let mut finances = crate::model::RailAuthorityFinances::with_initial_public_allocation();
+    finances
+        .refresh_maintenance_reserve(&rail_network)
+        .expect("the fixed starter network maintenance reserve must fit");
 
     Region {
         name: name.clone(),
@@ -137,10 +164,10 @@ pub fn generate_region(seed: u64) -> Region {
         settlements,
         rail_authority: RailAuthority {
             name: format!("{name} Rail Authority"),
-            rail_network: RailNetwork {
-                rail_stations,
-                rail_lines,
-            },
+            rail_network,
+            finances,
+            construction_capacity: crate::model::PROVISIONAL_CONSTRUCTION_CAPACITY,
+            infrastructure_projects: vec![],
         },
     }
 }
@@ -210,6 +237,53 @@ fn choose<'a>(random: &mut ChaCha8Rng, choices: &'a [&'a str]) -> &'a str {
     choices[(random.next_u64() as usize) % choices.len()]
 }
 
+/// Reconstructs the deterministic Region geography used by both new worlds
+/// and save migrations that predate persisted Settlement coordinates.
+pub fn settlement_positions_for_existing_region(seed: u64, count: usize) -> Vec<WorldPosition> {
+    const MIN_SPACING_KM: i64 = 14;
+    const MIN_SPACING_SQUARED: i64 = MIN_SPACING_KM * MIN_SPACING_KM;
+    const ANCHORS: [WorldPosition; 4] = [
+        WorldPosition::new(-10, 0),
+        WorldPosition::new(0, 0),
+        WorldPosition::new(42, 0),
+        WorldPosition::new(0, 31),
+    ];
+
+    let mut positions = ANCHORS
+        .into_iter()
+        .take(count.min(ANCHORS.len()))
+        .collect::<Vec<_>>();
+    let mut geography = ChaCha8Rng::seed_from_u64(seed ^ 0x5241_494c_5147_454f);
+
+    while positions.len() < count {
+        let mut accepted = None;
+        for _ in 0..128 {
+            let x = i32::try_from(geography.next_u64() % 121).unwrap_or(0) - 60;
+            let y = i32::try_from(geography.next_u64() % 101).unwrap_or(0) - 50;
+            let candidate = WorldPosition::new(x, y);
+            let clear = positions.iter().all(|existing| {
+                let dx = i64::from(existing.x) - i64::from(candidate.x);
+                let dy = i64::from(existing.y) - i64::from(candidate.y);
+                dx * dx + dy * dy >= MIN_SPACING_SQUARED
+            });
+            if clear {
+                accepted = Some(candidate);
+                break;
+            }
+        }
+
+        let fallback_index = i32::try_from(positions.len()).unwrap_or(i32::MAX);
+        positions.push(accepted.unwrap_or_else(|| {
+            WorldPosition::new(
+                -54 + (fallback_index % 7) * 18,
+                48 + (fallback_index / 7) * 18,
+            )
+        }));
+    }
+
+    positions
+}
+
 fn select_settlement_names(random: &mut ChaCha8Rng) -> [&'static str; SETTLEMENT_COUNT] {
     let mut names = SETTLEMENT_NAMES;
     for current in (1..names.len()).rev() {
@@ -222,17 +296,22 @@ fn select_settlement_names(random: &mut ChaCha8Rng) -> [&'static str; SETTLEMENT
 }
 
 fn rail_line(
-    id: u64,
-    first_station_id: u64,
-    second_station_id: u64,
+    id: RailLineId,
+    first_station_id: RailStationId,
+    second_station_id: RailStationId,
     distance_metres: i64,
 ) -> RailLine {
     RailLine {
-        id: RailLineId::new(id),
-        first_station_id: RailStationId::new(first_station_id),
-        second_station_id: RailStationId::new(second_station_id),
+        id,
+        first_station_id,
+        second_station_id,
         distance: crate::model::DistanceMetres::new(distance_metres)
             .expect("the fixed starter Rail Line distance must be positive"),
+        speed_limit: SpeedKilometresPerHour::new(70)
+            .expect("the starter Rail Line speed limit must be positive"),
+        track_count: TrackCount::SINGLE,
+        electrification: Electrification::None,
+        construction_difficulty: ConstructionDifficulty::Moderate,
     }
 }
 
@@ -276,13 +355,22 @@ mod tests {
         assert_eq!(region.settlements.len(), SETTLEMENT_COUNT);
         assert_eq!(network.rail_stations.len(), CONNECTED_SETTLEMENT_COUNT);
         assert_eq!(network.rail_lines.len(), 3);
+        assert!(region.rail_authority.infrastructure_projects.is_empty());
+        assert_eq!(
+            region.rail_authority.finances.maintenance_reserve,
+            Money::from_cents(2_075_000)
+        );
         assert_eq!(
             network
                 .rail_lines
                 .iter()
-                .map(|line| (line.first_station_id.get(), line.second_station_id.get()))
+                .map(|line| (line.first_station_id, line.second_station_id))
                 .collect::<Vec<_>>(),
-            vec![(1, 2), (2, 3), (2, 4)]
+            vec![
+                (network.rail_stations[0].id, network.rail_stations[1].id),
+                (network.rail_stations[1].id, network.rail_stations[2].id),
+                (network.rail_stations[1].id, network.rail_stations[3].id),
+            ]
         );
         assert!(
             network
@@ -296,6 +384,12 @@ mod tests {
                 .iter()
                 .any(|line| line.distance.metres() == 10_000)
         );
+        assert!(network.rail_lines.iter().all(|line| {
+            line.speed_limit.kilometres_per_hour() == 70
+                && line.track_count == TrackCount::SINGLE
+                && line.electrification == Electrification::None
+                && line.construction_difficulty == ConstructionDifficulty::Moderate
+        }));
     }
 
     #[test]

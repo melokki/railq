@@ -13,3 +13,4 @@ ron = "0.12"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 unicode-width = "0.2"
+uuid = { version = "1.26.1", features = ["serde", "v4"] }
