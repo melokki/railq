@@ -515,143 +515,31 @@ fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
         .iter()
         .map(|station| (station.id, station))
         .collect::<BTreeMap<_, _>>();
-    let mut adjacency = network
+    let station_by_settlement = network
         .rail_stations
         .iter()
-        .map(|station| (station.id, Vec::<(RailStationId, u64)>::new()))
+        .map(|station| (station.settlement_id, station.id))
         .collect::<BTreeMap<_, _>>();
-    for line in &network.rail_lines {
-        adjacency
-            .entry(line.first_station_id)
-            .or_default()
-            .push((line.second_station_id, line.distance.metres()));
-        adjacency
-            .entry(line.second_station_id)
-            .or_default()
-            .push((line.first_station_id, line.distance.metres()));
-    }
-    for neighbours in adjacency.values_mut() {
-        neighbours.sort_by_key(|(station_id, _)| *station_id);
-    }
 
-    let mut station_positions = BTreeMap::<RailStationId, (i32, i32)>::new();
-    if let Some(root) = network.rail_stations.iter().max_by_key(|station| {
-        (
-            adjacency.get(&station.id).map_or(0, Vec::len),
-            Reverse(station.id),
-        )
-    }) {
-        station_positions.insert(root.id, (0, 0));
-        let directions = [
-            MapDirection::Left,
-            MapDirection::Right,
-            MapDirection::Down,
-            MapDirection::Up,
-        ];
-        let mut queue = VecDeque::new();
-        for (index, (neighbour, metres)) in
-            adjacency.get(&root.id).into_iter().flatten().enumerate()
-        {
-            let direction = directions[index % directions.len()];
-            let length = directional_line_length(*metres, direction);
-            let position = offset_point((0, 0), direction, length);
-            station_positions.entry(*neighbour).or_insert(position);
-            queue.push_back((*neighbour, root.id, direction));
-        }
-
-        while let Some((station_id, parent_id, direction)) = queue.pop_front() {
-            let origin = station_positions
-                .get(&station_id)
-                .copied()
-                .unwrap_or((0, 0));
-            let children = adjacency
-                .get(&station_id)
-                .into_iter()
-                .flatten()
-                .filter(|(candidate, _)| *candidate != parent_id)
-                .cloned()
-                .collect::<Vec<_>>();
-            for (index, (child, metres)) in children.into_iter().enumerate() {
-                if station_positions.contains_key(&child) {
-                    continue;
-                }
-                let child_direction = if index == 0 {
-                    direction
-                } else if index % 2 == 1 {
-                    turn_clockwise(direction)
-                } else {
-                    turn_counter_clockwise(direction)
-                };
-                let position = offset_point(
-                    origin,
-                    child_direction,
-                    directional_line_length(metres, child_direction),
-                );
-                station_positions.insert(child, position);
-                queue.push_back((child, station_id, child_direction));
-            }
-        }
-    }
-
-    let mut places = network
-        .rail_stations
-        .iter()
-        .filter_map(|station| {
-            let settlement = state
-                .region
-                .settlements
-                .iter()
-                .find(|settlement| settlement.id == station.settlement_id)?;
-            let (x, y) = station_positions
-                .get(&station.id)
-                .copied()
-                .unwrap_or((0, 0));
-            Some(OperationalPlace {
-                settlement_id: settlement.id,
-                station_id: Some(station.id),
-                name: settlement.name.clone(),
-                x,
-                y,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let connected = network
-        .rail_stations
-        .iter()
-        .map(|station| station.settlement_id)
-        .collect::<BTreeSet<_>>();
-    let unconnected = state
+    let places = state
         .region
         .settlements
         .iter()
-        .filter(|settlement| !connected.contains(&settlement.id))
-        .collect::<Vec<_>>();
-
-    let min_connected_x = places.iter().map(|place| place.x).min().unwrap_or(-8);
-    let max_connected_x = places.iter().map(|place| place.x).max().unwrap_or(8);
-    let min_connected_y = places.iter().map(|place| place.y).min().unwrap_or(0);
-    let max_connected_y = places.iter().map(|place| place.y).max().unwrap_or(0);
-    let row_width = (max_connected_x - min_connected_x).max(34);
-    let columns = 3_i32;
-    let spacing = (row_width / (columns - 1)).max(13);
-    let left = -spacing;
-    for (index, settlement) in unconnected.into_iter().enumerate() {
-        let row = i32::try_from(index / usize::try_from(columns).unwrap_or(3)).unwrap_or(0);
-        let column = i32::try_from(index % usize::try_from(columns).unwrap_or(3)).unwrap_or(0);
-        let y = if row % 2 == 0 {
-            min_connected_y - 5 - (row / 2) * 4
-        } else {
-            max_connected_y + 5 + (row / 2) * 4
-        };
-        places.push(OperationalPlace {
+        .map(|settlement| OperationalPlace {
             settlement_id: settlement.id,
-            station_id: None,
+            station_id: station_by_settlement.get(&settlement.id).copied(),
             name: settlement.name.clone(),
-            x: left + column * spacing,
-            y,
-        });
-    }
+            x: settlement.position.x,
+            // Terminal cells are roughly twice as tall as they are wide.
+            // Compress world-space Y only for presentation so geography stays
+            // visually proportional while the persisted coordinates remain
+            // simulation-grade kilometres.
+            y: settlement
+                .position
+                .y
+                .div_euclid(TERMINAL_CELL_HEIGHT_TO_WIDTH),
+        })
+        .collect::<Vec<_>>();
 
     let lines = network
         .rail_lines
