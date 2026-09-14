@@ -932,15 +932,50 @@ fn ids_overlap<T: Eq>(left: &[T], right: &[T]) -> bool {
 /// available for future infrastructure projects. `carried_over_funds` records
 /// the portion brought forward from an earlier budget cycle once fiscal
 /// periods are introduced.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub const PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION: Money = Money::from_cents(10_000_000);
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RailAuthorityFinances {
     pub treasury: Money,
     pub maintenance_reserve: Money,
     pub committed_investment: Money,
     pub carried_over_funds: Money,
+    #[serde(default = "default_regional_public_allocation")]
+    pub regional_public_allocation: Money,
+}
+
+const fn default_regional_public_allocation() -> Money {
+    PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION
+}
+
+impl Default for RailAuthorityFinances {
+    fn default() -> Self {
+        Self {
+            treasury: Money::ZERO,
+            maintenance_reserve: Money::ZERO,
+            committed_investment: Money::ZERO,
+            carried_over_funds: Money::ZERO,
+            regional_public_allocation: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
+        }
+    }
 }
 
 impl RailAuthorityFinances {
+    /// Creates the initial Authority budget with the first recurring public
+    /// allocation already deposited.
+    pub fn with_initial_public_allocation() -> Self {
+        Self {
+            treasury: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
+            ..Self::default()
+        }
+    }
+
+    /// Deposits one regional public-allocation cycle into the Authority
+    /// treasury. Fiscal timing is intentionally introduced later.
+    pub fn receive_regional_public_allocation(&mut self) -> Result<Money, CalculationError> {
+        self.treasury = self.treasury.checked_add(self.regional_public_allocation)?;
+        Ok(self.regional_public_allocation)
+    }
     /// Money that is neither reserved for maintenance nor committed to an
     /// approved infrastructure project.
     pub fn uncommitted_investment(&self) -> Result<Money, CalculationError> {
@@ -1493,11 +1528,28 @@ mod tests {
             maintenance_reserve: Money::from_cents(200_000),
             committed_investment: Money::from_cents(350_000),
             carried_over_funds: Money::from_cents(100_000),
+            regional_public_allocation: Money::from_cents(500_000),
         };
 
         assert_eq!(
             finances.uncommitted_investment().unwrap(),
             Money::from_cents(450_000)
+        );
+    }
+
+    #[test]
+    fn regional_public_allocation_is_recurring_revenue() {
+        let mut finances = RailAuthorityFinances::default();
+        assert_eq!(finances.treasury, Money::ZERO);
+
+        let received = finances.receive_regional_public_allocation().unwrap();
+        assert_eq!(received, PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION);
+        assert_eq!(finances.treasury, PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION);
+
+        finances.receive_regional_public_allocation().unwrap();
+        assert_eq!(
+            finances.treasury,
+            PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.checked_mul(2).unwrap()
         );
     }
 

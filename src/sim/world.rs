@@ -142,7 +142,7 @@ pub fn generate_region(seed: u64) -> Region {
                 rail_stations,
                 rail_lines,
             },
-            finances: crate::model::RailAuthorityFinances::default(),
+            finances: crate::model::RailAuthorityFinances::with_initial_public_allocation(),
             infrastructure_projects: vec![],
             next_infrastructure_project_id: 1,
         },
