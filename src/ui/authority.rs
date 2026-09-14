@@ -750,7 +750,7 @@ fn append_timeline(
                     ]));
                     lines.push(Line::from(vec![
                         Span::styled("Remaining  ", theme::secondary()),
-                        Span::styled(compact_duration(remaining), theme::primary_value()),
+                        Span::styled(construction_remaining_duration(remaining), theme::primary_value()),
                     ]));
                     lines.push(progress_line("Progress", progress));
                 }
@@ -1087,6 +1087,20 @@ fn relative_time(timestamp: UtcSeconds, now: UtcSeconds) -> String {
     }
 }
 
+
+fn construction_remaining_duration(seconds: u64) -> String {
+    if seconds <= 30 * 60 {
+        let minutes = seconds / 60;
+        let seconds = seconds % 60;
+        if minutes == 0 {
+            return format!("{seconds}s");
+        }
+        return format!("{minutes}m {seconds:02}s");
+    }
+
+    compact_duration(seconds)
+}
+
 fn compact_duration(seconds: u64) -> String {
     if seconds < 60 {
         return format!("{seconds}s");
@@ -1193,7 +1207,10 @@ mod tests {
         sim::{authority::advance_infrastructure_planning, world::create_new_game},
     };
 
-    use super::{ProjectSelection, compact_duration, format_project_timestamp, render};
+    use super::{
+        ProjectSelection, compact_duration, construction_remaining_duration,
+        format_project_timestamp, render,
+    };
 
     #[test]
     fn authority_render_exposes_budget_and_project_pipeline() {
@@ -1222,6 +1239,10 @@ mod tests {
         );
         assert_eq!(compact_duration(8_110), "2h 15m");
         assert_eq!(compact_duration(42), "42s");
+        assert_eq!(construction_remaining_duration(1_811), "30m");
+        assert_eq!(construction_remaining_duration(1_800), "30m 00s");
+        assert_eq!(construction_remaining_duration(1_742), "29m 02s");
+        assert_eq!(construction_remaining_duration(42), "42s");
     }
 
     #[test]
