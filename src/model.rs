@@ -933,6 +933,12 @@ fn ids_overlap<T: Eq>(left: &[T], right: &[T]) -> bool {
 /// the portion brought forward from an earlier budget cycle once fiscal
 /// periods are introduced.
 pub const PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION: Money = Money::from_cents(10_000_000);
+/// Provisional maintenance reserve per physical track-kilometre and budget cycle.
+///
+/// This is deliberately a simple balancing value until RailQ models actual
+/// infrastructure condition and renewal work.
+pub const PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE: MoneyPerKilometre =
+    MoneyPerKilometre(25_000);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RailAuthorityFinances {
@@ -976,6 +982,20 @@ impl RailAuthorityFinances {
         self.treasury = self.treasury.checked_add(self.regional_public_allocation)?;
         Ok(self.regional_public_allocation)
     }
+
+    /// Reserves as much of the current maintenance requirement as the
+    /// uncommitted treasury can support. Detailed degradation/renewal costs
+    /// are intentionally deferred to the later infrastructure-condition phase.
+    pub fn refresh_maintenance_reserve(
+        &mut self,
+        network: &RailNetwork,
+    ) -> Result<Money, CalculationError> {
+        let required = network.provisional_maintenance_reserve()?;
+        let available_after_commitments = self.treasury.checked_sub(self.committed_investment)?;
+        self.maintenance_reserve = required.min(available_after_commitments);
+        Ok(self.maintenance_reserve)
+    }
+
     /// Money that is neither reserved for maintenance nor committed to an
     /// approved infrastructure project.
     pub fn uncommitted_investment(&self) -> Result<Money, CalculationError> {
@@ -1007,6 +1027,20 @@ const fn default_next_infrastructure_project_id() -> u64 {
 pub struct RailNetwork {
     pub rail_stations: Vec<RailStation>,
     pub rail_lines: Vec<RailLine>,
+}
+
+impl RailNetwork {
+    /// Calculates the provisional reserve needed to maintain the current
+    /// physical network. Double-track sections count twice because they
+    /// contain twice as much running track to maintain.
+    pub fn provisional_maintenance_reserve(&self) -> Result<Money, CalculationError> {
+        self.rail_lines.iter().try_fold(Money::ZERO, |total, line| {
+            let single_track = PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE
+                .checked_charge(line.distance)?;
+            let line_reserve = single_track.checked_mul(u64::from(line.track_count.tracks()))?;
+            total.checked_add(line_reserve)
+        })
+    }
 }
 
 /// A facility providing one Settlement access to the Rail Network.
@@ -1550,6 +1584,69 @@ mod tests {
         assert_eq!(
             finances.treasury,
             PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.checked_mul(2).unwrap()
+        );
+    }
+
+    #[test]
+    fn maintenance_reserve_scales_with_track_kilometres() {
+        let network = RailNetwork {
+            rail_stations: vec![],
+            rail_lines: vec![
+                RailLine {
+                    id: RailLineId::new(1),
+                    first_station_id: RailStationId::new(1),
+                    second_station_id: RailStationId::new(2),
+                    distance: DistanceMetres::new(10_000).unwrap(),
+                    speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
+                    track_count: TrackCount::SINGLE,
+                    electrification: Electrification::None,
+                    construction_difficulty: ConstructionDifficulty::Moderate,
+                },
+                RailLine {
+                    id: RailLineId::new(2),
+                    first_station_id: RailStationId::new(2),
+                    second_station_id: RailStationId::new(3),
+                    distance: DistanceMetres::new(5_000).unwrap(),
+                    speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
+                    track_count: TrackCount::DOUBLE,
+                    electrification: Electrification::None,
+                    construction_difficulty: ConstructionDifficulty::Moderate,
+                },
+            ],
+        };
+
+        assert_eq!(
+            network.provisional_maintenance_reserve().unwrap(),
+            Money::from_cents(500_000)
+        );
+    }
+
+    #[test]
+    fn maintenance_reserve_never_overcommits_the_treasury() {
+        let network = RailNetwork {
+            rail_stations: vec![],
+            rail_lines: vec![RailLine {
+                id: RailLineId::new(1),
+                first_station_id: RailStationId::new(1),
+                second_station_id: RailStationId::new(2),
+                distance: DistanceMetres::new(100_000).unwrap(),
+                speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
+                track_count: TrackCount::SINGLE,
+                electrification: Electrification::None,
+                construction_difficulty: ConstructionDifficulty::Moderate,
+            }],
+        };
+        let mut finances = RailAuthorityFinances {
+            treasury: Money::from_cents(1_000_000),
+            maintenance_reserve: Money::ZERO,
+            committed_investment: Money::from_cents(250_000),
+            carried_over_funds: Money::ZERO,
+            regional_public_allocation: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
+        };
+
+        assert_eq!(
+            finances.refresh_maintenance_reserve(&network).unwrap(),
+            Money::from_cents(750_000)
         );
     }
 

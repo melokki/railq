@@ -44,7 +44,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 14;
+pub const SAVE_VERSION: u32 = 15;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -598,6 +598,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         2 => {
             migrate_v2_to_v3(connection, path)?;
@@ -612,6 +613,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         3 => {
             migrate_v3_to_v4(connection, path)?;
@@ -625,6 +627,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         4 => {
             migrate_v4_to_v5(connection, path)?;
@@ -637,6 +640,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         5 => {
             migrate_v5_to_v6(connection, path)?;
@@ -648,6 +652,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         6 => {
             migrate_v6_to_v7(connection, path)?;
@@ -658,6 +663,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         7 => {
             migrate_v7_to_v8(connection, path)?;
@@ -667,6 +673,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         8 => {
             migrate_v8_to_v9(connection, path)?;
@@ -675,6 +682,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         9 => {
             migrate_v9_to_v10(connection, path)?;
@@ -682,23 +690,31 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         10 => {
             migrate_v10_to_v11(connection, path)?;
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         11 => {
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
         12 => {
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
         }
-        13 => migrate_v13_to_v14(connection, path)?,
+        13 => {
+            migrate_v13_to_v14(connection, path)?;
+            migrate_v14_to_v15(connection, path)?;
+        }
+        14 => migrate_v14_to_v15(connection, path)?,
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -1749,7 +1765,7 @@ fn migrate_v13_to_v14(connection: &Connection, path: &Path) -> Result<(), SaveSl
             )
             .map_err(|source| db_error("seed regional public allocation in", path, source))?;
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 14_u32)
             .map_err(|source| db_error("write v14 schema version to", path, source))?;
         Ok(())
     })();
@@ -1758,6 +1774,58 @@ fn migrate_v13_to_v14(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v13 to v14 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v14_to_v15(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v14 to v15 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let rail_lines_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'rail_lines'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect Rail Lines during v15 migration in", path, source))?;
+
+        if rail_lines_exist != 0 {
+            let rate = crate::model::PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE
+                .cents_per_kilometre();
+            let rate = i64::try_from(rate)
+                .expect("the provisional maintenance reserve rate fits SQLite INTEGER");
+            connection
+                .execute(
+                    "UPDATE rail_authority_finances
+                     SET maintenance_reserve_cents = MIN(
+                         treasury_cents - committed_investment_cents,
+                         COALESCE((
+                             SELECT SUM((((distance_metres * ?1) + 999) / 1000) * track_count)
+                             FROM rail_lines
+                         ), 0)
+                     )
+                     WHERE singleton = 1",
+                    params![rate],
+                )
+                .map_err(|source| db_error("seed infrastructure maintenance reserve in", path, source))?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v15 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v14 to v15 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -4953,6 +5021,56 @@ mod tests {
             finances,
             (crate::model::PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.cents(), 0, 0, 0)
         );
+    }
+
+    #[test]
+    fn v14_schema_seeds_network_sized_maintenance_reserve() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
+                     regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0)
+                 );
+                 INSERT INTO rail_authority_finances VALUES(1, 10000000, 0, 1000000, 0, 10000000);
+                 CREATE TABLE rail_lines (
+                     id INTEGER PRIMARY KEY,
+                     first_station_id INTEGER NOT NULL,
+                     second_station_id INTEGER NOT NULL,
+                     distance_metres INTEGER NOT NULL,
+                     speed_limit_kmh INTEGER NOT NULL,
+                     track_count INTEGER NOT NULL,
+                     electrification TEXT NOT NULL,
+                     construction_difficulty TEXT NOT NULL
+                 );
+                 INSERT INTO rail_lines VALUES(1, 1, 2, 10000, 70, 1, 'none', 'moderate');
+                 INSERT INTO rail_lines VALUES(2, 2, 3, 5000, 70, 2, 'none', 'moderate');
+                 PRAGMA user_version = 14;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let reserve: i64 = connection
+            .query_row(
+                "SELECT maintenance_reserve_cents
+                 FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(reserve, 500_000);
     }
 
     #[test]

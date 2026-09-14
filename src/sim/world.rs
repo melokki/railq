@@ -128,6 +128,15 @@ pub fn generate_region(seed: u64) -> Region {
         rail_line(3, 2, 4, 31_000),
     ];
 
+    let rail_network = RailNetwork {
+        rail_stations,
+        rail_lines,
+    };
+    let mut finances = crate::model::RailAuthorityFinances::with_initial_public_allocation();
+    finances
+        .refresh_maintenance_reserve(&rail_network)
+        .expect("the fixed starter network maintenance reserve must fit");
+
     Region {
         name: name.clone(),
         railway_registration: RailwayRegistration {
@@ -138,11 +147,8 @@ pub fn generate_region(seed: u64) -> Region {
         settlements,
         rail_authority: RailAuthority {
             name: format!("{name} Rail Authority"),
-            rail_network: RailNetwork {
-                rail_stations,
-                rail_lines,
-            },
-            finances: crate::model::RailAuthorityFinances::with_initial_public_allocation(),
+            rail_network,
+            finances,
             infrastructure_projects: vec![],
             next_infrastructure_project_id: 1,
         },
@@ -287,6 +293,10 @@ mod tests {
         assert_eq!(network.rail_lines.len(), 3);
         assert!(region.rail_authority.infrastructure_projects.is_empty());
         assert_eq!(region.rail_authority.next_infrastructure_project_id, 1);
+        assert_eq!(
+            region.rail_authority.finances.maintenance_reserve,
+            Money::from_cents(2_075_000)
+        );
         assert_eq!(
             network
                 .rail_lines
