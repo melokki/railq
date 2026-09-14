@@ -18,7 +18,7 @@ use crate::{
             advance_infrastructure_planning, advance_project_construction, advance_project_funding,
             advance_project_scheduling, open_completed_infrastructure_projects,
         },
-        demand::replenish_directional_demand,
+        demand::{replenish_directional_demand, synchronize_directional_demand_with_network},
         economy::{EconomyError, duration_between_service_stops, quote_boarding_at_stop},
     },
 };
@@ -179,6 +179,7 @@ pub fn advance_time_with_arrivals(
     advance_project_scheduling(&mut state.region, effective_now)?;
     advance_project_construction(&mut state.region, effective_now)?;
     open_completed_infrastructure_projects(&mut state.region, effective_now)?;
+    synchronize_directional_demand_with_network(state, effective_now);
     Ok(settled)
 }
 
