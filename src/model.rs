@@ -1279,6 +1279,11 @@ fn ids_overlap<T: Eq>(left: &[T], right: &[T]) -> bool {
 /// the portion brought forward from an earlier budget cycle once fiscal
 /// periods are introduced.
 pub const PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION: Money = Money::from_cents(10_000_000);
+/// Compressed real-time fiscal cadence used while the broader RailQ calendar is still provisional.
+///
+/// Every six real hours the Authority receives another regional public allocation.
+pub const PROVISIONAL_AUTHORITY_FISCAL_PERIOD: DurationSeconds =
+    DurationSeconds::from_seconds(6 * 60 * 60);
 /// Provisional maintenance reserve per physical track-kilometre and budget cycle.
 ///
 /// This is deliberately a simple balancing value until RailQ models actual
@@ -1304,6 +1309,8 @@ pub struct RailAuthorityFinances {
     pub regional_public_allocation: Money,
     #[serde(default)]
     pub infrastructure_access_fee_revenue: Money,
+    #[serde(default)]
+    pub next_fiscal_period_at: Option<UtcSeconds>,
 }
 
 const fn default_regional_public_allocation() -> Money {
@@ -1319,6 +1326,7 @@ impl Default for RailAuthorityFinances {
             carried_over_funds: Money::ZERO,
             regional_public_allocation: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
             infrastructure_access_fee_revenue: Money::ZERO,
+            next_fiscal_period_at: None,
         }
     }
 }
@@ -1333,8 +1341,17 @@ impl RailAuthorityFinances {
         }
     }
 
-    /// Deposits one regional public-allocation cycle into the Authority
-    /// treasury. Fiscal timing is intentionally introduced later.
+    /// Starts the compressed Authority fiscal calendar from a known game timestamp.
+    pub fn initialize_fiscal_calendar(
+        &mut self,
+        started_at: UtcSeconds,
+    ) -> Result<UtcSeconds, CalculationError> {
+        let next = started_at.checked_add(PROVISIONAL_AUTHORITY_FISCAL_PERIOD)?;
+        self.next_fiscal_period_at = Some(next);
+        Ok(next)
+    }
+
+    /// Deposits one regional public-allocation cycle into the Authority treasury.
     pub fn receive_regional_public_allocation(&mut self) -> Result<Money, CalculationError> {
         self.treasury = self.treasury.checked_add(self.regional_public_allocation)?;
         Ok(self.regional_public_allocation)
@@ -1931,6 +1948,7 @@ mod tests {
             carried_over_funds: Money::from_cents(100_000),
             regional_public_allocation: Money::from_cents(500_000),
             infrastructure_access_fee_revenue: Money::ZERO,
+            next_fiscal_period_at: None,
         };
 
         assert_eq!(
@@ -2025,6 +2043,7 @@ mod tests {
             carried_over_funds: Money::ZERO,
             regional_public_allocation: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
             infrastructure_access_fee_revenue: Money::ZERO,
+            next_fiscal_period_at: None,
         };
 
         assert_eq!(

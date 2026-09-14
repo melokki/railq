@@ -47,7 +47,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 22;
+pub const SAVE_VERSION: u32 = 23;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -392,7 +392,8 @@ CREATE TABLE IF NOT EXISTS rail_authority_finances (
     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
     regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0),
-    infrastructure_access_fee_revenue_cents INTEGER NOT NULL CHECK (infrastructure_access_fee_revenue_cents >= 0)
+    infrastructure_access_fee_revenue_cents INTEGER NOT NULL CHECK (infrastructure_access_fee_revenue_cents >= 0),
+    next_fiscal_period_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS settlements (
     id TEXT PRIMARY KEY,
@@ -751,7 +752,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 | 17 | 18 | 19 | 20 | 21 => {}
+        16 | 17 | 18 | 19 | 20 | 21 | 22 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -794,8 +795,72 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
     }
     if current_version == 21 {
         migrate_v21_to_v22(connection, path)?;
+        current_version = 22;
+    }
+    if current_version == 22 {
+        migrate_v22_to_v23(connection, path)?;
     }
     Ok(())
+}
+
+fn migrate_v22_to_v23(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v22 to v23 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let finances_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'rail_authority_finances'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect Authority finances during v23 migration in", path, source))?;
+        if finances_exist != 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE rail_authority_finances
+                     ADD COLUMN next_fiscal_period_at INTEGER;",
+                )
+                .map_err(|source| db_error("add Rail Authority fiscal calendar to", path, source))?;
+        }
+
+        let game_meta_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'game_meta'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect game metadata during v23 migration in", path, source))?;
+        if finances_exist != 0 && game_meta_exists != 0 {
+            connection
+                .execute_batch(
+                    "UPDATE rail_authority_finances
+                     SET next_fiscal_period_at = (
+                         SELECT last_processed_at + 21600
+                         FROM game_meta
+                         WHERE singleton = 1
+                     )
+                     WHERE singleton = 1;",
+                )
+                .map_err(|source| db_error("seed Rail Authority fiscal calendar in", path, source))?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 23_u32)
+            .map_err(|source| db_error("write v23 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v22 to v23 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
 }
 
 fn catalogue_model_for_persisted_id(model_id: &str) -> Option<&'static TrainModel> {
@@ -2769,8 +2834,9 @@ fn insert_state(
             "INSERT INTO rail_authority_finances(
                  singleton, treasury_cents, maintenance_reserve_cents,
                  committed_investment_cents, carried_over_funds_cents,
-                 regional_public_allocation_cents, infrastructure_access_fee_revenue_cents
-             ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6)",
+                 regional_public_allocation_cents, infrastructure_access_fee_revenue_cents,
+                 next_fiscal_period_at
+             ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 authority_finances.treasury.cents(),
                 authority_finances.maintenance_reserve.cents(),
@@ -2778,6 +2844,9 @@ fn insert_state(
                 authority_finances.carried_over_funds.cents(),
                 authority_finances.regional_public_allocation.cents(),
                 authority_finances.infrastructure_access_fee_revenue.cents(),
+                authority_finances
+                    .next_fiscal_period_at
+                    .map(UtcSeconds::unix_seconds),
             ],
         )
         .map_err(|source| db_error("write Rail Authority finances to", path, source))?;
@@ -3523,11 +3592,12 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         carried_over_funds,
         regional_public_allocation,
         infrastructure_access_fee_revenue,
-    ): (i64, i64, i64, i64, i64, i64) = connection
+        next_fiscal_period_at,
+    ): (i64, i64, i64, i64, i64, i64, Option<i64>) = connection
         .query_row(
             "SELECT treasury_cents, maintenance_reserve_cents, committed_investment_cents,
                     carried_over_funds_cents, regional_public_allocation_cents,
-                    infrastructure_access_fee_revenue_cents
+                    infrastructure_access_fee_revenue_cents, next_fiscal_period_at
              FROM rail_authority_finances WHERE singleton = 1",
             [],
             |row| {
@@ -3538,6 +3608,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )
@@ -3549,6 +3620,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         carried_over_funds: Money::from_cents(carried_over_funds),
         regional_public_allocation: Money::from_cents(regional_public_allocation),
         infrastructure_access_fee_revenue: Money::from_cents(infrastructure_access_fee_revenue),
+        next_fiscal_period_at: next_fiscal_period_at.map(UtcSeconds::from_unix_seconds),
     };
 
     let settlements = query_all(
@@ -5466,6 +5538,7 @@ mod tests {
             carried_over_funds: Money::from_cents(750_000),
             regional_public_allocation: Money::from_cents(3_000_000),
             infrastructure_access_fee_revenue: Money::from_cents(425_000),
+            next_fiscal_period_at: Some(UtcSeconds::from_unix_seconds(25_000)),
         };
 
         slot.save(&state).unwrap();
@@ -6311,6 +6384,50 @@ mod tests {
         assert_eq!(journey_train_id, train_id);
         assert_eq!(model_id, "helvetra-r70");
         assert_eq!(foreign_key_violations, 0);
+    }
+
+    #[test]
+    fn v22_schema_starts_the_next_authority_fiscal_period_from_last_processed_time() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
+                     regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0),
+                     infrastructure_access_fee_revenue_cents INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO rail_authority_finances VALUES(1, 10000000, 500000, 0, 0, 10000000, 0);
+                 CREATE TABLE game_meta (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     world_seed TEXT NOT NULL,
+                     last_processed_at INTEGER NOT NULL
+                 );
+                 INSERT INTO game_meta VALUES(1, '42', 1000);
+                 PRAGMA user_version = 22;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let next_fiscal_period_at: i64 = connection
+            .query_row(
+                "SELECT next_fiscal_period_at FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(next_fiscal_period_at, 1000 + 6 * 60 * 60);
     }
 
     #[test]

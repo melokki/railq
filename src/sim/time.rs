@@ -15,8 +15,9 @@ use crate::{
     },
     sim::{
         authority::{
-            advance_infrastructure_planning, advance_project_construction, advance_project_funding,
-            advance_project_scheduling, open_completed_infrastructure_projects,
+            advance_authority_fiscal_periods, advance_infrastructure_planning,
+            advance_project_construction, advance_project_funding, advance_project_scheduling,
+            open_completed_infrastructure_projects,
         },
         demand::{replenish_directional_demand, synchronize_directional_demand_with_network},
         economy::{EconomyError, duration_between_service_stops, quote_boarding_at_stop},
@@ -174,6 +175,7 @@ pub fn advance_time_with_arrivals(
     }
 
     replenish_directional_demand(state, effective_now);
+    advance_authority_fiscal_periods(&mut state.region, effective_now)?;
     advance_infrastructure_planning(&mut state.region, state.world_seed, effective_now)?;
     advance_project_funding(&mut state.region, effective_now)?;
     advance_project_scheduling(&mut state.region, effective_now)?;

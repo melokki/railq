@@ -11,8 +11,9 @@ use crate::model::{
     CalculationError, ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
     GameState, InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
     InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline, Money,
-    MoneyPerKilometre, PlannedRailLine, PlannedRailStation, RailLine, RailLineId, RailStation,
-    RailStationId, Region, SettlementId, SpeedKilometresPerHour, TrackCount, UtcSeconds,
+    MoneyPerKilometre, PlannedRailLine, PlannedRailStation, PROVISIONAL_AUTHORITY_FISCAL_PERIOD,
+    RailLine, RailLineId, RailStation, RailStationId, Region, SettlementId, SpeedKilometresPerHour,
+    TrackCount, UtcSeconds,
 };
 
 /// One provisional new-line opportunity evaluated by the Rail Authority.
@@ -216,6 +217,53 @@ pub fn contribute_to_infrastructure_project(
     }
     state.player_company.funds = funds_after;
     Ok(())
+}
+
+
+/// Advances the Rail Authority's compressed fiscal calendar.
+///
+/// Each due period pays the previous maintenance reserve, carries forward the
+/// remaining uncommitted investment, deposits the recurring regional public
+/// allocation, and reserves maintenance for the next period. Multiple missed periods are processed
+/// when RailQ is reopened after a longer offline gap.
+pub fn advance_authority_fiscal_periods(
+    region: &mut Region,
+    now: UtcSeconds,
+) -> Result<u32, CalculationError> {
+    let authority = &mut region.rail_authority;
+    if authority.finances.next_fiscal_period_at.is_none() {
+        authority.finances.initialize_fiscal_calendar(now)?;
+        return Ok(0);
+    }
+
+    let mut processed = 0_u32;
+    loop {
+        let Some(next_period) = authority.finances.next_fiscal_period_at else {
+            break;
+        };
+        if next_period > now {
+            break;
+        }
+
+        let maintenance_paid = authority.finances.maintenance_reserve;
+        authority.finances.treasury = authority
+            .finances
+            .treasury
+            .checked_sub(maintenance_paid)?;
+        authority.finances.maintenance_reserve = Money::ZERO;
+        authority.finances.carried_over_funds = authority.finances.uncommitted_investment()?;
+        authority.finances.receive_regional_public_allocation()?;
+        authority
+            .finances
+            .refresh_maintenance_reserve(&authority.rail_network)?;
+        authority.finances.next_fiscal_period_at =
+            Some(next_period.checked_add(PROVISIONAL_AUTHORITY_FISCAL_PERIOD)?);
+        processed = processed.checked_add(1).ok_or(CalculationError::Overflow {
+            operation: "Rail Authority fiscal period count",
+        })?;
+    }
+
+    Ok(processed)
 }
 
 /// Advances the early planning lifecycle and opens the next highest-ranked
@@ -950,12 +998,49 @@ mod tests {
     };
 
     use super::{
-        InfrastructureProjectActionError, advance_infrastructure_planning,
-        advance_project_construction, advance_project_funding, advance_project_scheduling,
+        InfrastructureProjectActionError, advance_authority_fiscal_periods,
+        advance_infrastructure_planning, advance_project_construction, advance_project_funding,
+        advance_project_scheduling,
         cancel_infrastructure_project, contribute_to_infrastructure_project,
         estimated_connection_cost, evaluate_connection_candidates, new_line_construction_duration,
         open_completed_infrastructure_projects, project_from_candidate,
     };
+
+    #[test]
+    fn fiscal_period_deposits_public_allocation_and_advances_schedule() {
+        let started = UtcSeconds::from_unix_seconds(10_000);
+        let mut state = create_new_game(42, "One More Prime", started);
+        let allocation = state
+            .region
+            .rail_authority
+            .finances
+            .regional_public_allocation;
+        let treasury_before = state.region.rail_authority.finances.treasury;
+        let maintenance_paid = state.region.rail_authority.finances.maintenance_reserve;
+        let next = state
+            .region
+            .rail_authority
+            .finances
+            .next_fiscal_period_at
+            .unwrap();
+
+        let processed = advance_authority_fiscal_periods(&mut state.region, next).unwrap();
+
+        assert_eq!(processed, 1);
+        assert_eq!(
+            state.region.rail_authority.finances.treasury,
+            treasury_before
+                .checked_sub(maintenance_paid)
+                .unwrap()
+                .checked_add(allocation)
+                .unwrap()
+        );
+        assert!(state.region.rail_authority.finances.carried_over_funds > Money::ZERO);
+        assert_eq!(
+            state.region.rail_authority.finances.next_fiscal_period_at,
+            Some(UtcSeconds::from_unix_seconds(next.unix_seconds() + 6 * 60 * 60))
+        );
+    }
 
     #[test]
     fn starter_region_exposes_one_candidate_per_unconnected_settlement() {

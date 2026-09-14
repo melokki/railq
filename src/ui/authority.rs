@@ -235,12 +235,12 @@ fn render_wide(
     selection: &mut ProjectSelection,
 ) {
     let [summary_area, body_area] =
-        Layout::vertical([Constraint::Length(9), Constraint::Fill(1)]).areas(area);
+        Layout::vertical([Constraint::Length(10), Constraint::Fill(1)]).areas(area);
     let [finance_area, programme_area] =
         Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
             .spacing(1)
             .areas(summary_area);
-    render_finances(frame, finance_area, state);
+    render_finances(frame, finance_area, state, now);
     render_programme(frame, programme_area, state);
 
     let [projects_area, inspector_area] =
@@ -259,12 +259,12 @@ fn render_compact(
     selection: &mut ProjectSelection,
 ) {
     let [summary_area, projects_area, inspector_area] = Layout::vertical([
-        Constraint::Length(8),
+        Constraint::Length(9),
         Constraint::Length(8),
         Constraint::Fill(1),
     ])
     .areas(area);
-    render_finances(frame, summary_area, state);
+    render_finances(frame, summary_area, state, now);
     render_projects(frame, projects_area, state, now, selection, true);
     render_project_inspector(frame, inspector_area, state, now, selection);
 }
@@ -279,7 +279,7 @@ fn render_tiny(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSeconds
     );
 }
 
-fn render_finances(frame: &mut Frame, area: Rect, state: &GameState) {
+fn render_finances(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSeconds) {
     let authority = &state.region.rail_authority;
     let finances = &authority.finances;
     let available = finances
@@ -304,6 +304,10 @@ fn render_finances(frame: &mut Frame, area: Rect, state: &GameState) {
             "Access-fee revenue",
             finances.infrastructure_access_fee_revenue,
         ),
+        finances
+            .next_fiscal_period_at
+            .map(|timestamp| schedule_line("Next fiscal period", timestamp, now))
+            .unwrap_or_else(|| value_line("Next fiscal period", "Scheduling pending")),
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -1176,6 +1180,10 @@ pub fn render(state: &GameState, now: UtcSeconds) -> String {
         format::money(finances.maintenance_reserve)
     )
     .expect("writing to String cannot fail");
+    if let Some(next) = finances.next_fiscal_period_at {
+        writeln!(output, "Next fiscal period: {}", relative_time(next, now))
+            .expect("writing to String cannot fail");
+    }
     writeln!(
         output,
         "Construction slots: {}/{} reserved",
@@ -1226,6 +1234,7 @@ mod tests {
         let output = render(&state, UtcSeconds::from_unix_seconds(0));
         assert!(output.contains("Treasury:"));
         assert!(output.contains("Available investment:"));
+        assert!(output.contains("Next fiscal period:"));
         assert!(output.contains("Projects:"));
         assert!(output.contains(" → "));
     }
