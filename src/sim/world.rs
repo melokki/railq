@@ -249,7 +249,10 @@ pub fn settlement_positions_for_existing_region(seed: u64, count: usize) -> Vec<
         WorldPosition::new(0, 31),
     ];
 
-    let mut positions = ANCHORS.into_iter().take(count.min(ANCHORS.len())).collect::<Vec<_>>();
+    let mut positions = ANCHORS
+        .into_iter()
+        .take(count.min(ANCHORS.len()))
+        .collect::<Vec<_>>();
     let mut geography = ChaCha8Rng::seed_from_u64(seed ^ 0x5241_494c_5147_454f);
 
     while positions.len() < count {
@@ -271,7 +274,10 @@ pub fn settlement_positions_for_existing_region(seed: u64, count: usize) -> Vec<
 
         let fallback_index = i32::try_from(positions.len()).unwrap_or(i32::MAX);
         positions.push(accepted.unwrap_or_else(|| {
-            WorldPosition::new(-54 + (fallback_index % 7) * 18, 48 + (fallback_index / 7) * 18)
+            WorldPosition::new(
+                -54 + (fallback_index % 7) * 18,
+                48 + (fallback_index / 7) * 18,
+            )
         }));
     }
 

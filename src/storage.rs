@@ -29,18 +29,19 @@ use crate::{
         Electrification, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState,
         InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
         InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline,
-        Journey, JourneyId,
-        JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre, OriginDestinationDemand,
-        PassengerArrivalRate, PassengerCapacity, PassengerService, PlannedRailLine,
-        PlannedRailStation, PlayerCompany, RailAuthority, RailAuthorityFinances, RailLine,
-        RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
+        Journey, JourneyId, JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre,
+        OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
+        PlannedRailLine, PlannedRailStation, PlayerCompany, RailAuthority, RailAuthorityFinances,
+        RailLine, RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
         ServiceId, Settlement, SettlementId, SpeedKilometresPerHour, SpeedMetresPerSecond,
         TrackCount, Train, TrainId, TrainModelId, TrainNickname, TrainStatus, UtcSeconds,
         VehicleKeeperMark, WorldPosition,
     },
     sim::{
         services::{path_between_stations, service_path_for_stops},
-        world::{railway_registration_for_existing_region, settlement_positions_for_existing_region},
+        world::{
+            railway_registration_for_existing_region, settlement_positions_for_existing_region,
+        },
     },
 };
 
@@ -2496,7 +2497,9 @@ fn migrate_v18_to_v19(connection: &Connection, path: &Path) -> Result<(), SaveSl
                          ), 0)
                          WHERE kind = 'new_line' AND estimated_cost_cents = 0;",
                     )
-                    .map_err(|source| db_error("backfill project estimated cost in", path, source))?;
+                    .map_err(|source| {
+                        db_error("backfill project estimated cost in", path, source)
+                    })?;
             }
         }
 
@@ -2536,27 +2539,50 @@ fn migrate_v19_to_v20(connection: &Connection, path: &Path) -> Result<(), SaveSl
                 [],
                 |row| row.get(0),
             )
-            .map_err(|source| db_error("read world seed for Settlement coordinate migration from", path, source))?;
-        let world_seed = world_seed_text
-            .parse::<u64>()
-            .map_err(|_| SaveSlotError::InvalidSave {
-                path: path.to_path_buf(),
-                source: Box::new(SaveCodecError::InvalidValue { field: "World Seed" }),
+            .map_err(|source| {
+                db_error(
+                    "read world seed for Settlement coordinate migration from",
+                    path,
+                    source,
+                )
             })?;
+        let world_seed =
+            world_seed_text
+                .parse::<u64>()
+                .map_err(|_| SaveSlotError::InvalidSave {
+                    path: path.to_path_buf(),
+                    source: Box::new(SaveCodecError::InvalidValue {
+                        field: "World Seed",
+                    }),
+                })?;
         let settlement_count: usize = connection
-            .query_row("SELECT COUNT(*) FROM settlements", [], |row| row.get::<_, i64>(0))
-            .map_err(|source| db_error("count Settlements for coordinate migration in", path, source))?
+            .query_row("SELECT COUNT(*) FROM settlements", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|source| {
+                db_error(
+                    "count Settlements for coordinate migration in",
+                    path,
+                    source,
+                )
+            })?
             .try_into()
             .map_err(|_| SaveSlotError::InvalidSave {
                 path: path.to_path_buf(),
-                source: Box::new(SaveCodecError::InvalidValue { field: "Settlement Count" }),
+                source: Box::new(SaveCodecError::InvalidValue {
+                    field: "Settlement Count",
+                }),
             })?;
         let positions = settlement_positions_for_existing_region(world_seed, settlement_count);
         for (sequence, position) in positions.into_iter().enumerate() {
             connection
                 .execute(
                     "UPDATE settlements SET world_x = ?1, world_y = ?2 WHERE sequence = ?3",
-                    params![position.x, position.y, i64::try_from(sequence).unwrap_or(i64::MAX)],
+                    params![
+                        position.x,
+                        position.y,
+                        i64::try_from(sequence).unwrap_or(i64::MAX)
+                    ],
                 )
                 .map_err(|source| db_error("backfill Settlement coordinates in", path, source))?;
         }
@@ -3884,16 +3910,6 @@ fn row_u64(row: &rusqlite::Row<'_>, index: usize, field: &'static str) -> rusqli
     u64::try_from(value).map_err(|_| conversion_error(index, field))
 }
 
-fn optional_row_u64(
-    row: &rusqlite::Row<'_>,
-    index: usize,
-    field: &'static str,
-) -> rusqlite::Result<Option<u64>> {
-    row.get::<_, Option<i64>>(index)?
-        .map(|value| u64::try_from(value).map_err(|_| conversion_error(index, field)))
-        .transpose()
-}
-
 fn optional_row_u32(
     row: &rusqlite::Row<'_>,
     index: usize,
@@ -3914,14 +3930,6 @@ fn conversion_error(index: usize, field: &'static str) -> rusqlite::Error {
 
 fn from_db_u64(value: i64, field: &'static str) -> Result<u64, &'static str> {
     u64::try_from(value).map_err(|_| field)
-}
-
-fn optional_id(
-    value: Option<u64>,
-    field: &'static str,
-    path: &Path,
-) -> Result<Option<i64>, SaveSlotError> {
-    value.map(|value| to_db_u64(value, field, path)).transpose()
 }
 
 fn db_error(action: &'static str, path: &Path, source: rusqlite::Error) -> SaveSlotError {
@@ -4546,8 +4554,8 @@ fn validate_infrastructure_projects(
             project.status,
             InfrastructureProjectStatus::Open | InfrastructureProjectStatus::Cancelled
         ) {
-            total_project_commitments = total_project_commitments
-                .checked_add(project.funding.authority_committed)?;
+            total_project_commitments =
+                total_project_commitments.checked_add(project.funding.authority_committed)?;
         }
     }
     if total_project_commitments > authority.finances.committed_investment {
@@ -6484,7 +6492,7 @@ mod tests {
                 let model = model_for_train(train).unwrap();
                 LegacyTrainV1 {
                     id: train.id,
-                    status: train.status,
+                    status: train.status.clone(),
                     model_name: model.name().to_owned(),
                     original_purchase_price: train.original_purchase_price,
                     passenger_capacity: model.passenger_capacity(),

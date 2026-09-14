@@ -1978,7 +1978,12 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             items
         }
     } else if shell.active_view == View::Authority {
-        if state.region.rail_authority.infrastructure_projects.is_empty() {
+        if state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .is_empty()
+        {
             vec![FooterShortcut::disabled("↑↓", "Project")]
         } else {
             let mut items = vec![FooterShortcut::enabled(

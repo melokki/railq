@@ -70,11 +70,8 @@ pub fn replenish_directional_demand(state: &mut GameState, now: UtcSeconds) {
             pool.origin_station_id,
             pool.destination_station_id,
         );
-        let effective_elapsed_seconds = market_effective_elapsed_seconds(
-            interval_start,
-            effective_now,
-            market_opened_at,
-        );
+        let effective_elapsed_seconds =
+            market_effective_elapsed_seconds(interval_start, effective_now, market_opened_at);
         replenish_pool(pool, effective_elapsed_seconds, cap_duration_seconds);
     }
     state.last_processed_at = effective_now;
@@ -111,11 +108,8 @@ pub fn synchronize_directional_demand_with_network(state: &mut GameState, now: U
                 continue;
             }
 
-            let passenger_arrival_rate_per_hour = seeded_arrival_rate(
-                state.world_seed,
-                origin_station_id,
-                destination_station_id,
-            );
+            let passenger_arrival_rate_per_hour =
+                seeded_arrival_rate(state.world_seed, origin_station_id, destination_station_id);
             let mut pool = OriginDestinationDemand {
                 origin_station_id,
                 destination_station_id,
@@ -149,7 +143,10 @@ fn station_opening_times(region: &Region) -> HashMap<RailStationId, UtcSeconds> 
         let Some(completed_at) = project.timeline.completed_at else {
             continue;
         };
-        let InfrastructureProjectKind::NewLine { planned_stations, .. } = &project.kind else {
+        let InfrastructureProjectKind::NewLine {
+            planned_stations, ..
+        } = &project.kind
+        else {
             continue;
         };
 
@@ -228,8 +225,8 @@ fn market_effective_elapsed_seconds(
 
     let mature_start = start.max(boundaries[3]);
     if end > mature_start {
-        weighted_seconds = weighted_seconds
-            .saturating_add(u128::try_from(end - mature_start).unwrap_or(0));
+        weighted_seconds =
+            weighted_seconds.saturating_add(u128::try_from(end - mature_start).unwrap_or(0));
     }
 
     weighted_seconds
@@ -284,11 +281,11 @@ fn mix_seed(mut value: u64) -> u64 {
 mod tests {
     use crate::{
         model::{
-            DistanceMetres, DurationSeconds, InfrastructureProject, InfrastructureProjectFunding,
-            InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus,
-            InfrastructureProjectTimeline, Money, PassengerArrivalRate, PlannedRailLine,
-            PlannedRailStation, RailLine, RailLineId, RailStation, RailStationId,
-            ConstructionDifficulty, Electrification, SpeedKilometresPerHour, TrackCount, UtcSeconds,
+            ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
+            InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
+            InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline,
+            Money, PassengerArrivalRate, PlannedRailLine, PlannedRailStation, RailLine, RailLineId,
+            RailStation, RailStationId, SpeedKilometresPerHour, TrackCount, UtcSeconds,
         },
         sim::world::create_new_game,
     };
@@ -467,37 +464,37 @@ mod tests {
             .rail_authority
             .infrastructure_projects
             .push(InfrastructureProject {
-            id: InfrastructureProjectId::new_v4(),
-            kind: InfrastructureProjectKind::NewLine {
-                planned_stations: vec![PlannedRailStation {
-                    id: new_station_id,
-                    settlement_id,
-                }],
-                planned_lines: vec![PlannedRailLine {
-                    id: new_line_id,
-                    first_station_id: existing_station_ids[0],
-                    second_station_id: new_station_id,
-                    distance: DistanceMetres::new(20_000).unwrap(),
-                    speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
-                    track_count: TrackCount::SINGLE,
-                    electrification: Electrification::None,
-                    construction_difficulty: ConstructionDifficulty::Moderate,
-                }],
-            },
-            status: InfrastructureProjectStatus::Open,
-            timeline: InfrastructureProjectTimeline {
-                requested_at: UtcSeconds::from_unix_seconds(0),
-                review_started_at: None,
-                proposed_at: None,
-                approved_at: None,
-                funding_completed_at: None,
-                scheduled_start_at: None,
-                construction_started_at: None,
-                planned_completion_at: Some(opened_at),
-                completed_at: Some(opened_at),
-                deferred_at: None,
-                cancelled_at: None,
-            },
+                id: InfrastructureProjectId::new_v4(),
+                kind: InfrastructureProjectKind::NewLine {
+                    planned_stations: vec![PlannedRailStation {
+                        id: new_station_id,
+                        settlement_id,
+                    }],
+                    planned_lines: vec![PlannedRailLine {
+                        id: new_line_id,
+                        first_station_id: existing_station_ids[0],
+                        second_station_id: new_station_id,
+                        distance: DistanceMetres::new(20_000).unwrap(),
+                        speed_limit: SpeedKilometresPerHour::new(70).unwrap(),
+                        track_count: TrackCount::SINGLE,
+                        electrification: Electrification::None,
+                        construction_difficulty: ConstructionDifficulty::Moderate,
+                    }],
+                },
+                status: InfrastructureProjectStatus::Open,
+                timeline: InfrastructureProjectTimeline {
+                    requested_at: UtcSeconds::from_unix_seconds(0),
+                    review_started_at: None,
+                    proposed_at: None,
+                    approved_at: None,
+                    funding_completed_at: None,
+                    scheduled_start_at: None,
+                    construction_started_at: None,
+                    planned_completion_at: Some(opened_at),
+                    completed_at: Some(opened_at),
+                    deferred_at: None,
+                    cancelled_at: None,
+                },
                 funding: InfrastructureProjectFunding {
                     estimated_cost: Money::ZERO,
                     authority_committed: Money::ZERO,
@@ -541,12 +538,15 @@ mod tests {
             .rail_authority
             .infrastructure_projects
             .push(InfrastructureProject {
-            id: InfrastructureProjectId::new_v4(),
-            kind: InfrastructureProjectKind::NewLine {
-                planned_stations: vec![PlannedRailStation { id: new_station_id, settlement_id }],
-                planned_lines: vec![],
-            },
-            status: InfrastructureProjectStatus::Open,
+                id: InfrastructureProjectId::new_v4(),
+                kind: InfrastructureProjectKind::NewLine {
+                    planned_stations: vec![PlannedRailStation {
+                        id: new_station_id,
+                        settlement_id,
+                    }],
+                    planned_lines: vec![],
+                },
+                status: InfrastructureProjectStatus::Open,
                 timeline: InfrastructureProjectTimeline {
                     requested_at: opened_at,
                     review_started_at: None,

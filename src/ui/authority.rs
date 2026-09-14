@@ -64,8 +64,7 @@ impl ProjectSelection {
                 projects.iter().position(|project| {
                     !matches!(
                         project.status,
-                        InfrastructureProjectStatus::Open
-                            | InfrastructureProjectStatus::Cancelled
+                        InfrastructureProjectStatus::Open | InfrastructureProjectStatus::Cancelled
                     )
                 })
             })
@@ -80,7 +79,12 @@ impl ProjectSelection {
     }
 
     fn select_index(&mut self, state: &GameState, index: usize) {
-        let Some(project) = state.region.rail_authority.infrastructure_projects.get(index) else {
+        let Some(project) = state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .get(index)
+        else {
             return;
         };
         self.selected_project_id = Some(project.id);
@@ -134,21 +138,17 @@ fn render_wide(
 ) {
     let [summary_area, body_area] =
         Layout::vertical([Constraint::Length(9), Constraint::Fill(1)]).areas(area);
-    let [finance_area, programme_area] = Layout::horizontal([
-        Constraint::Percentage(58),
-        Constraint::Percentage(42),
-    ])
-    .spacing(1)
-    .areas(summary_area);
+    let [finance_area, programme_area] =
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .spacing(1)
+            .areas(summary_area);
     render_finances(frame, finance_area, state);
     render_programme(frame, programme_area, state);
 
-    let [projects_area, inspector_area] = Layout::horizontal([
-        Constraint::Percentage(58),
-        Constraint::Percentage(42),
-    ])
-    .spacing(1)
-    .areas(body_area);
+    let [projects_area, inspector_area] =
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .spacing(1)
+            .areas(body_area);
     render_projects(frame, projects_area, state, now, selection, false);
     render_project_inspector(frame, inspector_area, state, now, selection);
 }
@@ -269,7 +269,11 @@ fn render_programme(frame: &mut Frame, area: Rect, state: &GameState) {
             ),
         ]),
         status_count_line(projects, InfrastructureProjectStatus::Funding, "Funding"),
-        status_count_line(projects, InfrastructureProjectStatus::Scheduled, "Scheduled"),
+        status_count_line(
+            projects,
+            InfrastructureProjectStatus::Scheduled,
+            "Scheduled",
+        ),
         status_count_line(
             projects,
             InfrastructureProjectStatus::Construction,
@@ -318,27 +322,27 @@ fn render_projects(
         .iter()
         .enumerate()
         .map(|(index, project)| {
-        let scope = project_scope(state, project);
-        let status = project_status(project.status);
-        let next = project_next(project, now);
-        if compact {
-            Row::new(vec![
-                Cell::from(format!("{:02}", index + 1)),
-                Cell::from(scope),
-                Cell::from(status),
-            ])
-        } else {
-            Row::new(vec![
-                Cell::from(format!("{:02}", index + 1)),
-                Cell::from(scope),
-                Cell::from(status),
-                Cell::from(format::money(project.funding.estimated_cost)),
-                Cell::from(funding_percent(project)),
-                Cell::from(next),
-            ])
-        }
-    })
-    .collect::<Vec<_>>();
+            let scope = project_scope(state, project);
+            let status = project_status(project.status);
+            let next = project_next(project, now);
+            if compact {
+                Row::new(vec![
+                    Cell::from(format!("{:02}", index + 1)),
+                    Cell::from(scope),
+                    Cell::from(status),
+                ])
+            } else {
+                Row::new(vec![
+                    Cell::from(format!("{:02}", index + 1)),
+                    Cell::from(scope),
+                    Cell::from(status),
+                    Cell::from(format::money(project.funding.estimated_cost)),
+                    Cell::from(funding_percent(project)),
+                    Cell::from(next),
+                ])
+            }
+        })
+        .collect::<Vec<_>>();
 
     let (header, widths) = if compact {
         (
@@ -351,7 +355,7 @@ fn render_projects(
         )
     } else {
         (
-            Row::new(["#", "Project", "Status", "Cost", "Funded", "Next"])
+            Row::new(["#", "Project", "Status", "Cost", "Funded", "Next milestone"])
                 .style(theme::table_header()),
             vec![
                 Constraint::Length(3),
@@ -445,7 +449,10 @@ fn append_project_scope_details(
                 .map(|line| line.distance.metres())
                 .sum::<u64>();
             lines.push(Line::from(""));
-            lines.push(Line::styled("PLANNED INFRASTRUCTURE", theme::table_header()));
+            lines.push(Line::styled(
+                "PLANNED INFRASTRUCTURE",
+                theme::table_header(),
+            ));
             if let Some(route) = new_line_route_label(state, planned_stations, planned_lines) {
                 lines.push(Line::from(vec![
                     Span::styled("Route  ", theme::secondary()),
@@ -475,7 +482,11 @@ fn append_project_scope_details(
                             "{} km/h · {} track{} · {} · {} difficulty",
                             line.speed_limit.kilometres_per_hour(),
                             line.track_count.tracks(),
-                            if line.track_count.tracks() == 1 { "" } else { "s" },
+                            if line.track_count.tracks() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            },
                             electrification_label(line.electrification),
                             difficulty_label(line.construction_difficulty)
                         ),
@@ -503,18 +514,27 @@ fn append_project_scope_details(
         InfrastructureProjectKind::Electrification { rail_line_ids } => lines.push(Line::from(
             format!("Electrify {} segment(s)", rail_line_ids.len()),
         )),
-        InfrastructureProjectKind::Renewal { rail_line_ids } => {
-            lines.push(Line::from(format!("Renew {} segment(s)", rail_line_ids.len())))
-        }
+        InfrastructureProjectKind::Renewal { rail_line_ids } => lines.push(Line::from(format!(
+            "Renew {} segment(s)",
+            rail_line_ids.len()
+        ))),
         InfrastructureProjectKind::StationUpgrade { rail_station_ids } => lines.push(Line::from(
             format!("Upgrade {} station(s)", rail_station_ids.len()),
         )),
     }
 }
 
-fn append_timeline(lines: &mut Vec<Line<'static>>, project: &InfrastructureProject, now: UtcSeconds) {
+fn append_timeline(
+    lines: &mut Vec<Line<'static>>,
+    project: &InfrastructureProject,
+    now: UtcSeconds,
+) {
     lines.push(Line::styled("PROJECT TIMELINE", theme::table_header()));
-    lines.push(timestamp_line("Requested", project.timeline.requested_at, now));
+    lines.push(timestamp_line(
+        "Requested",
+        project.timeline.requested_at,
+        now,
+    ));
     if let Some(value) = project.timeline.approved_at {
         lines.push(timestamp_line("Approved", value, now));
     }
@@ -559,7 +579,10 @@ fn append_timeline(lines: &mut Vec<Line<'static>>, project: &InfrastructureProje
             let percent = if estimated == 0 {
                 0
             } else {
-                committed.saturating_mul(100).saturating_div(estimated).min(100) as u8
+                committed
+                    .saturating_mul(100)
+                    .saturating_div(estimated)
+                    .min(100) as u8
             };
             lines.push(progress_line("Progress", percent));
             if let Ok(gap) = project.funding.funding_gap() {
@@ -594,13 +617,19 @@ fn append_timeline(lines: &mut Vec<Line<'static>>, project: &InfrastructureProje
                     let progress = if duration == 0 {
                         100
                     } else {
-                        elapsed.min(duration).saturating_mul(100).saturating_div(duration) as u8
+                        elapsed
+                            .min(duration)
+                            .saturating_mul(100)
+                            .saturating_div(duration) as u8
                     };
 
                     lines.push(duration_line("Duration", duration));
                     lines.push(Line::from(vec![
                         Span::styled("Opens  ", theme::secondary()),
-                        Span::styled(format_project_timestamp(completion, now), theme::primary_value()),
+                        Span::styled(
+                            format_project_timestamp(completion, now),
+                            theme::primary_value(),
+                        ),
                     ]));
                     lines.push(Line::from(vec![
                         Span::styled("Remaining  ", theme::secondary()),
@@ -737,7 +766,10 @@ fn station_name(
     planned_stations: &[crate::model::PlannedRailStation],
     station_id: crate::model::RailStationId,
 ) -> String {
-    if let Some(station) = planned_stations.iter().find(|station| station.id == station_id) {
+    if let Some(station) = planned_stations
+        .iter()
+        .find(|station| station.id == station_id)
+    {
         return settlement_name(state, station.settlement_id);
     }
 
@@ -796,39 +828,42 @@ fn funding_percent(project: &InfrastructureProject) -> String {
     if estimated == 0 {
         return "—".into();
     }
-    let percent = committed.saturating_mul(100).saturating_div(estimated).min(100);
+    let percent = committed
+        .saturating_mul(100)
+        .saturating_div(estimated)
+        .min(100);
     format!("{percent}%")
 }
 
 fn project_next(project: &InfrastructureProject, now: UtcSeconds) -> String {
     match project.status {
-        InfrastructureProjectStatus::Requested => "Awaiting review".into(),
-        InfrastructureProjectStatus::UnderReview => "Review underway".into(),
-        InfrastructureProjectStatus::Proposed => "Decision pending".into(),
-        InfrastructureProjectStatus::Approved => "Funding next".into(),
-        InfrastructureProjectStatus::Deferred => "Deferred".into(),
+        InfrastructureProjectStatus::Requested => "Review pending".into(),
+        InfrastructureProjectStatus::UnderReview => "Decision pending".into(),
+        InfrastructureProjectStatus::Proposed => "Approval pending".into(),
+        InfrastructureProjectStatus::Approved => "Funding pending".into(),
+        InfrastructureProjectStatus::Deferred => "No action".into(),
         InfrastructureProjectStatus::Funding => project
             .funding
             .funding_gap()
             .map(|gap| {
                 if gap <= Money::ZERO {
-                    "Fully funded".into()
+                    "Scheduling pending".into()
                 } else {
-                    format!("Gap {}", format::money(gap))
+                    format!("Still needs {}", format::money(gap))
                 }
             })
-            .unwrap_or_else(|_| "Funding".into()),
+            .unwrap_or_else(|_| "Funding pending".into()),
         InfrastructureProjectStatus::Scheduled => project
             .timeline
             .scheduled_start_at
-            .map(|value| relative_time(value, now))
-            .unwrap_or_else(|| "Queued".into()),
+            .map(|value| format!("Starts {}", relative_time(value, now)))
+            .unwrap_or_else(|| "Construction slot pending".into()),
         InfrastructureProjectStatus::Construction => project
             .timeline
             .planned_completion_at
-            .map(|value| relative_time(value, now))
-            .unwrap_or_else(|| "In progress".into()),
-        InfrastructureProjectStatus::Open => "Open".into(),
+            .map(|value| format!("Opens {}", relative_time(value, now)))
+            .unwrap_or_else(|| "Opening pending".into()),
+        InfrastructureProjectStatus::Open => "Complete".into(),
         InfrastructureProjectStatus::Cancelled => "Cancelled".into(),
     }
 }
@@ -850,7 +885,10 @@ fn value_line(label: &str, value: &str) -> Line<'static> {
 fn schedule_line(label: &str, timestamp: UtcSeconds, now: UtcSeconds) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label}  "), theme::secondary()),
-        Span::styled(format_project_timestamp(timestamp, now), theme::primary_value()),
+        Span::styled(
+            format_project_timestamp(timestamp, now),
+            theme::primary_value(),
+        ),
         Span::styled(" · ", theme::secondary()),
         Span::styled(relative_time(timestamp, now), theme::primary_value()),
     ])
@@ -904,9 +942,8 @@ fn civil_date_from_unix_days(days: i64) -> (i64, i64, i64) {
     let shifted = days.saturating_add(719_468);
     let era = shifted.div_euclid(146_097);
     let day_of_era = shifted - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524
-        - day_of_era / 146_096)
-        / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let mut year = year_of_era + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_prime = (5 * day_of_year + 2) / 153;
@@ -917,9 +954,7 @@ fn civil_date_from_unix_days(days: i64) -> (i64, i64, i64) {
 }
 
 fn relative_time(timestamp: UtcSeconds, now: UtcSeconds) -> String {
-    let delta = timestamp
-        .unix_seconds()
-        .saturating_sub(now.unix_seconds());
+    let delta = timestamp.unix_seconds().saturating_sub(now.unix_seconds());
     if delta == 0 {
         return "now".into();
     }
@@ -999,8 +1034,7 @@ pub fn render(state: &GameState, now: UtcSeconds) -> String {
     writeln!(output, "{}", authority.name).expect("writing to String cannot fail");
     writeln!(output, "Treasury: {}", format::money(finances.treasury))
         .expect("writing to String cannot fail");
-    writeln!(output, "Available investment: {available}")
-        .expect("writing to String cannot fail");
+    writeln!(output, "Available investment: {available}").expect("writing to String cannot fail");
     writeln!(
         output,
         "Maintenance reserve: {}",
@@ -1057,7 +1091,6 @@ mod tests {
         assert!(output.contains("Projects:"));
         assert!(output.contains(" → "));
     }
-
 
     #[test]
     fn formats_project_times_without_seconds() {

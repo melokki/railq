@@ -10,11 +10,9 @@ use std::{error::Error, fmt};
 use crate::model::{
     CalculationError, ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
     InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
-    InfrastructureProjectKind,
-    InfrastructureProjectStatus, InfrastructureProjectTimeline, Money, MoneyPerKilometre,
-    PlannedRailLine, PlannedRailStation, RailLine, RailLineId, RailStation, RailStationId, Region,
-    SettlementId,
-    SpeedKilometresPerHour, TrackCount, UtcSeconds,
+    InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline, Money,
+    MoneyPerKilometre, PlannedRailLine, PlannedRailStation, RailLine, RailLineId, RailStation,
+    RailStationId, Region, SettlementId, SpeedKilometresPerHour, TrackCount, UtcSeconds,
 };
 
 /// One provisional new-line opportunity evaluated by the Rail Authority.
@@ -63,7 +61,9 @@ const HIGH_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 4 * 60;
 /// Why an explicit Rail Authority project action cannot be completed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InfrastructureProjectActionError {
-    ProjectNotFound { project_id: InfrastructureProjectId },
+    ProjectNotFound {
+        project_id: InfrastructureProjectId,
+    },
     CannotCancel {
         project_id: InfrastructureProjectId,
         status: InfrastructureProjectStatus,
@@ -75,7 +75,11 @@ impl fmt::Display for InfrastructureProjectActionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ProjectNotFound { project_id } => {
-                write!(formatter, "Infrastructure Project {} was not found", project_id.uuid())
+                write!(
+                    formatter,
+                    "Infrastructure Project {} was not found",
+                    project_id.uuid()
+                )
             }
             Self::CannotCancel { project_id, status } => write!(
                 formatter,
@@ -119,10 +123,7 @@ pub fn cancel_infrastructure_project(
             | InfrastructureProjectStatus::Open
             | InfrastructureProjectStatus::Cancelled
     ) {
-        return Err(InfrastructureProjectActionError::CannotCancel {
-            project_id,
-            status,
-        });
+        return Err(InfrastructureProjectActionError::CannotCancel { project_id, status });
     }
 
     let authority_committed = authority.infrastructure_projects[index]
@@ -203,8 +204,7 @@ pub fn advance_project_funding(
     });
 
     for index in indices {
-        if authority.infrastructure_projects[index].status
-            == InfrastructureProjectStatus::Approved
+        if authority.infrastructure_projects[index].status == InfrastructureProjectStatus::Approved
         {
             authority.infrastructure_projects[index].status = InfrastructureProjectStatus::Funding;
         }
@@ -226,7 +226,9 @@ pub fn advance_project_funding(
         if available <= Money::ZERO {
             continue;
         }
-        let gap = authority.infrastructure_projects[index].funding.funding_gap()?;
+        let gap = authority.infrastructure_projects[index]
+            .funding
+            .funding_gap()?;
         let commitment = available.min(gap);
         authority.finances.committed_investment = authority
             .finances
@@ -245,7 +247,6 @@ pub fn advance_project_funding(
 
     Ok(())
 }
-
 
 /// Reserves available construction capacity for fully funded projects in
 /// funding-completion order. Projects that cannot reserve a slot remain in
@@ -329,7 +330,6 @@ pub fn advance_project_construction(
 
     Ok(())
 }
-
 
 /// Opens completed New Line projects and materialises their approved Stations
 /// and physical Rail Lines into the public network.
@@ -827,11 +827,11 @@ mod tests {
     };
 
     use super::{
-        advance_infrastructure_planning, advance_project_construction, advance_project_funding,
-        advance_project_scheduling, cancel_infrastructure_project, estimated_connection_cost,
-        evaluate_connection_candidates, new_line_construction_duration,
-        open_completed_infrastructure_projects, project_from_candidate,
-        InfrastructureProjectActionError,
+        InfrastructureProjectActionError, advance_infrastructure_planning,
+        advance_project_construction, advance_project_funding, advance_project_scheduling,
+        cancel_infrastructure_project, estimated_connection_cost, evaluate_connection_candidates,
+        new_line_construction_duration, open_completed_infrastructure_projects,
+        project_from_candidate,
     };
 
     #[test]
@@ -1186,8 +1186,14 @@ mod tests {
         .unwrap();
         let project = &region.rail_authority.infrastructure_projects[0];
         assert_eq!(project.status, InfrastructureProjectStatus::Construction);
-        assert_eq!(project.timeline.construction_started_at, Some(scheduled_start));
-        assert_eq!(project.timeline.planned_completion_at, Some(expected_completion));
+        assert_eq!(
+            project.timeline.construction_started_at,
+            Some(scheduled_start)
+        );
+        assert_eq!(
+            project.timeline.planned_completion_at,
+            Some(expected_completion)
+        );
 
         advance_project_construction(
             &mut region,
@@ -1195,10 +1201,15 @@ mod tests {
         )
         .unwrap();
         let project = &region.rail_authority.infrastructure_projects[0];
-        assert_eq!(project.timeline.construction_started_at, Some(scheduled_start));
-        assert_eq!(project.timeline.planned_completion_at, Some(expected_completion));
+        assert_eq!(
+            project.timeline.construction_started_at,
+            Some(scheduled_start)
+        );
+        assert_eq!(
+            project.timeline.planned_completion_at,
+            Some(expected_completion)
+        );
     }
-
 
     #[test]
     fn completed_new_line_materialises_network_and_spends_commitment_once() {
@@ -1232,8 +1243,14 @@ mod tests {
             UtcSeconds::from_unix_seconds(completion.unix_seconds() - 1),
         )
         .unwrap();
-        assert_eq!(region.rail_authority.rail_network.rail_stations.len(), station_count);
-        assert_eq!(region.rail_authority.rail_network.rail_lines.len(), line_count);
+        assert_eq!(
+            region.rail_authority.rail_network.rail_stations.len(),
+            station_count
+        );
+        assert_eq!(
+            region.rail_authority.rail_network.rail_lines.len(),
+            line_count
+        );
 
         open_completed_infrastructure_projects(
             &mut region,
@@ -1244,32 +1261,45 @@ mod tests {
         let opened = &region.rail_authority.infrastructure_projects[0];
         assert_eq!(opened.status, InfrastructureProjectStatus::Open);
         assert_eq!(opened.timeline.completed_at, Some(completion));
-        assert_eq!(region.rail_authority.rail_network.rail_stations.len(), station_count + 1);
-        assert_eq!(region.rail_authority.rail_network.rail_lines.len(), line_count + 1);
-        assert!(region
-            .rail_authority
-            .rail_network
-            .rail_stations
-            .iter()
-            .any(|station| station.id == planned_station.id
-                && station.settlement_id == planned_station.settlement_id));
-        assert!(region
-            .rail_authority
-            .rail_network
-            .rail_lines
-            .iter()
-            .any(|line| line.id == planned_line.id
-                && line.first_station_id == planned_line.first_station_id
-                && line.second_station_id == planned_line.second_station_id
-                && line.distance == planned_line.distance
-                && line.speed_limit == planned_line.speed_limit
-                && line.track_count == planned_line.track_count
-                && line.electrification == planned_line.electrification));
+        assert_eq!(
+            region.rail_authority.rail_network.rail_stations.len(),
+            station_count + 1
+        );
+        assert_eq!(
+            region.rail_authority.rail_network.rail_lines.len(),
+            line_count + 1
+        );
+        assert!(
+            region
+                .rail_authority
+                .rail_network
+                .rail_stations
+                .iter()
+                .any(|station| station.id == planned_station.id
+                    && station.settlement_id == planned_station.settlement_id)
+        );
+        assert!(
+            region
+                .rail_authority
+                .rail_network
+                .rail_lines
+                .iter()
+                .any(|line| line.id == planned_line.id
+                    && line.first_station_id == planned_line.first_station_id
+                    && line.second_station_id == planned_line.second_station_id
+                    && line.distance == planned_line.distance
+                    && line.speed_limit == planned_line.speed_limit
+                    && line.track_count == planned_line.track_count
+                    && line.electrification == planned_line.electrification)
+        );
         assert_eq!(
             region.rail_authority.finances.treasury,
             treasury_before.checked_sub(committed).unwrap()
         );
-        assert_eq!(region.rail_authority.finances.committed_investment, Money::ZERO);
+        assert_eq!(
+            region.rail_authority.finances.committed_investment,
+            Money::ZERO
+        );
         assert_eq!(
             region.rail_authority.finances.maintenance_reserve,
             region
@@ -1286,8 +1316,14 @@ mod tests {
             UtcSeconds::from_unix_seconds(completion.unix_seconds() + 7_200),
         )
         .unwrap();
-        assert_eq!(region.rail_authority.rail_network.rail_stations.len(), station_count + 1);
-        assert_eq!(region.rail_authority.rail_network.rail_lines.len(), line_count + 1);
+        assert_eq!(
+            region.rail_authority.rail_network.rail_stations.len(),
+            station_count + 1
+        );
+        assert_eq!(
+            region.rail_authority.rail_network.rail_lines.len(),
+            line_count + 1
+        );
         assert_eq!(region.rail_authority.finances.treasury, treasury_after_open);
     }
 
@@ -1317,7 +1353,10 @@ mod tests {
             project.timeline.cancelled_at,
             Some(UtcSeconds::from_unix_seconds(50_100))
         );
-        assert_eq!(region.rail_authority.finances.committed_investment, Money::ZERO);
+        assert_eq!(
+            region.rail_authority.finances.committed_investment,
+            Money::ZERO
+        );
         assert_eq!(project.funding.authority_committed, Money::ZERO);
     }
 
@@ -1378,5 +1417,4 @@ mod tests {
             Err(InfrastructureProjectActionError::ProjectNotFound { project_id })
         );
     }
-
 }
