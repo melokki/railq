@@ -8,10 +8,11 @@ use std::{error::Error, fmt, path::PathBuf};
 
 use crate::{
     model::{
-        GameState, RailStationId, ServiceId, TrainId, TrainNickname, TrainStatus, UtcSeconds,
-        VehicleKeeperMark,
+        GameState, InfrastructureProjectId, Money, RailStationId, ServiceId, TrainId, TrainNickname,
+        TrainStatus, UtcSeconds, VehicleKeeperMark,
     },
     sim::{
+        authority::{InfrastructureProjectActionError, contribute_to_infrastructure_project},
         economy::EconomyError,
         finance::{FinanceError, FinancialStatus, evaluate_financial_recovery},
         fleet::{FleetError, purchase_train, sell_train},
@@ -73,6 +74,8 @@ pub enum AppError<E> {
     Service(ServiceError),
     /// The financial recovery evaluator could not determine whether operations remain allowed.
     Finance(FinanceError),
+    /// A Player Company infrastructure contribution was rejected.
+    Authority(InfrastructureProjectActionError),
     /// Bankruptcy prevents purchases, resale, and Manual Dispatch.
     Bankruptcy,
     /// A safe restart was requested before the Player Company reached Bankruptcy.
@@ -91,6 +94,7 @@ impl<E: fmt::Display> fmt::Display for AppError<E> {
             Self::Dispatch(error) => error.fmt(formatter),
             Self::Service(error) => error.fmt(formatter),
             Self::Finance(error) => error.fmt(formatter),
+            Self::Authority(error) => error.fmt(formatter),
             Self::Bankruptcy => write!(
                 formatter,
                 "Bankruptcy prevents normal operations; exit or start a confirmed safe restart"
@@ -110,6 +114,7 @@ impl<E: Error + 'static> Error for AppError<E> {
             Self::Advance(error) => Some(error),
             Self::Service(error) => Some(error),
             Self::Finance(error) => Some(error),
+            Self::Authority(error) => Some(error),
             Self::Purchase(error) | Self::Resale(error) | Self::Rename(error) => Some(error),
             Self::Dispatch(error) => Some(error),
             Self::Bankruptcy | Self::RestartUnavailable { .. } => None,
@@ -210,6 +215,25 @@ impl<S: GameStore> App<S> {
                 Err(AppError::Bankruptcy)
             } else {
                 Ok(proceeds)
+            }
+        })
+    }
+
+    /// Contributes Player Company cash to one Authority project in Funding.
+    pub fn contribute_to_infrastructure_project(
+        &mut self,
+        project_id: InfrastructureProjectId,
+        amount: Money,
+        now: UtcSeconds,
+    ) -> Result<(), AppError<S::Error>> {
+        self.transact(now, |state, now| {
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            contribute_to_infrastructure_project(state, project_id, amount, now)
+                .map_err(AppError::Authority)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(())
             }
         })
     }

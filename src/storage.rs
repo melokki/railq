@@ -47,7 +47,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 20;
+pub const SAVE_VERSION: u32 = 21;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -425,6 +425,7 @@ CREATE TABLE IF NOT EXISTS infrastructure_projects (
     status TEXT NOT NULL CHECK (status IN ('requested', 'under_review', 'proposed', 'approved', 'deferred', 'funding', 'scheduled', 'construction', 'open', 'cancelled')),
     estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0),
     authority_committed_cents INTEGER NOT NULL DEFAULT 0 CHECK (authority_committed_cents >= 0),
+    operator_contributed_cents INTEGER NOT NULL DEFAULT 0 CHECK (operator_contributed_cents >= 0),
     requested_at INTEGER NOT NULL,
     review_started_at INTEGER,
     proposed_at INTEGER,
@@ -748,7 +749,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 | 17 | 18 | 19 => {}
+        16 | 17 | 18 | 19 | 20 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -783,6 +784,10 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
     }
     if current_version == 19 {
         migrate_v19_to_v20(connection, path)?;
+        current_version = 20;
+    }
+    if current_version == 20 {
+        migrate_v20_to_v21(connection, path)?;
     }
     Ok(())
 }
@@ -2605,6 +2610,36 @@ fn migrate_v19_to_v20(connection: &Connection, path: &Path) -> Result<(), SaveSl
     }
 }
 
+fn migrate_v20_to_v21(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v20 to v21 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE infrastructure_projects
+                 ADD COLUMN operator_contributed_cents INTEGER NOT NULL DEFAULT 0
+                 CHECK (operator_contributed_cents >= 0);",
+            )
+            .map_err(|source| db_error("add operator infrastructure contributions to", path, source))?;
+        connection
+            .pragma_update(None, "user_version", 21_u32)
+            .map_err(|source| db_error("write v21 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v20 to v21 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
 fn clear_state(
     transaction: &Transaction<'_>,
     path: &Path,
@@ -2961,10 +2996,10 @@ fn insert_infrastructure_project(
         .execute(
             "INSERT INTO infrastructure_projects(
                  id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
-                 requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
-                 scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
-                 deferred_at, cancelled_at, target_speed_limit_kmh, target_track_count
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                 operator_contributed_cents, requested_at, review_started_at, proposed_at, approved_at,
+                 funding_completed_at, scheduled_start_at, construction_started_at, planned_completion_at,
+                 completed_at, deferred_at, cancelled_at, target_speed_limit_kmh, target_track_count
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 project.id.to_string(),
                 i64::try_from(sequence).unwrap_or(i64::MAX),
@@ -2972,6 +3007,7 @@ fn insert_infrastructure_project(
                 status,
                 project.funding.estimated_cost.cents(),
                 project.funding.authority_committed.cents(),
+                project.funding.operator_contributed.cents(),
                 timeline.requested_at.unix_seconds(),
                 timeline.review_started_at.map(UtcSeconds::unix_seconds),
                 timeline.proposed_at.map(UtcSeconds::unix_seconds),
@@ -3098,9 +3134,9 @@ fn load_infrastructure_projects(
     let rows = query_all(
         connection,
         "SELECT id, kind, status, estimated_cost_cents, authority_committed_cents,
-                requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
-                scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
-                deferred_at, cancelled_at, target_speed_limit_kmh, target_track_count
+                operator_contributed_cents, requested_at, review_started_at, proposed_at, approved_at,
+                funding_completed_at, scheduled_start_at, construction_started_at, planned_completion_at,
+                completed_at, deferred_at, cancelled_at, target_speed_limit_kmh, target_track_count
          FROM infrastructure_projects ORDER BY sequence",
         path,
         |row| {
@@ -3121,22 +3157,23 @@ fn load_infrastructure_projects(
                 funding: InfrastructureProjectFunding {
                     estimated_cost: Money::from_cents(row.get(3)?),
                     authority_committed: Money::from_cents(row.get(4)?),
+                    operator_contributed: Money::from_cents(row.get(5)?),
                 },
                 timeline: InfrastructureProjectTimeline {
-                    requested_at: UtcSeconds::from_unix_seconds(row.get(5)?),
-                    review_started_at: timestamp(6)?,
-                    proposed_at: timestamp(7)?,
-                    approved_at: timestamp(8)?,
-                    funding_completed_at: timestamp(9)?,
-                    scheduled_start_at: timestamp(10)?,
-                    construction_started_at: timestamp(11)?,
-                    planned_completion_at: timestamp(12)?,
-                    completed_at: timestamp(13)?,
-                    deferred_at: timestamp(14)?,
-                    cancelled_at: timestamp(15)?,
+                    requested_at: UtcSeconds::from_unix_seconds(row.get(6)?),
+                    review_started_at: timestamp(7)?,
+                    proposed_at: timestamp(8)?,
+                    approved_at: timestamp(9)?,
+                    funding_completed_at: timestamp(10)?,
+                    scheduled_start_at: timestamp(11)?,
+                    construction_started_at: timestamp(12)?,
+                    planned_completion_at: timestamp(13)?,
+                    completed_at: timestamp(14)?,
+                    deferred_at: timestamp(15)?,
+                    cancelled_at: timestamp(16)?,
                 },
-                target_speed_limit_kmh: row.get(16)?,
-                target_track_count: row.get(17)?,
+                target_speed_limit_kmh: row.get(17)?,
+                target_track_count: row.get(18)?,
             })
         },
     )?;
@@ -4541,14 +4578,20 @@ fn validate_infrastructure_projects(
     for project in &authority.infrastructure_projects {
         if project.funding.estimated_cost.cents() < 0
             || project.funding.authority_committed.cents() < 0
+            || project.funding.operator_contributed.cents() < 0
         {
             return Err(SaveValidationError::InvalidValue {
                 field: "Infrastructure Project funding amount",
             });
         }
-        if project.funding.authority_committed > project.funding.estimated_cost {
+        if project.funding.total_funded()? > project.funding.estimated_cost {
             return Err(SaveValidationError::ImpossibleState {
-                reason: "Infrastructure Project commitment exceeds estimated cost",
+                reason: "Infrastructure Project funding exceeds estimated cost",
+            });
+        }
+        if project.funding.operator_contributed > project.funding.operator_contribution_cap()? {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Infrastructure Project operator contribution exceeds its cap",
             });
         }
         if !matches!(
@@ -5582,6 +5625,7 @@ mod tests {
             funding: InfrastructureProjectFunding {
                 estimated_cost: historical_commitment,
                 authority_committed: historical_commitment,
+                operator_contributed: Money::ZERO,
             },
         }];
 

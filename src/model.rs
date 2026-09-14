@@ -928,19 +928,66 @@ pub struct InfrastructureProjectTimeline {
 ///
 /// Player/operator contributions are introduced later. For now the Authority
 /// can reserve part or all of the estimated cost from its investment budget.
+pub const PROVISIONAL_OPERATOR_CONTRIBUTION_CAP_PERCENT: u64 = 20;
+pub const PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT: u64 = 10;
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InfrastructureProjectFunding {
     pub estimated_cost: Money,
     pub authority_committed: Money,
+    #[serde(default)]
+    pub operator_contributed: Money,
 }
 
 impl InfrastructureProjectFunding {
+    pub fn total_funded(&self) -> Result<Money, CalculationError> {
+        self.authority_committed.checked_add(self.operator_contributed)
+    }
+
     pub fn funding_gap(&self) -> Result<Money, CalculationError> {
-        self.estimated_cost.checked_sub(self.authority_committed)
+        self.estimated_cost.checked_sub(self.total_funded()?)
+    }
+
+    pub fn operator_contribution_cap(&self) -> Result<Money, CalculationError> {
+        let cents = i128::from(self.estimated_cost.cents())
+            .checked_mul(i128::from(PROVISIONAL_OPERATOR_CONTRIBUTION_CAP_PERCENT))
+            .ok_or(CalculationError::Overflow {
+                operation: "operator infrastructure contribution cap",
+            })?
+            / 100;
+        let cents = i64::try_from(cents).map_err(|_| CalculationError::Overflow {
+            operation: "operator infrastructure contribution cap",
+        })?;
+        Ok(Money::from_cents(cents))
+    }
+
+    pub fn remaining_operator_contribution_capacity(&self) -> Result<Money, CalculationError> {
+        self.operator_contribution_cap()?
+            .checked_sub(self.operator_contributed)
+    }
+
+    pub fn suggested_operator_contribution(&self, company_funds: Money) -> Result<Money, CalculationError> {
+        if company_funds <= Money::ZERO {
+            return Ok(Money::ZERO);
+        }
+        let cents = i128::from(self.estimated_cost.cents())
+            .checked_mul(i128::from(PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT))
+            .ok_or(CalculationError::Overflow {
+                operation: "operator infrastructure contribution tranche",
+            })?
+            / 100;
+        let cents = i64::try_from(cents).map_err(|_| CalculationError::Overflow {
+            operation: "operator infrastructure contribution tranche",
+        })?;
+        let tranche = Money::from_cents(cents.max(1));
+        Ok(tranche
+            .min(self.funding_gap()?)
+            .min(self.remaining_operator_contribution_capacity()?)
+            .min(company_funds))
     }
 
     pub fn is_fully_funded(&self) -> bool {
-        self.authority_committed >= self.estimated_cost
+        self.total_funded().is_ok_and(|funded| funded >= self.estimated_cost)
     }
 }
 

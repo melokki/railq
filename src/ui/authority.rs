@@ -1,8 +1,8 @@
 //! Rail Authority infrastructure programme presentation.
 //!
-//! This workspace is read-only. It exposes the public infrastructure budget,
-//! construction capacity, and persisted project pipeline without allowing the
-//! Player Company to control Authority decisions directly.
+//! This workspace exposes the public infrastructure budget, construction
+//! capacity, persisted project pipeline, and optional Player Company funding
+//! contributions without giving the operator control of Authority decisions.
 
 use std::fmt::Write;
 
@@ -20,7 +20,7 @@ use crate::{
         InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus, Money,
         UtcSeconds,
     },
-    ui::{format, theme},
+    ui::{format, modal, theme},
 };
 
 /// Persistent read-only project focus for the Authority workspace.
@@ -108,6 +108,90 @@ impl ProjectSelection {
     fn set_page_size(&mut self, page_size: usize) {
         self.page_size = page_size.max(1);
     }
+
+    pub fn selected_project_id(&mut self, state: &GameState) -> Option<InfrastructureProjectId> {
+        self.selected_project(state).map(|(_, project)| project.id)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContributionReview {
+    pub project_id: InfrastructureProjectId,
+    pub amount: Money,
+}
+
+impl ContributionReview {
+    pub fn start(state: &GameState, project_id: InfrastructureProjectId) -> Result<Self, &'static str> {
+        let project = state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .ok_or("The selected infrastructure project is no longer available.")?;
+        if project.status != InfrastructureProjectStatus::Funding {
+            return Err("Contributions are accepted only while a project is in Funding.");
+        }
+        let amount = project
+            .funding
+            .suggested_operator_contribution(state.player_company.funds)
+            .map_err(|_| "The contribution amount could not be calculated.")?;
+        if amount <= Money::ZERO {
+            return Err("No contribution can be made from the current Company Funds and project funding gap.");
+        }
+        Ok(Self { project_id, amount })
+    }
+}
+
+pub fn render_contribution_review(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    review: ContributionReview,
+) {
+    let project = state
+        .region
+        .rail_authority
+        .infrastructure_projects
+        .iter()
+        .find(|project| project.id == review.project_id);
+    let Some(project) = project else {
+        return;
+    };
+    let card = modal::centered_rect(area, 70, 18);
+    let modal_areas = modal::render_shell(
+        frame,
+        card,
+        "Infrastructure Contribution",
+        modal::shortcut_line(&[("Enter", "contribute"), ("Esc", "cancel")]),
+    );
+    let remaining_cap = project
+        .funding
+        .remaining_operator_contribution_capacity()
+        .map(format::money)
+        .unwrap_or_else(|_| "—".into());
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Project  ", theme::secondary()),
+            Span::styled(project_scope(state, project), theme::primary_value()),
+        ]),
+        Line::from(""),
+        money_line("Company Funds", state.player_company.funds),
+        money_line("Contribution", review.amount),
+        money_line("Already contributed", project.funding.operator_contributed),
+        Line::from(vec![
+            Span::styled("Contribution capacity  ", theme::secondary()),
+            Span::styled(remaining_cap, theme::primary_value()),
+        ]),
+        Line::from(""),
+        Line::from("This is a 10% project-cost tranche, capped by the remaining funding gap,"),
+        Line::from("the 20% operator cap, and current Company Funds."),
+        Line::from("Contributing can close funding sooner but never shortens construction time."),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).style(theme::panel()).wrap(Wrap { trim: true }),
+        modal_areas.body,
+    );
 }
 
 /// Renders the public Rail Authority as a dedicated read-only workspace.
@@ -415,6 +499,7 @@ fn render_project_inspector(
         Line::from(""),
         money_line("Estimated cost", project.funding.estimated_cost),
         money_line("Authority committed", project.funding.authority_committed),
+        money_line("Operator contribution", project.funding.operator_contributed),
         Line::from(vec![
             Span::styled("Funding gap  ", theme::secondary()),
             Span::styled(gap, theme::primary_value()),
@@ -575,7 +660,11 @@ fn append_timeline(
         InfrastructureProjectStatus::Funding => {
             lines.push(Line::styled("FUNDING", theme::table_header()));
             let estimated = i128::from(project.funding.estimated_cost.cents()).max(0);
-            let committed = i128::from(project.funding.authority_committed.cents()).max(0);
+            let committed = project
+        .funding
+        .total_funded()
+        .map(|money| i128::from(money.cents()).max(0))
+        .unwrap_or(0);
             let percent = if estimated == 0 {
                 0
             } else {
@@ -824,7 +913,11 @@ fn status_style(status: InfrastructureProjectStatus) -> ratatui::style::Style {
 
 fn funding_percent(project: &InfrastructureProject) -> String {
     let estimated = i128::from(project.funding.estimated_cost.cents()).max(0);
-    let committed = i128::from(project.funding.authority_committed.cents()).max(0);
+    let committed = project
+        .funding
+        .total_funded()
+        .map(|money| i128::from(money.cents()).max(0))
+        .unwrap_or(0);
     if estimated == 0 {
         return "—".into();
     }

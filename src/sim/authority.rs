@@ -9,7 +9,7 @@ use std::{error::Error, fmt};
 
 use crate::model::{
     CalculationError, ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
-    InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
+    GameState, InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
     InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline, Money,
     MoneyPerKilometre, PlannedRailLine, PlannedRailStation, RailLine, RailLineId, RailStation,
     RailStationId, Region, SettlementId, SpeedKilometresPerHour, TrackCount, UtcSeconds,
@@ -68,6 +68,14 @@ pub enum InfrastructureProjectActionError {
         project_id: InfrastructureProjectId,
         status: InfrastructureProjectStatus,
     },
+    CannotContribute {
+        project_id: InfrastructureProjectId,
+        status: InfrastructureProjectStatus,
+    },
+    InvalidContribution,
+    ContributionExceedsFundingGap,
+    ContributionExceedsOperatorCap,
+    InsufficientCompanyFunds,
     Calculation(CalculationError),
 }
 
@@ -86,6 +94,21 @@ impl fmt::Display for InfrastructureProjectActionError {
                 "Infrastructure Project {} cannot be cancelled while {status:?}",
                 project_id.uuid()
             ),
+            Self::CannotContribute { project_id, status } => write!(
+                formatter,
+                "Infrastructure Project {} cannot accept an operator contribution while {status:?}",
+                project_id.uuid()
+            ),
+            Self::InvalidContribution => write!(formatter, "Infrastructure contribution must be positive"),
+            Self::ContributionExceedsFundingGap => {
+                write!(formatter, "Infrastructure contribution exceeds the remaining funding gap")
+            }
+            Self::ContributionExceedsOperatorCap => {
+                write!(formatter, "Infrastructure contribution exceeds the operator contribution cap")
+            }
+            Self::InsufficientCompanyFunds => {
+                write!(formatter, "Company Funds are too low for this infrastructure contribution")
+            }
             Self::Calculation(error) => error.fmt(formatter),
         }
     }
@@ -139,6 +162,59 @@ pub fn cancel_infrastructure_project(
     project.status = InfrastructureProjectStatus::Cancelled;
     project.timeline.cancelled_at = Some(now);
 
+    Ok(())
+}
+
+
+/// Transfers Player Company cash into one approved public infrastructure project.
+///
+/// Contributions are accepted only while the project is in Funding, are capped
+/// at a provisional share of project cost, and never alter construction duration.
+pub fn contribute_to_infrastructure_project(
+    state: &mut GameState,
+    project_id: InfrastructureProjectId,
+    amount: Money,
+    now: UtcSeconds,
+) -> Result<(), InfrastructureProjectActionError> {
+    if amount <= Money::ZERO {
+        return Err(InfrastructureProjectActionError::InvalidContribution);
+    }
+
+    let project_index = state
+        .region
+        .rail_authority
+        .infrastructure_projects
+        .iter()
+        .position(|project| project.id == project_id)
+        .ok_or(InfrastructureProjectActionError::ProjectNotFound { project_id })?;
+
+    let project = &state.region.rail_authority.infrastructure_projects[project_index];
+    if project.status != InfrastructureProjectStatus::Funding {
+        return Err(InfrastructureProjectActionError::CannotContribute {
+            project_id,
+            status: project.status,
+        });
+    }
+    if amount > project.funding.funding_gap()? {
+        return Err(InfrastructureProjectActionError::ContributionExceedsFundingGap);
+    }
+    if amount > project.funding.remaining_operator_contribution_capacity()? {
+        return Err(InfrastructureProjectActionError::ContributionExceedsOperatorCap);
+    }
+    if amount > state.player_company.funds {
+        return Err(InfrastructureProjectActionError::InsufficientCompanyFunds);
+    }
+
+    let funds_after = state.player_company.funds.checked_sub(amount)?;
+    let project = &mut state.region.rail_authority.infrastructure_projects[project_index];
+    project.funding.operator_contributed = project
+        .funding
+        .operator_contributed
+        .checked_add(amount)?;
+    if project.funding.is_fully_funded() && project.timeline.funding_completed_at.is_none() {
+        project.timeline.funding_completed_at = Some(now);
+    }
+    state.player_company.funds = funds_after;
     Ok(())
 }
 
@@ -602,6 +678,7 @@ fn project_from_candidate(
         funding: InfrastructureProjectFunding {
             estimated_cost: candidate.estimated_cost,
             authority_committed: Money::ZERO,
+            operator_contributed: Money::ZERO,
         },
     }
 }
@@ -823,15 +900,15 @@ mod tests {
             ConstructionDifficulty, DistanceMetres, DurationSeconds, InfrastructureProjectId,
             InfrastructureProjectKind, InfrastructureProjectStatus, Money, UtcSeconds,
         },
-        sim::world::generate_region,
+        sim::world::{create_new_game, generate_region},
     };
 
     use super::{
         InfrastructureProjectActionError, advance_infrastructure_planning,
         advance_project_construction, advance_project_funding, advance_project_scheduling,
-        cancel_infrastructure_project, estimated_connection_cost, evaluate_connection_candidates,
-        new_line_construction_duration, open_completed_infrastructure_projects,
-        project_from_candidate,
+        cancel_infrastructure_project, contribute_to_infrastructure_project,
+        estimated_connection_cost, evaluate_connection_candidates, new_line_construction_duration,
+        open_completed_infrastructure_projects, project_from_candidate,
     };
 
     #[test]
@@ -1417,4 +1494,39 @@ mod tests {
             Err(InfrastructureProjectActionError::ProjectNotFound { project_id })
         );
     }
+    #[test]
+    fn operator_contribution_reduces_company_cash_and_project_gap() {
+        let now = UtcSeconds::from_unix_seconds(90_000);
+        let mut game = create_new_game(41, "Operator", now);
+        let candidate = evaluate_connection_candidates(&game.region, 41).unwrap()[0].clone();
+        let mut project = project_from_candidate(candidate, now);
+        project.status = InfrastructureProjectStatus::Funding;
+        let project_id = project.id;
+        game.player_company.funds = Money::from_cents(10_000_000);
+        let amount = project
+            .funding
+            .suggested_operator_contribution(game.player_company.funds)
+            .unwrap();
+        let gap_before = project.funding.funding_gap().unwrap();
+        let funds_before = game.player_company.funds;
+        game.region.rail_authority.infrastructure_projects = vec![project];
+
+        contribute_to_infrastructure_project(&mut game, project_id, amount, now).unwrap();
+
+        let project = &game.region.rail_authority.infrastructure_projects[0];
+        assert_eq!(project.funding.operator_contributed, amount);
+        assert_eq!(
+            game.player_company.funds,
+            funds_before.checked_sub(amount).unwrap()
+        );
+        assert_eq!(
+            project.funding.funding_gap().unwrap(),
+            gap_before.checked_sub(amount).unwrap()
+        );
+        assert!(
+            project.funding.operator_contributed
+                <= project.funding.operator_contribution_cap().unwrap()
+        );
+    }
+
 }

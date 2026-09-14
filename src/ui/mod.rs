@@ -31,8 +31,8 @@ use crate::{
     APPLICATION_NAME,
     catalog::{model_for_train, train_catalogue},
     model::{
-        GameState, Money, RailStationId, ServiceId, TrainId, TrainNickname, TrainStatus,
-        UtcSeconds, VehicleKeeperMark,
+        GameState, InfrastructureProjectId, Money, RailStationId, ServiceId, TrainId, TrainNickname,
+        TrainStatus, UtcSeconds, VehicleKeeperMark,
     },
     sim::{
         finance::{FinancialStatus, evaluate_financial_recovery},
@@ -130,6 +130,11 @@ pub enum ShellAction {
     UpdateCompanyVkm {
         vehicle_keeper_mark: VehicleKeeperMark,
     },
+    /// Confirmed player contribution to one public infrastructure project.
+    ContributeInfrastructure {
+        project_id: InfrastructureProjectId,
+        amount: Money,
+    },
     /// Confirmed player input changing or clearing one Train nickname.
     UpdateTrainNickname {
         train_id: TrainId,
@@ -179,6 +184,12 @@ pub enum TerminalCommand {
         vehicle_keeper_mark: VehicleKeeperMark,
         now: UtcSeconds,
     },
+    /// Persist a Player Company contribution to one Authority project.
+    ContributeInfrastructure {
+        project_id: InfrastructureProjectId,
+        amount: Money,
+        now: UtcSeconds,
+    },
     /// Persist a Train nickname change without touching its official EVN.
     UpdateTrainNickname {
         train_id: TrainId,
@@ -222,6 +233,7 @@ pub struct Shell {
     market_flow: Option<market::MarketFlow>,
     market_selection: market::CatalogueSelection,
     authority_project_selection: authority::ProjectSelection,
+    authority_contribution_review: Option<authority::ContributionReview>,
     company_receipt_selection: company::ReceiptSelection,
     company_receipt_details_open: bool,
     company_recovery_selection: company::RecoverySelection,
@@ -255,6 +267,7 @@ impl Shell {
             market_flow: None,
             market_selection: market::CatalogueSelection::default(),
             authority_project_selection: authority::ProjectSelection::default(),
+            authority_contribution_review: None,
             company_receipt_selection: company::ReceiptSelection::default(),
             company_receipt_details_open: false,
             company_recovery_selection: company::RecoverySelection::default(),
@@ -427,6 +440,21 @@ impl Shell {
         }
 
         self.restart_confirmation = false;
+
+        if let Some(review) = self.authority_contribution_review {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.authority_contribution_review = None;
+                    self.notice = Some("Infrastructure contribution cancelled; no changes were made.".into());
+                    ShellAction::Continue
+                }
+                KeyCode::Enter => ShellAction::ContributeInfrastructure {
+                    project_id: review.project_id,
+                    amount: review.amount,
+                },
+                _ => ShellAction::Continue,
+            };
+        }
 
         if let Some(flow) = &mut self.dispatch_flow {
             return match flow.handle_key(key, state) {
@@ -733,6 +761,18 @@ impl Shell {
             {
                 self.fleet_selection.handle_key(key.code, state);
             }
+            KeyCode::Char('c' | 'C') if self.active_view == View::Authority => {
+                match self.authority_project_selection.selected_project_id(state) {
+                    Some(project_id) => match authority::ContributionReview::start(state, project_id) {
+                        Ok(review) => {
+                            self.authority_contribution_review = Some(review);
+                            self.notice = None;
+                        }
+                        Err(message) => self.notice = Some(message.into()),
+                    },
+                    None => self.notice = Some("Select an infrastructure project first.".into()),
+                }
+            }
             KeyCode::Up
             | KeyCode::Down
             | KeyCode::PageUp
@@ -862,6 +902,23 @@ impl Shell {
         self.fleet_flow = None;
         self.fleet_details_open = false;
         self.publish_pending_outcome(state);
+    }
+
+    pub fn reject_infrastructure_contribution(&mut self, error: impl Into<String>) {
+        self.notice = Some(error.into());
+    }
+
+    pub fn confirm_infrastructure_contribution_saved(&mut self, state: &GameState) {
+        let amount = self
+            .authority_contribution_review
+            .map(|review| review.amount)
+            .unwrap_or(Money::ZERO);
+        self.authority_contribution_review = None;
+        self.notice = Some(format!(
+            "Infrastructure contribution of {} saved. Company Funds {}.",
+            format_money(amount),
+            format_money(state.player_company.funds)
+        ));
     }
 
     /// Publishes arrivals only from a successfully reconciled state transition.
@@ -1352,6 +1409,21 @@ where
                             Err(error) => shell.reject_company_vkm_update(error.to_string()),
                         }
                     }
+                    ShellAction::ContributeInfrastructure { project_id, amount } => {
+                        match command(TerminalCommand::ContributeInfrastructure {
+                            project_id,
+                            amount,
+                            now: current_utc_seconds(),
+                        }) {
+                            Ok(next_state) => {
+                                state = next_state;
+                                shell.confirm_infrastructure_contribution_saved(&state);
+                            }
+                            Err(error) => {
+                                shell.reject_infrastructure_contribution(error.to_string())
+                            }
+                        }
+                    }
                     ShellAction::UpdateTrainNickname { train_id, nickname } => {
                         match command(TerminalCommand::UpdateTrainNickname {
                             train_id,
@@ -1598,7 +1670,8 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 }
 
 fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
-    shell.train_nickname_editor.is_some()
+    shell.authority_contribution_review.is_some()
+        || shell.train_nickname_editor.is_some()
         || shell.company_vkm_editor.is_some()
         || shell.company_recovery_review_open
         || shell.company_receipt_details_open
@@ -1618,6 +1691,10 @@ fn render_focused_modal(
     shell: &mut Shell,
     state: &GameState,
 ) {
+    if let Some(review) = shell.authority_contribution_review {
+        authority::render_contribution_review(frame, content_area, state, review);
+        return;
+    }
     if let Some(editor) = &shell.train_nickname_editor {
         fleet::render_nickname_editor(frame, content_area, editor, state);
         return;
@@ -1801,6 +1878,13 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         return vec![
             FooterShortcut::enabled("W/Esc", "Close"),
             FooterShortcut::enabled("?", "Help"),
+            FooterShortcut::enabled("Q", "Quit"),
+        ];
+    }
+    if shell.authority_contribution_review.is_some() {
+        return vec![
+            FooterShortcut::enabled("Enter", "Contribute"),
+            FooterShortcut::enabled("Esc", "Cancel"),
             FooterShortcut::enabled("Q", "Quit"),
         ];
     }
@@ -1993,6 +2077,16 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             if wide {
                 items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
             }
+            let can_contribute = shell
+                .authority_project_selection
+                .selected_project_id(state)
+                .and_then(|project_id| authority::ContributionReview::start(state, project_id).ok())
+                .is_some();
+            items.push(if can_contribute {
+                FooterShortcut::enabled("C", "Contribute")
+            } else {
+                FooterShortcut::disabled("C", "Contribute")
+            });
             items
         }
     } else if shell.active_view == View::BuyTrains {
@@ -2390,8 +2484,9 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                 "Current · Rail Authority".into(),
                 "↑↓ / jk Select infrastructure project".into(),
                 "PgUp / PgDn Scroll project pipeline".into(),
+                "c Contribute to selected project while it is in Funding".into(),
                 String::new(),
-                "This workspace is read-only: the Authority controls public infrastructure.".into(),
+                "The Authority controls public infrastructure; operator contributions are optional.".into(),
             ]);
         }
     }

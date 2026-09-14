@@ -130,6 +130,11 @@ fn handle_action(
             app.update_company_vkm(vehicle_keeper_mark, now).unwrap();
             shell.confirm_company_vkm_saved(app.state());
         }
+        ShellAction::ContributeInfrastructure { project_id, amount } => {
+            app.contribute_to_infrastructure_project(project_id, amount, now)
+                .unwrap();
+            shell.confirm_infrastructure_contribution_saved(app.state());
+        }
         ShellAction::UpdateTrainNickname { train_id, nickname } => {
             app.update_train_nickname(train_id, nickname, now).unwrap();
             shell.confirm_train_nickname_saved(app.state());

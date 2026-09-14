@@ -685,6 +685,7 @@ mod tests {
                 funding: InfrastructureProjectFunding {
                     estimated_cost: Money::ZERO,
                     authority_committed: Money::ZERO,
+                    operator_contributed: Money::ZERO,
                 },
             });
 
@@ -750,6 +751,7 @@ mod tests {
                 funding: InfrastructureProjectFunding {
                     estimated_cost: Money::ZERO,
                     authority_committed: Money::ZERO,
+                    operator_contributed: Money::ZERO,
                 },
             });
 

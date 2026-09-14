@@ -84,6 +84,13 @@ fn run_dashboard(
             } => {
                 app.update_company_vkm(vehicle_keeper_mark, now)?;
             }
+            ui::TerminalCommand::ContributeInfrastructure {
+                project_id,
+                amount,
+                now,
+            } => {
+                app.contribute_to_infrastructure_project(project_id, amount, now)?;
+            }
             ui::TerminalCommand::UpdateTrainNickname {
                 train_id,
                 nickname,
