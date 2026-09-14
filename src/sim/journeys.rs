@@ -114,7 +114,7 @@ pub fn dispatch_journey(
         demand_deductions.push((demand_index, remaining));
     }
 
-    let journey_id = next_journey_id(state)?;
+    let journey_id = JourneyId::new_v4();
     let arrives_at = departed_at.checked_add(quote.first_leg_duration)?;
     let funds_after_departure = state
         .player_company
@@ -175,24 +175,6 @@ pub fn dispatch_journey(
     Ok(journey_id)
 }
 
-fn next_journey_id(state: &GameState) -> Result<JourneyId, DispatchError> {
-    state
-        .active_journeys
-        .iter()
-        .map(|journey| journey.id.get())
-        .chain(
-            state
-                .financials
-                .recent_journey_receipts
-                .iter()
-                .map(|receipt| receipt.journey_id.get()),
-        )
-        .max()
-        .unwrap_or(0)
-        .checked_add(1)
-        .map(JourneyId::new)
-        .ok_or(DispatchError::JourneyIdExhausted)
-}
 
 #[cfg(test)]
 mod tests {
@@ -329,8 +311,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(first_journey.get(), 1);
-        assert_eq!(second_journey.get(), 2);
+        assert_ne!(first_journey, second_journey);
         assert_eq!(
             state.financials.recent_journey_receipts[0].journey_id,
             first_journey

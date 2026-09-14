@@ -121,11 +121,26 @@ pub fn generate_region(seed: u64) -> Region {
             id: RailStationId::new((index + 1) as u64),
             settlement_id: settlement.id,
         })
-        .collect();
+        .collect::<Vec<_>>();
     let rail_lines = vec![
-        rail_line(1, 1, 2, 10_000),
-        rail_line(2, 2, 3, 42_000),
-        rail_line(3, 2, 4, 31_000),
+        rail_line(
+            RailLineId::new(1),
+            rail_stations[0].id,
+            rail_stations[1].id,
+            10_000,
+        ),
+        rail_line(
+            RailLineId::new(2),
+            rail_stations[1].id,
+            rail_stations[2].id,
+            42_000,
+        ),
+        rail_line(
+            RailLineId::new(3),
+            rail_stations[1].id,
+            rail_stations[3].id,
+            31_000,
+        ),
     ];
 
     let rail_network = RailNetwork {
@@ -150,7 +165,6 @@ pub fn generate_region(seed: u64) -> Region {
             rail_network,
             finances,
             infrastructure_projects: vec![],
-            next_infrastructure_project_id: 1,
         },
     }
 }
@@ -231,16 +245,17 @@ fn select_settlement_names(random: &mut ChaCha8Rng) -> [&'static str; SETTLEMENT
         .expect("the seeded settlement name pool must contain ten names")
 }
 
+
 fn rail_line(
-    id: u64,
-    first_station_id: u64,
-    second_station_id: u64,
+    id: RailLineId,
+    first_station_id: RailStationId,
+    second_station_id: RailStationId,
     distance_metres: i64,
 ) -> RailLine {
     RailLine {
-        id: RailLineId::new(id),
-        first_station_id: RailStationId::new(first_station_id),
-        second_station_id: RailStationId::new(second_station_id),
+        id,
+        first_station_id,
+        second_station_id,
         distance: crate::model::DistanceMetres::new(distance_metres)
             .expect("the fixed starter Rail Line distance must be positive"),
         speed_limit: SpeedKilometresPerHour::new(70)
@@ -292,7 +307,6 @@ mod tests {
         assert_eq!(network.rail_stations.len(), CONNECTED_SETTLEMENT_COUNT);
         assert_eq!(network.rail_lines.len(), 3);
         assert!(region.rail_authority.infrastructure_projects.is_empty());
-        assert_eq!(region.rail_authority.next_infrastructure_project_id, 1);
         assert_eq!(
             region.rail_authority.finances.maintenance_reserve,
             Money::from_cents(2_075_000)
@@ -301,9 +315,13 @@ mod tests {
             network
                 .rail_lines
                 .iter()
-                .map(|line| (line.first_station_id.get(), line.second_station_id.get()))
+                .map(|line| (line.first_station_id, line.second_station_id))
                 .collect::<Vec<_>>(),
-            vec![(1, 2), (2, 3), (2, 4)]
+            vec![
+                (network.rail_stations[0].id, network.rail_stations[1].id),
+                (network.rail_stations[1].id, network.rail_stations[2].id),
+                (network.rail_stations[1].id, network.rail_stations[3].id),
+            ]
         );
         assert!(
             network

@@ -8,6 +8,7 @@
 use std::{collections::BTreeMap, error::Error, fmt};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use uuid::Uuid;
 
 use crate::balance::BalanceConfig;
 
@@ -50,48 +51,178 @@ impl fmt::Display for CalculationError {
 impl Error for CalculationError {}
 
 macro_rules! domain_id {
-    ($name:ident, $description:literal) => {
+    ($name:ident, $description:literal, $namespace:expr) => {
         #[doc = $description]
-        #[derive(
-            Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-        )]
-        pub struct $name(u64);
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        pub struct $name(Uuid);
 
         impl $name {
-            /// Creates an ID allocated by its owning collection.
-            pub const fn new(value: u64) -> Self {
+            /// Creates a fresh UUID v4 identity for a new persisted entity.
+            pub fn new_v4() -> Self {
+                Self(Uuid::new_v4())
+            }
+
+            /// Creates a UUID v4 while preserving a small numeric suffix for
+            /// compact player-facing labels. The UUID remains the persisted
+            /// identity; the suffix is display metadata only.
+            pub fn new_v4_with_suffix(suffix: u64) -> Self {
+                let random = Uuid::new_v4().as_u128();
+                let payload = (random & !((1_u128 << 62) - 1))
+                    | u128::from(suffix & ((1_u64 << 62) - 1));
+                Self::from_v4_bits(payload)
+            }
+
+            /// Creates a UUID identity from an already validated UUID.
+            pub const fn from_uuid(value: Uuid) -> Self {
                 Self(value)
             }
 
-            /// Returns the stored identifier value.
-            pub const fn get(self) -> u64 {
+            /// Deterministic UUID-v4-shaped constructor used by seeded world
+            /// generation and compact test fixtures.
+            ///
+            /// Production entities that are not world-seeded should use
+            /// [`Self::new_v4`] instead.
+            pub const fn new(value: u64) -> Self {
+                Self(Uuid::from_u128(
+                    (($namespace as u128) << 96)
+                        | (4_u128 << 76)
+                        | (2_u128 << 62)
+                        | value as u128,
+                ))
+            }
+
+            /// Creates a UUID v4 identity from 122 random payload bits.
+            /// Version and RFC 4122 variant bits are normalized here so seeded
+            /// world generation remains reproducible while persisted IDs are
+            /// still UUID v4 values.
+            pub const fn from_v4_bits(value: u128) -> Self {
+                let value = (value & !(0xf_u128 << 76) & !(0x3_u128 << 62))
+                    | (4_u128 << 76)
+                    | (2_u128 << 62);
+                Self(Uuid::from_u128(value))
+            }
+
+            /// Returns the UUID stored by this identity.
+            pub const fn uuid(self) -> Uuid {
                 self.0
+            }
+
+            /// Returns whether this identity uses the UUID v4 + RFC 4122 variant layout.
+            pub const fn is_v4(self) -> bool {
+                let value = self.0.as_u128();
+                ((value >> 76) & 0x0f) == 4 && ((value >> 62) & 0x03) == 2
+            }
+
+            /// Returns a compact numeric suffix used only by legacy UI labels
+            /// and deterministic fixtures. Persistence must use [`Self::uuid`].
+            pub const fn get(self) -> u64 {
+                (self.0.as_u128() & ((1_u128 << 62) - 1)) as u64
+            }
+
+            pub fn parse(value: &str) -> Result<Self, uuid::Error> {
+                Uuid::parse_str(value).map(Self)
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_newtype_struct(stringify!($name), &self.0)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                struct DomainIdVisitor;
+
+                impl<'de> de::Visitor<'de> for DomainIdVisitor {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str("a UUID or legacy positive integer ID")
+                    }
+
+                    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        Ok($name::new(value))
+                    }
+
+                    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        let value = u64::try_from(value)
+                            .map_err(|_| E::custom("legacy ID must be non-negative"))?;
+                        Ok($name::new(value))
+                    }
+
+                    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        $name::parse(value).map_err(E::custom)
+                    }
+
+                    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        self.visit_str(&value)
+                    }
+
+                    fn visit_newtype_struct<D2>(self, deserializer: D2) -> Result<Self::Value, D2::Error>
+                    where
+                        D2: Deserializer<'de>,
+                    {
+                        deserializer.deserialize_any(self)
+                    }
+                }
+
+                deserializer.deserialize_newtype_struct(stringify!($name), DomainIdVisitor)
             }
         }
     };
 }
 
-domain_id!(SettlementId, "The identity of a Settlement in a Region.");
+domain_id!(SettlementId, "The identity of a Settlement in a Region.", 1);
 domain_id!(
     RailStationId,
-    "The identity of a Rail Station in the Rail Network."
+    "The identity of a Rail Station in the Rail Network.",
+    2
 );
 domain_id!(
     RailLineId,
-    "The stable identity of one physical Rail Line segment in the Rail Network."
+    "The stable identity of one physical Rail Line segment in the Rail Network.",
+    3
 );
 domain_id!(
     TrainId,
-    "The identity of a Train owned by the Player Company."
+    "The identity of a Train owned by the Player Company.",
+    5
 );
 domain_id!(
     ServiceId,
-    "The identity of a Passenger Service owned by the Player Company."
+    "The identity of a Passenger Service owned by the Player Company.",
+    6
 );
-domain_id!(JourneyId, "The identity of one physical Train movement.");
+domain_id!(JourneyId, "The identity of one physical Train movement.", 7);
 domain_id!(
     InfrastructureProjectId,
-    "The identity of one Rail Authority infrastructure project."
+    "The identity of one Rail Authority infrastructure project.",
+    4
 );
 
 /// Stable identity of one immutable Train model in the central catalogue.
@@ -1030,12 +1161,6 @@ pub struct RailAuthority {
     pub finances: RailAuthorityFinances,
     #[serde(default)]
     pub infrastructure_projects: Vec<InfrastructureProject>,
-    #[serde(default = "default_next_infrastructure_project_id")]
-    pub next_infrastructure_project_id: u64,
-}
-
-const fn default_next_infrastructure_project_id() -> u64 {
-    1
 }
 
 /// The physical infrastructure owned by a Rail Authority.
@@ -1273,9 +1398,10 @@ pub struct PlayerCompany {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Fleet {
     pub trains: Vec<Train>,
-    /// Next lifetime internal Train identity. Internal IDs are never reused.
-    #[serde(default = "default_next_train_id")]
-    pub next_train_id: u64,
+    /// Next compact display number for an owned Train. This is not the Train
+    /// identity; persisted Train IDs are UUID v4 values.
+    #[serde(default = "default_next_train_display_number")]
+    pub next_train_display_number: u64,
     /// Next EVN unit number to allocate for each persistent Train model.
     ///
     /// Values are one-based; 1000 means the model's 001–999 allocation is
@@ -1284,7 +1410,7 @@ pub struct Fleet {
     pub next_evn_unit_by_model: BTreeMap<TrainModelId, u16>,
 }
 
-const fn default_next_train_id() -> u64 {
+const fn default_next_train_display_number() -> u64 {
     1
 }
 
@@ -1292,7 +1418,7 @@ impl Default for Fleet {
     fn default() -> Self {
         Self {
             trains: Vec::new(),
-            next_train_id: default_next_train_id(),
+            next_train_display_number: default_next_train_display_number(),
             next_evn_unit_by_model: BTreeMap::new(),
         }
     }
@@ -1725,7 +1851,6 @@ mod tests {
             rail_network: RailNetwork::default(),
             finances: RailAuthorityFinances::default(),
             infrastructure_projects: vec![approved, blocker.clone()],
-            next_infrastructure_project_id: 4,
         };
 
         assert_eq!(
@@ -1964,7 +2089,6 @@ mod tests {
                     },
                     finances: RailAuthorityFinances::default(),
                     infrastructure_projects: vec![],
-                    next_infrastructure_project_id: 1,
                 },
             },
             player_company: PlayerCompany {
@@ -1974,6 +2098,7 @@ mod tests {
                 ),
                 funds: Money::from_cents(10_000),
                 fleet: Fleet {
+                    next_train_display_number: 2,
                     trains: vec![Train {
                         id: train_id,
                         evn: EuropeanVehicleNumber::generate(95, 67, 701, 1).unwrap(),
@@ -1982,7 +2107,6 @@ mod tests {
                         model_id: TrainModelId::new("helvetra-r70"),
                         original_purchase_price: Money::from_cents(5_000),
                     }],
-                    next_train_id: train_id.get() + 1,
                     next_evn_unit_by_model: [(TrainModelId::new("helvetra-r70"), 2)]
                         .into_iter()
                         .collect(),
@@ -2021,7 +2145,6 @@ mod tests {
             rail_network: RailNetwork::default(),
             finances: RailAuthorityFinances::default(),
             infrastructure_projects: vec![],
-            next_infrastructure_project_id: 1,
         };
         let company = PlayerCompany {
             name: "Alden Passenger".into(),

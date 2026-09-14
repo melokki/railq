@@ -550,7 +550,6 @@ mod tests {
                     },
                     finances: crate::model::RailAuthorityFinances::default(),
                     infrastructure_projects: vec![],
-                    next_infrastructure_project_id: 1,
                 },
             },
             player_company: PlayerCompany {
@@ -560,6 +559,7 @@ mod tests {
                 ),
                 funds: Money::from_cents(10_000),
                 fleet: Fleet {
+                    next_train_display_number: 2,
                     trains: vec![Train {
                         id: TRAIN_ID,
                         evn: crate::model::EuropeanVehicleNumber::generate(95, 99, 701, 1).unwrap(),
@@ -568,7 +568,6 @@ mod tests {
                         model_id: crate::model::TrainModelId::new("helvetra-r70"),
                         original_purchase_price: Money::from_cents(5_000),
                     }],
-                    next_train_id: TRAIN_ID.get() + 1,
                     next_evn_unit_by_model: [(crate::model::TrainModelId::new("helvetra-r70"), 2)]
                         .into_iter()
                         .collect(),
