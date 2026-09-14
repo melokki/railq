@@ -948,6 +948,8 @@ pub struct RailAuthorityFinances {
     pub carried_over_funds: Money,
     #[serde(default = "default_regional_public_allocation")]
     pub regional_public_allocation: Money,
+    #[serde(default)]
+    pub infrastructure_access_fee_revenue: Money,
 }
 
 const fn default_regional_public_allocation() -> Money {
@@ -962,6 +964,7 @@ impl Default for RailAuthorityFinances {
             committed_investment: Money::ZERO,
             carried_over_funds: Money::ZERO,
             regional_public_allocation: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
+            infrastructure_access_fee_revenue: Money::ZERO,
         }
     }
 }
@@ -981,6 +984,19 @@ impl RailAuthorityFinances {
     pub fn receive_regional_public_allocation(&mut self) -> Result<Money, CalculationError> {
         self.treasury = self.treasury.checked_add(self.regional_public_allocation)?;
         Ok(self.regional_public_allocation)
+    }
+
+    /// Records an infrastructure access fee paid by the passenger operator
+    /// and deposits it into the Rail Authority treasury.
+    pub fn receive_infrastructure_access_fee(
+        &mut self,
+        amount: Money,
+    ) -> Result<(), CalculationError> {
+        let treasury = self.treasury.checked_add(amount)?;
+        let revenue = self.infrastructure_access_fee_revenue.checked_add(amount)?;
+        self.treasury = treasury;
+        self.infrastructure_access_fee_revenue = revenue;
+        Ok(())
     }
 
     /// Reserves as much of the current maintenance requirement as the
@@ -1563,6 +1579,7 @@ mod tests {
             committed_investment: Money::from_cents(350_000),
             carried_over_funds: Money::from_cents(100_000),
             regional_public_allocation: Money::from_cents(500_000),
+            infrastructure_access_fee_revenue: Money::ZERO,
         };
 
         assert_eq!(
@@ -1585,6 +1602,18 @@ mod tests {
             finances.treasury,
             PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.checked_mul(2).unwrap()
         );
+    }
+
+    #[test]
+    fn infrastructure_access_fees_are_authority_revenue() {
+        let mut finances = RailAuthorityFinances::with_initial_public_allocation();
+        let before = finances.treasury;
+        let fee = Money::from_cents(42_500);
+
+        finances.receive_infrastructure_access_fee(fee).unwrap();
+
+        assert_eq!(finances.treasury, before.checked_add(fee).unwrap());
+        assert_eq!(finances.infrastructure_access_fee_revenue, fee);
     }
 
     #[test]
@@ -1642,6 +1671,7 @@ mod tests {
             committed_investment: Money::from_cents(250_000),
             carried_over_funds: Money::ZERO,
             regional_public_allocation: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
+            infrastructure_access_fee_revenue: Money::ZERO,
         };
 
         assert_eq!(

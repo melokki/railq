@@ -44,7 +44,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 15;
+pub const SAVE_VERSION: u32 = 16;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -388,7 +388,8 @@ CREATE TABLE IF NOT EXISTS rail_authority_finances (
     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
-    regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0)
+    regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0),
+    infrastructure_access_fee_revenue_cents INTEGER NOT NULL CHECK (infrastructure_access_fee_revenue_cents >= 0)
 );
 CREATE TABLE IF NOT EXISTS settlements (
     id INTEGER PRIMARY KEY,
@@ -599,6 +600,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         2 => {
             migrate_v2_to_v3(connection, path)?;
@@ -614,6 +616,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         3 => {
             migrate_v3_to_v4(connection, path)?;
@@ -628,6 +631,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         4 => {
             migrate_v4_to_v5(connection, path)?;
@@ -641,6 +645,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         5 => {
             migrate_v5_to_v6(connection, path)?;
@@ -653,6 +658,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         6 => {
             migrate_v6_to_v7(connection, path)?;
@@ -664,6 +670,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         7 => {
             migrate_v7_to_v8(connection, path)?;
@@ -674,6 +681,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         8 => {
             migrate_v8_to_v9(connection, path)?;
@@ -683,6 +691,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         9 => {
             migrate_v9_to_v10(connection, path)?;
@@ -691,6 +700,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         10 => {
             migrate_v10_to_v11(connection, path)?;
@@ -698,23 +708,31 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         11 => {
             migrate_v11_to_v12(connection, path)?;
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         12 => {
             migrate_v12_to_v13(connection, path)?;
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
         13 => {
             migrate_v13_to_v14(connection, path)?;
             migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
         }
-        14 => migrate_v14_to_v15(connection, path)?,
+        14 => {
+            migrate_v14_to_v15(connection, path)?;
+            migrate_v15_to_v16(connection, path)?;
+        }
+        15 => migrate_v15_to_v16(connection, path)?,
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -1817,7 +1835,7 @@ fn migrate_v14_to_v15(connection: &Connection, path: &Path) -> Result<(), SaveSl
         }
 
         connection
-            .pragma_update(None, "user_version", SAVE_VERSION)
+            .pragma_update(None, "user_version", 15_u32)
             .map_err(|source| db_error("write v15 schema version to", path, source))?;
         Ok(())
     })();
@@ -1826,6 +1844,66 @@ fn migrate_v14_to_v15(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v14 to v15 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v15_to_v16(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v15 to v16 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE rail_authority_finances
+                 ADD COLUMN infrastructure_access_fee_revenue_cents INTEGER NOT NULL DEFAULT 0
+                 CHECK (infrastructure_access_fee_revenue_cents >= 0);",
+            )
+            .map_err(|source| db_error("add Authority access-fee revenue to", path, source))?;
+
+        let financials_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'financials'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect financial history during v16 migration in", path, source))?;
+        if financials_exist != 0 {
+            let historical_access_fees: i64 = connection
+                .query_row(
+                    "SELECT COALESCE(infrastructure_access_fees_cents, 0)
+                     FROM financials WHERE singleton = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|source| db_error("read historical access fees during v16 migration from", path, source))?
+                .unwrap_or(0);
+            connection
+                .execute(
+                    "UPDATE rail_authority_finances
+                     SET infrastructure_access_fee_revenue_cents = ?1,
+                         treasury_cents = treasury_cents + ?1
+                     WHERE singleton = 1",
+                    params![historical_access_fees],
+                )
+                .map_err(|source| db_error("credit historical access fees to Rail Authority in", path, source))?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", SAVE_VERSION)
+            .map_err(|source| db_error("write v16 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v15 to v16 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -1920,14 +1998,15 @@ fn insert_state(
             "INSERT INTO rail_authority_finances(
                  singleton, treasury_cents, maintenance_reserve_cents,
                  committed_investment_cents, carried_over_funds_cents,
-                 regional_public_allocation_cents
-             ) VALUES(1, ?1, ?2, ?3, ?4, ?5)",
+                 regional_public_allocation_cents, infrastructure_access_fee_revenue_cents
+             ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 authority_finances.treasury.cents(),
                 authority_finances.maintenance_reserve.cents(),
                 authority_finances.committed_investment.cents(),
                 authority_finances.carried_over_funds.cents(),
                 authority_finances.regional_public_allocation.cents(),
+                authority_finances.infrastructure_access_fee_revenue.cents(),
             ],
         )
         .map_err(|source| db_error("write Rail Authority finances to", path, source))?;
@@ -2599,10 +2678,12 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         committed_investment,
         carried_over_funds,
         regional_public_allocation,
-    ): (i64, i64, i64, i64, i64) = connection
+        infrastructure_access_fee_revenue,
+    ): (i64, i64, i64, i64, i64, i64) = connection
         .query_row(
             "SELECT treasury_cents, maintenance_reserve_cents, committed_investment_cents,
-                    carried_over_funds_cents, regional_public_allocation_cents
+                    carried_over_funds_cents, regional_public_allocation_cents,
+                    infrastructure_access_fee_revenue_cents
              FROM rail_authority_finances WHERE singleton = 1",
             [],
             |row| {
@@ -2612,6 +2693,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             },
         )
@@ -2622,6 +2704,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         committed_investment: Money::from_cents(committed_investment),
         carried_over_funds: Money::from_cents(carried_over_funds),
         regional_public_allocation: Money::from_cents(regional_public_allocation),
+        infrastructure_access_fee_revenue: Money::from_cents(infrastructure_access_fee_revenue),
     };
 
     let settlements = query_all(
@@ -3598,6 +3681,7 @@ fn validate_rail_authority_finances(
         || finances.committed_investment.cents() < 0
         || finances.carried_over_funds.cents() < 0
         || finances.regional_public_allocation.cents() < 0
+        || finances.infrastructure_access_fee_revenue.cents() < 0
     {
         return Err(SaveValidationError::InvalidValue {
             field: "Rail Authority financial amount",
@@ -4420,6 +4504,7 @@ mod tests {
             committed_investment: Money::from_cents(2_000_000),
             carried_over_funds: Money::from_cents(750_000),
             regional_public_allocation: Money::from_cents(3_000_000),
+            infrastructure_access_fee_revenue: Money::from_cents(425_000),
         };
 
         slot.save(&state).unwrap();
@@ -5021,6 +5106,52 @@ mod tests {
             finances,
             (crate::model::PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.cents(), 0, 0, 0)
         );
+    }
+
+    #[test]
+    fn v15_schema_credits_historical_access_fees_to_authority() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
+                     regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0)
+                 );
+                 INSERT INTO rail_authority_finances VALUES(1, 10000000, 500000, 0, 0, 10000000);
+                 CREATE TABLE financials (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     operating_revenue_cents INTEGER NOT NULL,
+                     infrastructure_access_fees_cents INTEGER NOT NULL,
+                     fuel_costs_cents INTEGER NOT NULL
+                 );
+                 INSERT INTO financials VALUES(1, 2000000, 325000, 175000);
+                 PRAGMA user_version = 15;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let (treasury, access_fee_revenue): (i64, i64) = connection
+            .query_row(
+                "SELECT treasury_cents, infrastructure_access_fee_revenue_cents
+                 FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(access_fee_revenue, 325_000);
+        assert_eq!(treasury, 10_325_000);
     }
 
     #[test]
