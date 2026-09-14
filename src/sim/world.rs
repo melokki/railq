@@ -164,6 +164,7 @@ pub fn generate_region(seed: u64) -> Region {
             name: format!("{name} Rail Authority"),
             rail_network,
             finances,
+            construction_capacity: crate::model::PROVISIONAL_CONSTRUCTION_CAPACITY,
             infrastructure_projects: vec![],
         },
     }

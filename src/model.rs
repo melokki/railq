@@ -1050,6 +1050,34 @@ impl RailAuthority {
                 && project.conflicts_with(candidate)
         })
     }
+
+    /// Number of major infrastructure projects currently occupying Authority
+    /// construction capacity.
+    pub fn active_construction_count(&self) -> u32 {
+        u32::try_from(
+            self.infrastructure_projects
+                .iter()
+                .filter(|project| project.status.is_under_construction())
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+    }
+
+    /// Remaining major-project construction slots.
+    pub fn construction_slots_remaining(&self) -> u32 {
+        self.construction_capacity
+            .saturating_sub(self.active_construction_count())
+    }
+
+    /// Whether an additional project could start construction right now.
+    ///
+    /// Scheduling is introduced later; this method only combines the two
+    /// constraints already modeled: global Authority capacity and physical
+    /// project conflicts.
+    pub fn can_start_construction(&self, candidate: &InfrastructureProject) -> bool {
+        self.construction_slots_remaining() > 0
+            && self.blocking_construction_project(candidate).is_none()
+    }
 }
 
 fn ids_overlap<T: Eq>(left: &[T], right: &[T]) -> bool {
@@ -1070,6 +1098,14 @@ pub const PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION: Money = Money::from_cents(10_0
 /// infrastructure condition and renewal work.
 pub const PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE: MoneyPerKilometre =
     MoneyPerKilometre(25_000);
+
+/// Maximum number of major infrastructure projects the Authority can have
+/// under construction at the same time in the initial simulation.
+pub const PROVISIONAL_CONSTRUCTION_CAPACITY: u32 = 1;
+
+const fn default_construction_capacity() -> u32 {
+    PROVISIONAL_CONSTRUCTION_CAPACITY
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RailAuthorityFinances {
@@ -1159,6 +1195,8 @@ pub struct RailAuthority {
     pub rail_network: RailNetwork,
     #[serde(default)]
     pub finances: RailAuthorityFinances,
+    #[serde(default = "default_construction_capacity")]
+    pub construction_capacity: u32,
     #[serde(default)]
     pub infrastructure_projects: Vec<InfrastructureProject>,
 }
@@ -1850,6 +1888,7 @@ mod tests {
             name: "Test Authority".into(),
             rail_network: RailNetwork::default(),
             finances: RailAuthorityFinances::default(),
+            construction_capacity: PROVISIONAL_CONSTRUCTION_CAPACITY,
             infrastructure_projects: vec![approved, blocker.clone()],
         };
 
@@ -1857,6 +1896,93 @@ mod tests {
             authority.blocking_construction_project(&candidate),
             Some(&blocker)
         );
+    }
+
+    #[test]
+    fn construction_capacity_blocks_unrelated_projects_when_all_slots_are_used() {
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(1),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        let active = InfrastructureProject {
+            id: InfrastructureProjectId::new(10),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![RailLineId::new(1)],
+            },
+            status: InfrastructureProjectStatus::Construction,
+            timeline: timeline.clone(),
+        };
+        let unrelated = InfrastructureProject {
+            id: InfrastructureProjectId::new(11),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![RailLineId::new(2)],
+            },
+            status: InfrastructureProjectStatus::Scheduled,
+            timeline,
+        };
+        let authority = RailAuthority {
+            name: "Test Authority".into(),
+            rail_network: RailNetwork::default(),
+            finances: RailAuthorityFinances::default(),
+            construction_capacity: 1,
+            infrastructure_projects: vec![active],
+        };
+
+        assert_eq!(authority.active_construction_count(), 1);
+        assert_eq!(authority.construction_slots_remaining(), 0);
+        assert!(!authority.can_start_construction(&unrelated));
+    }
+
+    #[test]
+    fn spare_capacity_allows_non_conflicting_construction() {
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(1),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        let active = InfrastructureProject {
+            id: InfrastructureProjectId::new(20),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![RailLineId::new(1)],
+            },
+            status: InfrastructureProjectStatus::Construction,
+            timeline: timeline.clone(),
+        };
+        let unrelated = InfrastructureProject {
+            id: InfrastructureProjectId::new(21),
+            kind: InfrastructureProjectKind::Renewal {
+                rail_line_ids: vec![RailLineId::new(2)],
+            },
+            status: InfrastructureProjectStatus::Scheduled,
+            timeline,
+        };
+        let authority = RailAuthority {
+            name: "Test Authority".into(),
+            rail_network: RailNetwork::default(),
+            finances: RailAuthorityFinances::default(),
+            construction_capacity: 2,
+            infrastructure_projects: vec![active],
+        };
+
+        assert_eq!(authority.construction_slots_remaining(), 1);
+        assert!(authority.can_start_construction(&unrelated));
     }
 
     #[test]
@@ -2088,6 +2214,7 @@ mod tests {
                         rail_lines: vec![],
                     },
                     finances: RailAuthorityFinances::default(),
+                    construction_capacity: PROVISIONAL_CONSTRUCTION_CAPACITY,
                     infrastructure_projects: vec![],
                 },
             },
@@ -2144,6 +2271,7 @@ mod tests {
             name: "Varelia Rail Authority".into(),
             rail_network: RailNetwork::default(),
             finances: RailAuthorityFinances::default(),
+            construction_capacity: PROVISIONAL_CONSTRUCTION_CAPACITY,
             infrastructure_projects: vec![],
         };
         let company = PlayerCompany {

@@ -44,7 +44,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 17;
+pub const SAVE_VERSION: u32 = 18;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -379,7 +379,8 @@ CREATE TABLE IF NOT EXISTS region (
     registration_code INTEGER NOT NULL CHECK (registration_code BETWEEN 10 AND 99),
     registration_mark TEXT NOT NULL,
     population INTEGER NOT NULL,
-    rail_authority_name TEXT NOT NULL
+    rail_authority_name TEXT NOT NULL,
+    rail_authority_construction_capacity INTEGER NOT NULL DEFAULT 1 CHECK (rail_authority_construction_capacity > 0)
 );
 CREATE TABLE IF NOT EXISTS rail_authority_finances (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -740,7 +741,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 => {},
+        16 | 17 => {},
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -758,11 +759,15 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
         }
     }
 
-    let current_version: u32 = connection
+    let mut current_version: u32 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|source| db_error("read migrated schema version from", path, source))?;
     if current_version == 16 {
         migrate_v16_to_v17(connection, path)?;
+        current_version = 17;
+    }
+    if current_version == 17 {
+        migrate_v17_to_v18(connection, path)?;
     }
     Ok(())
 }
@@ -2319,6 +2324,47 @@ fn migrate_v16_to_v17(connection: &Connection, path: &Path) -> Result<(), SaveSl
     }
 }
 
+fn migrate_v17_to_v18(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v17 to v18 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let has_capacity_column: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('region')
+                 WHERE name = 'rail_authority_construction_capacity'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect Rail Authority construction capacity in", path, source))?;
+        if has_capacity_column == 0 {
+            connection
+                .execute(
+                    "ALTER TABLE region
+                     ADD COLUMN rail_authority_construction_capacity INTEGER NOT NULL DEFAULT 1
+                     CHECK (rail_authority_construction_capacity > 0)",
+                    [],
+                )
+                .map_err(|source| db_error("add Rail Authority construction capacity to", path, source))?;
+        }
+        connection
+            .pragma_update(None, "user_version", 18_u32)
+            .map_err(|source| db_error("write v18 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v17 to v18 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
 fn clear_state(
     transaction: &Transaction<'_>,
     path: &Path,
@@ -2385,14 +2431,15 @@ fn insert_state(
     transaction.execute(
         "INSERT INTO region(
              singleton, name, registration_code, registration_mark, population,
-             rail_authority_name
-         ) VALUES(1, ?1, ?2, ?3, ?4, ?5)",
+             rail_authority_name, rail_authority_construction_capacity
+         ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             &state.region.name,
             i64::from(state.region.railway_registration.numeric_code),
             &state.region.railway_registration.mark,
             db(state.region.population, "Region Population")?,
             &state.region.rail_authority.name,
+            i64::from(state.region.rail_authority.construction_capacity),
         ],
     ).map_err(|source| db_error("write Region to", path, source))?;
 
@@ -3072,13 +3119,29 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         .parse::<u64>()
         .map_err(|_| invalid_value(path, "world seed"))?;
 
-    let (region_name, registration_code, registration_mark, region_population, authority_name):
-        (String, i64, String, i64, String) = connection
+    let (
+        region_name,
+        registration_code,
+        registration_mark,
+        region_population,
+        authority_name,
+        authority_construction_capacity,
+    ): (String, i64, String, i64, String, i64) = connection
         .query_row(
-            "SELECT name, registration_code, registration_mark, population, rail_authority_name
+            "SELECT name, registration_code, registration_mark, population, rail_authority_name,
+                    rail_authority_construction_capacity
              FROM region WHERE singleton = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
         )
         .map_err(|source| db_error("read Region from", path, source))?;
 
@@ -3434,6 +3497,8 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                     rail_lines,
                 },
                 finances: rail_authority_finances,
+                construction_capacity: u32::try_from(authority_construction_capacity)
+                    .map_err(|_| invalid_value(path, "Rail Authority construction capacity"))?,
                 infrastructure_projects,
             },
         },
@@ -4126,6 +4191,17 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
 fn validate_rail_authority_finances(
     authority: &RailAuthority,
 ) -> Result<(), SaveValidationError> {
+    if authority.construction_capacity == 0 {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Rail Authority construction capacity",
+        });
+    }
+    if authority.active_construction_count() > authority.construction_capacity {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Rail Authority active construction exceeds its capacity",
+        });
+    }
+
     let finances = &authority.finances;
     if finances.treasury.cents() < 0
         || finances.maintenance_reserve.cents() < 0
@@ -4940,6 +5016,7 @@ mod tests {
         let directory = TestDirectory::new();
         let slot = SaveSlot::open(directory.save_path()).unwrap();
         let mut state = active_game();
+        state.region.rail_authority.construction_capacity = 2;
         state.region.rail_authority.finances = RailAuthorityFinances {
             treasury: Money::from_cents(9_000_000),
             maintenance_reserve: Money::from_cents(1_500_000),
@@ -5058,6 +5135,7 @@ mod tests {
             deferred_at: None,
             cancelled_at: None,
         };
+        state.region.rail_authority.construction_capacity = 2;
         state.region.rail_authority.infrastructure_projects = vec![
             InfrastructureProject {
                 id: InfrastructureProjectId::new(1),
@@ -5102,6 +5180,7 @@ mod tests {
             deferred_at: None,
             cancelled_at: None,
         };
+        state.region.rail_authority.construction_capacity = 2;
         state.region.rail_authority.infrastructure_projects = vec![
             InfrastructureProject {
                 id: InfrastructureProjectId::new(1),
@@ -5122,6 +5201,50 @@ mod tests {
             },
         ];
         assert_eq!(validate_game_state(&state), Ok(()));
+    }
+
+    #[test]
+    fn validation_rejects_more_active_projects_than_construction_capacity() {
+        let mut state = active_game();
+        state.region.rail_authority.construction_capacity = 1;
+        let timeline = InfrastructureProjectTimeline {
+            requested_at: UtcSeconds::from_unix_seconds(2_000),
+            review_started_at: None,
+            proposed_at: None,
+            approved_at: None,
+            funding_completed_at: None,
+            scheduled_start_at: None,
+            construction_started_at: None,
+            planned_completion_at: None,
+            completed_at: None,
+            deferred_at: None,
+            cancelled_at: None,
+        };
+        state.region.rail_authority.infrastructure_projects = vec![
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(101),
+                kind: InfrastructureProjectKind::Renewal {
+                    rail_line_ids: vec![RailLineId::new(1)],
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline: timeline.clone(),
+            },
+            InfrastructureProject {
+                id: InfrastructureProjectId::new(102),
+                kind: InfrastructureProjectKind::Renewal {
+                    rail_line_ids: vec![RailLineId::new(2)],
+                },
+                status: InfrastructureProjectStatus::Construction,
+                timeline,
+            },
+        ];
+
+        assert_eq!(
+            validate_game_state(&state),
+            Err(SaveValidationError::ImpossibleState {
+                reason: "Rail Authority active construction exceeds its capacity",
+            })
+        );
     }
 
     #[test]
@@ -5572,6 +5695,46 @@ mod tests {
         assert_eq!(
             finances,
             (crate::model::PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION.cents(), 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn v17_schema_adds_rail_authority_construction_capacity() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE region (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     name TEXT NOT NULL,
+                     registration_code INTEGER NOT NULL,
+                     registration_mark TEXT NOT NULL,
+                     population INTEGER NOT NULL,
+                     rail_authority_name TEXT NOT NULL
+                 );
+                 INSERT INTO region VALUES(1, 'Federation of Varelia', 67, 'VA', 1000, 'Varelia Rail Authority');
+                 PRAGMA user_version = 17;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let capacity: i64 = connection
+            .query_row(
+                "SELECT rail_authority_construction_capacity FROM region WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(
+            capacity,
+            i64::from(crate::model::PROVISIONAL_CONSTRUCTION_CAPACITY)
         );
     }
 
