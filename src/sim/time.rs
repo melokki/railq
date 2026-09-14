@@ -14,7 +14,7 @@ use crate::{
         RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
     },
     sim::{
-        authority::advance_infrastructure_planning,
+        authority::{advance_infrastructure_planning, advance_project_funding},
         demand::replenish_directional_demand,
         economy::{EconomyError, duration_between_service_stops, quote_boarding_at_stop},
     },
@@ -172,6 +172,7 @@ pub fn advance_time_with_arrivals(
 
     replenish_directional_demand(state, effective_now);
     advance_infrastructure_planning(&mut state.region, state.world_seed, effective_now)?;
+    advance_project_funding(&mut state.region, effective_now)?;
     Ok(settled)
 }
 

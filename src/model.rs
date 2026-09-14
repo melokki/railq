@@ -905,6 +905,26 @@ pub struct InfrastructureProjectTimeline {
     pub cancelled_at: Option<UtcSeconds>,
 }
 
+/// Financial commitment state for one public infrastructure project.
+///
+/// Player/operator contributions are introduced later. For now the Authority
+/// can reserve part or all of the estimated cost from its investment budget.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InfrastructureProjectFunding {
+    pub estimated_cost: Money,
+    pub authority_committed: Money,
+}
+
+impl InfrastructureProjectFunding {
+    pub fn funding_gap(&self) -> Result<Money, CalculationError> {
+        self.estimated_cost.checked_sub(self.authority_committed)
+    }
+
+    pub fn is_fully_funded(&self) -> bool {
+        self.authority_committed >= self.estimated_cost
+    }
+}
+
 /// One Rail Station reserved by a planned New Line project.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PlannedRailStation {
@@ -966,6 +986,8 @@ pub struct InfrastructureProject {
     pub kind: InfrastructureProjectKind,
     pub status: InfrastructureProjectStatus,
     pub timeline: InfrastructureProjectTimeline,
+    #[serde(default)]
+    pub funding: InfrastructureProjectFunding,
 }
 
 impl InfrastructureProjectStatus {
@@ -1866,6 +1888,7 @@ mod tests {
             },
             status: InfrastructureProjectStatus::Construction,
             timeline: timeline.clone(),
+            funding: InfrastructureProjectFunding::default(),
         };
         let approved = InfrastructureProject {
             id: InfrastructureProjectId::new(2),
@@ -1874,6 +1897,7 @@ mod tests {
             },
             status: InfrastructureProjectStatus::Approved,
             timeline: timeline.clone(),
+            funding: InfrastructureProjectFunding::default(),
         };
         let candidate = InfrastructureProject {
             id: InfrastructureProjectId::new(3),
@@ -1882,6 +1906,7 @@ mod tests {
             },
             status: InfrastructureProjectStatus::Scheduled,
             timeline,
+            funding: InfrastructureProjectFunding::default(),
         };
         let authority = RailAuthority {
             name: "Test Authority".into(),
@@ -1919,6 +1944,7 @@ mod tests {
             },
             status: InfrastructureProjectStatus::Construction,
             timeline: timeline.clone(),
+            funding: InfrastructureProjectFunding::default(),
         };
         let unrelated = InfrastructureProject {
             id: InfrastructureProjectId::new(11),
@@ -1927,6 +1953,7 @@ mod tests {
             },
             status: InfrastructureProjectStatus::Scheduled,
             timeline,
+            funding: InfrastructureProjectFunding::default(),
         };
         let authority = RailAuthority {
             name: "Test Authority".into(),
@@ -1963,6 +1990,7 @@ mod tests {
             },
             status: InfrastructureProjectStatus::Construction,
             timeline: timeline.clone(),
+            funding: InfrastructureProjectFunding::default(),
         };
         let unrelated = InfrastructureProject {
             id: InfrastructureProjectId::new(21),
@@ -1971,6 +1999,7 @@ mod tests {
             },
             status: InfrastructureProjectStatus::Scheduled,
             timeline,
+            funding: InfrastructureProjectFunding::default(),
         };
         let authority = RailAuthority {
             name: "Test Authority".into(),

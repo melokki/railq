@@ -27,8 +27,9 @@ use crate::{
     model::{
         CalculationError, ConstructionDifficulty, DemandRules, DistanceMetres, DurationSeconds,
         Electrification, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState,
-        InfrastructureProject, InfrastructureProjectId, InfrastructureProjectKind,
-        InfrastructureProjectStatus, InfrastructureProjectTimeline, Journey, JourneyId,
+        InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
+        InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline,
+        Journey, JourneyId,
         JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre, OriginDestinationDemand,
         PassengerArrivalRate, PassengerCapacity, PassengerService, PlannedRailLine,
         PlannedRailStation, PlayerCompany, RailAuthority, RailAuthorityFinances, RailLine,
@@ -44,7 +45,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 18;
+pub const SAVE_VERSION: u32 = 19;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -418,6 +419,8 @@ CREATE TABLE IF NOT EXISTS infrastructure_projects (
     sequence INTEGER NOT NULL UNIQUE,
     kind TEXT NOT NULL CHECK (kind IN ('new_line', 'speed_upgrade', 'double_tracking', 'electrification', 'renewal', 'station_upgrade')),
     status TEXT NOT NULL CHECK (status IN ('requested', 'under_review', 'proposed', 'approved', 'deferred', 'funding', 'scheduled', 'construction', 'open', 'cancelled')),
+    estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0),
+    authority_committed_cents INTEGER NOT NULL DEFAULT 0 CHECK (authority_committed_cents >= 0),
     requested_at INTEGER NOT NULL,
     review_started_at INTEGER,
     proposed_at INTEGER,
@@ -741,7 +744,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 | 17 => {}
+        16 | 17 | 18 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -768,6 +771,10 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
     }
     if current_version == 17 {
         migrate_v17_to_v18(connection, path)?;
+        current_version = 18;
+    }
+    if current_version == 18 {
+        migrate_v18_to_v19(connection, path)?;
     }
     Ok(())
 }
@@ -2399,6 +2406,111 @@ fn migrate_v17_to_v18(connection: &Connection, path: &Path) -> Result<(), SaveSl
     }
 }
 
+fn migrate_v18_to_v19(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v18 to v19 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let project_table_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'infrastructure_projects'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect Infrastructure Project table in", path, source))?;
+
+        if project_table_exists != 0 {
+            let has_estimated_cost: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('infrastructure_projects')
+                     WHERE name = 'estimated_cost_cents'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|source| db_error("inspect project estimated cost in", path, source))?;
+            if has_estimated_cost == 0 {
+                connection
+                    .execute(
+                        "ALTER TABLE infrastructure_projects
+                         ADD COLUMN estimated_cost_cents INTEGER NOT NULL DEFAULT 0
+                         CHECK (estimated_cost_cents >= 0)",
+                        [],
+                    )
+                    .map_err(|source| db_error("add project estimated cost to", path, source))?;
+            }
+
+            let has_authority_commitment: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('infrastructure_projects')
+                     WHERE name = 'authority_committed_cents'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|source| {
+                    db_error("inspect project Authority commitment in", path, source)
+                })?;
+            if has_authority_commitment == 0 {
+                connection
+                    .execute(
+                        "ALTER TABLE infrastructure_projects
+                         ADD COLUMN authority_committed_cents INTEGER NOT NULL DEFAULT 0
+                         CHECK (authority_committed_cents >= 0)",
+                        [],
+                    )
+                    .map_err(|source| {
+                        db_error("add project Authority commitment to", path, source)
+                    })?;
+            }
+
+            let planned_lines_exist: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'table' AND name = 'infrastructure_project_planned_lines'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|source| db_error("inspect planned Rail Line table in", path, source))?;
+            if planned_lines_exist != 0 {
+                connection
+                    .execute_batch(
+                        "UPDATE infrastructure_projects
+                         SET estimated_cost_cents = COALESCE((
+                             SELECT SUM(
+                                 ((pl.distance_metres * CASE pl.construction_difficulty
+                                     WHEN 'low' THEN 120000
+                                     WHEN 'moderate' THEN 160000
+                                     WHEN 'high' THEN 220000
+                                     ELSE 160000
+                                 END) + 999) / 1000
+                             )
+                             FROM infrastructure_project_planned_lines pl
+                             WHERE pl.project_id = infrastructure_projects.id
+                         ), 0)
+                         WHERE kind = 'new_line' AND estimated_cost_cents = 0;",
+                    )
+                    .map_err(|source| db_error("backfill project estimated cost in", path, source))?;
+            }
+        }
+
+        connection
+            .pragma_update(None, "user_version", 19_u32)
+            .map_err(|source| db_error("write v19 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v18 to v19 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
 fn clear_state(
     transaction: &Transaction<'_>,
     path: &Path,
@@ -2752,16 +2864,18 @@ fn insert_infrastructure_project(
     transaction
         .execute(
             "INSERT INTO infrastructure_projects(
-                 id, sequence, kind, status, requested_at, review_started_at, proposed_at, approved_at,
-                 funding_completed_at, scheduled_start_at, construction_started_at,
-                 planned_completion_at, completed_at, deferred_at, cancelled_at,
-                 target_speed_limit_kmh, target_track_count
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                 id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
+                 requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
+                 scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
+                 deferred_at, cancelled_at, target_speed_limit_kmh, target_track_count
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 project.id.to_string(),
                 i64::try_from(sequence).unwrap_or(i64::MAX),
                 kind,
                 status,
+                project.funding.estimated_cost.cents(),
+                project.funding.authority_committed.cents(),
                 timeline.requested_at.unix_seconds(),
                 timeline.review_started_at.map(UtcSeconds::unix_seconds),
                 timeline.proposed_at.map(UtcSeconds::unix_seconds),
@@ -2879,6 +2993,7 @@ fn load_infrastructure_projects(
         id: InfrastructureProjectId,
         kind: String,
         status: String,
+        funding: InfrastructureProjectFunding,
         timeline: InfrastructureProjectTimeline,
         target_speed_limit_kmh: Option<i64>,
         target_track_count: Option<i64>,
@@ -2886,10 +3001,10 @@ fn load_infrastructure_projects(
 
     let rows = query_all(
         connection,
-        "SELECT id, kind, status, requested_at, review_started_at, proposed_at, approved_at,
-                funding_completed_at, scheduled_start_at, construction_started_at,
-                planned_completion_at, completed_at, deferred_at, cancelled_at,
-                target_speed_limit_kmh, target_track_count
+        "SELECT id, kind, status, estimated_cost_cents, authority_committed_cents,
+                requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
+                scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
+                deferred_at, cancelled_at, target_speed_limit_kmh, target_track_count
          FROM infrastructure_projects ORDER BY sequence",
         path,
         |row| {
@@ -2907,21 +3022,25 @@ fn load_infrastructure_projects(
                 )?,
                 kind: row.get(1)?,
                 status: row.get(2)?,
-                timeline: InfrastructureProjectTimeline {
-                    requested_at: UtcSeconds::from_unix_seconds(row.get(3)?),
-                    review_started_at: timestamp(4)?,
-                    proposed_at: timestamp(5)?,
-                    approved_at: timestamp(6)?,
-                    funding_completed_at: timestamp(7)?,
-                    scheduled_start_at: timestamp(8)?,
-                    construction_started_at: timestamp(9)?,
-                    planned_completion_at: timestamp(10)?,
-                    completed_at: timestamp(11)?,
-                    deferred_at: timestamp(12)?,
-                    cancelled_at: timestamp(13)?,
+                funding: InfrastructureProjectFunding {
+                    estimated_cost: Money::from_cents(row.get(3)?),
+                    authority_committed: Money::from_cents(row.get(4)?),
                 },
-                target_speed_limit_kmh: row.get(14)?,
-                target_track_count: row.get(15)?,
+                timeline: InfrastructureProjectTimeline {
+                    requested_at: UtcSeconds::from_unix_seconds(row.get(5)?),
+                    review_started_at: timestamp(6)?,
+                    proposed_at: timestamp(7)?,
+                    approved_at: timestamp(8)?,
+                    funding_completed_at: timestamp(9)?,
+                    scheduled_start_at: timestamp(10)?,
+                    construction_started_at: timestamp(11)?,
+                    planned_completion_at: timestamp(12)?,
+                    completed_at: timestamp(13)?,
+                    deferred_at: timestamp(14)?,
+                    cancelled_at: timestamp(15)?,
+                },
+                target_speed_limit_kmh: row.get(16)?,
+                target_track_count: row.get(17)?,
             })
         },
     )?;
@@ -3158,6 +3277,7 @@ fn load_infrastructure_projects(
             kind,
             status,
             timeline: row.timeline,
+            funding: row.funding,
         });
     }
 
@@ -4333,6 +4453,29 @@ fn validate_infrastructure_projects(
         });
     }
 
+    let mut total_project_commitments = Money::ZERO;
+    for project in &authority.infrastructure_projects {
+        if project.funding.estimated_cost.cents() < 0
+            || project.funding.authority_committed.cents() < 0
+        {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Infrastructure Project funding amount",
+            });
+        }
+        if project.funding.authority_committed > project.funding.estimated_cost {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Infrastructure Project commitment exceeds estimated cost",
+            });
+        }
+        total_project_commitments = total_project_commitments
+            .checked_add(project.funding.authority_committed)?;
+    }
+    if total_project_commitments > authority.finances.committed_investment {
+        return Err(SaveValidationError::ImpossibleState {
+            reason: "Infrastructure Project commitments exceed Authority committed investment",
+        });
+    }
+
     let mut reserved_station_ids = HashSet::new();
     let mut reserved_line_ids = HashSet::new();
     for project in &authority.infrastructure_projects {
@@ -5150,6 +5293,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Requested,
                 timeline: timeline(2_000),
+                funding: InfrastructureProjectFunding::default(),
             },
             InfrastructureProject {
                 id: InfrastructureProjectId::new(2),
@@ -5159,6 +5303,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::UnderReview,
                 timeline: timeline(2_001),
+                funding: InfrastructureProjectFunding::default(),
             },
             InfrastructureProject {
                 id: InfrastructureProjectId::new(3),
@@ -5168,6 +5313,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Proposed,
                 timeline: timeline(2_002),
+                funding: InfrastructureProjectFunding::default(),
             },
             InfrastructureProject {
                 id: InfrastructureProjectId::new(4),
@@ -5176,6 +5322,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Approved,
                 timeline: timeline(2_003),
+                funding: InfrastructureProjectFunding::default(),
             },
             InfrastructureProject {
                 id: InfrastructureProjectId::new(5),
@@ -5184,6 +5331,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Deferred,
                 timeline: timeline(2_004),
+                funding: InfrastructureProjectFunding::default(),
             },
             InfrastructureProject {
                 id: InfrastructureProjectId::new(6),
@@ -5192,6 +5340,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Funding,
                 timeline: timeline(2_005),
+                funding: InfrastructureProjectFunding::default(),
             },
         ];
         slot.save(&state).unwrap();
@@ -5225,6 +5374,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Construction,
                 timeline: timeline.clone(),
+                funding: InfrastructureProjectFunding::default(),
             },
             InfrastructureProject {
                 id: InfrastructureProjectId::new(2),
@@ -5233,6 +5383,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Construction,
                 timeline,
+                funding: InfrastructureProjectFunding::default(),
             },
         ];
         assert_eq!(
@@ -5269,6 +5420,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Construction,
                 timeline: timeline.clone(),
+                funding: InfrastructureProjectFunding::default(),
             },
             InfrastructureProject {
                 id: InfrastructureProjectId::new(2),
@@ -5277,6 +5429,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Construction,
                 timeline,
+                funding: InfrastructureProjectFunding::default(),
             },
         ];
         assert_eq!(validate_game_state(&state), Ok(()));
@@ -5307,6 +5460,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Construction,
                 timeline: timeline.clone(),
+                funding: InfrastructureProjectFunding::default(),
             },
             InfrastructureProject {
                 id: InfrastructureProjectId::new(102),
@@ -5315,6 +5469,7 @@ mod tests {
                 },
                 status: InfrastructureProjectStatus::Construction,
                 timeline,
+                funding: InfrastructureProjectFunding::default(),
             },
         ];
 

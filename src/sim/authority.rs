@@ -2,12 +2,13 @@
 //!
 //! Candidate evaluation and the early Rail Authority planning lifecycle.
 //!
-//! This layer deliberately stops at approval. Funding, scheduling, construction,
-//! and opening are introduced by later batches.
+//! This layer currently advances projects through public funding. Scheduling,
+//! construction, and opening are introduced by later batches.
 
 use crate::model::{
     CalculationError, ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
-    InfrastructureProject, InfrastructureProjectId, InfrastructureProjectKind,
+    InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
+    InfrastructureProjectKind,
     InfrastructureProjectStatus, InfrastructureProjectTimeline, Money, MoneyPerKilometre,
     PlannedRailLine, PlannedRailStation, RailLineId, RailStationId, Region, SettlementId,
     SpeedKilometresPerHour, TrackCount, UtcSeconds,
@@ -84,6 +85,70 @@ pub fn advance_infrastructure_planning(
             .rail_authority
             .infrastructure_projects
             .push(project_from_candidate(candidate, now));
+    }
+
+    Ok(())
+}
+
+/// Moves approved projects into Funding and commits currently available
+/// Authority investment funds in approval order. Partial funding is allowed;
+/// a project remains in Funding until later budget income closes the gap.
+pub fn advance_project_funding(
+    region: &mut Region,
+    now: UtcSeconds,
+) -> Result<(), CalculationError> {
+    let authority = &mut region.rail_authority;
+    let mut indices = (0..authority.infrastructure_projects.len()).collect::<Vec<_>>();
+    indices.sort_by_key(|&index| {
+        let project = &authority.infrastructure_projects[index];
+        (
+            project
+                .timeline
+                .approved_at
+                .unwrap_or(project.timeline.requested_at),
+            project.id,
+        )
+    });
+
+    for index in indices {
+        if authority.infrastructure_projects[index].status
+            == InfrastructureProjectStatus::Approved
+        {
+            authority.infrastructure_projects[index].status = InfrastructureProjectStatus::Funding;
+        }
+        if authority.infrastructure_projects[index].status != InfrastructureProjectStatus::Funding {
+            continue;
+        }
+        if authority.infrastructure_projects[index]
+            .funding
+            .is_fully_funded()
+        {
+            authority.infrastructure_projects[index]
+                .timeline
+                .funding_completed_at
+                .get_or_insert(now);
+            continue;
+        }
+
+        let available = authority.finances.uncommitted_investment()?;
+        if available <= Money::ZERO {
+            continue;
+        }
+        let gap = authority.infrastructure_projects[index].funding.funding_gap()?;
+        let commitment = available.min(gap);
+        authority.finances.committed_investment = authority
+            .finances
+            .committed_investment
+            .checked_add(commitment)?;
+
+        let project = &mut authority.infrastructure_projects[index];
+        project.funding.authority_committed = project
+            .funding
+            .authority_committed
+            .checked_add(commitment)?;
+        if project.funding.is_fully_funded() && project.timeline.funding_completed_at.is_none() {
+            project.timeline.funding_completed_at = Some(now);
+        }
     }
 
     Ok(())
@@ -210,6 +275,10 @@ fn project_from_candidate(
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+        },
+        funding: InfrastructureProjectFunding {
+            estimated_cost: candidate.estimated_cost,
+            authority_committed: Money::ZERO,
         },
     }
 }
@@ -411,13 +480,14 @@ mod tests {
     use crate::{
         model::{
             ConstructionDifficulty, DistanceMetres, InfrastructureProjectKind,
-            InfrastructureProjectStatus, UtcSeconds,
+            InfrastructureProjectStatus, Money, UtcSeconds,
         },
         sim::world::generate_region,
     };
 
     use super::{
-        advance_infrastructure_planning, estimated_connection_cost, evaluate_connection_candidates,
+        advance_infrastructure_planning, advance_project_funding, estimated_connection_cost,
+        evaluate_connection_candidates,
     };
 
     #[test]
@@ -517,6 +587,8 @@ mod tests {
         );
         assert_eq!(planned_lines[0].second_station_id, planned_stations[0].id);
         assert_eq!(planned_lines[0].distance, expected.estimated_distance);
+        assert_eq!(project.funding.estimated_cost, expected.estimated_cost);
+        assert_eq!(project.funding.authority_committed, Money::ZERO);
     }
 
     #[test]
@@ -606,4 +678,53 @@ mod tests {
             region.rail_authority.infrastructure_projects.len()
         );
     }
+    #[test]
+    fn funding_commits_available_authority_investment_to_approved_project() {
+        let mut region = generate_region(42);
+        let candidate = evaluate_connection_candidates(&region, 42).unwrap()[0].clone();
+        let cost = candidate.estimated_cost;
+        let now = UtcSeconds::from_unix_seconds(5_000);
+        let mut project = project_from_candidate(candidate, now);
+        project.status = InfrastructureProjectStatus::Approved;
+        project.timeline.approved_at = Some(now);
+        region.rail_authority.infrastructure_projects = vec![project];
+        region.rail_authority.finances.treasury =
+            cost.checked_add(Money::from_cents(10_000)).unwrap();
+        region.rail_authority.finances.maintenance_reserve = Money::ZERO;
+        region.rail_authority.finances.committed_investment = Money::ZERO;
+
+        advance_project_funding(&mut region, now).unwrap();
+
+        let project = &region.rail_authority.infrastructure_projects[0];
+        assert_eq!(project.status, InfrastructureProjectStatus::Funding);
+        assert_eq!(project.funding.authority_committed, cost);
+        assert_eq!(project.timeline.funding_completed_at, Some(now));
+        assert_eq!(region.rail_authority.finances.committed_investment, cost);
+    }
+
+    #[test]
+    fn funding_can_leave_project_partially_funded_when_budget_is_insufficient() {
+        let mut region = generate_region(7);
+        let candidate = evaluate_connection_candidates(&region, 7).unwrap()[0].clone();
+        let cost = candidate.estimated_cost;
+        let partial = Money::from_cents((cost.cents() / 2).max(1));
+        let now = UtcSeconds::from_unix_seconds(8_000);
+        let mut project = project_from_candidate(candidate, now);
+        project.status = InfrastructureProjectStatus::Approved;
+        project.timeline.approved_at = Some(now);
+        region.rail_authority.infrastructure_projects = vec![project];
+        region.rail_authority.finances.treasury = partial;
+        region.rail_authority.finances.maintenance_reserve = Money::ZERO;
+        region.rail_authority.finances.committed_investment = Money::ZERO;
+
+        advance_project_funding(&mut region, now).unwrap();
+
+        let project = &region.rail_authority.infrastructure_projects[0];
+        assert_eq!(project.status, InfrastructureProjectStatus::Funding);
+        assert_eq!(project.funding.authority_committed, partial);
+        assert_eq!(project.timeline.funding_completed_at, None);
+        assert_eq!(region.rail_authority.finances.committed_investment, partial);
+        assert!(project.funding.funding_gap().unwrap() > Money::ZERO);
+    }
+
 }
