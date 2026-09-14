@@ -170,6 +170,15 @@ pub fn render_contribution_review(
         .remaining_operator_contribution_capacity()
         .map(format::money)
         .unwrap_or_else(|_| "—".into());
+    let mut projected_funding = project.funding.clone();
+    projected_funding.operator_contributed = projected_funding
+        .operator_contributed
+        .checked_add(review.amount)
+        .unwrap_or(projected_funding.operator_contributed);
+    let projected_credit = projected_funding
+        .operator_access_credit_value()
+        .map(format::money)
+        .unwrap_or_else(|_| "—".into());
     let lines = vec![
         Line::from(vec![
             Span::styled("Project  ", theme::secondary()),
@@ -180,6 +189,10 @@ pub fn render_contribution_review(
         money_line("Contribution", review.amount),
         money_line("Already contributed", project.funding.operator_contributed),
         Line::from(vec![
+            Span::styled("Access credit after opening  ", theme::secondary()),
+            Span::styled(projected_credit, theme::success()),
+        ]),
+        Line::from(vec![
             Span::styled("Contribution capacity  ", theme::secondary()),
             Span::styled(remaining_cap, theme::primary_value()),
         ]),
@@ -187,6 +200,7 @@ pub fn render_contribution_review(
         Line::from("This is a 10% project-cost tranche, capped by the remaining funding gap,"),
         Line::from("the 20% operator cap, and current Company Funds."),
         Line::from("Contributing can close funding sooner but never shortens construction time."),
+        Line::from("After opening, 115% of contributed funds become finite access-fee credit on the project infrastructure."),
     ];
     frame.render_widget(
         Paragraph::new(lines).style(theme::panel()).wrap(Wrap { trim: true }),
@@ -505,6 +519,20 @@ fn render_project_inspector(
             Span::styled(gap, theme::primary_value()),
         ]),
     ];
+    if project.funding.access_fee_credit_awarded > Money::ZERO {
+        lines.push(money_line(
+            "Access credit awarded",
+            project.funding.access_fee_credit_awarded,
+        ));
+        lines.push(money_line(
+            "Access credit remaining",
+            project.funding.access_fee_credit_remaining,
+        ));
+    } else if project.funding.operator_contributed > Money::ZERO {
+        if let Ok(projected_credit) = project.funding.operator_access_credit_value() {
+            lines.push(money_line("Projected access credit", projected_credit));
+        }
+    }
 
     append_project_scope_details(&mut lines, state, project);
     lines.push(Line::from(""));

@@ -930,6 +930,9 @@ pub struct InfrastructureProjectTimeline {
 /// can reserve part or all of the estimated cost from its investment budget.
 pub const PROVISIONAL_OPERATOR_CONTRIBUTION_CAP_PERCENT: u64 = 20;
 pub const PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT: u64 = 10;
+/// Provisional access-fee credit granted when an operator-funded project opens.
+/// 115% gives the contribution a modest commercial return without creating ownership.
+pub const PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT: u64 = 115;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InfrastructureProjectFunding {
@@ -937,6 +940,10 @@ pub struct InfrastructureProjectFunding {
     pub authority_committed: Money,
     #[serde(default)]
     pub operator_contributed: Money,
+    #[serde(default)]
+    pub access_fee_credit_awarded: Money,
+    #[serde(default)]
+    pub access_fee_credit_remaining: Money,
 }
 
 impl InfrastructureProjectFunding {
@@ -984,6 +991,29 @@ impl InfrastructureProjectFunding {
             .min(self.funding_gap()?)
             .min(self.remaining_operator_contribution_capacity()?)
             .min(company_funds))
+    }
+
+    pub fn operator_access_credit_value(&self) -> Result<Money, CalculationError> {
+        let cents = i128::from(self.operator_contributed.cents())
+            .checked_mul(i128::from(PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT))
+            .ok_or(CalculationError::Overflow {
+                operation: "operator infrastructure access credit",
+            })?
+            / 100;
+        let cents = i64::try_from(cents).map_err(|_| CalculationError::Overflow {
+            operation: "operator infrastructure access credit",
+        })?;
+        Ok(Money::from_cents(cents))
+    }
+
+    pub fn award_operator_access_credit(&mut self) -> Result<Money, CalculationError> {
+        if self.access_fee_credit_awarded > Money::ZERO {
+            return Ok(self.access_fee_credit_awarded);
+        }
+        let credit = self.operator_access_credit_value()?;
+        self.access_fee_credit_awarded = credit;
+        self.access_fee_credit_remaining = credit;
+        Ok(credit)
     }
 
     pub fn is_fully_funded(&self) -> bool {
@@ -1127,6 +1157,22 @@ impl InfrastructureProjectKind {
 impl InfrastructureProject {
     pub fn conflicts_with(&self, other: &Self) -> bool {
         self.kind.conflicts_with(&other.kind)
+    }
+
+    /// Whether an access-fee credit earned by this project applies to one Rail Line.
+    pub fn access_credit_covers_line(&self, rail_line_id: RailLineId) -> bool {
+        match &self.kind {
+            InfrastructureProjectKind::NewLine { planned_lines, .. } => {
+                planned_lines.iter().any(|line| line.id == rail_line_id)
+            }
+            InfrastructureProjectKind::SpeedUpgrade { rail_line_ids, .. }
+            | InfrastructureProjectKind::DoubleTracking { rail_line_ids, .. }
+            | InfrastructureProjectKind::Electrification { rail_line_ids }
+            | InfrastructureProjectKind::Renewal { rail_line_ids } => {
+                rail_line_ids.contains(&rail_line_id)
+            }
+            InfrastructureProjectKind::StationUpgrade { .. } => false,
+        }
     }
 }
 

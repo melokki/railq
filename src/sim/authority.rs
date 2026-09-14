@@ -505,6 +505,7 @@ pub fn open_completed_infrastructure_projects(
             .refresh_maintenance_reserve(&region.rail_authority.rail_network)?;
 
         let project = &mut region.rail_authority.infrastructure_projects[index];
+        project.funding.award_operator_access_credit()?;
         project.status = InfrastructureProjectStatus::Open;
         project.timeline.completed_at = Some(completion);
     }
@@ -679,6 +680,8 @@ fn project_from_candidate(
             estimated_cost: candidate.estimated_cost,
             authority_committed: Money::ZERO,
             operator_contributed: Money::ZERO,
+            access_fee_credit_awarded: Money::ZERO,
+            access_fee_credit_remaining: Money::ZERO,
         },
     }
 }
