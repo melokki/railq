@@ -484,16 +484,19 @@ mod tests {
                         id: crate::model::SettlementId::new(1),
                         name: "Origin".into(),
                         population: 1,
+                        position: crate::model::WorldPosition::default(),
                     },
                     Settlement {
                         id: crate::model::SettlementId::new(2),
                         name: "Middle".into(),
                         population: 1,
+                        position: crate::model::WorldPosition::default(),
                     },
                     Settlement {
                         id: crate::model::SettlementId::new(3),
                         name: "Destination".into(),
                         population: 1,
+                        position: crate::model::WorldPosition::default(),
                     },
                 ],
                 rail_authority: RailAuthority {

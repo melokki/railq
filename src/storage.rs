@@ -36,16 +36,16 @@ use crate::{
         RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
         ServiceId, Settlement, SettlementId, SpeedKilometresPerHour, SpeedMetresPerSecond,
         TrackCount, Train, TrainId, TrainModelId, TrainNickname, TrainStatus, UtcSeconds,
-        VehicleKeeperMark,
+        VehicleKeeperMark, WorldPosition,
     },
     sim::{
         services::{path_between_stations, service_path_for_stops},
-        world::railway_registration_for_existing_region,
+        world::{railway_registration_for_existing_region, settlement_positions_for_existing_region},
     },
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 19;
+pub const SAVE_VERSION: u32 = 20;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -396,7 +396,9 @@ CREATE TABLE IF NOT EXISTS settlements (
     id TEXT PRIMARY KEY,
     sequence INTEGER NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    population INTEGER NOT NULL
+    population INTEGER NOT NULL,
+    world_x INTEGER NOT NULL,
+    world_y INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS rail_stations (
     id TEXT PRIMARY KEY,
@@ -744,7 +746,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 | 17 | 18 => {}
+        16 | 17 | 18 | 19 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -775,6 +777,10 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
     }
     if current_version == 18 {
         migrate_v18_to_v19(connection, path)?;
+        current_version = 19;
+    }
+    if current_version == 19 {
+        migrate_v19_to_v20(connection, path)?;
     }
     Ok(())
 }
@@ -2511,6 +2517,67 @@ fn migrate_v18_to_v19(connection: &Connection, path: &Path) -> Result<(), SaveSl
     }
 }
 
+fn migrate_v19_to_v20(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v19 to v20 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE settlements ADD COLUMN world_x INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE settlements ADD COLUMN world_y INTEGER NOT NULL DEFAULT 0;",
+            )
+            .map_err(|source| db_error("add Settlement coordinates to", path, source))?;
+
+        let world_seed_text: String = connection
+            .query_row(
+                "SELECT world_seed FROM game_meta WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("read world seed for Settlement coordinate migration from", path, source))?;
+        let world_seed = world_seed_text
+            .parse::<u64>()
+            .map_err(|_| SaveSlotError::InvalidSave {
+                path: path.to_path_buf(),
+                source: Box::new(SaveCodecError::InvalidValue { field: "World Seed" }),
+            })?;
+        let settlement_count: usize = connection
+            .query_row("SELECT COUNT(*) FROM settlements", [], |row| row.get::<_, i64>(0))
+            .map_err(|source| db_error("count Settlements for coordinate migration in", path, source))?
+            .try_into()
+            .map_err(|_| SaveSlotError::InvalidSave {
+                path: path.to_path_buf(),
+                source: Box::new(SaveCodecError::InvalidValue { field: "Settlement Count" }),
+            })?;
+        let positions = settlement_positions_for_existing_region(world_seed, settlement_count);
+        for (sequence, position) in positions.into_iter().enumerate() {
+            connection
+                .execute(
+                    "UPDATE settlements SET world_x = ?1, world_y = ?2 WHERE sequence = ?3",
+                    params![position.x, position.y, i64::try_from(sequence).unwrap_or(i64::MAX)],
+                )
+                .map_err(|source| db_error("backfill Settlement coordinates in", path, source))?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 20_u32)
+            .map_err(|source| db_error("write v20 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v19 to v20 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
 fn clear_state(
     transaction: &Transaction<'_>,
     path: &Path,
@@ -2613,12 +2680,14 @@ fn insert_state(
     for (sequence, settlement) in state.region.settlements.iter().enumerate() {
         transaction
             .execute(
-                "INSERT INTO settlements(id, sequence, name, population) VALUES(?1, ?2, ?3, ?4)",
+                "INSERT INTO settlements(id, sequence, name, population, world_x, world_y) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     settlement.id.to_string(),
                     i64::try_from(sequence).unwrap_or(i64::MAX),
                     &settlement.name,
-                    db(settlement.population, "Settlement Population")?
+                    db(settlement.population, "Settlement Population")?,
+                    settlement.position.x,
+                    settlement.position.y
                 ],
             )
             .map_err(|source| db_error("write Settlements to", path, source))?;
@@ -3371,13 +3440,14 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
 
     let settlements = query_all(
         connection,
-        "SELECT id, name, population FROM settlements ORDER BY sequence",
+        "SELECT id, name, population, world_x, world_y FROM settlements ORDER BY sequence",
         path,
         |row| {
             Ok(Settlement {
                 id: row_domain_id(row, 0, "Settlement ID", SettlementId::parse)?,
                 name: row.get(1)?,
                 population: row_u64(row, 2, "Settlement Population")?,
+                position: WorldPosition::new(row.get(3)?, row.get(4)?),
             })
         },
     )?;

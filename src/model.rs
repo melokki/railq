@@ -863,12 +863,31 @@ impl RailwayRegistration {
     }
 }
 
+/// Stable geographical position inside the generated Region.
+///
+/// Coordinates are world-space kilometres, not terminal cells. The UI may
+/// scale them to any terminal size while simulation systems can derive
+/// consistent physical distances from the same geography.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WorldPosition {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl WorldPosition {
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+}
+
 /// A populated place in a Region, with or without railway access.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Settlement {
     pub id: SettlementId,
     pub name: String,
     pub population: u64,
+    #[serde(default)]
+    pub position: WorldPosition,
 }
 
 /// Current lifecycle stage of a Rail Authority infrastructure project.
@@ -2267,6 +2286,7 @@ mod tests {
                     id: settlement_id,
                     name: "Alden".into(),
                     population: 1_000,
+                    position: crate::model::WorldPosition::default(),
                 }],
                 rail_authority: RailAuthority {
                     name: "Varelia Rail Authority".into(),

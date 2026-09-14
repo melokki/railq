@@ -11,7 +11,7 @@ use crate::{
         ConstructionDifficulty, DemandRules, Electrification, Financials, Fleet, GameRules,
         GameState, Money, PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork,
         RailStation, RailStationId, RailwayRegistration, Region, Settlement, SettlementId,
-        SpeedKilometresPerHour, TrackCount, UtcSeconds, VehicleKeeperMark,
+        SpeedKilometresPerHour, TrackCount, UtcSeconds, VehicleKeeperMark, WorldPosition,
     },
     sim::demand::seed_directional_demand,
 };
@@ -99,6 +99,7 @@ pub fn generate_region(seed: u64) -> Region {
     let identity = REGION_IDENTITIES[(random.next_u64() as usize) % REGION_IDENTITIES.len()];
     let name = format!("{region_form} of {}", identity.name);
     let settlement_names = select_settlement_names(&mut random);
+    let settlement_positions = settlement_positions_for_existing_region(seed, SETTLEMENT_COUNT);
     let settlements = settlement_names
         .into_iter()
         .enumerate()
@@ -106,6 +107,7 @@ pub fn generate_region(seed: u64) -> Region {
             id: SettlementId::new((index + 1) as u64),
             name: settlement_name.to_owned(),
             population: 40_000 + random.next_u64() % 260_001,
+            position: settlement_positions[index],
         })
         .collect::<Vec<_>>();
     let population = settlements
@@ -233,6 +235,47 @@ pub fn create_new_game(
 
 fn choose<'a>(random: &mut ChaCha8Rng, choices: &'a [&'a str]) -> &'a str {
     choices[(random.next_u64() as usize) % choices.len()]
+}
+
+/// Reconstructs the deterministic Region geography used by both new worlds
+/// and save migrations that predate persisted Settlement coordinates.
+pub fn settlement_positions_for_existing_region(seed: u64, count: usize) -> Vec<WorldPosition> {
+    const MIN_SPACING_KM: i64 = 14;
+    const MIN_SPACING_SQUARED: i64 = MIN_SPACING_KM * MIN_SPACING_KM;
+    const ANCHORS: [WorldPosition; 4] = [
+        WorldPosition::new(-10, 0),
+        WorldPosition::new(0, 0),
+        WorldPosition::new(42, 0),
+        WorldPosition::new(0, 31),
+    ];
+
+    let mut positions = ANCHORS.into_iter().take(count.min(ANCHORS.len())).collect::<Vec<_>>();
+    let mut geography = ChaCha8Rng::seed_from_u64(seed ^ 0x5241_494c_5147_454f);
+
+    while positions.len() < count {
+        let mut accepted = None;
+        for _ in 0..128 {
+            let x = i32::try_from(geography.next_u64() % 121).unwrap_or(0) - 60;
+            let y = i32::try_from(geography.next_u64() % 101).unwrap_or(0) - 50;
+            let candidate = WorldPosition::new(x, y);
+            let clear = positions.iter().all(|existing| {
+                let dx = i64::from(existing.x) - i64::from(candidate.x);
+                let dy = i64::from(existing.y) - i64::from(candidate.y);
+                dx * dx + dy * dy >= MIN_SPACING_SQUARED
+            });
+            if clear {
+                accepted = Some(candidate);
+                break;
+            }
+        }
+
+        let fallback_index = i32::try_from(positions.len()).unwrap_or(i32::MAX);
+        positions.push(accepted.unwrap_or_else(|| {
+            WorldPosition::new(-54 + (fallback_index % 7) * 18, 48 + (fallback_index / 7) * 18)
+        }));
+    }
+
+    positions
 }
 
 fn select_settlement_names(random: &mut ChaCha8Rng) -> [&'static str; SETTLEMENT_COUNT] {

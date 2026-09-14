@@ -522,6 +522,7 @@ fn delivery_selection_scrolls_and_recovers_when_its_station_disappears() {
             id: settlement_id,
             name: format!("Long Delivery Station {index}"),
             population: 1_000,
+            position: crate::model::WorldPosition::default(),
         });
         state
             .region
