@@ -29,6 +29,7 @@ use ratatui::{
 
 use crate::{
     APPLICATION_NAME,
+    app::AppCommand,
     catalog::{model_for_train, train_catalogue},
     model::{
         GameState, InfrastructureProjectId, Money, RailStationId, ServiceId, TrainId, TrainNickname,
@@ -154,43 +155,8 @@ pub enum ShellAction {
 pub enum TerminalCommand {
     /// Reconcile elapsed demand and due Journey arrivals before presentation or input.
     Reconcile,
-    /// Revalidate and authorise a player-requested Manual Dispatch.
-    ManualDispatch {
-        train_id: TrainId,
-        service_id: ServiceId,
-    },
-    /// Revalidate and purchase a selected catalogue Train.
-    PurchaseTrain {
-        catalogue_index: usize,
-        delivery_station_id: RailStationId,
-    },
-    /// Revalidate and resell a selected READY Train.
-    SellTrain { train_id: TrainId },
-    /// Create one directional Passenger Service.
-    CreatePassengerService {
-        stop_station_ids: Vec<RailStationId>,
-    },
-    /// Update one unused directional Passenger Service.
-    UpdatePassengerService {
-        service_id: ServiceId,
-        stop_station_ids: Vec<RailStationId>,
-    },
-    /// Delete one unused Passenger Service.
-    DeletePassengerService { service_id: ServiceId },
-    /// Persist a new Player Company Vehicle Keeper Mark.
-    UpdateCompanyVkm {
-        vehicle_keeper_mark: VehicleKeeperMark,
-    },
-    /// Persist a Player Company contribution to one Authority project.
-    ContributeInfrastructure {
-        project_id: InfrastructureProjectId,
-        amount: Money,
-    },
-    /// Persist a Train nickname change without touching its official EVN.
-    UpdateTrainNickname {
-        train_id: TrainId,
-        nickname: Option<TrainNickname>,
-    },
+    /// Execute one presentation-independent player command.
+    Player(AppCommand),
     /// Archive the Bankrupt Player Company save and start a fresh game.
     RestartAfterBankruptcy,
 }
@@ -1153,10 +1119,10 @@ where
                     ShellAction::ManualDispatch {
                         train_id,
                         service_id,
-                    } => match command(TerminalCommand::ManualDispatch {
+                    } => match command(TerminalCommand::Player(AppCommand::ManualDispatch {
                         train_id,
                         service_id,
-                    }) {
+                    })) {
                         Ok(next_state) => {
                             let before_command = state.clone();
                             state = next_state;
@@ -1168,10 +1134,10 @@ where
                     ShellAction::PurchaseTrain {
                         catalogue_index,
                         delivery_station_id,
-                    } => match command(TerminalCommand::PurchaseTrain {
+                    } => match command(TerminalCommand::Player(AppCommand::PurchaseTrain {
                         catalogue_index,
                         delivery_station_id,
-                    }) {
+                    })) {
                         Ok(next_state) => {
                             let before_command = state.clone();
                             state = next_state;
@@ -1181,9 +1147,9 @@ where
                         Err(error) => shell.reject_purchase_train(error.to_string()),
                     },
                     ShellAction::SellTrain { train_id } => {
-                        match command(TerminalCommand::SellTrain {
+                        match command(TerminalCommand::Player(AppCommand::SellTrain {
                             train_id,
-                        }) {
+                        })) {
                             Ok(next_state) => {
                                 let before_command = state.clone();
                                 state = next_state;
@@ -1194,9 +1160,9 @@ where
                         }
                     }
                     ShellAction::CreatePassengerService { stop_station_ids } => {
-                        match command(TerminalCommand::CreatePassengerService {
+                        match command(TerminalCommand::Player(AppCommand::CreatePassengerService {
                             stop_station_ids,
-                        }) {
+                        })) {
                             Ok(next_state) => {
                                 state = next_state;
                                 shell.confirm_passenger_service_created(&state);
@@ -1207,10 +1173,10 @@ where
                     ShellAction::UpdatePassengerService {
                         service_id,
                         stop_station_ids,
-                    } => match command(TerminalCommand::UpdatePassengerService {
+                    } => match command(TerminalCommand::Player(AppCommand::UpdatePassengerService {
                         service_id,
                         stop_station_ids,
-                    }) {
+                    })) {
                         Ok(next_state) => {
                             state = next_state;
                             shell.confirm_passenger_service_updated(&state);
@@ -1218,9 +1184,9 @@ where
                         Err(error) => shell.reject_passenger_service_action(error.to_string()),
                     },
                     ShellAction::DeletePassengerService { service_id } => {
-                        match command(TerminalCommand::DeletePassengerService {
+                        match command(TerminalCommand::Player(AppCommand::DeletePassengerService {
                             service_id,
-                        }) {
+                        })) {
                             Ok(next_state) => {
                                 state = next_state;
                                 shell.confirm_passenger_service_deleted(&state);
@@ -1231,9 +1197,9 @@ where
                     ShellAction::UpdateCompanyVkm {
                         vehicle_keeper_mark,
                     } => {
-                        match command(TerminalCommand::UpdateCompanyVkm {
+                        match command(TerminalCommand::Player(AppCommand::UpdateCompanyVkm {
                             vehicle_keeper_mark,
-                        }) {
+                        })) {
                             Ok(next_state) => {
                                 state = next_state;
                                 shell.confirm_company_vkm_saved(&state);
@@ -1242,10 +1208,10 @@ where
                         }
                     }
                     ShellAction::ContributeInfrastructure { project_id, amount } => {
-                        match command(TerminalCommand::ContributeInfrastructure {
+                        match command(TerminalCommand::Player(AppCommand::ContributeInfrastructure {
                             project_id,
                             amount,
-                        }) {
+                        })) {
                             Ok(next_state) => {
                                 state = next_state;
                                 shell.confirm_infrastructure_contribution_saved(&state);
@@ -1256,10 +1222,10 @@ where
                         }
                     }
                     ShellAction::UpdateTrainNickname { train_id, nickname } => {
-                        match command(TerminalCommand::UpdateTrainNickname {
+                        match command(TerminalCommand::Player(AppCommand::UpdateTrainNickname {
                             train_id,
                             nickname,
-                        }) {
+                        })) {
                             Ok(next_state) => {
                                 state = next_state;
                                 shell.confirm_train_nickname_saved(&state);

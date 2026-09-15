@@ -46,78 +46,8 @@ fn run_dashboard(
         let now = current_utc_seconds();
         match command {
             ui::TerminalCommand::Reconcile => app.reconcile(now)?,
-            ui::TerminalCommand::ManualDispatch {
-                train_id,
-                service_id,
-            } => {
-                app.execute(
-                    railq::app::AppCommand::ManualDispatch {
-                        train_id,
-                        service_id,
-                    },
-                    now,
-                )?;
-            }
-            ui::TerminalCommand::PurchaseTrain {
-                catalogue_index,
-                delivery_station_id,
-            } => {
-                app.execute(
-                    railq::app::AppCommand::PurchaseTrain {
-                        catalogue_index,
-                        delivery_station_id,
-                    },
-                    now,
-                )?;
-            }
-            ui::TerminalCommand::SellTrain { train_id } => {
-                app.execute(railq::app::AppCommand::SellTrain { train_id }, now)?;
-            }
-            ui::TerminalCommand::CreatePassengerService { stop_station_ids } => {
-                app.execute(
-                    railq::app::AppCommand::CreatePassengerService { stop_station_ids },
-                    now,
-                )?;
-            }
-            ui::TerminalCommand::UpdatePassengerService {
-                service_id,
-                stop_station_ids,
-            } => {
-                app.execute(
-                    railq::app::AppCommand::UpdatePassengerService {
-                        service_id,
-                        stop_station_ids,
-                    },
-                    now,
-                )?;
-            }
-            ui::TerminalCommand::DeletePassengerService { service_id } => {
-                app.execute(
-                    railq::app::AppCommand::DeletePassengerService { service_id },
-                    now,
-                )?;
-            }
-            ui::TerminalCommand::UpdateCompanyVkm {
-                vehicle_keeper_mark,
-            } => {
-                app.execute(
-                    railq::app::AppCommand::UpdateCompanyVkm {
-                        vehicle_keeper_mark,
-                    },
-                    now,
-                )?;
-            }
-            ui::TerminalCommand::ContributeInfrastructure { project_id, amount } => {
-                app.execute(
-                    railq::app::AppCommand::ContributeInfrastructure { project_id, amount },
-                    now,
-                )?;
-            }
-            ui::TerminalCommand::UpdateTrainNickname { train_id, nickname } => {
-                app.execute(
-                    railq::app::AppCommand::UpdateTrainNickname { train_id, nickname },
-                    now,
-                )?;
+            ui::TerminalCommand::Player(command) => {
+                app.execute(command, now)?;
             }
             ui::TerminalCommand::RestartAfterBankruptcy => {
                 app.restart_after_bankruptcy(new_world_seed(), now)?;
