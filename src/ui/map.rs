@@ -4,8 +4,6 @@
 //! state without changing either. Markers make connection state understandable
 //! in terminals where colour is unavailable.
 
-use std::fmt::Write;
-
 use crossterm::event::KeyCode;
 use ratatui::{Frame, layout::Rect};
 
@@ -13,9 +11,12 @@ mod geometry;
 mod journeys;
 mod network;
 mod operational;
+mod shared;
+mod text;
 
 pub use journeys::JourneySelection;
 pub use network::{MapFocus, MapSelections, SettlementSelection, StationSelection, render_dashboard};
+pub use text::{render, render_at};
 #[cfg(test)]
 use network::schematic_layout;
 use operational::{
@@ -26,13 +27,11 @@ use operational::{
     focus_rank, journey_route_segments, map_place_label,
     place_link_distance_label, point_along_orthogonal_rail, selected_neighbours,
 };
+#[cfg(test)]
+use shared::journey_progress_percent;
 
 use crate::{
-    catalog::model_for_train,
-    model::{
-        GameState, Journey, Money, RailStationId, SettlementId, Train,
-        TrainStatus, UtcSeconds,
-    },
+    model::{GameState, RailStationId, SettlementId, TrainStatus},
 };
 
 /// One keyboard selection across every Settlement shown by the operational map.
@@ -329,214 +328,6 @@ impl MapLocationSelection {
                     .map(|settlement| settlement.id)
             });
     }
-}
-
-/// Renders the current Region, Rail Network, Fleet locations, and Company Funds.
-pub fn render(state: &GameState) -> String {
-    render_at(state, state.last_processed_at)
-}
-
-/// Renders the map using `now` to calculate active Journey progress and ETA.
-pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
-    let network = &state.region.rail_authority.rail_network;
-    let mut output = String::new();
-
-    writeln!(output, "Region: {}", state.region.name).expect("writing to a String cannot fail");
-    writeln!(
-        output,
-        "Rail registration: {} · {}",
-        state.region.railway_registration.display_code(),
-        state.region.railway_registration.mark
-    )
-    .expect("writing to a String cannot fail");
-    writeln!(
-        output,
-        "Company Funds: {}",
-        format_money(state.player_company.funds)
-    )
-    .expect("writing to a String cannot fail");
-    writeln!(
-        output,
-        "Legend: [S] Connected Settlement / Rail Station; [ ] Unconnected Settlement"
-    )
-    .expect("writing to a String cannot fail");
-
-    writeln!(output, "\nRail Lines:").expect("writing to a String cannot fail");
-    for line in &network.rail_lines {
-        let first = station_label(state, line.first_station_id);
-        let second = station_label(state, line.second_station_id);
-        writeln!(
-            output,
-            "  Rail Line {}: [{first}] -- {} -- [{second}]",
-            line.id.get(),
-            format_distance(line.distance.metres()),
-        )
-        .expect("writing to a String cannot fail");
-    }
-
-    writeln!(output, "Settlements:").expect("writing to a String cannot fail");
-    for settlements in state.region.settlements.chunks(4) {
-        let mut first = true;
-        output.push_str("  ");
-        for settlement in settlements {
-            if !first {
-                output.push_str(" | ");
-            }
-            first = false;
-            let marker = if network
-                .rail_stations
-                .iter()
-                .any(|station| station.settlement_id == settlement.id)
-            {
-                "[S]"
-            } else {
-                "[ ]"
-            };
-            write!(output, "{marker} {}", settlement.name)
-                .expect("writing to a String cannot fail");
-        }
-        output.push('\n');
-    }
-
-    writeln!(output, "Trains:").expect("writing to a String cannot fail");
-    if state.player_company.fleet.trains.is_empty() {
-        writeln!(
-            output,
-            "  No Trains in the Fleet. Open 3 Market to purchase one."
-        )
-        .expect("writing to a String cannot fail");
-    }
-    for train in &state.player_company.fleet.trains {
-        match train.status {
-            TrainStatus::Ready { at } => {
-                writeln!(
-                    output,
-                    "  Train {} ({}) — READY at {}",
-                    train.id.get(),
-                    train_model_name(train),
-                    station_label(state, at),
-                )
-                .expect("writing to a String cannot fail");
-            }
-            TrainStatus::Travelling { journey_id } => {
-                let journey = state
-                    .active_journeys
-                    .iter()
-                    .find(|journey| journey.id == journey_id);
-                match journey {
-                    Some(journey) => render_travelling_train(
-                        &mut output,
-                        state,
-                        train.id.get(),
-                        &train_model_name(train),
-                        journey,
-                        now,
-                    ),
-                    None => writeln!(
-                        output,
-                        "  Train {} ({}) — TRAVELLING on Journey {} (details unavailable)",
-                        train.id.get(),
-                        train_model_name(train),
-                        journey_id.get(),
-                    )
-                    .expect("writing to a String cannot fail"),
-                }
-            }
-        }
-    }
-
-    output
-}
-
-fn train_model_name(train: &Train) -> String {
-    let model = model_for_train(train)
-        .map(|model| model.name().to_owned())
-        .unwrap_or_else(|| format!("Unknown model ({})", train.model_id.as_str()));
-    train
-        .nickname
-        .as_ref()
-        .map(|nickname| format!("{} · {model}", nickname.as_str()))
-        .unwrap_or(model)
-}
-
-fn render_travelling_train(
-    output: &mut String,
-    state: &GameState,
-    train_id: u64,
-    model_name: &str,
-    journey: &Journey,
-    now: UtcSeconds,
-) {
-    writeln!(
-        output,
-        "  Train {train_id} ({model_name}) — TRAVELLING {} -> {} | next: {} | leg: {}% | ETA: {} | onboard: {}",
-        station_label(state, journey.origin_station_id),
-        station_label(state, journey.destination_station_id),
-        journey_next_stop_station_id(state, journey)
-            .map(|station_id| station_label(state, station_id))
-            .unwrap_or("unknown Rail Station"),
-        journey_progress_percent(journey, now),
-        format_duration(remaining_seconds(journey, now)),
-        journey.onboard_passengers(),
-    )
-    .expect("writing to a String cannot fail");
-}
-
-fn station_label(state: &GameState, station_id: RailStationId) -> &str {
-    let Some(station) = state
-        .region
-        .rail_authority
-        .rail_network
-        .rail_stations
-        .iter()
-        .find(|station| station.id == station_id)
-    else {
-        return "unknown Rail Station";
-    };
-    state
-        .region
-        .settlements
-        .iter()
-        .find(|settlement| settlement.id == station.settlement_id)
-        .map_or("unknown Settlement", |settlement| settlement.name.as_str())
-}
-
-fn journey_progress_percent(journey: &Journey, now: UtcSeconds) -> u64 {
-    let duration = journey
-        .arrives_at
-        .unix_seconds()
-        .saturating_sub(journey.departed_at.unix_seconds());
-    if duration <= 0 {
-        return 100;
-    }
-    let elapsed = now
-        .unix_seconds()
-        .saturating_sub(journey.departed_at.unix_seconds())
-        .clamp(0, duration);
-    u64::try_from(elapsed.saturating_mul(100) / duration).unwrap_or(100)
-}
-
-fn remaining_seconds(journey: &Journey, now: UtcSeconds) -> u64 {
-    u64::try_from(
-        journey
-            .arrives_at
-            .unix_seconds()
-            .saturating_sub(now.unix_seconds())
-            .max(0),
-    )
-    .unwrap_or(u64::MAX)
-}
-
-fn format_money(money: Money) -> String {
-    crate::ui::format::money(money)
-}
-
-fn format_distance(metres: u64) -> String {
-    crate::ui::format::distance(metres)
-}
-
-fn format_duration(seconds: u64) -> String {
-    crate::ui::format::duration(seconds)
 }
 
 #[cfg(test)]

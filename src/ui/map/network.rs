@@ -17,7 +17,7 @@ use ratatui::{
     },
 };
 
-use super::{format_distance, train_model_name};
+use super::shared::{format_distance, train_model_name};
 use super::operational::market_maturity_percent;
 use super::journeys::{
     JourneySelection, render_compact_journey_board, render_journey_inspector,

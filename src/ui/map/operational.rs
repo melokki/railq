@@ -15,7 +15,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use super::{MapLocationSelection, format_distance};
+use super::MapLocationSelection;
+use super::shared::format_distance;
 use super::geometry::{
     MapCell, MapInk, can_place_text, draw_orthogonal_rail, map_ink_style, put_cell, put_text,
     rail_glyph,
