@@ -226,8 +226,7 @@ pub struct Shell {
     fleet_details_open: bool,
     fleet_split_visible: bool,
     market_workspace: market::MarketWorkspace,
-    authority_project_selection: authority::ProjectSelection,
-    authority_contribution_review: Option<authority::ContributionReview>,
+    authority_workspace: authority::AuthorityWorkspace,
     bulletin_workspace: bulletin::BulletinWorkspace,
     company_receipt_selection: company::ReceiptSelection,
     company_receipt_details_open: bool,
@@ -260,8 +259,7 @@ impl Shell {
             fleet_details_open: false,
             fleet_split_visible: false,
             market_workspace: market::MarketWorkspace::default(),
-            authority_project_selection: authority::ProjectSelection::default(),
-            authority_contribution_review: None,
+            authority_workspace: authority::AuthorityWorkspace::default(),
             bulletin_workspace: bulletin::BulletinWorkspace::default(),
             company_receipt_selection: company::ReceiptSelection::default(),
             company_receipt_details_open: false,
@@ -436,19 +434,8 @@ impl Shell {
 
         self.restart_confirmation = false;
 
-        if let Some(review) = self.authority_contribution_review {
-            return match key.code {
-                KeyCode::Esc => {
-                    self.authority_contribution_review = None;
-                    self.notice = Some("Infrastructure contribution cancelled; no changes were made.".into());
-                    ShellAction::Continue
-                }
-                KeyCode::Enter => ShellAction::ContributeInfrastructure {
-                    project_id: review.project_id,
-                    amount: review.amount,
-                },
-                _ => ShellAction::Continue,
-            };
+        if self.authority_workspace.has_modal() {
+            return self.handle_authority_key(key, state);
         }
 
         if let Some(flow) = &mut self.dispatch_flow {
@@ -721,16 +708,7 @@ impl Shell {
                 self.fleet_selection.handle_key(key.code, state);
             }
             KeyCode::Char('f' | 'F') if self.active_view == View::Authority => {
-                match self.authority_project_selection.selected_project_id(state) {
-                    Some(project_id) => match authority::ContributionReview::start(state, project_id) {
-                        Ok(review) => {
-                            self.authority_contribution_review = Some(review);
-                            self.notice = None;
-                        }
-                        Err(message) => self.notice = Some(message.into()),
-                    },
-                    None => self.notice = Some("Select an infrastructure project first.".into()),
-                }
+                return self.handle_authority_key(key, state);
             }
             KeyCode::Up
             | KeyCode::Down
@@ -739,7 +717,7 @@ impl Shell {
             | KeyCode::Char('j' | 'J' | 'k' | 'K')
                 if self.active_view == View::Authority =>
             {
-                self.authority_project_selection.handle_key(key.code, state);
+                return self.handle_authority_key(key, state);
             }
             KeyCode::Up
             | KeyCode::Down
@@ -816,6 +794,23 @@ impl Shell {
                     catalogue_index,
                     delivery_station_id,
                 }
+            }
+        }
+    }
+
+    fn handle_authority_key(&mut self, key: KeyEvent, state: &GameState) -> ShellAction {
+        match self.authority_workspace.handle_key(key, state) {
+            authority::AuthorityWorkspaceAction::Continue => ShellAction::Continue,
+            authority::AuthorityWorkspaceAction::ClearNotice => {
+                self.notice = None;
+                ShellAction::Continue
+            }
+            authority::AuthorityWorkspaceAction::Notice(message) => {
+                self.notice = Some(message);
+                ShellAction::Continue
+            }
+            authority::AuthorityWorkspaceAction::Contribute { project_id, amount } => {
+                ShellAction::ContributeInfrastructure { project_id, amount }
             }
         }
     }
@@ -903,11 +898,7 @@ impl Shell {
     }
 
     pub fn confirm_infrastructure_contribution_saved(&mut self, state: &GameState) {
-        let amount = self
-            .authority_contribution_review
-            .map(|review| review.amount)
-            .unwrap_or(Money::ZERO);
-        self.authority_contribution_review = None;
+        let amount = self.authority_workspace.confirm_saved();
         self.notice = Some(format!(
             "Infrastructure contribution of {} saved. Company Funds {}.",
             format_money(amount),
@@ -1086,6 +1077,7 @@ impl Shell {
         self.dispatch_returns_to_fleet = false;
         self.fleet_flow = None;
         self.market_workspace.reset();
+        self.authority_workspace.reset();
         self.services_open = false;
         self.service_workspace = services::ServiceWorkspace::default();
         self.restart_confirmation = false;
@@ -1558,13 +1550,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             .market_workspace
             .render_dashboard(frame, content_area, state);
     } else if shell.active_view == View::Authority && !is_bankrupt(state) {
-        authority::render_dashboard(
-            frame,
-            content_area,
-            state,
-            now,
-            &mut shell.authority_project_selection,
-        );
+        shell
+            .authority_workspace
+            .render_dashboard(frame, content_area, state, now);
     } else if shell.active_view == View::Bulletin && !is_bankrupt(state) {
         shell.bulletin_workspace.render(frame, content_area, state, now);
     } else {
@@ -1576,7 +1564,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
                 View::Trains => fleet::render_at(state, now),
                 View::BuyTrains => shell.market_workspace.render_text(state),
                 View::Company => company::render(state),
-                View::Authority => authority::render(state, now),
+                View::Authority => shell.authority_workspace.render_text(state, now),
                 View::Bulletin => "Railway Bulletin".into(),
             }
         };
@@ -1626,7 +1614,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 }
 
 fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
-    shell.authority_contribution_review.is_some()
+    shell.authority_workspace.has_modal()
         || shell.train_nickname_editor.is_some()
         || shell.company_vkm_editor.is_some()
         || shell.company_recovery_review_open
@@ -1644,8 +1632,10 @@ fn render_focused_modal(
     shell: &mut Shell,
     state: &GameState,
 ) {
-    if let Some(review) = shell.authority_contribution_review {
-        authority::render_contribution_review(frame, content_area, state, review);
+    if shell.authority_workspace.has_modal() {
+        shell
+            .authority_workspace
+            .render_modal(frame, content_area, state);
         return;
     }
     if let Some(editor) = &shell.train_nickname_editor {
@@ -1830,7 +1820,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             FooterShortcut::enabled("Q", "Quit"),
         ];
     }
-    if shell.authority_contribution_review.is_some() {
+    if shell.authority_workspace.has_modal() {
         return vec![
             FooterShortcut::enabled("Enter", "Contribute"),
             FooterShortcut::enabled("Esc", "Cancel"),
@@ -2026,11 +2016,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             if wide {
                 items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
             }
-            let can_contribute = shell
-                .authority_project_selection
-                .selected_project_id(state)
-                .and_then(|project_id| authority::ContributionReview::start(state, project_id).ok())
-                .is_some();
+            let can_contribute = shell.authority_workspace.can_contribute(state);
             items.push(if can_contribute {
                 FooterShortcut::enabled("F", "Contribute")
             } else {
