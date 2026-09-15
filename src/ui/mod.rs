@@ -228,11 +228,7 @@ pub struct Shell {
     market_workspace: market::MarketWorkspace,
     authority_workspace: authority::AuthorityWorkspace,
     bulletin_workspace: bulletin::BulletinWorkspace,
-    company_receipt_selection: company::ReceiptSelection,
-    company_receipt_details_open: bool,
-    company_recovery_selection: company::RecoverySelection,
-    company_recovery_review_open: bool,
-    company_vkm_editor: Option<company::VkmEditor>,
+    company_workspace: company::CompanyWorkspace,
     train_nickname_editor: Option<fleet::TrainNicknameEditor>,
     notice: Option<String>,
     pending_action: Option<PendingAction>,
@@ -261,11 +257,7 @@ impl Shell {
             market_workspace: market::MarketWorkspace::default(),
             authority_workspace: authority::AuthorityWorkspace::default(),
             bulletin_workspace: bulletin::BulletinWorkspace::default(),
-            company_receipt_selection: company::ReceiptSelection::default(),
-            company_receipt_details_open: false,
-            company_recovery_selection: company::RecoverySelection::default(),
-            company_recovery_review_open: false,
-            company_vkm_editor: None,
+            company_workspace: company::CompanyWorkspace::default(),
             train_nickname_editor: None,
             notice: None,
             pending_action: None,
@@ -307,20 +299,8 @@ impl Shell {
             };
         }
 
-        if let Some(editor) = &mut self.company_vkm_editor {
-            return match editor.handle_key(key.code) {
-                company::VkmEditorAction::Continue => ShellAction::Continue,
-                company::VkmEditorAction::Cancel => {
-                    self.company_vkm_editor = None;
-                    self.notice = Some("VKM edit cancelled; no changes were made.".into());
-                    ShellAction::Continue
-                }
-                company::VkmEditorAction::Confirm(vehicle_keeper_mark) => {
-                    ShellAction::UpdateCompanyVkm {
-                        vehicle_keeper_mark,
-                    }
-                }
-            };
+        if self.company_workspace.has_vkm_editor() {
+            return self.handle_company_key(key, state);
         }
 
         if matches!(key.code, KeyCode::Char('q' | 'Q'))
@@ -516,56 +496,8 @@ impl Shell {
             }
         }
 
-        if self.company_recovery_review_open {
-            match key.code {
-                KeyCode::Esc => {
-                    self.company_recovery_review_open = false;
-                    self.notice = Some("Recovery review closed; no changes were made.".into());
-                }
-                KeyCode::Enter => {
-                    let Some(destination) =
-                        self.company_recovery_selection.selected_destination(state)
-                    else {
-                        self.company_recovery_review_open = false;
-                        self.notice = Some(
-                            "Recovery route changed; review the current Company status again."
-                                .into(),
-                        );
-                        return ShellAction::Continue;
-                    };
-                    self.company_recovery_review_open = false;
-                    self.active_view = match destination {
-                        company::RecoveryDestination::Fleet => View::Trains,
-                        company::RecoveryDestination::BuyTrains => View::BuyTrains,
-                        company::RecoveryDestination::Map => View::Map,
-                    };
-                    self.notice = Some(
-                        "Recovery route opened for review only; no action has been authorised."
-                            .into(),
-                    );
-                }
-                KeyCode::Char('1' | 'm' | 'M') => {
-                    self.company_recovery_review_open = false;
-                    self.active_view = View::Map;
-                }
-                KeyCode::Char('2' | 't' | 'T') => {
-                    self.company_recovery_review_open = false;
-                    self.active_view = View::Trains;
-                }
-                KeyCode::Char('3' | 'b' | 'B') => {
-                    self.company_recovery_review_open = false;
-                    self.active_view = View::BuyTrains;
-                }
-                KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::PageUp
-                | KeyCode::PageDown
-                | KeyCode::Char('j' | 'J' | 'k' | 'K') => {
-                    self.company_recovery_selection.handle_key(key.code, state);
-                }
-                _ => {}
-            }
-            return ShellAction::Continue;
+        if self.company_workspace.recovery_review_open() {
+            return self.handle_company_key(key, state);
         }
 
         match key.code {
@@ -582,30 +514,7 @@ impl Shell {
             KeyCode::Char('4' | 'c' | 'C') => {
                 self.active_view = View::Company;
                 self.services_open = false;
-                self.company_receipt_details_open = false;
-                self.company_recovery_review_open = false;
-                self.company_vkm_editor = None;
-            }
-            KeyCode::Char('v' | 'V')
-                if self.active_view == View::Company && !self.company_receipt_details_open =>
-            {
-                self.company_vkm_editor = Some(company::VkmEditor::start(state));
-                self.company_receipt_details_open = false;
-                self.company_recovery_review_open = false;
-                self.notice = None;
-            }
-            KeyCode::Char('r' | 'R')
-                if self.active_view == View::Company && !self.company_receipt_details_open =>
-            {
-                if self
-                    .company_recovery_selection
-                    .selected_destination(state)
-                    .is_some()
-                {
-                    self.company_recovery_review_open = true;
-                    self.company_receipt_details_open = false;
-                    self.notice = None;
-                }
+                self.company_workspace.activate();
             }
             KeyCode::Char('3' | 'b' | 'B') => {
                 self.active_view = View::BuyTrains;
@@ -618,17 +527,6 @@ impl Shell {
             KeyCode::Char('6' | 'u' | 'U') => {
                 self.active_view = View::Bulletin;
                 self.services_open = false;
-            }
-            KeyCode::Enter if self.active_view == View::Company => {
-                if self.company_receipt_selection.has_selection(state) {
-                    self.company_receipt_details_open = true;
-                    self.notice = None;
-                }
-            }
-            KeyCode::Esc
-                if self.active_view == View::Company && self.company_receipt_details_open =>
-            {
-                self.company_receipt_details_open = false;
             }
             KeyCode::Enter if self.active_view == View::BuyTrains => {
                 return self.handle_market_key(key, state);
@@ -742,15 +640,6 @@ impl Shell {
                 self.map_location_selection.handle_key(key.code, state);
                 self.notice = None;
             }
-            KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::PageUp
-            | KeyCode::PageDown
-            | KeyCode::Char('j' | 'J' | 'k' | 'K')
-                if self.active_view == View::Company && !self.company_receipt_details_open =>
-            {
-                self.company_receipt_selection.handle_key(key.code, state);
-            }
             KeyCode::Char('s' | 'S') if self.active_view == View::Map => {
                 self.services_open = true;
                 self.notice = None;
@@ -765,9 +654,43 @@ impl Shell {
                     Err(message) => self.notice = Some(message.into()),
                 }
             }
+            _ if self.active_view == View::Company => {
+                return self.handle_company_key(key, state);
+            }
             _ => {}
         }
         ShellAction::Continue
+    }
+
+    fn handle_company_key(&mut self, key: KeyEvent, state: &GameState) -> ShellAction {
+        match self.company_workspace.handle_key(key, state) {
+            company::CompanyWorkspaceAction::Continue => ShellAction::Continue,
+            company::CompanyWorkspaceAction::ClearNotice => {
+                self.notice = None;
+                ShellAction::Continue
+            }
+            company::CompanyWorkspaceAction::Notice(message) => {
+                self.notice = Some(message);
+                ShellAction::Continue
+            }
+            company::CompanyWorkspaceAction::Navigate(destination) => {
+                self.active_view = match destination {
+                    company::RecoveryDestination::Fleet => View::Trains,
+                    company::RecoveryDestination::BuyTrains => View::BuyTrains,
+                    company::RecoveryDestination::Map => View::Map,
+                };
+                self.notice = Some(
+                    "Recovery route opened for review only; no action has been authorised."
+                        .into(),
+                );
+                ShellAction::Continue
+            }
+            company::CompanyWorkspaceAction::UpdateVkm(vehicle_keeper_mark) => {
+                ShellAction::UpdateCompanyVkm {
+                    vehicle_keeper_mark,
+                }
+            }
+        }
     }
 
     fn handle_market_key(&mut self, key: KeyEvent, state: &GameState) -> ShellAction {
@@ -1025,7 +948,7 @@ impl Shell {
 
     /// Closes the Company VKM editor after a persisted update.
     pub fn confirm_company_vkm_saved(&mut self, state: &GameState) {
-        self.company_vkm_editor = None;
+        self.company_workspace.confirm_vkm_saved();
         self.notice = Some(format!(
             "Company VKM updated and saved as {}.",
             state.player_company.vehicle_keeper_mark
@@ -1081,8 +1004,7 @@ impl Shell {
         self.services_open = false;
         self.service_workspace = services::ServiceWorkspace::default();
         self.restart_confirmation = false;
-        self.company_recovery_review_open = false;
-        self.company_vkm_editor = None;
+        self.company_workspace.reset();
         self.train_nickname_editor = None;
         self.notice = Some(
             "Fresh game saved. The former Player Company save was preserved in a restart backup."
@@ -1538,13 +1460,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             content_area,
         );
     } else if shell.active_view == View::Company && !is_bankrupt(state) {
-        company::render_dashboard(
-            frame,
-            content_area,
-            state,
-            &mut shell.company_receipt_selection,
-            false,
-        );
+        shell
+            .company_workspace
+            .render_dashboard(frame, content_area, state);
     } else if shell.active_view == View::BuyTrains && !is_bankrupt(state) {
         shell
             .market_workspace
@@ -1563,7 +1481,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
                 View::Map => map::render_at(state, now),
                 View::Trains => fleet::render_at(state, now),
                 View::BuyTrains => shell.market_workspace.render_text(state),
-                View::Company => company::render(state),
+                View::Company => shell.company_workspace.render_text(state),
                 View::Authority => shell.authority_workspace.render_text(state, now),
                 View::Bulletin => "Railway Bulletin".into(),
             }
@@ -1616,9 +1534,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
     shell.authority_workspace.has_modal()
         || shell.train_nickname_editor.is_some()
-        || shell.company_vkm_editor.is_some()
-        || shell.company_recovery_review_open
-        || shell.company_receipt_details_open
+        || shell.company_workspace.has_modal()
         || (is_bankrupt(state) && shell.restart_confirmation)
         || shell.dispatch_flow.is_some()
         || shell.fleet_flow.is_some()
@@ -1642,26 +1558,10 @@ fn render_focused_modal(
         fleet::render_nickname_editor(frame, content_area, editor, state);
         return;
     }
-    if let Some(editor) = &shell.company_vkm_editor {
-        company::render_vkm_editor(frame, content_area, editor, state);
-        return;
-    }
-    if shell.company_recovery_review_open {
-        company::render_recovery_review(
-            frame,
-            content_area,
-            state,
-            &mut shell.company_recovery_selection,
-        );
-        return;
-    }
-    if shell.company_receipt_details_open {
-        company::render_receipt_modal(
-            frame,
-            content_area,
-            state,
-            &mut shell.company_receipt_selection,
-        );
+    if shell.company_workspace.has_modal() {
+        shell
+            .company_workspace
+            .render_modal(frame, content_area, state);
         return;
     }
     if is_bankrupt(state) && shell.restart_confirmation {
@@ -1827,7 +1727,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             FooterShortcut::enabled("Esc", "Cancel"),
         ];
     }
-    if shell.company_vkm_editor.is_some() {
+    if shell.company_workspace.has_vkm_editor() {
         return vec![
             FooterShortcut::enabled("Enter", "Save"),
             FooterShortcut::enabled("Backspace", "Delete"),
@@ -1960,7 +1860,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
                     evaluation.status == FinancialStatus::Insolvent
                         && !evaluation.recovery_options.is_empty()
                 });
-        if shell.company_recovery_review_open {
+        if shell.company_workspace.recovery_review_open() {
             let mut items = vec![FooterShortcut::enabled(
                 if compact { "↑↓" } else { "↑↓/JK" },
                 "Route",
@@ -1971,7 +1871,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             items.push(FooterShortcut::enabled("Enter", "Review"));
             items.push(FooterShortcut::enabled("Esc", "Back"));
             items
-        } else if shell.company_receipt_details_open {
+        } else if shell.company_workspace.receipt_details_open() {
             vec![FooterShortcut::enabled("Esc", "Back")]
         } else {
             let mut items = Vec::new();
@@ -2229,7 +2129,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         return lines;
     }
 
-    if shell.active_view == View::Company && shell.company_recovery_review_open {
+    if shell.active_view == View::Company && shell.company_workspace.recovery_review_open() {
         lines.extend([
             "Current · Financial Recovery".into(),
             "↑↓ / jk Select a recovery route".into(),
@@ -2239,7 +2139,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         return lines;
     }
 
-    if shell.active_view == View::Company && shell.company_receipt_details_open {
+    if shell.active_view == View::Company && shell.company_workspace.receipt_details_open() {
         lines.extend([
             "Current · Journey Receipt".into(),
             "Esc Back to Journey history".into(),
@@ -2901,7 +2801,7 @@ mod tests {
             ),
             ShellAction::Continue
         );
-        assert!(shell.company_vkm_editor.is_some());
+        assert!(shell.company_workspace.has_vkm_editor());
         let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
         assert!(rendered.contains("Edit Vehicle Keeper Mark"));
         assert!(rendered.contains("VEHICLE KEEPER MARK"));

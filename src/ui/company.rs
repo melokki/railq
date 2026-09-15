@@ -6,7 +6,7 @@
 
 use std::fmt::Write;
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -311,6 +311,200 @@ impl ReceiptSelection {
 
     fn set_page_size(&mut self, page_size: usize) {
         self.page_size = page_size.max(1);
+    }
+}
+
+/// Shell-facing outcome from the Company workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompanyWorkspaceAction {
+    /// No application action is required.
+    Continue,
+    /// Clear stale Shell feedback after a Company-only transition.
+    ClearNotice,
+    /// Surface presentation feedback without crossing the application boundary.
+    Notice(String),
+    /// Open another workspace while reviewing a financial recovery route.
+    Navigate(RecoveryDestination),
+    /// Revalidate and persist the edited Vehicle Keeper Mark.
+    UpdateVkm(VehicleKeeperMark),
+}
+
+/// Owns presentation state and keyboard interaction for the Company workspace.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CompanyWorkspace {
+    receipt_selection: ReceiptSelection,
+    receipt_details_open: bool,
+    recovery_selection: RecoverySelection,
+    recovery_review_open: bool,
+    vkm_editor: Option<VkmEditor>,
+}
+
+impl CompanyWorkspace {
+    /// Clears transient Company workflows when the primary view is reopened.
+    pub fn activate(&mut self) {
+        self.receipt_details_open = false;
+        self.recovery_review_open = false;
+        self.vkm_editor = None;
+    }
+
+    /// Clears all transient Company presentation state after a fresh-game restart.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Returns whether any Company-owned focused workflow is visible.
+    pub fn has_modal(&self) -> bool {
+        self.vkm_editor.is_some() || self.recovery_review_open || self.receipt_details_open
+    }
+
+    /// Returns whether the VKM editor currently owns input before global shortcuts.
+    pub fn has_vkm_editor(&self) -> bool {
+        self.vkm_editor.is_some()
+    }
+
+    /// Transitional query used by Shell footer/help ownership until the next cleanup batch.
+    pub fn recovery_review_open(&self) -> bool {
+        self.recovery_review_open
+    }
+
+    /// Transitional query used by Shell footer/help ownership until the next cleanup batch.
+    pub fn receipt_details_open(&self) -> bool {
+        self.receipt_details_open
+    }
+
+    /// Routes one Company-owned keyboard event. Global primary-view navigation remains a Shell concern.
+    pub fn handle_key(&mut self, key: KeyEvent, state: &GameState) -> CompanyWorkspaceAction {
+        if let Some(editor) = &mut self.vkm_editor {
+            return match editor.handle_key(key.code) {
+                VkmEditorAction::Continue => CompanyWorkspaceAction::Continue,
+                VkmEditorAction::Cancel => {
+                    self.vkm_editor = None;
+                    CompanyWorkspaceAction::Notice(
+                        "VKM edit cancelled; no changes were made.".into(),
+                    )
+                }
+                VkmEditorAction::Confirm(vehicle_keeper_mark) => {
+                    CompanyWorkspaceAction::UpdateVkm(vehicle_keeper_mark)
+                }
+            };
+        }
+
+        if self.recovery_review_open {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.recovery_review_open = false;
+                    CompanyWorkspaceAction::Notice(
+                        "Recovery review closed; no changes were made.".into(),
+                    )
+                }
+                KeyCode::Enter => {
+                    let Some(destination) = self.recovery_selection.selected_destination(state)
+                    else {
+                        self.recovery_review_open = false;
+                        return CompanyWorkspaceAction::Notice(
+                            "Recovery route changed; review the current Company status again."
+                                .into(),
+                        );
+                    };
+                    self.recovery_review_open = false;
+                    CompanyWorkspaceAction::Navigate(destination)
+                }
+                KeyCode::Char('1' | 'm' | 'M') => {
+                    self.recovery_review_open = false;
+                    CompanyWorkspaceAction::Navigate(RecoveryDestination::Map)
+                }
+                KeyCode::Char('2' | 't' | 'T') => {
+                    self.recovery_review_open = false;
+                    CompanyWorkspaceAction::Navigate(RecoveryDestination::Fleet)
+                }
+                KeyCode::Char('3' | 'b' | 'B') => {
+                    self.recovery_review_open = false;
+                    CompanyWorkspaceAction::Navigate(RecoveryDestination::BuyTrains)
+                }
+                KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Char('j' | 'J' | 'k' | 'K') => {
+                    self.recovery_selection.handle_key(key.code, state);
+                    CompanyWorkspaceAction::Continue
+                }
+                _ => CompanyWorkspaceAction::Continue,
+            };
+        }
+
+        match key.code {
+            KeyCode::Char('v' | 'V') if !self.receipt_details_open => {
+                self.vkm_editor = Some(VkmEditor::start(state));
+                self.receipt_details_open = false;
+                self.recovery_review_open = false;
+                CompanyWorkspaceAction::ClearNotice
+            }
+            KeyCode::Char('r' | 'R') if !self.receipt_details_open => {
+                if self.recovery_selection.selected_destination(state).is_some() {
+                    self.recovery_review_open = true;
+                    self.receipt_details_open = false;
+                    CompanyWorkspaceAction::ClearNotice
+                } else {
+                    CompanyWorkspaceAction::Continue
+                }
+            }
+            KeyCode::Enter => {
+                if self.receipt_selection.has_selection(state) {
+                    self.receipt_details_open = true;
+                    CompanyWorkspaceAction::ClearNotice
+                } else {
+                    CompanyWorkspaceAction::Continue
+                }
+            }
+            KeyCode::Esc if self.receipt_details_open => {
+                self.receipt_details_open = false;
+                CompanyWorkspaceAction::Continue
+            }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K')
+                if !self.receipt_details_open =>
+            {
+                self.receipt_selection.handle_key(key.code, state);
+                CompanyWorkspaceAction::Continue
+            }
+            _ => CompanyWorkspaceAction::Continue,
+        }
+    }
+
+    /// Renders the Company operational dashboard with workspace-owned receipt selection.
+    pub fn render_dashboard(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        render_dashboard(
+            frame,
+            area,
+            state,
+            &mut self.receipt_selection,
+            self.receipt_details_open,
+        );
+    }
+
+    /// Renders whichever Company-owned focused workflow currently has input.
+    pub fn render_modal(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        if let Some(editor) = &self.vkm_editor {
+            render_vkm_editor(frame, area, editor, state);
+        } else if self.recovery_review_open {
+            render_recovery_review(frame, area, state, &mut self.recovery_selection);
+        } else if self.receipt_details_open {
+            render_receipt_modal(frame, area, state, &mut self.receipt_selection);
+        }
+    }
+
+    /// Closes the editor only after the application boundary persisted the new VKM.
+    pub fn confirm_vkm_saved(&mut self) {
+        self.vkm_editor = None;
+    }
+
+    /// Text fallback used by very small terminals.
+    pub fn render_text(&self, state: &GameState) -> String {
+        render(state)
     }
 }
 
