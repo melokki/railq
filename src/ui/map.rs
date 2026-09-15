@@ -86,6 +86,32 @@ pub enum WorldDetailsKeyAction {
     ClosedForNavigation,
 }
 
+/// One contextual footer action owned by the Map workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MapShortcut {
+    pub key: String,
+    pub action: String,
+    pub enabled: bool,
+}
+
+impl MapShortcut {
+    fn enabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: true,
+        }
+    }
+
+    fn disabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: false,
+        }
+    }
+}
+
 impl MapWorkspace {
     /// Routes input owned by the operational Map.
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) -> MapWorkspaceAction {
@@ -129,6 +155,82 @@ impl MapWorkspace {
     /// Returns whether the World Details overlay currently owns focus.
     pub fn world_details_visible(&self) -> bool {
         self.world_details_visible
+    }
+
+    /// Returns the contextual controls owned by the Map workspace.
+    pub fn shortcuts(&self, state: &GameState, compact: bool) -> Vec<MapShortcut> {
+        if self.world_details_visible {
+            return vec![MapShortcut::enabled("W/Esc", "Close")];
+        }
+
+        let train_count = state.player_company.fleet.trains.len();
+        let ready = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
+            .count();
+
+        let mut items = vec![MapShortcut::enabled(
+            if compact { "↑↓←→" } else { "↑↓←→/HJKL" },
+            "Station",
+        )];
+        if train_count == 0 {
+            items.push(MapShortcut::enabled("3", "Market"));
+        } else if ready == 0 {
+            items.push(MapShortcut::disabled("D", "Dispatch"));
+        } else {
+            items.push(MapShortcut::enabled("D", "Dispatch"));
+        }
+        items.push(MapShortcut::enabled("S", "Services"));
+        items.push(MapShortcut::enabled("W", "World"));
+        items
+    }
+
+    /// Returns help text for the currently focused Map surface.
+    pub fn help_lines(&self, state: &GameState) -> Vec<String> {
+        if self.world_details_visible {
+            return vec![
+                "Current · World Details".into(),
+                "w / Esc Return to Map".into(),
+                "The railway registration belongs to the Region and remains stable for this save."
+                    .into(),
+            ];
+        }
+
+        let train_count = state.player_company.fleet.trains.len();
+        let ready = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
+            .count();
+        let mut lines = vec![
+            "Current · Map".into(),
+            "↑↓←→ / hjkl Select a map location".into(),
+            "s Open Passenger Services".into(),
+            "w Open World Details".into(),
+        ];
+        if train_count == 0 {
+            lines.extend([
+                String::new(),
+                "Next step".into(),
+                "3 Open Market and acquire your first passenger Train".into(),
+            ]);
+        } else if ready == 0 {
+            lines.extend([
+                "d Dispatch is unavailable while every Train is travelling".into(),
+                "Journeys continue while RailQ is closed; dispatch again after arrival".into(),
+            ]);
+        } else {
+            lines.push(format!(
+                "d Manual Dispatch · {ready} READY {}",
+                if ready == 1 { "Train" } else { "Trains" }
+            ));
+        }
+        lines
     }
 
     /// Renders the operational Map with its stable location selection.
@@ -3023,6 +3125,23 @@ mod tests {
             WorldDetailsKeyAction::ClosedForNavigation
         );
         assert!(!workspace.world_details_visible());
+    }
+
+    #[test]
+    fn workspace_owns_map_controls_and_help() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = MapWorkspace::default();
+
+        let shortcuts = workspace.shortcuts(&state, false);
+        assert!(shortcuts.iter().any(|shortcut| shortcut.key == "3"));
+        assert!(shortcuts.iter().any(|shortcut| shortcut.key == "W"));
+        assert!(workspace.help_lines(&state)[0].contains("Map"));
+
+        workspace.handle_key(KeyCode::Char('w'), &state);
+        let modal_shortcuts = workspace.shortcuts(&state, false);
+        assert_eq!(modal_shortcuts.len(), 1);
+        assert_eq!(modal_shortcuts[0].key, "W/Esc");
+        assert!(workspace.help_lines(&state)[0].contains("World Details"));
     }
 
     #[test]

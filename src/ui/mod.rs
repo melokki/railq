@@ -1634,11 +1634,19 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         return actions;
     }
     if shell.map_workspace.world_details_visible() {
-        return vec![
-            FooterShortcut::enabled("W/Esc", "Close"),
-            FooterShortcut::enabled("?", "Help"),
-            FooterShortcut::enabled("Q", "Quit"),
-        ];
+        let mut actions = shell
+            .map_workspace
+            .shortcuts(state, compact)
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect::<Vec<_>>();
+        actions.push(FooterShortcut::enabled("?", "Help"));
+        actions.push(FooterShortcut::enabled("Q", "Quit"));
+        return actions;
     }
     if shell.active_view == View::Trains && shell.fleet_workspace.has_nickname_editor() {
         return shell
@@ -1737,34 +1745,16 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             })
             .collect()
     } else if shell.active_view == View::Map {
-        let train_count = state.player_company.fleet.trains.len();
-        let ready = state
-            .player_company
-            .fleet
-            .trains
-            .iter()
-            .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
-            .count();
-        let mut items = vec![FooterShortcut::enabled(
-            if compact {
-                "↑↓←→"
-            } else {
-                "↑↓←→/HJKL"
-            },
-            "Station",
-        )];
-        if train_count == 0 {
-            items.push(FooterShortcut::enabled("3", "Market"));
-        } else if ready == 0 {
-            // The header already owns Fleet status. Keep the footer purely
-            // action-oriented and let disabled styling communicate availability.
-            items.push(FooterShortcut::disabled("D", "Dispatch"));
-        } else {
-            items.push(FooterShortcut::enabled("D", "Dispatch"));
-        }
-        items.push(FooterShortcut::enabled("S", "Services"));
-        items.push(FooterShortcut::enabled("W", "World"));
-        items
+        shell
+            .map_workspace
+            .shortcuts(state, compact)
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect()
     } else if shell.active_view == View::Company {
         shell
             .company_workspace
@@ -1930,12 +1920,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     }
 
     if shell.map_workspace.world_details_visible() {
-        lines.extend([
-            "Current · World Details".into(),
-            "w / Esc Return to Map".into(),
-            "The railway registration belongs to the Region and remains stable for this save."
-                .into(),
-        ]);
+        lines.extend(shell.map_workspace.help_lines(state));
         return lines;
     }
 
@@ -2000,39 +1985,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     }
 
     match shell.active_view {
-        View::Map => {
-            let train_count = state.player_company.fleet.trains.len();
-            let ready = state
-                .player_company
-                .fleet
-                .trains
-                .iter()
-                .filter(|train| matches!(train.status, TrainStatus::Ready { .. }))
-                .count();
-            lines.extend([
-                "Current · Map".into(),
-                "↑↓←→ / hjkl Select a map location".into(),
-                "s Open Passenger Services".into(),
-                "w Open World Details".into(),
-            ]);
-            if train_count == 0 {
-                lines.extend([
-                    String::new(),
-                    "Next step".into(),
-                    "3 Open Market and acquire your first passenger Train".into(),
-                ]);
-            } else if ready == 0 {
-                lines.extend([
-                    "d Dispatch is unavailable while every Train is travelling".into(),
-                    "Journeys continue while RailQ is closed; dispatch again after arrival".into(),
-                ]);
-            } else {
-                lines.push(format!(
-                    "d Manual Dispatch · {ready} READY {}",
-                    if ready == 1 { "Train" } else { "Trains" }
-                ));
-            }
-        }
+        View::Map => lines.extend(shell.map_workspace.help_lines(state)),
         View::Trains => {
             lines.extend(shell.fleet_workspace.help_lines(state));
         }
