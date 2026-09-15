@@ -399,6 +399,216 @@ impl FleetFlow {
     }
 }
 
+
+/// Result of routing one Fleet-owned keyboard event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FleetWorkspaceAction {
+    Continue,
+    ClearNotice,
+    Notice(String),
+    SellTrain { train_id: TrainId },
+    UpdateNickname {
+        train_id: TrainId,
+        nickname: Option<TrainNickname>,
+    },
+    Dispatch { train_id: TrainId },
+}
+
+/// Owns presentation state and keyboard interaction for the Fleet workspace.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FleetWorkspace {
+    flow: Option<FleetFlow>,
+    selection: FleetSelection,
+    details_open: bool,
+    split_visible: bool,
+    nickname_editor: Option<TrainNicknameEditor>,
+}
+
+impl FleetWorkspace {
+    pub fn activate(&mut self) {
+        self.details_open = false;
+        self.split_visible = false;
+    }
+
+    pub fn has_resale_flow(&self) -> bool {
+        self.flow.is_some()
+    }
+
+    pub fn has_nickname_editor(&self) -> bool {
+        self.nickname_editor.is_some()
+    }
+
+    pub fn has_modal(&self) -> bool {
+        self.has_resale_flow() || self.has_nickname_editor()
+    }
+
+    pub fn details_open(&self) -> bool {
+        self.details_open
+    }
+
+    pub fn split_visible(&self) -> bool {
+        self.split_visible
+    }
+
+    pub fn selected_train_id(&mut self, state: &GameState) -> Option<TrainId> {
+        self.selection.selected_train_id(state)
+    }
+
+    pub fn close_details(&mut self) {
+        self.details_open = false;
+    }
+
+    pub fn handle_nickname_key(&mut self, key: KeyCode) -> FleetWorkspaceAction {
+        let Some(editor) = &mut self.nickname_editor else {
+            return FleetWorkspaceAction::Continue;
+        };
+        match editor.handle_key(key) {
+            TrainNicknameEditorAction::Continue => FleetWorkspaceAction::Continue,
+            TrainNicknameEditorAction::Cancel => {
+                self.nickname_editor = None;
+                FleetWorkspaceAction::Notice(
+                    "Train rename cancelled; no changes were made.".into(),
+                )
+            }
+            TrainNicknameEditorAction::Confirm { train_id, nickname } => {
+                FleetWorkspaceAction::UpdateNickname { train_id, nickname }
+            }
+        }
+    }
+
+    pub fn handle_resale_key(
+        &mut self,
+        key: KeyEvent,
+        state: &GameState,
+    ) -> FleetWorkspaceAction {
+        let Some(flow) = &mut self.flow else {
+            return FleetWorkspaceAction::Continue;
+        };
+        match flow.handle_key(key, state) {
+            FleetFlowAction::Continue => FleetWorkspaceAction::Continue,
+            FleetFlowAction::Cancel => {
+                self.flow = None;
+                FleetWorkspaceAction::Notice(
+                    "Train resale cancelled; no changes were made.".into(),
+                )
+            }
+            FleetFlowAction::Confirm { train_id } => FleetWorkspaceAction::SellTrain { train_id },
+        }
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent, state: &GameState) -> FleetWorkspaceAction {
+        match key.code {
+            KeyCode::Enter if !self.split_visible => {
+                if self.selection.selected_train_id(state).is_some() {
+                    self.details_open = true;
+                    FleetWorkspaceAction::ClearNotice
+                } else {
+                    FleetWorkspaceAction::Continue
+                }
+            }
+            KeyCode::Esc if self.details_open => {
+                self.details_open = false;
+                FleetWorkspaceAction::Continue
+            }
+            KeyCode::Char('r' | 'R' | 'n' | 'N') => {
+                match self.selection.selected_train_id(state) {
+                    Some(train_id) => match TrainNicknameEditor::start(state, train_id) {
+                        Ok(editor) => {
+                            self.nickname_editor = Some(editor);
+                            FleetWorkspaceAction::ClearNotice
+                        }
+                        Err(message) => FleetWorkspaceAction::Notice(message),
+                    },
+                    None => FleetWorkspaceAction::Notice(
+                        "Select a Train before renaming it.".into(),
+                    ),
+                }
+            }
+            KeyCode::Char('s' | 'S') => match self.selection.selected_train_id(state) {
+                Some(train_id) => match FleetFlow::start(state, train_id) {
+                    Ok(flow) => {
+                        self.flow = Some(flow);
+                        FleetWorkspaceAction::ClearNotice
+                    }
+                    Err(message) => FleetWorkspaceAction::Notice(message),
+                },
+                None => FleetWorkspaceAction::Notice(
+                    "Select a Train before starting a resale review.".into(),
+                ),
+            },
+            KeyCode::Char('d' | 'D') => match self.selection.selected_train_id(state) {
+                Some(train_id) => FleetWorkspaceAction::Dispatch { train_id },
+                None => FleetWorkspaceAction::Notice(
+                    "Select a READY Train before starting Manual Dispatch.".into(),
+                ),
+            },
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K') => {
+                self.selection.handle_key(key.code, state);
+                FleetWorkspaceAction::Continue
+            }
+            _ => FleetWorkspaceAction::Continue,
+        }
+    }
+
+    pub fn reject_resale(&mut self, error: impl Into<String>) -> Option<String> {
+        let error = error.into();
+        if let Some(flow) = &mut self.flow {
+            flow.reject(error);
+            None
+        } else {
+            Some(error)
+        }
+    }
+
+    pub fn confirm_resale_saved(&mut self) {
+        self.flow = None;
+        self.details_open = false;
+    }
+
+    pub fn confirm_nickname_saved(&mut self) -> Option<TrainId> {
+        let train_id = self.nickname_editor.as_ref().map(TrainNicknameEditor::train_id);
+        self.nickname_editor = None;
+        train_id
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn render_dashboard(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &GameState,
+        now: UtcSeconds,
+    ) {
+        self.split_visible = area.width >= 96 && area.height >= 18;
+        if self.split_visible {
+            self.details_open = false;
+        }
+        render_dashboard(
+            frame,
+            area,
+            state,
+            now,
+            &mut self.selection,
+            self.details_open,
+        );
+    }
+
+    pub fn render_modal(&self, frame: &mut Frame, area: Rect, state: &GameState) {
+        if let Some(editor) = &self.nickname_editor {
+            render_nickname_editor(frame, area, editor, state);
+        } else if let Some(flow) = &self.flow {
+            flow.render_review(frame, area, state);
+        }
+    }
+}
+
 struct ResaleReview<'a> {
     train: &'a Train,
     proceeds: Money,
@@ -1426,7 +1636,8 @@ mod tests {
     };
 
     use super::{
-        FleetFlow, FleetFlowAction, TrainNicknameEditor, TrainNicknameEditorAction, render_at,
+        FleetFlow, FleetFlowAction, FleetWorkspace, FleetWorkspaceAction, TrainNicknameEditor,
+        TrainNicknameEditorAction, render_at,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
@@ -1464,6 +1675,23 @@ mod tests {
                 train_id,
                 nickname: None,
             }
+        );
+    }
+
+    #[test]
+    fn fleet_workspace_owns_resale_interaction_state() {
+        let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let mut workspace = FleetWorkspace::default();
+
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('s')), &state),
+            FleetWorkspaceAction::ClearNotice
+        );
+        assert!(workspace.has_resale_flow());
+        assert_eq!(
+            workspace.handle_resale_key(key(KeyCode::Enter), &state),
+            FleetWorkspaceAction::SellTrain { train_id }
         );
     }
 

@@ -221,15 +221,11 @@ pub struct Shell {
     world_details_visible: bool,
     services_open: bool,
     service_workspace: services::ServiceWorkspace,
-    fleet_flow: Option<fleet::FleetFlow>,
-    fleet_selection: fleet::FleetSelection,
-    fleet_details_open: bool,
-    fleet_split_visible: bool,
+    fleet_workspace: fleet::FleetWorkspace,
     market_workspace: market::MarketWorkspace,
     authority_workspace: authority::AuthorityWorkspace,
     bulletin_workspace: bulletin::BulletinWorkspace,
     company_workspace: company::CompanyWorkspace,
-    train_nickname_editor: Option<fleet::TrainNicknameEditor>,
     notice: Option<String>,
     pending_action: Option<PendingAction>,
     action_outcome: Option<ActionOutcome>,
@@ -250,15 +246,11 @@ impl Shell {
             world_details_visible: false,
             services_open: false,
             service_workspace: services::ServiceWorkspace::default(),
-            fleet_flow: None,
-            fleet_selection: fleet::FleetSelection::default(),
-            fleet_details_open: false,
-            fleet_split_visible: false,
+            fleet_workspace: fleet::FleetWorkspace::default(),
             market_workspace: market::MarketWorkspace::default(),
             authority_workspace: authority::AuthorityWorkspace::default(),
             bulletin_workspace: bulletin::BulletinWorkspace::default(),
             company_workspace: company::CompanyWorkspace::default(),
-            train_nickname_editor: None,
             notice: None,
             pending_action: None,
             action_outcome: None,
@@ -285,18 +277,9 @@ impl Shell {
             return ShellAction::Continue;
         }
 
-        if let Some(editor) = &mut self.train_nickname_editor {
-            return match editor.handle_key(key.code) {
-                fleet::TrainNicknameEditorAction::Continue => ShellAction::Continue,
-                fleet::TrainNicknameEditorAction::Cancel => {
-                    self.train_nickname_editor = None;
-                    self.notice = Some("Train rename cancelled; no changes were made.".into());
-                    ShellAction::Continue
-                }
-                fleet::TrainNicknameEditorAction::Confirm { train_id, nickname } => {
-                    ShellAction::UpdateTrainNickname { train_id, nickname }
-                }
-            };
+        if self.fleet_workspace.has_nickname_editor() {
+            let action = self.fleet_workspace.handle_nickname_key(key.code);
+            return self.handle_fleet_workspace_action(action, state);
         }
 
         if self.company_workspace.has_vkm_editor() {
@@ -424,7 +407,7 @@ impl Shell {
                 dispatch::DispatchFlowAction::Cancel => {
                     self.dispatch_flow = None;
                     if self.dispatch_returns_to_fleet {
-                        self.fleet_details_open = false;
+                        self.fleet_workspace.close_details();
                     }
                     self.dispatch_returns_to_fleet = false;
                     self.notice = Some("Manual Dispatch cancelled; no changes were made.".into());
@@ -443,19 +426,9 @@ impl Shell {
             };
         }
 
-        if let Some(flow) = &mut self.fleet_flow {
-            return match flow.handle_key(key, state) {
-                fleet::FleetFlowAction::Continue => ShellAction::Continue,
-                fleet::FleetFlowAction::Cancel => {
-                    self.fleet_flow = None;
-                    self.notice = Some("Train resale cancelled; no changes were made.".into());
-                    ShellAction::Continue
-                }
-                fleet::FleetFlowAction::Confirm { train_id } => {
-                    self.pending_action = Some(pending_resale(state, train_id));
-                    ShellAction::SellTrain { train_id }
-                }
-            };
+        if self.fleet_workspace.has_resale_flow() {
+            let action = self.fleet_workspace.handle_resale_key(key, state);
+            return self.handle_fleet_workspace_action(action, state);
         }
 
         if self.market_workspace.has_flow() {
@@ -508,8 +481,7 @@ impl Shell {
             KeyCode::Char('2' | 't' | 'T') => {
                 self.active_view = View::Trains;
                 self.services_open = false;
-                self.fleet_details_open = false;
-                self.fleet_split_visible = false;
+                self.fleet_workspace.activate();
             }
             KeyCode::Char('4' | 'c' | 'C') => {
                 self.active_view = View::Company;
@@ -531,79 +503,18 @@ impl Shell {
             KeyCode::Enter if self.active_view == View::BuyTrains => {
                 return self.handle_market_key(key, state);
             }
-            KeyCode::Enter if self.active_view == View::Trains && !self.fleet_split_visible => {
-                if self.fleet_selection.selected_train_id(state).is_some() {
-                    self.fleet_details_open = true;
-                    self.notice = None;
-                }
-            }
-            KeyCode::Esc if self.active_view == View::Trains && self.fleet_details_open => {
-                self.fleet_details_open = false;
-            }
-            KeyCode::Char('r' | 'R' | 'n' | 'N') if self.active_view == View::Trains => {
-                match self.fleet_selection.selected_train_id(state) {
-                    Some(train_id) => match fleet::TrainNicknameEditor::start(state, train_id) {
-                        Ok(editor) => {
-                            self.train_nickname_editor = Some(editor);
-                            self.notice = None;
-                        }
-                        Err(message) => self.notice = Some(message),
-                    },
-                    None => {
-                        self.notice = Some("Select a Train before renaming it.".into());
-                    }
-                }
-            }
-            KeyCode::Char('s' | 'S') if self.active_view == View::Trains => {
-                match self.fleet_selection.selected_train_id(state) {
-                    Some(train_id) => match fleet::FleetFlow::start(state, train_id) {
-                        Ok(flow) => {
-                            self.fleet_flow = Some(flow);
-                            self.notice = None;
-                        }
-                        Err(message) => self.notice = Some(message),
-                    },
-                    None => {
-                        self.notice =
-                            Some("Select a Train before starting a resale review.".into());
-                    }
-                }
-            }
-            KeyCode::Char('d' | 'D') if self.active_view == View::Trains => {
-                match self.fleet_selection.selected_train_id(state) {
-                    Some(train_id) => {
-                        match dispatch::DispatchFlow::start_with_selected_train(state, train_id) {
-                            Ok(flow) => {
-                                self.dispatch_flow = Some(flow);
-                                self.dispatch_returns_to_fleet = true;
-                                self.notice = None;
-                            }
-                            Err(message) => self.notice = Some(message),
-                        }
-                    }
-                    None => {
-                        self.notice =
-                            Some("Select a READY Train before starting Manual Dispatch.".into());
-                    }
-                }
-            }
-            KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::PageUp
-            | KeyCode::PageDown
-            | KeyCode::Char('j' | 'J' | 'k' | 'K')
-                if self.active_view == View::BuyTrains =>
-            {
-                return self.handle_market_key(key, state);
-            }
-            KeyCode::Up
+            KeyCode::Enter
+            | KeyCode::Esc
+            | KeyCode::Char('r' | 'R' | 'n' | 'N' | 's' | 'S' | 'd' | 'D')
+            | KeyCode::Up
             | KeyCode::Down
             | KeyCode::PageUp
             | KeyCode::PageDown
             | KeyCode::Char('j' | 'J' | 'k' | 'K')
                 if self.active_view == View::Trains =>
             {
-                self.fleet_selection.handle_key(key.code, state);
+                let action = self.fleet_workspace.handle_key(key, state);
+                return self.handle_fleet_workspace_action(action, state);
             }
             KeyCode::Char('f' | 'F') if self.active_view == View::Authority => {
                 return self.handle_authority_key(key, state);
@@ -738,6 +649,42 @@ impl Shell {
         }
     }
 
+    fn handle_fleet_workspace_action(
+        &mut self,
+        action: fleet::FleetWorkspaceAction,
+        state: &GameState,
+    ) -> ShellAction {
+        match action {
+            fleet::FleetWorkspaceAction::Continue => ShellAction::Continue,
+            fleet::FleetWorkspaceAction::ClearNotice => {
+                self.notice = None;
+                ShellAction::Continue
+            }
+            fleet::FleetWorkspaceAction::Notice(message) => {
+                self.notice = Some(message);
+                ShellAction::Continue
+            }
+            fleet::FleetWorkspaceAction::SellTrain { train_id } => {
+                self.pending_action = Some(pending_resale(state, train_id));
+                ShellAction::SellTrain { train_id }
+            }
+            fleet::FleetWorkspaceAction::UpdateNickname { train_id, nickname } => {
+                ShellAction::UpdateTrainNickname { train_id, nickname }
+            }
+            fleet::FleetWorkspaceAction::Dispatch { train_id } => {
+                match dispatch::DispatchFlow::start_with_selected_train(state, train_id) {
+                    Ok(flow) => {
+                        self.dispatch_flow = Some(flow);
+                        self.dispatch_returns_to_fleet = true;
+                        self.notice = None;
+                    }
+                    Err(message) => self.notice = Some(message),
+                }
+                ShellAction::Continue
+            }
+        }
+    }
+
     /// Keeps a rejected confirmation visible to explain the actual current-state cause.
     pub fn reject_manual_dispatch(&mut self, error: impl Into<String>) {
         self.pending_action = None;
@@ -753,7 +700,7 @@ impl Shell {
         self.pending_action = None;
         self.dispatch_flow = None;
         if self.dispatch_returns_to_fleet {
-            self.fleet_details_open = false;
+            self.fleet_workspace.close_details();
         }
         self.dispatch_returns_to_fleet = false;
         self.notice = Some("Manual Dispatch authorised and saved.".into());
@@ -791,18 +738,15 @@ impl Shell {
     /// Keeps a rejected resale visible to explain the actual current-state cause.
     pub fn reject_train_resale(&mut self, error: impl Into<String>) {
         self.pending_action = None;
-        if let Some(flow) = &mut self.fleet_flow {
-            flow.reject(error);
-        } else {
-            self.notice = Some(error.into());
+        if let Some(message) = self.fleet_workspace.reject_resale(error) {
+            self.notice = Some(message);
         }
     }
 
     /// Closes a saved resale and shows the actual proceeds credited to Company Funds.
     pub fn confirm_train_resale(&mut self, proceeds: crate::model::Money) {
         self.pending_action = None;
-        self.fleet_flow = None;
-        self.fleet_details_open = false;
+        self.fleet_workspace.confirm_resale_saved();
         self.notice = Some(format!(
             "Train resold and saved. Sale proceeds of {} were added to Company Funds.",
             format_money(proceeds)
@@ -811,8 +755,7 @@ impl Shell {
 
     /// Publishes resale feedback only after the save boundary succeeded.
     pub fn confirm_train_resale_saved(&mut self, state: &GameState) {
-        self.fleet_flow = None;
-        self.fleet_details_open = false;
+        self.fleet_workspace.confirm_resale_saved();
         self.publish_pending_outcome(state);
     }
 
@@ -957,11 +900,7 @@ impl Shell {
 
     /// Closes a saved Train nickname edit and reports its current label.
     pub fn confirm_train_nickname_saved(&mut self, state: &GameState) {
-        let train_id = self
-            .train_nickname_editor
-            .as_ref()
-            .map(fleet::TrainNicknameEditor::train_id);
-        self.train_nickname_editor = None;
+        let train_id = self.fleet_workspace.confirm_nickname_saved();
         let summary = train_id
             .and_then(|train_id| {
                 state
@@ -998,14 +937,13 @@ impl Shell {
         self.active_view = View::Map;
         self.dispatch_flow = None;
         self.dispatch_returns_to_fleet = false;
-        self.fleet_flow = None;
+        self.fleet_workspace.reset();
         self.market_workspace.reset();
         self.authority_workspace.reset();
         self.services_open = false;
         self.service_workspace = services::ServiceWorkspace::default();
         self.restart_confirmation = false;
         self.company_workspace.reset();
-        self.train_nickname_editor = None;
         self.notice = Some(
             "Fresh game saved. The former Player Company save was preserved in a restart backup."
                 .into(),
@@ -1432,18 +1370,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             &mut shell.map_location_selection,
         );
     } else if !is_bankrupt(state) && shell.active_view == View::Trains {
-        shell.fleet_split_visible = content_area.width >= 96 && content_area.height >= 18;
-        if shell.fleet_split_visible {
-            shell.fleet_details_open = false;
-        }
-        fleet::render_dashboard(
-            frame,
-            content_area,
-            state,
-            now,
-            &mut shell.fleet_selection,
-            shell.fleet_details_open,
-        );
+        shell
+            .fleet_workspace
+            .render_dashboard(frame, content_area, state, now);
     } else if shell.active_view == View::Trains {
         frame.render_widget(
             Paragraph::new(fleet::render_at(state, now))
@@ -1533,11 +1462,10 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 
 fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
     shell.authority_workspace.has_modal()
-        || shell.train_nickname_editor.is_some()
+        || shell.fleet_workspace.has_modal()
         || shell.company_workspace.has_modal()
         || (is_bankrupt(state) && shell.restart_confirmation)
         || shell.dispatch_flow.is_some()
-        || shell.fleet_flow.is_some()
         || shell.market_workspace.has_modal()
         || (shell.services_open && shell.service_workspace.has_modal())
 }
@@ -1554,8 +1482,10 @@ fn render_focused_modal(
             .render_modal(frame, content_area, state);
         return;
     }
-    if let Some(editor) = &shell.train_nickname_editor {
-        fleet::render_nickname_editor(frame, content_area, editor, state);
+    if shell.fleet_workspace.has_modal() {
+        shell
+            .fleet_workspace
+            .render_modal(frame, content_area, state);
         return;
     }
     if shell.company_workspace.has_modal() {
@@ -1570,10 +1500,6 @@ fn render_focused_modal(
     }
     if let Some(flow) = &mut shell.dispatch_flow {
         flow.render_panel(frame, modal::workflow_rect(content_area), state);
-        return;
-    }
-    if let Some(flow) = &shell.fleet_flow {
-        flow.render_review(frame, content_area, state);
         return;
     }
     if shell.market_workspace.has_modal() {
@@ -1720,7 +1646,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             FooterShortcut::enabled("Q", "Quit"),
         ];
     }
-    if shell.train_nickname_editor.is_some() {
+    if shell.fleet_workspace.has_nickname_editor() {
         return vec![
             FooterShortcut::enabled("Enter", "Save"),
             FooterShortcut::enabled("Backspace", "Delete"),
@@ -1787,16 +1713,16 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
                 FooterShortcut::enabled("Esc", "Cancel"),
             ]
         }
-    } else if shell.active_view == View::Trains && shell.fleet_flow.is_some() {
+    } else if shell.active_view == View::Trains && shell.fleet_workspace.has_resale_flow() {
         vec![
             FooterShortcut::enabled("Enter", "Resell"),
             FooterShortcut::enabled("Esc", "Cancel"),
         ]
-    } else if shell.active_view == View::Trains && shell.fleet_details_open {
+    } else if shell.active_view == View::Trains && shell.fleet_workspace.details_open() {
         let mut items = vec![FooterShortcut::enabled("Esc", "Back")];
         items.extend(fleet_action_shortcuts(shell, state));
         items
-    } else if shell.active_view == View::Trains && shell.fleet_flow.is_none() {
+    } else if shell.active_view == View::Trains && !shell.fleet_workspace.has_resale_flow() {
         if state.player_company.fleet.trains.is_empty() {
             let mut items = vec![FooterShortcut::enabled("3", "Market")];
             items.extend(fleet_action_shortcuts(shell, state));
@@ -1809,7 +1735,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             if wide {
                 items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
             }
-            if !shell.fleet_split_visible {
+            if !shell.fleet_workspace.split_visible() {
                 items.push(FooterShortcut::enabled("Enter", "Details"));
             }
             items.extend(fleet_action_shortcuts(shell, state));
@@ -1917,7 +1843,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
 
 fn fleet_action_shortcuts(shell: &mut Shell, state: &GameState) -> Vec<FooterShortcut> {
     let selected = shell
-        .fleet_selection
+        .fleet_workspace
         .selected_train_id(state)
         .and_then(|id| {
             state
@@ -2100,7 +2026,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         }
     }
 
-    if shell.active_view == View::Trains && shell.fleet_flow.is_some() {
+    if shell.active_view == View::Trains && shell.fleet_workspace.has_resale_flow() {
         lines.extend([
             "Current · Train Resale".into(),
             "Enter Confirm resale".into(),
@@ -2177,7 +2103,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                     "Next step".into(),
                     "3 Open Market and acquire your first passenger Train".into(),
                 ]);
-            } else if shell.fleet_details_open {
+            } else if shell.fleet_workspace.details_open() {
                 lines.extend([
                     "Esc Back to Fleet".into(),
                     "r Rename selected Train".into(),
