@@ -1646,12 +1646,17 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             FooterShortcut::enabled("Q", "Quit"),
         ];
     }
-    if shell.fleet_workspace.has_nickname_editor() {
-        return vec![
-            FooterShortcut::enabled("Enter", "Save"),
-            FooterShortcut::enabled("Backspace", "Delete"),
-            FooterShortcut::enabled("Esc", "Cancel"),
-        ];
+    if shell.active_view == View::Trains && shell.fleet_workspace.has_nickname_editor() {
+        return shell
+            .fleet_workspace
+            .shortcuts(state, compact, wide)
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect();
     }
     if shell.outcome_details_open {
         return vec![
@@ -1713,34 +1718,17 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
                 FooterShortcut::enabled("Esc", "Cancel"),
             ]
         }
-    } else if shell.active_view == View::Trains && shell.fleet_workspace.has_resale_flow() {
-        vec![
-            FooterShortcut::enabled("Enter", "Resell"),
-            FooterShortcut::enabled("Esc", "Cancel"),
-        ]
-    } else if shell.active_view == View::Trains && shell.fleet_workspace.details_open() {
-        let mut items = vec![FooterShortcut::enabled("Esc", "Back")];
-        items.extend(fleet_action_shortcuts(shell, state));
-        items
-    } else if shell.active_view == View::Trains && !shell.fleet_workspace.has_resale_flow() {
-        if state.player_company.fleet.trains.is_empty() {
-            let mut items = vec![FooterShortcut::enabled("3", "Market")];
-            items.extend(fleet_action_shortcuts(shell, state));
-            items
-        } else {
-            let mut items = vec![FooterShortcut::enabled(
-                if compact { "↑↓" } else { "↑↓/JK" },
-                "Train",
-            )];
-            if wide {
-                items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
-            }
-            if !shell.fleet_workspace.split_visible() {
-                items.push(FooterShortcut::enabled("Enter", "Details"));
-            }
-            items.extend(fleet_action_shortcuts(shell, state));
-            items
-        }
+    } else if shell.active_view == View::Trains {
+        shell
+            .fleet_workspace
+            .shortcuts(state, compact, wide)
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect()
     } else if shell.active_view == View::Map && shell.services_open {
         shell
             .service_workspace
@@ -1839,40 +1827,6 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
     push_shortcut_if_fits(&mut actions, FooterShortcut::enabled("?", "Help"), width);
     push_shortcut_if_fits(&mut actions, FooterShortcut::enabled("Q", "Quit"), width);
     actions
-}
-
-fn fleet_action_shortcuts(shell: &mut Shell, state: &GameState) -> Vec<FooterShortcut> {
-    let selected = shell
-        .fleet_workspace
-        .selected_train_id(state)
-        .and_then(|id| {
-            state
-                .player_company
-                .fleet
-                .trains
-                .iter()
-                .find(|train| train.id == id)
-        });
-    let has_selection = selected.is_some();
-    let is_ready = selected.is_some_and(|train| matches!(&train.status, TrainStatus::Ready { .. }));
-
-    vec![
-        if has_selection {
-            FooterShortcut::enabled("R", "Rename")
-        } else {
-            FooterShortcut::disabled("R", "Rename")
-        },
-        if is_ready {
-            FooterShortcut::enabled("D", "Dispatch")
-        } else {
-            FooterShortcut::disabled("D", "Dispatch")
-        },
-        if is_ready {
-            FooterShortcut::enabled("S", "Sell")
-        } else {
-            FooterShortcut::disabled("S", "Sell")
-        },
-    ]
 }
 
 fn shell_status_line(state: &GameState, now: UtcSeconds, width: u16) -> String {
@@ -2026,15 +1980,6 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         }
     }
 
-    if shell.active_view == View::Trains && shell.fleet_workspace.has_resale_flow() {
-        lines.extend([
-            "Current · Train Resale".into(),
-            "Enter Confirm resale".into(),
-            "Esc Cancel".into(),
-        ]);
-        return lines;
-    }
-
     if shell.active_view == View::Map && shell.services_open {
         lines.push("Current · Passenger Services".into());
         if state.player_company.passenger_services.is_empty() {
@@ -2095,31 +2040,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
             }
         }
         View::Trains => {
-            lines.push("Current · Trains".into());
-            if state.player_company.fleet.trains.is_empty() {
-                lines.extend([
-                    "No trains owned yet".into(),
-                    String::new(),
-                    "Next step".into(),
-                    "3 Open Market and acquire your first passenger Train".into(),
-                ]);
-            } else if shell.fleet_workspace.details_open() {
-                lines.extend([
-                    "Esc Back to Fleet".into(),
-                    "r Rename selected Train".into(),
-                    "d Dispatch selected READY Train".into(),
-                    "s Review resale of selected READY Train".into(),
-                ]);
-            } else {
-                lines.extend([
-                    "↑↓ / jk Select Train".into(),
-                    "PgUp / PgDn Scroll".into(),
-                    "Enter Details".into(),
-                    "r Rename selected Train".into(),
-                    "d Dispatch selected READY Train".into(),
-                    "s Review resale of selected READY Train".into(),
-                ]);
-            }
+            lines.extend(shell.fleet_workspace.help_lines(state));
         }
         View::BuyTrains => {
             lines.extend([
