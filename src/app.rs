@@ -170,6 +170,13 @@ impl<S: GameStore> App<S> {
                 let proceeds = self.sell_train(train_id, now)?;
                 Ok(AppCommandResult::TrainSold { train_id, proceeds })
             }
+            AppCommand::ManualDispatch {
+                train_id,
+                service_id,
+            } => {
+                let journey_id = self.dispatch_journey(train_id, service_id, now)?;
+                Ok(AppCommandResult::JourneyDispatched { journey_id })
+            }
             AppCommand::ContributeInfrastructure { project_id, amount } => {
                 self.contribute_to_infrastructure_project(project_id, amount, now)?;
                 Ok(AppCommandResult::InfrastructureContributionRecorded { project_id, amount })
@@ -711,11 +718,40 @@ mod tests {
         store.fail_next_save.set(true);
 
         assert!(matches!(
-            app.dispatch_journey(train_id, service_id, DEPARTED_AT),
+            app.execute(
+                AppCommand::ManualDispatch {
+                    train_id,
+                    service_id,
+                },
+                DEPARTED_AT,
+            ),
             Err(AppError::Save(TestStoreError::SimulatedWriteFailure))
         ));
         assert_eq!(app.state(), &before);
         assert_eq!(store.load().unwrap(), Some(before));
+    }
+
+    #[test]
+    fn execute_dispatches_a_journey_through_the_application_boundary() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        let mut app = App::start_new(store.clone(), state).unwrap();
+
+        let result = app
+            .execute(
+                AppCommand::ManualDispatch {
+                    train_id,
+                    service_id,
+                },
+                DEPARTED_AT,
+            )
+            .unwrap();
+
+        let journey_id = app.state().active_journeys[0].id;
+        assert_eq!(result, AppCommandResult::JourneyDispatched { journey_id });
+        assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
     }
 
     #[test]

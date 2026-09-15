@@ -50,7 +50,13 @@ fn run_dashboard(
                 service_id,
                 now,
             } => {
-                app.dispatch_journey(train_id, service_id, now)?;
+                app.execute(
+                    railq::app::AppCommand::ManualDispatch {
+                        train_id,
+                        service_id,
+                    },
+                    now,
+                )?;
             }
             ui::TerminalCommand::PurchaseTrain {
                 catalogue_index,

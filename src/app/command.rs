@@ -4,7 +4,8 @@
 //! timestamp are supplied separately when the application executes them.
 
 use crate::model::{
-    InfrastructureProjectId, Money, RailStationId, TrainId, TrainNickname, VehicleKeeperMark,
+    InfrastructureProjectId, JourneyId, Money, RailStationId, ServiceId, TrainId, TrainNickname,
+    VehicleKeeperMark,
 };
 
 /// A player-requested state transition accepted by the application layer.
@@ -17,6 +18,11 @@ pub enum AppCommand {
     },
     /// Sell one READY owned Train.
     SellTrain { train_id: TrainId },
+    /// Authorise one Manual Dispatch over an existing Passenger Service.
+    ManualDispatch {
+        train_id: TrainId,
+        service_id: ServiceId,
+    },
     /// Contribute Player Company funds to one Authority infrastructure project.
     ContributeInfrastructure {
         project_id: InfrastructureProjectId,
@@ -40,6 +46,8 @@ pub enum AppCommandResult {
     TrainPurchased { train_id: TrainId },
     /// One Train sale was durably committed.
     TrainSold { train_id: TrainId, proceeds: Money },
+    /// One Manual Dispatch was durably committed.
+    JourneyDispatched { journey_id: JourneyId },
     /// One infrastructure contribution was durably committed.
     InfrastructureContributionRecorded {
         project_id: InfrastructureProjectId,
