@@ -1813,8 +1813,8 @@ pub struct OriginDestinationDemand {
     pub market_maturity: MarketMaturity,
     /// Seeded/base Passenger Demand potential for this direction.
     ///
-    /// Market maturity is persisted separately; the next integration batch
-    /// will make maturity scale this base rate.
+    /// Market maturity is persisted separately and scales this base rate in
+    /// the Passenger Demand simulation.
     pub passenger_arrival_rate_per_hour: PassengerArrivalRate,
     /// Passenger-seconds left over after the last whole-passenger update.
     ///

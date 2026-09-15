@@ -19,7 +19,10 @@ use crate::{
             advance_project_construction, advance_project_funding, advance_project_scheduling,
             open_completed_infrastructure_projects,
         },
-        demand::{replenish_directional_demand, synchronize_directional_demand_with_network},
+        demand::{
+            record_served_passengers, replenish_directional_demand,
+            synchronize_directional_demand_with_network,
+        },
         economy::{EconomyError, duration_between_service_stops, quote_boarding_at_stop},
     },
 };
@@ -251,11 +254,17 @@ fn process_stop_arrival(
     let final_arrival = arrival_station_id == journey_snapshot.destination_station_id;
 
     let mut remaining_groups = Vec::new();
+    let mut served_groups = Vec::new();
     let mut credited_now = Money::ZERO;
     for group in &journey_snapshot.passenger_groups {
         if group.destination_station_id == arrival_station_id {
             credited_now =
                 credited_now.checked_add(group.fare.checked_mul(u64::from(group.passengers))?)?;
+            served_groups.push((
+                group.origin_station_id,
+                group.destination_station_id,
+                group.passengers,
+            ));
         } else {
             remaining_groups.push(group.clone());
         }
@@ -291,6 +300,14 @@ fn process_stop_arrival(
             });
         }
 
+        for (origin_station_id, destination_station_id, passengers) in &served_groups {
+            record_served_passengers(
+                state,
+                *origin_station_id,
+                *destination_station_id,
+                *passengers,
+            );
+        }
         state.player_company.funds = funds;
         state.financials.operating_revenue = operating_revenue;
         state.player_company.fleet.trains[train_index].status = TrainStatus::Ready {
@@ -405,6 +422,14 @@ fn process_stop_arrival(
         .operating_revenue
         .checked_add(credited_now)?;
 
+    for (origin_station_id, destination_station_id, passengers) in &served_groups {
+        record_served_passengers(
+            state,
+            *origin_station_id,
+            *destination_station_id,
+            *passengers,
+        );
+    }
     for (index, remaining) in demand_deductions {
         state.origin_destination_demand[index].waiting_passengers = remaining;
     }
@@ -462,7 +487,7 @@ fn next_stop_index(current: usize, direction: i32, stop_count: usize) -> Option<
 mod tests {
     use crate::{
         catalog::model_for_train,
-        model::{Money, RailStationId, TrainStatus, UtcSeconds},
+        model::{MarketMaturity, Money, RailStationId, TrainStatus, UtcSeconds},
         sim::{
             economy::quote_journey,
             fleet::purchase_train,
@@ -514,6 +539,14 @@ mod tests {
         let (mut state, _, journey_id, quote) = dispatched_game();
         let arrives_at = state.active_journeys[0].arrives_at;
         let funds_before_arrival = state.player_company.funds;
+        let maturity_before_arrival = state
+            .origin_destination_demand
+            .iter()
+            .find(|pool| {
+                pool.origin_station_id == ORIGIN && pool.destination_station_id == DESTINATION
+            })
+            .unwrap()
+            .market_maturity;
 
         advance_time(&mut state, arrives_at).unwrap();
 
@@ -550,6 +583,15 @@ mod tests {
             Some(train_model.passenger_capacity().passengers())
         );
         assert_eq!(receipt.completed_at, Some(arrives_at));
+        let maturity_after_arrival = state
+            .origin_destination_demand
+            .iter()
+            .find(|pool| {
+                pool.origin_station_id == ORIGIN && pool.destination_station_id == DESTINATION
+            })
+            .unwrap()
+            .market_maturity;
+        assert!(maturity_after_arrival > maturity_before_arrival);
 
         let after_first_arrival = state.clone();
         advance_time(&mut state, arrives_at).unwrap();
@@ -651,6 +693,28 @@ mod tests {
                 .waiting_passengers = passengers;
         }
 
+        for pool in &mut state.origin_destination_demand {
+            if matches!(
+                (pool.origin_station_id.get(), pool.destination_station_id.get()),
+                (1, 2) | (1, 3) | (2, 3)
+            ) {
+                pool.market_maturity = MarketMaturity::from_basis_points(2_500).unwrap();
+            }
+        }
+
+        let maturity = |state: &crate::model::GameState, origin: u64, destination: u64| {
+            state
+                .origin_destination_demand
+                .iter()
+                .find(|pool| {
+                    pool.origin_station_id == RailStationId::new(origin)
+                        && pool.destination_station_id == RailStationId::new(destination)
+                })
+                .unwrap()
+                .market_maturity
+                .basis_points()
+        };
+
         let journey_id = dispatch_journey(&mut state, train_id, service_id, DEPARTED_AT).unwrap();
         assert_eq!(state.active_journeys[0].onboard_passengers(), 30);
         assert_eq!(state.active_journeys[0].passengers_carried, 30);
@@ -670,6 +734,9 @@ mod tests {
             state.player_company.fleet.trains[0].status,
             TrainStatus::Travelling { journey_id }
         );
+        assert!(maturity(&state, 1, 2) > 2_500);
+        assert_eq!(maturity(&state, 1, 3), 2_500);
+        assert_eq!(maturity(&state, 2, 3), 2_500);
 
         let terminus_arrival = journey.arrives_at;
         state.last_processed_at = terminus_arrival;
@@ -682,6 +749,8 @@ mod tests {
                 at: RailStationId::new(3)
             }
         );
+        assert!(maturity(&state, 1, 3) > 2_500);
+        assert!(maturity(&state, 2, 3) > 2_500);
         let receipt = state.financials.recent_journey_receipts.last().unwrap();
         assert_eq!(receipt.journey_id, journey_id);
         assert_eq!(receipt.passengers_carried, Some(45));

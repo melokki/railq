@@ -13,6 +13,10 @@ use crate::{
 const SECONDS_PER_HOUR: u128 = 60 * 60;
 const INITIAL_DEMAND_HOURS: u32 = 3;
 const INITIAL_MARKET_MATURITY_BASIS_POINTS: i64 = 2_500;
+// Playtest tuning: a delivered passenger group grows adoption in proportion
+// to the remaining maturity gap. Larger successful flows matter more, while
+// growth naturally slows as the market becomes established.
+const MARKET_MATURITY_PASSENGER_SCALE: u128 = 1_000;
 
 // A 70 km/h railway is the current starter-network reference point. Better
 // infrastructure can make rail more attractive, but the first implementation
@@ -238,6 +242,47 @@ fn market_elapsed_seconds(
     u128::try_from(end.saturating_sub(start)).unwrap_or(0)
 }
 
+/// Records passengers who successfully reached their OD destination.
+///
+/// Rail adoption grows only from completed passenger trips, not from Train
+/// ownership or departures. Growth is proportional to the remaining maturity
+/// gap, so the same passenger volume has less effect on an already-established
+/// market and maturity asymptotically approaches 100%.
+pub fn record_served_passengers(
+    state: &mut GameState,
+    origin_station_id: RailStationId,
+    destination_station_id: RailStationId,
+    passengers: u32,
+) {
+    if passengers == 0 {
+        return;
+    }
+
+    let Some(pool) = state.origin_destination_demand.iter_mut().find(|pool| {
+        pool.origin_station_id == origin_station_id
+            && pool.destination_station_id == destination_station_id
+    }) else {
+        return;
+    };
+
+    let current = u128::from(pool.market_maturity.basis_points());
+    let full = u128::from(MarketMaturity::FULL_BASIS_POINTS);
+    if current >= full {
+        return;
+    }
+
+    let remaining = full - current;
+    let gain = remaining
+        .saturating_mul(u128::from(passengers))
+        .saturating_add(MARKET_MATURITY_PASSENGER_SCALE - 1)
+        / MARKET_MATURITY_PASSENGER_SCALE;
+    let next = current.saturating_add(gain).min(full);
+    pool.market_maturity = MarketMaturity::from_basis_points(
+        i64::try_from(next).expect("market maturity basis points fit in i64"),
+    )
+    .expect("served-passenger maturity growth remains within the valid range");
+}
+
 /// Returns the currently effective hourly Passenger Demand for one OD market.
 ///
 /// `passenger_arrival_rate_per_hour` remains the market's seeded potential. The
@@ -433,8 +478,8 @@ mod tests {
     };
 
     use super::{
-        effective_arrival_rate_per_hour, replenish_directional_demand,
-        synchronize_directional_demand_with_network,
+        effective_arrival_rate_per_hour, record_served_passengers,
+        replenish_directional_demand, synchronize_directional_demand_with_network,
     };
 
     fn game() -> crate::model::GameState {
@@ -486,6 +531,36 @@ mod tests {
             effective_arrival_rate_per_hour(&game, &game.origin_destination_demand[0]),
             0
         );
+    }
+
+    #[test]
+    fn served_passengers_grow_market_maturity_with_diminishing_returns() {
+        let mut game = game();
+        let origin = game.origin_destination_demand[0].origin_station_id;
+        let destination = game.origin_destination_demand[0].destination_station_id;
+
+        record_served_passengers(&mut game, origin, destination, 100);
+        assert_eq!(game.origin_destination_demand[0].market_maturity.basis_points(), 3_250);
+
+        game.origin_destination_demand[0].market_maturity =
+            MarketMaturity::from_basis_points(9_000).unwrap();
+        record_served_passengers(&mut game, origin, destination, 100);
+        assert_eq!(game.origin_destination_demand[0].market_maturity.basis_points(), 9_100);
+    }
+
+    #[test]
+    fn empty_service_and_full_market_do_not_change_maturity() {
+        let mut game = game();
+        let origin = game.origin_destination_demand[0].origin_station_id;
+        let destination = game.origin_destination_demand[0].destination_station_id;
+        let initial = game.origin_destination_demand[0].market_maturity;
+
+        record_served_passengers(&mut game, origin, destination, 0);
+        assert_eq!(game.origin_destination_demand[0].market_maturity, initial);
+
+        game.origin_destination_demand[0].market_maturity = MarketMaturity::full();
+        record_served_passengers(&mut game, origin, destination, u32::MAX);
+        assert_eq!(game.origin_destination_demand[0].market_maturity, MarketMaturity::full());
     }
 
     #[test]
