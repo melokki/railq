@@ -465,7 +465,9 @@ mod tests {
         catalog::train_catalogue,
         model::{GameState, RailStationId, TrainNickname, TrainStatus, UtcSeconds},
         sim::{
-            economy::quote_journey, fleet::purchase_train, journeys::dispatch_journey,
+            economy::quote_journey,
+            fleet::{FleetError, purchase_train},
+            journeys::dispatch_journey,
             services::find_or_create_service, world::create_new_game,
         },
     };
@@ -542,6 +544,82 @@ mod tests {
         let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
         let nickname = TrainNickname::parse("North Star").unwrap();
         let mut app = App::start_new(store.clone(), state).unwrap();
+
+        let result = app
+            .execute(
+                AppCommand::UpdateTrainNickname {
+                    train_id,
+                    nickname: Some(nickname.clone()),
+                },
+                STARTED_AT,
+            )
+            .unwrap();
+
+        assert_eq!(
+            result,
+            AppCommandResult::TrainNicknameUpdated { train_id }
+        );
+        assert_eq!(
+            app.state().player_company.fleet.trains[0]
+                .nickname
+                .as_ref(),
+            Some(&nickname)
+        );
+        assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
+    }
+
+    #[test]
+    fn execute_rejects_an_invalid_command_without_changing_published_or_persisted_state() {
+        let store = TestStore::default();
+        let mut app = App::start_new(store.clone(), new_game()).unwrap();
+        let before = app.state().clone();
+        let missing_train_id = crate::model::TrainId::new(999);
+
+        let error = app
+            .execute(
+                AppCommand::UpdateTrainNickname {
+                    train_id: missing_train_id,
+                    nickname: Some(TrainNickname::parse("North Star").unwrap()),
+                },
+                STARTED_AT,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            AppError::Rename(FleetError::TrainNotFound { train_id })
+                if train_id == missing_train_id
+        ));
+        assert_eq!(app.state(), &before);
+        assert_eq!(store.load().unwrap(), Some(before));
+    }
+
+    #[test]
+    fn execute_does_not_publish_a_command_when_persistence_fails() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let mut app = App::start_new(store.clone(), state).unwrap();
+        let before = app.state().clone();
+        let nickname = TrainNickname::parse("North Star").unwrap();
+        store.fail_next_save.set(true);
+
+        let error = app
+            .execute(
+                AppCommand::UpdateTrainNickname {
+                    train_id,
+                    nickname: Some(nickname.clone()),
+                },
+                STARTED_AT,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            AppError::Save(TestStoreError::SimulatedWriteFailure)
+        ));
+        assert_eq!(app.state(), &before);
+        assert_eq!(store.load().unwrap(), Some(before));
 
         let result = app
             .execute(
