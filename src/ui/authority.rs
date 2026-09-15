@@ -1211,7 +1211,7 @@ mod tests {
     use crossterm::event::KeyCode;
 
     use crate::{
-        model::UtcSeconds,
+        model::{MarketMaturity, UtcSeconds},
         sim::{authority::advance_infrastructure_planning, world::create_new_game},
     };
 
@@ -1220,13 +1220,21 @@ mod tests {
         format_project_timestamp, render,
     };
 
+    fn establish_rail_markets(state: &mut crate::model::GameState) {
+        for pool in &mut state.origin_destination_demand {
+            pool.market_maturity = MarketMaturity::full();
+        }
+    }
+
     #[test]
     fn authority_render_exposes_budget_and_project_pipeline() {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         let world_seed = state.world_seed;
+        establish_rail_markets(&mut state);
         advance_infrastructure_planning(
             &mut state.region,
             world_seed,
+            &state.origin_destination_demand,
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();
@@ -1258,9 +1266,11 @@ mod tests {
     fn project_selection_tracks_project_identity() {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         let world_seed = state.world_seed;
+        establish_rail_markets(&mut state);
         advance_infrastructure_planning(
             &mut state.region,
             world_seed,
+            &state.origin_destination_demand,
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();

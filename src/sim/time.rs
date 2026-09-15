@@ -179,7 +179,12 @@ pub fn advance_time_with_arrivals(
 
     replenish_directional_demand(state, effective_now);
     advance_authority_fiscal_periods(&mut state.region, effective_now)?;
-    advance_infrastructure_planning(&mut state.region, state.world_seed, effective_now)?;
+    advance_infrastructure_planning(
+        &mut state.region,
+        state.world_seed,
+        &state.origin_destination_demand,
+        effective_now,
+    )?;
     advance_project_funding(&mut state.region, effective_now)?;
     advance_project_scheduling(&mut state.region, effective_now)?;
     advance_project_construction(&mut state.region, effective_now)?;

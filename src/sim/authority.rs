@@ -5,14 +5,14 @@
 //! This layer currently advances projects through public funding, scheduling,
 //! and fixed-duration construction. Opening is introduced later.
 
-use std::{error::Error, fmt};
+use std::{collections::BTreeSet, error::Error, fmt};
 
 use crate::model::{
     CalculationError, ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
     GameState, InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
     InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline, Money,
     MoneyPerKilometre, PlannedRailLine, PlannedRailStation, RailLine, RailLineId, RailStation,
-    RailStationId, Region, SettlementId, SpeedKilometresPerHour,
+    OriginDestinationDemand, RailStationId, Region, SettlementId, SpeedKilometresPerHour,
     TrackCount, UtcSeconds,
 };
 
@@ -47,6 +47,11 @@ pub struct ConnectionCandidateScore {
 const REQUEST_QUEUE_DELAY: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
 const REVIEW_DURATION: DurationSeconds = DurationSeconds::from_seconds(30 * 60);
 const PROPOSAL_DURATION: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
+// A local council considers a rail connection politically justified only after
+// a nearby existing corridor has become meaningfully established. Market
+// maturity can rise only through completed passenger trips, so this threshold
+// reacts to real railway use rather than Train ownership or elapsed time.
+const COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS: u16 = 4_000;
 // A small mobilisation window keeps Scheduled visible as a real lifecycle
 // state while reserving scarce construction capacity before work begins.
 const CONSTRUCTION_MOBILISATION_DELAY: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
@@ -285,6 +290,7 @@ pub fn advance_authority_fiscal_periods(
 pub fn advance_infrastructure_planning(
     region: &mut Region,
     world_seed: u64,
+    demand: &[OriginDestinationDemand],
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
     advance_existing_planning_projects(region, now)?;
@@ -298,6 +304,10 @@ pub fn advance_infrastructure_planning(
         return Ok(());
     }
 
+    // Councils request connections only after rail travel around the nearest
+    // existing Station has become established through successful passenger
+    // operation. Candidate scoring still decides which eligible request the
+    // Authority planning desk takes first.
     let candidates = evaluate_connection_candidates(region, world_seed)?;
     let next_candidate = candidates.into_iter().find(|candidate| {
         !region
@@ -305,6 +315,8 @@ pub fn advance_infrastructure_planning(
             .infrastructure_projects
             .iter()
             .any(|project| project_targets_settlement(project, candidate.settlement_id))
+            && local_rail_success_basis_points(demand, candidate.connection_station_id)
+                >= COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS
     });
 
     if let Some(candidate) = next_candidate {
@@ -315,6 +327,54 @@ pub fn advance_infrastructure_planning(
     }
 
     Ok(())
+}
+
+/// Returns the strongest established bidirectional passenger market touching
+/// `station_id`, expressed in the same basis points as market maturity.
+///
+/// Using the strongest local corridor avoids diluting a successful Station as
+/// the wider network grows, while averaging both directions prevents one busy
+/// direction alone from immediately triggering political pressure.
+pub fn local_rail_success_basis_points(
+    demand: &[OriginDestinationDemand],
+    station_id: RailStationId,
+) -> u16 {
+    let mut counterpart_ids = BTreeSet::new();
+    for pool in demand {
+        if pool.origin_station_id == station_id {
+            counterpart_ids.insert(pool.destination_station_id);
+        } else if pool.destination_station_id == station_id {
+            counterpart_ids.insert(pool.origin_station_id);
+        }
+    }
+
+    counterpart_ids
+        .into_iter()
+        .filter_map(|counterpart_id| {
+            let forward = demand.iter().find(|pool| {
+                pool.origin_station_id == station_id
+                    && pool.destination_station_id == counterpart_id
+            });
+            let reverse = demand.iter().find(|pool| {
+                pool.origin_station_id == counterpart_id
+                    && pool.destination_station_id == station_id
+            });
+
+            match (forward, reverse) {
+                (Some(forward), Some(reverse)) => Some(
+                    (u32::from(forward.market_maturity.basis_points())
+                        + u32::from(reverse.market_maturity.basis_points()))
+                        / 2,
+                ),
+                (Some(pool), None) | (None, Some(pool)) => {
+                    Some(u32::from(pool.market_maturity.basis_points()))
+                }
+                (None, None) => None,
+            }
+        })
+        .max()
+        .and_then(|value| u16::try_from(value).ok())
+        .unwrap_or(0)
 }
 
 /// Moves approved projects into the active Funding pipeline and commits
@@ -1002,9 +1062,13 @@ mod tests {
     use crate::{
         model::{
             ConstructionDifficulty, DistanceMetres, DurationSeconds, InfrastructureProjectId,
-            InfrastructureProjectKind, InfrastructureProjectStatus, Money, UtcSeconds,
+            InfrastructureProjectKind, InfrastructureProjectStatus, MarketMaturity, Money,
+            OriginDestinationDemand, UtcSeconds,
         },
-        sim::world::{create_new_game, generate_region},
+        sim::{
+            demand::seed_directional_demand,
+            world::{create_new_game, generate_region},
+        },
     };
 
     use super::{
@@ -1012,9 +1076,18 @@ mod tests {
         advance_infrastructure_planning, advance_project_construction, advance_project_funding,
         advance_project_scheduling,
         cancel_infrastructure_project, contribute_to_infrastructure_project,
-        estimated_connection_cost, evaluate_connection_candidates, new_line_construction_duration,
-        open_completed_infrastructure_projects, project_from_candidate,
+        estimated_connection_cost, evaluate_connection_candidates, local_rail_success_basis_points,
+        new_line_construction_duration, open_completed_infrastructure_projects,
+        project_from_candidate,
     };
+
+    fn fully_mature_demand(region: &crate::model::Region, world_seed: u64) -> Vec<OriginDestinationDemand> {
+        let mut demand = seed_directional_demand(region, world_seed);
+        for pool in &mut demand {
+            pool.market_maturity = MarketMaturity::full();
+        }
+        demand
+    }
 
     #[test]
     fn fiscal_period_deposits_public_allocation_and_advances_schedule() {
@@ -1154,6 +1227,26 @@ mod tests {
     }
 
     #[test]
+    fn local_rail_success_uses_the_best_bidirectional_market() {
+        let region = generate_region(42);
+        let mut demand = seed_directional_demand(&region, 42);
+        let station_id = region.rail_authority.rail_network.rail_stations[0].id;
+        let counterpart_id = region.rail_authority.rail_network.rail_stations[1].id;
+
+        for pool in &mut demand {
+            if pool.origin_station_id == station_id && pool.destination_station_id == counterpart_id {
+                pool.market_maturity = MarketMaturity::from_basis_points(5_000).unwrap();
+            } else if pool.origin_station_id == counterpart_id
+                && pool.destination_station_id == station_id
+            {
+                pool.market_maturity = MarketMaturity::from_basis_points(3_000).unwrap();
+            }
+        }
+
+        assert_eq!(local_rail_success_basis_points(&demand, station_id), 4_000);
+    }
+
+    #[test]
     fn harder_construction_costs_more_for_the_same_distance() {
         let distance = DistanceMetres::new(40_000).unwrap();
         let low = estimated_connection_cost(distance, ConstructionDifficulty::Low).unwrap();
@@ -1166,12 +1259,24 @@ mod tests {
     }
 
     #[test]
-    fn planning_creates_the_highest_ranked_connection_request() {
+    fn fresh_network_does_not_immediately_create_a_connection_request() {
         let mut region = generate_region(42);
+        let demand = seed_directional_demand(&region, 42);
+        let now = UtcSeconds::from_unix_seconds(1_000);
+
+        advance_infrastructure_planning(&mut region, 42, &demand, now).unwrap();
+
+        assert!(region.rail_authority.infrastructure_projects.is_empty());
+    }
+
+    #[test]
+    fn established_local_rail_market_creates_the_highest_ranked_eligible_request() {
+        let mut region = generate_region(42);
+        let demand = fully_mature_demand(&region, 42);
         let expected = evaluate_connection_candidates(&region, 42).unwrap()[0].clone();
         let now = UtcSeconds::from_unix_seconds(1_000);
 
-        advance_infrastructure_planning(&mut region, 42, now).unwrap();
+        advance_infrastructure_planning(&mut region, 42, &demand, now).unwrap();
 
         let [project] = region.rail_authority.infrastructure_projects.as_slice() else {
             panic!("expected exactly one planning project");
@@ -1204,13 +1309,15 @@ mod tests {
     #[test]
     fn planning_advances_requested_project_to_approval_on_fixed_timeline() {
         let mut region = generate_region(7);
+        let demand = fully_mature_demand(&region, 7);
         let started = UtcSeconds::from_unix_seconds(10_000);
-        advance_infrastructure_planning(&mut region, 7, started).unwrap();
+        advance_infrastructure_planning(&mut region, 7, &demand, started).unwrap();
         let first_id = region.rail_authority.infrastructure_projects[0].id;
 
         advance_infrastructure_planning(
             &mut region,
             7,
+            &demand,
             UtcSeconds::from_unix_seconds(10_000 + 15 * 60),
         )
         .unwrap();
@@ -1222,6 +1329,7 @@ mod tests {
         advance_infrastructure_planning(
             &mut region,
             7,
+            &demand,
             UtcSeconds::from_unix_seconds(10_000 + 45 * 60),
         )
         .unwrap();
@@ -1233,6 +1341,7 @@ mod tests {
         advance_infrastructure_planning(
             &mut region,
             7,
+            &demand,
             UtcSeconds::from_unix_seconds(10_000 + 60 * 60),
         )
         .unwrap();
@@ -1258,13 +1367,20 @@ mod tests {
     #[test]
     fn planning_does_not_request_the_same_settlement_twice() {
         let mut region = generate_region(99);
+        let demand = fully_mature_demand(&region, 99);
         let started = 20_000;
 
-        advance_infrastructure_planning(&mut region, 99, UtcSeconds::from_unix_seconds(started))
-            .unwrap();
         advance_infrastructure_planning(
             &mut region,
             99,
+            &demand,
+            UtcSeconds::from_unix_seconds(started),
+        )
+        .unwrap();
+        advance_infrastructure_planning(
+            &mut region,
+            99,
+            &demand,
             UtcSeconds::from_unix_seconds(started + 60 * 60),
         )
         .unwrap();
