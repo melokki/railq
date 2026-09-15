@@ -16,12 +16,12 @@ use ratatui::{
 };
 
 use super::MapLocationSelection;
-use super::shared::format_distance;
 use super::geometry::{
     MapCell, MapInk, can_place_text, draw_orthogonal_rail, map_ink_style, put_cell, put_text,
     rail_glyph,
 };
 use super::network::{format_population, panel_block, ready_trains, station_name};
+use super::shared::format_distance;
 use crate::{
     model::{GameState, Journey, RailStationId, SettlementId, UtcSeconds},
     sim::{
@@ -57,8 +57,8 @@ pub(super) struct OperationalLayout {
 #[derive(Clone, Debug)]
 pub(super) struct OperationalPlace {
     pub(super) settlement_id: SettlementId,
-    station_id: Option<RailStationId>,
-    name: String,
+    pub(super) station_id: Option<RailStationId>,
+    pub(super) name: String,
     pub(super) x: i32,
     pub(super) y: i32,
 }
@@ -301,7 +301,9 @@ fn render_location_inspector(
                 lines.push(Line::from(""));
                 lines.push(inspector_section("TOP MARKETS"));
                 for (name, waiting, per_hour, maturity) in demand.into_iter().take(3) {
-                    lines.push(inspector_destination_line(&name, waiting, per_hour, maturity));
+                    lines.push(inspector_destination_line(
+                        &name, waiting, per_hour, maturity,
+                    ));
                 }
             }
         }
@@ -329,9 +331,7 @@ fn render_location_inspector(
                     &format!(
                         "{} / {}",
                         market_maturity_percent(maturity),
-                        market_maturity_percent(
-                            COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS
-                        )
+                        market_maturity_percent(COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS)
                     ),
                 ));
             } else {
@@ -355,9 +355,7 @@ fn render_location_inspector(
                 ));
                 lines.push(inspector_metric(
                     "Request threshold",
-                    &market_maturity_percent(
-                        COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS,
-                    ),
+                    &market_maturity_percent(COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS),
                 ));
                 lines.push(Line::styled(
                     if maturity >= COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS {
@@ -834,7 +832,10 @@ fn journey_service_direction(
     }
 }
 
-pub(super) fn journey_next_stop_station_id(state: &GameState, journey: &Journey) -> Option<RailStationId> {
+pub(super) fn journey_next_stop_station_id(
+    state: &GameState,
+    journey: &Journey,
+) -> Option<RailStationId> {
     let service = state
         .player_company
         .passenger_services

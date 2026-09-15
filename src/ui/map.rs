@@ -15,24 +15,22 @@ mod shared;
 mod text;
 
 pub use journeys::JourneySelection;
-pub use network::{MapFocus, MapSelections, SettlementSelection, StationSelection, render_dashboard};
-pub use text::{render, render_at};
 #[cfg(test)]
 use network::schematic_layout;
-use operational::{
-    MapDirection, operational_layout, render_operational_map,
+pub use network::{
+    MapFocus, MapSelections, SettlementSelection, StationSelection, render_dashboard,
 };
+use operational::{MapDirection, operational_layout, render_operational_map};
 #[cfg(test)]
 use operational::{
-    focus_rank, journey_route_segments, map_place_label,
-    place_link_distance_label, point_along_orthogonal_rail, selected_neighbours,
+    focus_rank, journey_route_segments, map_place_label, place_link_distance_label,
+    point_along_orthogonal_rail, selected_neighbours,
 };
 #[cfg(test)]
 use shared::journey_progress_percent;
+pub use text::{render, render_at};
 
-use crate::{
-    model::{GameState, RailStationId, SettlementId, TrainStatus},
-};
+use crate::model::{GameState, RailStationId, SettlementId, TrainStatus};
 
 /// One keyboard selection across every Settlement shown by the operational map.
 ///
@@ -124,8 +122,8 @@ impl MapWorkspace {
                 WorldDetailsKeyAction::Closed
             }
             KeyCode::Char(
-                '1' | '2' | '3' | '4' | '5' | '6' | 'm' | 'M' | 't' | 'T' | 'b' | 'B'
-                | 'c' | 'C' | 'a' | 'A' | 'u' | 'U',
+                '1' | '2' | '3' | '4' | '5' | '6' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
+                | 'a' | 'A' | 'u' | 'U',
             ) => {
                 self.world_details_visible = false;
                 WorldDetailsKeyAction::ClosedForNavigation
@@ -155,7 +153,11 @@ impl MapWorkspace {
             .count();
 
         let mut items = vec![MapShortcut::enabled(
-            if compact { "↑↓←→" } else { "↑↓←→/HJKL" },
+            if compact {
+                "↑↓←→"
+            } else {
+                "↑↓←→/HJKL"
+            },
             "Station",
         )];
         if train_count == 0 {
@@ -342,13 +344,13 @@ mod tests {
         },
     };
 
-    use super::{
-        MapDirection, MapWorkspace, MapWorkspaceAction, WorldDetailsKeyAction, focus_rank,
-        journey_progress_percent,
-        journey_route_segments, map_place_label, operational_layout, place_link_distance_label,
-        point_along_orthogonal_rail, render_at, schematic_layout, selected_neighbours,
-    };
     use super::geometry::{MapCell, RAIL_LEFT, RAIL_RIGHT, rail_glyph};
+    use super::{
+        MapWorkspace, MapWorkspaceAction, WorldDetailsKeyAction, focus_rank,
+        journey_progress_percent, journey_route_segments, map_place_label, operational_layout,
+        place_link_distance_label, point_along_orthogonal_rail, render_at, schematic_layout,
+        selected_neighbours,
+    };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 
