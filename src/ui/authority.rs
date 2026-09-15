@@ -20,6 +20,10 @@ use crate::{
         InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus, Money,
         UtcSeconds,
     },
+    sim::authority::{
+        AUTHORITY_APPROVAL_SCORE_THRESHOLD, deferred_reconsideration_threshold,
+        local_rail_success_basis_points, project_connection_station_id, project_review_score,
+    },
     ui::{format, modal, theme},
 };
 
@@ -404,7 +408,7 @@ fn render_projects(
             Paragraph::new(vec![
                 Line::styled("No infrastructure projects yet.", theme::secondary()),
                 Line::styled(
-                    "The Authority is evaluating unconnected settlements.",
+                    "Local councils will request connections as nearby rail adoption grows.",
                     theme::secondary(),
                 ),
             ])
@@ -514,7 +518,11 @@ fn render_project_inspector(
             Span::styled("Status  ", theme::secondary()),
             Span::styled(project_status(project.status), status_style(project.status)),
         ]),
-        Line::from(""),
+    ];
+
+    append_project_development_context(&mut lines, state, project);
+    lines.push(Line::from(""));
+    lines.extend([
         money_line("Estimated cost", project.funding.estimated_cost),
         money_line("Authority committed", project.funding.authority_committed),
         money_line("Operator contribution", project.funding.operator_contributed),
@@ -522,7 +530,7 @@ fn render_project_inspector(
             Span::styled("Funding gap  ", theme::secondary()),
             Span::styled(gap, theme::primary_value()),
         ]),
-    ];
+    ]);
     if project.funding.access_fee_credit_awarded > Money::ZERO {
         lines.push(money_line(
             "Access credit awarded",
@@ -549,6 +557,79 @@ fn render_project_inspector(
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn append_project_development_context(
+    lines: &mut Vec<Line<'static>>,
+    state: &GameState,
+    project: &InfrastructureProject,
+) {
+    let InfrastructureProjectKind::NewLine { planned_stations, .. } = &project.kind else {
+        return;
+    };
+    let Some(planned_station) = planned_stations.first() else {
+        return;
+    };
+
+    lines.push(Line::from(""));
+    lines.push(Line::styled("DEVELOPMENT CASE", theme::table_header()));
+    lines.push(Line::from(vec![
+        Span::styled("Requested by  ", theme::secondary()),
+        Span::styled(
+            format!(
+                "{} Council",
+                settlement_name(state, planned_station.settlement_id)
+            ),
+            theme::primary_value(),
+        ),
+    ]));
+
+    if let Some(connection_station_id) = project_connection_station_id(project) {
+        let maturity = local_rail_success_basis_points(
+            &state.origin_destination_demand,
+            connection_station_id,
+        );
+        lines.push(Line::from(vec![
+            Span::styled("Nearby rail adoption  ", theme::secondary()),
+            Span::styled(
+                format!(
+                    "{} · {}",
+                    maturity_percent(maturity),
+                    maturity_label(maturity)
+                ),
+                theme::primary_value(),
+            ),
+        ]));
+    }
+
+    if let Some(score) = project_review_score(&state.region, project, state.world_seed) {
+        lines.push(Line::from(vec![
+            Span::styled("Authority case  ", theme::secondary()),
+            Span::styled(
+                format!("{score} / {AUTHORITY_APPROVAL_SCORE_THRESHOLD}"),
+                if score >= AUTHORITY_APPROVAL_SCORE_THRESHOLD {
+                    theme::success()
+                } else {
+                    theme::warning()
+                },
+            ),
+        ]));
+        if project.status == InfrastructureProjectStatus::Deferred
+            && score < AUTHORITY_APPROVAL_SCORE_THRESHOLD
+        {
+            lines.push(Line::styled(
+                "Deferred: current regional value does not yet justify the project cost.",
+                theme::secondary(),
+            ));
+        }
+    }
+
+    if project.timeline.reconsideration_count > 0 {
+        lines.push(value_line(
+            "Reconsiderations",
+            &project.timeline.reconsideration_count.to_string(),
+        ));
+    }
 }
 
 fn append_project_scope_details(
@@ -647,11 +728,12 @@ fn append_timeline(
     now: UtcSeconds,
 ) {
     lines.push(Line::styled("PROJECT TIMELINE", theme::table_header()));
-    lines.push(timestamp_line(
-        "Requested",
-        project.timeline.requested_at,
-        now,
-    ));
+    let request_label = if matches!(&project.kind, InfrastructureProjectKind::NewLine { .. }) {
+        "Council request"
+    } else {
+        "Requested"
+    };
+    lines.push(timestamp_line(request_label, project.timeline.requested_at, now));
     if let Some(value) = project.timeline.approved_at {
         lines.push(timestamp_line("Approved", value, now));
     }
@@ -687,6 +769,20 @@ fn append_timeline(
             lines.push(Line::styled("DEFERRED", theme::table_header()));
             if let Some(value) = project.timeline.deferred_at {
                 lines.push(timestamp_line("Deferred", value, now));
+            }
+            let required = deferred_reconsideration_threshold(
+                project.timeline.reconsideration_count,
+            );
+            if required <= 10_000 {
+                lines.push(value_line(
+                    "Next",
+                    &format!(
+                        "Reconsider at {} nearby rail adoption",
+                        maturity_percent(required)
+                    ),
+                ));
+            } else {
+                lines.push(value_line("Next", "No further automatic reconsideration"));
             }
         }
         InfrastructureProjectStatus::Funding => {
@@ -933,9 +1029,8 @@ fn project_status(status: InfrastructureProjectStatus) -> &'static str {
 fn status_style(status: InfrastructureProjectStatus) -> ratatui::style::Style {
     match status {
         InfrastructureProjectStatus::Open => theme::success(),
-        InfrastructureProjectStatus::Deferred | InfrastructureProjectStatus::Cancelled => {
-            theme::error()
-        }
+        InfrastructureProjectStatus::Deferred => theme::warning(),
+        InfrastructureProjectStatus::Cancelled => theme::error(),
         InfrastructureProjectStatus::Funding
         | InfrastructureProjectStatus::Scheduled
         | InfrastructureProjectStatus::Construction => theme::warning(),
@@ -962,11 +1057,20 @@ fn funding_percent(project: &InfrastructureProject) -> String {
 
 fn project_next(project: &InfrastructureProject, now: UtcSeconds) -> String {
     match project.status {
-        InfrastructureProjectStatus::Requested => "Review pending".into(),
-        InfrastructureProjectStatus::UnderReview => "Decision pending".into(),
-        InfrastructureProjectStatus::Proposed => "Approval pending".into(),
+        InfrastructureProjectStatus::Requested => "Council request · review pending".into(),
+        InfrastructureProjectStatus::UnderReview => "Authority review in progress".into(),
+        InfrastructureProjectStatus::Proposed => "Authority decision pending".into(),
         InfrastructureProjectStatus::Approved => "Awaiting funding slot".into(),
-        InfrastructureProjectStatus::Deferred => "No action".into(),
+        InfrastructureProjectStatus::Deferred => {
+            let required = deferred_reconsideration_threshold(
+                project.timeline.reconsideration_count,
+            );
+            if required <= 10_000 {
+                format!("Needs {} adoption", maturity_percent(required))
+            } else {
+                "No further automatic review".into()
+            }
+        },
         InfrastructureProjectStatus::Funding => project
             .funding
             .funding_gap()
@@ -990,6 +1094,19 @@ fn project_next(project: &InfrastructureProject, now: UtcSeconds) -> String {
             .unwrap_or_else(|| "Opening pending".into()),
         InfrastructureProjectStatus::Open => "Complete".into(),
         InfrastructureProjectStatus::Cancelled => "Cancelled".into(),
+    }
+}
+
+fn maturity_percent(basis_points: u16) -> String {
+    format!("{}%", u32::from(basis_points).saturating_add(50) / 100)
+}
+
+fn maturity_label(basis_points: u16) -> &'static str {
+    match basis_points {
+        0..=3_499 => "Emerging",
+        3_500..=5_999 => "Growing",
+        6_000..=8_499 => "Established",
+        _ => "Mature",
     }
 }
 
@@ -1244,6 +1361,7 @@ mod tests {
         assert!(output.contains("Available investment:"));
         assert!(output.contains("Next fiscal period:"));
         assert!(output.contains("Projects:"));
+        assert!(output.contains("Council request"));
         assert!(output.contains(" → "));
     }
 

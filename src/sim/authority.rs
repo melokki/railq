@@ -51,7 +51,7 @@ const PROPOSAL_DURATION: DurationSeconds = DurationSeconds::from_seconds(15 * 60
 // a nearby existing corridor has become meaningfully established. Market
 // maturity can rise only through completed passenger trips, so this threshold
 // reacts to real railway use rather than Train ownership or elapsed time.
-const COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS: u16 = 4_000;
+pub(crate) const COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS: u16 = 4_000;
 // Councils do not submit connection requests back-to-back. This also makes
 // offline reconciliation safe: reopening RailQ can produce at most one new
 // request before this real-time cooldown must elapse.
@@ -67,7 +67,7 @@ const DEFERRED_RECONSIDERATION_STEP_BASIS_POINTS: u16 = 1_500;
 // survive Authority review. The score already balances population, latent
 // demand, network usefulness, regional-development value, and construction
 // cost (which incorporates distance and difficulty).
-const AUTHORITY_APPROVAL_SCORE_THRESHOLD: i32 = 250;
+pub(crate) const AUTHORITY_APPROVAL_SCORE_THRESHOLD: i32 = 250;
 // A small mobilisation window keeps Scheduled visible as a real lifecycle
 // state while reserving scarce construction capacity before work begins.
 const CONSTRUCTION_MOBILISATION_DELAY: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
@@ -420,7 +420,7 @@ fn deferred_project_ready_for_reconsideration(
     Ok(None)
 }
 
-fn deferred_reconsideration_threshold(reconsideration_count: u8) -> u16 {
+pub(crate) fn deferred_reconsideration_threshold(reconsideration_count: u8) -> u16 {
     DEFERRED_RECONSIDERATION_BASE_MATURITY_BASIS_POINTS
         .saturating_add(
             DEFERRED_RECONSIDERATION_STEP_BASIS_POINTS
@@ -887,7 +887,7 @@ fn advance_existing_planning_projects(
     Ok(())
 }
 
-fn project_connection_station_id(project: &InfrastructureProject) -> Option<RailStationId> {
+pub(crate) fn project_connection_station_id(project: &InfrastructureProject) -> Option<RailStationId> {
     let InfrastructureProjectKind::NewLine {
         planned_stations,
         planned_lines,
@@ -906,7 +906,7 @@ fn project_connection_station_id(project: &InfrastructureProject) -> Option<Rail
     })
 }
 
-fn project_review_score(
+pub(crate) fn project_review_score(
     region: &Region,
     project: &InfrastructureProject,
     world_seed: u64,
@@ -1078,6 +1078,25 @@ pub fn evaluate_connection_candidates(
     });
 
     Ok(candidates)
+}
+
+pub(crate) fn nearest_connection_station_id(
+    region: &Region,
+    settlement_id: SettlementId,
+) -> Option<RailStationId> {
+    region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .map(|station| {
+            (
+                station.id,
+                geographic_connection_distance(region, settlement_id, station.id),
+            )
+        })
+        .min_by_key(|(station_id, distance)| (*distance, *station_id))
+        .map(|(station_id, _)| station_id)
 }
 
 fn geographic_connection_distance(
