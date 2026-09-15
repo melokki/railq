@@ -20,7 +20,7 @@ pub use text::{render, render_at};
 #[cfg(test)]
 use network::schematic_layout;
 use operational::{
-    MapDirection, journey_next_stop_station_id, operational_layout, render_operational_map,
+    MapDirection, operational_layout, render_operational_map,
 };
 #[cfg(test)]
 use operational::{
