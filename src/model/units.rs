@@ -349,7 +349,7 @@ impl UtcSeconds {
 
 /// A positive monetary rate in cents per kilometre.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct MoneyPerKilometre(u64);
+pub struct MoneyPerKilometre(pub(super) u64);
 
 impl MoneyPerKilometre {
     pub fn new(cents_per_kilometre: i64) -> Result<Self, ValidationError> {
