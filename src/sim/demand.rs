@@ -772,6 +772,7 @@ mod tests {
                     completed_at: Some(opened_at),
                     deferred_at: None,
                     cancelled_at: None,
+                    reconsideration_count: 0,
                 },
                 funding: InfrastructureProjectFunding {
                     estimated_cost: Money::ZERO,
@@ -840,6 +841,7 @@ mod tests {
                     completed_at: Some(opened_at),
                     deferred_at: None,
                     cancelled_at: None,
+                    reconsideration_count: 0,
                 },
                 funding: InfrastructureProjectFunding {
                     estimated_cost: Money::ZERO,

@@ -48,7 +48,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 25;
+pub const SAVE_VERSION: u32 = 26;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -441,6 +441,7 @@ CREATE TABLE IF NOT EXISTS infrastructure_projects (
     completed_at INTEGER,
     deferred_at INTEGER,
     cancelled_at INTEGER,
+    reconsideration_count INTEGER NOT NULL DEFAULT 0 CHECK (reconsideration_count BETWEEN 0 AND 255),
     target_speed_limit_kmh INTEGER CHECK (target_speed_limit_kmh IS NULL OR target_speed_limit_kmh > 0),
     target_track_count INTEGER CHECK (target_track_count IS NULL OR target_track_count > 0)
 );
@@ -755,7 +756,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 => {}
+        16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -810,6 +811,10 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
     }
     if current_version == 24 {
         migrate_v24_to_v25(connection, path)?;
+        current_version = 25;
+    }
+    if current_version == 25 {
+        migrate_v25_to_v26(connection, path)?;
     }
     Ok(())
 }
@@ -994,6 +999,59 @@ fn migrate_v24_to_v25(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v24 to v25 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v25_to_v26(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v25 to v26 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let projects_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'infrastructure_projects'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "inspect infrastructure projects during v26 migration in",
+                    path,
+                    source,
+                )
+            })?;
+
+        if projects_exist != 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE infrastructure_projects
+                     ADD COLUMN reconsideration_count INTEGER NOT NULL DEFAULT 0
+                     CHECK (reconsideration_count >= 0);",
+                )
+                .map_err(|source| {
+                    db_error(
+                        "add project reconsideration count during v26 migration in",
+                        path,
+                        source,
+                    )
+                })?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 26_u32)
+            .map_err(|source| db_error("write v26 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v25 to v26 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -3252,8 +3310,8 @@ fn insert_infrastructure_project(
                  operator_contributed_cents, access_fee_credit_awarded_cents, access_fee_credit_remaining_cents,
                  requested_at, review_started_at, proposed_at, approved_at, funding_completed_at, scheduled_start_at,
                  construction_started_at, planned_completion_at, completed_at, deferred_at, cancelled_at,
-                 target_speed_limit_kmh, target_track_count
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                 reconsideration_count, target_speed_limit_kmh, target_track_count
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 project.id.to_string(),
                 i64::try_from(sequence).unwrap_or(i64::MAX),
@@ -3275,6 +3333,7 @@ fn insert_infrastructure_project(
                 timeline.completed_at.map(UtcSeconds::unix_seconds),
                 timeline.deferred_at.map(UtcSeconds::unix_seconds),
                 timeline.cancelled_at.map(UtcSeconds::unix_seconds),
+                i64::from(timeline.reconsideration_count),
                 target_speed_limit_kmh,
                 target_track_count,
             ],
@@ -3393,7 +3452,7 @@ fn load_infrastructure_projects(
                 operator_contributed_cents, access_fee_credit_awarded_cents, access_fee_credit_remaining_cents,
                 requested_at, review_started_at, proposed_at, approved_at, funding_completed_at, scheduled_start_at,
                 construction_started_at, planned_completion_at, completed_at, deferred_at, cancelled_at,
-                target_speed_limit_kmh, target_track_count
+                reconsideration_count, target_speed_limit_kmh, target_track_count
          FROM infrastructure_projects ORDER BY sequence",
         path,
         |row| {
@@ -3430,9 +3489,11 @@ fn load_infrastructure_projects(
                     completed_at: timestamp(16)?,
                     deferred_at: timestamp(17)?,
                     cancelled_at: timestamp(18)?,
+                    reconsideration_count: u8::try_from(row.get::<_, i64>(19)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 },
-                target_speed_limit_kmh: row.get(19)?,
-                target_track_count: row.get(20)?,
+                target_speed_limit_kmh: row.get(20)?,
+                target_track_count: row.get(21)?,
             })
         },
     )?;
@@ -5708,7 +5769,10 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
+        let mut reconsidered_timeline = timeline(2_004);
+        reconsidered_timeline.reconsideration_count = 2;
         state.region.rail_authority.infrastructure_projects = vec![
             InfrastructureProject {
                 id: InfrastructureProjectId::new(1),
@@ -5767,7 +5831,7 @@ mod tests {
                     rail_line_ids: vec![RailLineId::new(1)],
                 },
                 status: InfrastructureProjectStatus::Deferred,
-                timeline: timeline(2_004),
+                timeline: reconsidered_timeline,
                 funding: InfrastructureProjectFunding::default(),
             },
             InfrastructureProject {
@@ -5800,6 +5864,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         state.region.rail_authority.construction_capacity = 2;
         state.region.rail_authority.infrastructure_projects = vec![
@@ -5846,6 +5911,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         state.region.rail_authority.construction_capacity = 2;
         state.region.rail_authority.infrastructure_projects = vec![
@@ -5895,6 +5961,7 @@ mod tests {
                 completed_at: Some(UtcSeconds::from_unix_seconds(1_700)),
                 deferred_at: None,
                 cancelled_at: None,
+                reconsideration_count: 0,
             },
             funding: InfrastructureProjectFunding {
                 estimated_cost: historical_commitment,
@@ -5924,6 +5991,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         state.region.rail_authority.infrastructure_projects = vec![
             InfrastructureProject {
@@ -6618,6 +6686,38 @@ mod tests {
 
         assert_eq!(version, SAVE_VERSION);
         assert_eq!(next_fiscal_period_at, 86_400);
+    }
+
+    #[test]
+    fn v25_schema_backfills_project_reconsideration_count() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE infrastructure_projects (
+                     id TEXT PRIMARY KEY
+                 );
+                 INSERT INTO infrastructure_projects(id) VALUES('project-1');
+                 PRAGMA user_version = 25;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let reconsideration_count: i64 = connection
+            .query_row(
+                "SELECT reconsideration_count FROM infrastructure_projects WHERE id = 'project-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(reconsideration_count, 0);
     }
 
     #[test]

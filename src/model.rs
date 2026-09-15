@@ -922,6 +922,12 @@ pub struct InfrastructureProjectTimeline {
     pub completed_at: Option<UtcSeconds>,
     pub deferred_at: Option<UtcSeconds>,
     pub cancelled_at: Option<UtcSeconds>,
+    /// Number of times a Deferred request has been reopened for reconsideration.
+    ///
+    /// Persisting this keeps council pressure monotonic across save/load and lets
+    /// later reconsiderations require a stronger rail-adoption signal.
+    #[serde(default)]
+    pub reconsideration_count: u8,
 }
 
 /// Financial commitment state for one public infrastructure project.
@@ -2138,6 +2144,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         let blocker = InfrastructureProject {
             id: InfrastructureProjectId::new(1),
@@ -2195,6 +2202,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         let active = InfrastructureProject {
             id: InfrastructureProjectId::new(10),
@@ -2241,6 +2249,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         let active = InfrastructureProject {
             id: InfrastructureProjectId::new(20),

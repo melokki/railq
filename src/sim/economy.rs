@@ -791,6 +791,7 @@ mod tests {
                     completed_at: Some(UtcSeconds::from_unix_seconds(0)),
                     deferred_at: None,
                     cancelled_at: None,
+                    reconsideration_count: 0,
                 },
                 funding: crate::model::InfrastructureProjectFunding {
                     estimated_cost: Money::from_cents(1_000),
