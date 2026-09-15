@@ -4,14 +4,15 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     model::{
-        GameState, InfrastructureProjectKind, InfrastructureProjectStatus, OriginDestinationDemand,
-        PassengerArrivalRate, RailStationId, Region, UtcSeconds,
+        GameState, InfrastructureProjectKind, InfrastructureProjectStatus, MarketMaturity,
+        OriginDestinationDemand, PassengerArrivalRate, RailStationId, Region, UtcSeconds,
     },
     sim::services::path_between_stations,
 };
 
 const SECONDS_PER_HOUR: u128 = 60 * 60;
 const INITIAL_DEMAND_HOURS: u32 = 3;
+const INITIAL_MARKET_MATURITY_BASIS_POINTS: i64 = 2_500;
 
 // Newly opened rail markets need time to establish themselves. The mature OD
 // rate remains the single source of truth; this provisional ramp only scales
@@ -55,6 +56,10 @@ pub fn seed_directional_demand(region: &Region, world_seed: u64) -> Vec<OriginDe
                         waiting_passengers: passenger_arrival_rate_per_hour
                             .passengers_per_hour()
                             .saturating_mul(INITIAL_DEMAND_HOURS),
+                        market_maturity: MarketMaturity::from_basis_points(
+                            INITIAL_MARKET_MATURITY_BASIS_POINTS,
+                        )
+                        .expect("initial market maturity is valid"),
                         passenger_arrival_rate_per_hour,
                         fractional_passenger_seconds: 0,
                     }
@@ -138,6 +143,10 @@ pub fn synchronize_directional_demand_with_network(state: &mut GameState, now: U
                 origin_station_id,
                 destination_station_id,
                 waiting_passengers: 0,
+                market_maturity: MarketMaturity::from_basis_points(
+                    INITIAL_MARKET_MATURITY_BASIS_POINTS,
+                )
+                .expect("initial market maturity is valid"),
                 passenger_arrival_rate_per_hour,
                 fractional_passenger_seconds: 0,
             };
@@ -462,6 +471,7 @@ mod tests {
                 pool.passenger_arrival_rate_per_hour,
                 reverse.passenger_arrival_rate_per_hour
             );
+            assert_eq!(pool.market_maturity.basis_points(), 2_500);
         }
     }
 

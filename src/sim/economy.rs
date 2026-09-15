@@ -541,9 +541,9 @@ mod tests {
     use crate::{
         balance::BalanceConfig,
         model::{
-            DemandRules, Financials, Fleet, GameRules, OriginDestinationDemand,
-            PassengerArrivalRate, PassengerService, PlayerCompany, RailAuthority, RailLine,
-            RailNetwork, RailStation, Settlement, Train, UtcSeconds,
+            DemandRules, Financials, Fleet, GameRules, MarketMaturity, OriginDestinationDemand,
+            PassengerArrivalRate, PassengerService, PlayerCompany, RailAuthority,
+            RailLine, RailNetwork, RailStation, Settlement, Train, UtcSeconds,
         },
     };
 
@@ -667,6 +667,7 @@ mod tests {
                     origin_station_id: ORIGIN,
                     destination_station_id: DESTINATION,
                     waiting_passengers: 3,
+                    market_maturity: MarketMaturity::full(),
                     passenger_arrival_rate_per_hour: PassengerArrivalRate::new(1).unwrap(),
                     fractional_passenger_seconds: 0,
                 },
@@ -674,6 +675,7 @@ mod tests {
                     origin_station_id: DESTINATION,
                     destination_station_id: ORIGIN,
                     waiting_passengers: 1,
+                    market_maturity: MarketMaturity::full(),
                     passenger_arrival_rate_per_hour: PassengerArrivalRate::new(1).unwrap(),
                     fractional_passenger_seconds: 0,
                 },

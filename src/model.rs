@@ -1805,7 +1805,16 @@ pub struct OriginDestinationDemand {
     pub origin_station_id: RailStationId,
     pub destination_station_id: RailStationId,
     pub waiting_passengers: u32,
-    /// New Waiting Passengers generated per hour for this direction.
+    /// Long-term rail adoption for this directional market.
+    ///
+    /// This is persisted independently from the seeded potential arrival rate
+    /// so later simulation batches can grow demand through actual operation.
+    #[serde(default = "MarketMaturity::full")]
+    pub market_maturity: MarketMaturity,
+    /// Seeded/base Passenger Demand potential for this direction.
+    ///
+    /// Market maturity is persisted separately; the next integration batch
+    /// will make maturity scale this base rate.
     pub passenger_arrival_rate_per_hour: PassengerArrivalRate,
     /// Passenger-seconds left over after the last whole-passenger update.
     ///
@@ -1813,6 +1822,55 @@ pub struct OriginDestinationDemand {
     /// It is cleared when the pool reaches the cap, so capped demand cannot
     /// become a hidden backlog.
     pub fractional_passenger_seconds: u64,
+}
+
+/// Rail-adoption maturity for one directional passenger market, expressed in
+/// basis points so growth can remain gradual without floating-point state.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct MarketMaturity(u16);
+
+impl MarketMaturity {
+    pub const FULL_BASIS_POINTS: u16 = 10_000;
+
+    pub fn from_basis_points(basis_points: i64) -> Result<Self, ValidationError> {
+        let basis_points =
+            u16::try_from(basis_points).map_err(|_| ValidationError::OutOfRange {
+                unit: "market maturity basis points",
+            })?;
+        if basis_points > Self::FULL_BASIS_POINTS {
+            return Err(ValidationError::OutOfRange {
+                unit: "market maturity basis points",
+            });
+        }
+        Ok(Self(basis_points))
+    }
+
+    pub const fn full() -> Self {
+        Self(Self::FULL_BASIS_POINTS)
+    }
+
+    pub const fn basis_points(self) -> u16 {
+        self.0
+    }
+}
+
+impl Serialize for MarketMaturity {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MarketMaturity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = i64::deserialize(deserializer)?;
+        Self::from_basis_points(value).map_err(de::Error::custom)
+    }
 }
 
 /// A positive directional Passenger Demand rate, in passengers per hour.

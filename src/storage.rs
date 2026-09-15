@@ -29,8 +29,9 @@ use crate::{
         Electrification, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState,
         InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
         InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline,
-        Journey, JourneyId, JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre,
-        OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
+        Journey, JourneyId, JourneyPassengerGroup, JourneyReceipt, MarketMaturity, Money,
+        MoneyPerKilometre, OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity,
+        PassengerService,
         PlannedRailLine, PlannedRailStation, PlayerCompany, RailAuthority, RailAuthorityFinances,
         RailLine, RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
         ServiceId, Settlement, SettlementId, SpeedKilometresPerHour, SpeedMetresPerSecond,
@@ -47,7 +48,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 24;
+pub const SAVE_VERSION: u32 = 25;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -518,6 +519,8 @@ CREATE TABLE IF NOT EXISTS origin_destination_demand (
     destination_station_id TEXT NOT NULL REFERENCES rail_stations(id),
     sequence INTEGER NOT NULL UNIQUE,
     waiting_passengers INTEGER NOT NULL,
+    market_maturity_basis_points INTEGER NOT NULL DEFAULT 10000
+        CHECK (market_maturity_basis_points BETWEEN 0 AND 10000),
     passenger_arrival_rate_per_hour INTEGER NOT NULL,
     fractional_passenger_seconds INTEGER NOT NULL,
     PRIMARY KEY (origin_station_id, destination_station_id)
@@ -752,7 +755,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 => {}
+        16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -803,6 +806,10 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
     }
     if current_version == 23 {
         migrate_v23_to_v24(connection, path)?;
+        current_version = 24;
+    }
+    if current_version == 24 {
+        migrate_v24_to_v25(connection, path)?;
     }
     Ok(())
 }
@@ -934,6 +941,59 @@ fn migrate_v23_to_v24(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v23 to v24 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v24_to_v25(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v24 to v25 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let demand_table_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'origin_destination_demand'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "inspect Passenger Demand during v25 migration in",
+                    path,
+                    source,
+                )
+            })?;
+
+        if demand_table_exists != 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE origin_destination_demand
+                     ADD COLUMN market_maturity_basis_points INTEGER NOT NULL DEFAULT 10000
+                     CHECK (market_maturity_basis_points BETWEEN 0 AND 10000);",
+                )
+                .map_err(|source| {
+                    db_error(
+                        "add Passenger Demand maturity during v25 migration in",
+                        path,
+                        source,
+                    )
+                })?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 25_u32)
+            .map_err(|source| db_error("write v25 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v24 to v25 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -3070,12 +3130,13 @@ fn insert_state(
 
     for (sequence, demand) in state.origin_destination_demand.iter().enumerate() {
         transaction.execute(
-            "INSERT INTO origin_destination_demand(origin_station_id, destination_station_id, sequence, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO origin_destination_demand(origin_station_id, destination_station_id, sequence, waiting_passengers, market_maturity_basis_points, passenger_arrival_rate_per_hour, fractional_passenger_seconds)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 demand.origin_station_id.to_string(), demand.destination_station_id.to_string(),
                 i64::try_from(sequence).unwrap_or(i64::MAX),
-                i64::from(demand.waiting_passengers), i64::from(demand.passenger_arrival_rate_per_hour.passengers_per_hour()),
+                i64::from(demand.waiting_passengers), i64::from(demand.market_maturity.basis_points()),
+                i64::from(demand.passenger_arrival_rate_per_hour.passengers_per_hour()),
                 db(demand.fractional_passenger_seconds, "Demand fractional passenger seconds")?
             ],
         ).map_err(|source| db_error("write Passenger Demand to", path, source))?;
@@ -3878,7 +3939,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
 
     let demand = query_all(
         connection,
-        "SELECT origin_station_id, destination_station_id, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds FROM origin_destination_demand ORDER BY sequence",
+        "SELECT origin_station_id, destination_station_id, waiting_passengers, market_maturity_basis_points, passenger_arrival_rate_per_hour, fractional_passenger_seconds FROM origin_destination_demand ORDER BY sequence",
         path,
         |row| {
             Ok(OriginDestinationDemand {
@@ -3891,11 +3952,13 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                 )?,
                 waiting_passengers: u32::try_from(row.get::<_, i64>(2)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                passenger_arrival_rate_per_hour: PassengerArrivalRate::new(row.get(3)?)
+                market_maturity: MarketMaturity::from_basis_points(row.get(3)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                passenger_arrival_rate_per_hour: PassengerArrivalRate::new(row.get(4)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 fractional_passenger_seconds: row_u64(
                     row,
-                    4,
+                    5,
                     "Demand fractional passenger seconds",
                 )?,
             })
@@ -5576,6 +5639,8 @@ mod tests {
             find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))
                 .unwrap();
         dispatch_journey(&mut state, train_id, service_id, departed_at).unwrap();
+        state.origin_destination_demand[0].market_maturity =
+            MarketMaturity::from_basis_points(4_321).unwrap();
         state.origin_destination_demand[0].fractional_passenger_seconds = 1_234;
         state
     }
@@ -6553,6 +6618,44 @@ mod tests {
 
         assert_eq!(version, SAVE_VERSION);
         assert_eq!(next_fiscal_period_at, 86_400);
+    }
+
+    #[test]
+    fn v24_schema_backfills_existing_markets_as_fully_mature() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE origin_destination_demand (
+                     origin_station_id TEXT NOT NULL,
+                     destination_station_id TEXT NOT NULL,
+                     sequence INTEGER NOT NULL UNIQUE,
+                     waiting_passengers INTEGER NOT NULL,
+                     passenger_arrival_rate_per_hour INTEGER NOT NULL,
+                     fractional_passenger_seconds INTEGER NOT NULL,
+                     PRIMARY KEY (origin_station_id, destination_station_id)
+                 );
+                 INSERT INTO origin_destination_demand VALUES('a', 'b', 0, 12, 4, 0);
+                 PRAGMA user_version = 24;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let maturity: i64 = connection
+            .query_row(
+                "SELECT market_maturity_basis_points FROM origin_destination_demand",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(maturity, 10_000);
     }
 
     #[test]
