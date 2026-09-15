@@ -329,6 +329,32 @@ pub enum CompanyWorkspaceAction {
     UpdateVkm(VehicleKeeperMark),
 }
 
+/// One contextual footer action owned by the Company workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompanyShortcut {
+    pub key: String,
+    pub action: String,
+    pub enabled: bool,
+}
+
+impl CompanyShortcut {
+    fn enabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: true,
+        }
+    }
+
+    fn disabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: false,
+        }
+    }
+}
+
 /// Owns presentation state and keyboard interaction for the Company workspace.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompanyWorkspace {
@@ -357,19 +383,125 @@ impl CompanyWorkspace {
         self.vkm_editor.is_some() || self.recovery_review_open || self.receipt_details_open
     }
 
-    /// Returns whether the VKM editor currently owns input before global shortcuts.
+    /// Returns whether the VKM editor must receive text input before global shortcuts.
     pub fn has_vkm_editor(&self) -> bool {
         self.vkm_editor.is_some()
     }
 
-    /// Transitional query used by Shell footer/help ownership until the next cleanup batch.
+    /// Returns whether recovery navigation must be handled before global workspace shortcuts.
     pub fn recovery_review_open(&self) -> bool {
         self.recovery_review_open
     }
 
-    /// Transitional query used by Shell footer/help ownership until the next cleanup batch.
-    pub fn receipt_details_open(&self) -> bool {
-        self.receipt_details_open
+    /// Returns contextual footer actions for the currently focused Company state.
+    pub fn shortcuts(
+        &mut self,
+        state: &GameState,
+        compact: bool,
+        wide: bool,
+    ) -> Vec<CompanyShortcut> {
+        if self.vkm_editor.is_some() {
+            return vec![
+                CompanyShortcut::enabled("Enter", "Save"),
+                CompanyShortcut::enabled("Backspace", "Delete"),
+                CompanyShortcut::enabled("Esc", "Cancel"),
+            ];
+        }
+
+        if self.recovery_review_open {
+            let mut items = vec![CompanyShortcut::enabled(
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Route",
+            )];
+            if wide {
+                items.push(CompanyShortcut::enabled("PgUp/PgDn", "Page"));
+            }
+            items.push(CompanyShortcut::enabled("Enter", "Review"));
+            items.push(CompanyShortcut::enabled("Esc", "Back"));
+            return items;
+        }
+
+        if self.receipt_details_open {
+            return vec![CompanyShortcut::enabled("Esc", "Back")];
+        }
+
+        let mut items = Vec::new();
+        if !state.financials.recent_journey_receipts.is_empty() {
+            items.push(CompanyShortcut::enabled(
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Receipt",
+            ));
+            if wide {
+                items.push(CompanyShortcut::enabled("PgUp/PgDn", "Page"));
+            }
+            items.push(CompanyShortcut::enabled("Enter", "Inspect"));
+        }
+        items.push(CompanyShortcut::enabled("V", "Edit VKM"));
+
+        let recovery_available = evaluate_financial_recovery(state)
+            .ok()
+            .is_some_and(|evaluation| {
+                evaluation.status == FinancialStatus::Insolvent
+                    && !evaluation.recovery_options.is_empty()
+            });
+        items.push(if recovery_available {
+            CompanyShortcut::enabled("R", "Recovery")
+        } else {
+            CompanyShortcut::disabled("R", "Recovery")
+        });
+        items
+    }
+
+    /// Returns help content for the currently focused Company state.
+    pub fn help_lines(&self, state: &GameState) -> Vec<String> {
+        if self.vkm_editor.is_some() {
+            return vec![
+                "Current · Company VKM".into(),
+                "Type A-Z to edit the Vehicle Keeper Mark".into(),
+                "Backspace Delete the previous letter".into(),
+                "Enter Save VKM   Esc Cancel".into(),
+            ];
+        }
+
+        if self.recovery_review_open {
+            return vec![
+                "Current · Financial Recovery".into(),
+                "↑↓ / jk Select a recovery route".into(),
+                "Enter Open the selected recovery action".into(),
+                "Esc Back to Company".into(),
+            ];
+        }
+
+        if self.receipt_details_open {
+            return vec![
+                "Current · Journey Receipt".into(),
+                "Esc Back to Journey history".into(),
+                "1–6 Switch workspace".into(),
+            ];
+        }
+
+        let mut lines = vec![
+            "Current · Company".into(),
+            "v Edit Company VKM".into(),
+        ];
+        if state.financials.recent_journey_receipts.is_empty() {
+            lines.extend([
+                "No settled Journey receipts yet".into(),
+                "1 Return to Map to operate your railway".into(),
+            ]);
+        } else {
+            lines.extend([
+                "↑↓ / jk Select Journey receipt".into(),
+                "PgUp / PgDn Scroll history".into(),
+                "Enter Details".into(),
+            ]);
+        }
+        if let Ok(evaluation) = evaluate_financial_recovery(state) {
+            if evaluation.status != FinancialStatus::Operating {
+                lines.push("r Review available financial recovery routes".into());
+            }
+        }
+        lines
     }
 
     /// Routes one Company-owned keyboard event. Global primary-view navigation remains a Shell concern.
@@ -2005,6 +2137,8 @@ fn format_cents(cents: i128) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
     use crate::{
         model::{Money, RailStationId, UtcSeconds},
         sim::{
@@ -2013,7 +2147,7 @@ mod tests {
         },
     };
 
-    use super::render;
+    use super::{CompanyWorkspace, render};
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
     const ORIGIN: RailStationId = RailStationId::new(1);
@@ -2066,5 +2200,21 @@ mod tests {
 
         assert!(rendered.contains("BANKRUPTCY:"));
         assert!(!rendered.contains("Recovery options:"));
+    }
+
+    #[test]
+    fn company_workspace_owns_vkm_footer_and_help() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = CompanyWorkspace::default();
+
+        workspace.handle_key(
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+            &state,
+        );
+
+        let shortcuts = workspace.shortcuts(&state, false, true);
+        assert_eq!(shortcuts[0].key, "Enter");
+        assert_eq!(shortcuts[0].action, "Save");
+        assert!(workspace.help_lines(&state)[0].contains("Company VKM"));
     }
 }

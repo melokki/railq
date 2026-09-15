@@ -1727,18 +1727,23 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             FooterShortcut::enabled("Esc", "Cancel"),
         ];
     }
-    if shell.company_workspace.has_vkm_editor() {
-        return vec![
-            FooterShortcut::enabled("Enter", "Save"),
-            FooterShortcut::enabled("Backspace", "Delete"),
-            FooterShortcut::enabled("Esc", "Cancel"),
-        ];
-    }
     if shell.outcome_details_open {
         return vec![
             FooterShortcut::enabled("i", "Close"),
             FooterShortcut::enabled("Esc", "Close"),
         ];
+    }
+    if shell.active_view == View::Company && shell.company_workspace.has_modal() {
+        return shell
+            .company_workspace
+            .shortcuts(state, compact, wide)
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect();
     }
     if is_bankrupt(state) {
         return if shell.restart_confirmation {
@@ -1853,46 +1858,16 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         items.push(FooterShortcut::enabled("W", "World"));
         items
     } else if shell.active_view == View::Company {
-        let recovery_available =
-            evaluate_financial_recovery(state)
-                .ok()
-                .is_some_and(|evaluation| {
-                    evaluation.status == FinancialStatus::Insolvent
-                        && !evaluation.recovery_options.is_empty()
-                });
-        if shell.company_workspace.recovery_review_open() {
-            let mut items = vec![FooterShortcut::enabled(
-                if compact { "↑↓" } else { "↑↓/JK" },
-                "Route",
-            )];
-            if wide {
-                items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
-            }
-            items.push(FooterShortcut::enabled("Enter", "Review"));
-            items.push(FooterShortcut::enabled("Esc", "Back"));
-            items
-        } else if shell.company_workspace.receipt_details_open() {
-            vec![FooterShortcut::enabled("Esc", "Back")]
-        } else {
-            let mut items = Vec::new();
-            if !state.financials.recent_journey_receipts.is_empty() {
-                items.push(FooterShortcut::enabled(
-                    if compact { "↑↓" } else { "↑↓/JK" },
-                    "Receipt",
-                ));
-                if wide {
-                    items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
-                }
-                items.push(FooterShortcut::enabled("Enter", "Inspect"));
-            }
-            items.push(FooterShortcut::enabled("V", "Edit VKM"));
-            items.push(if recovery_available {
-                FooterShortcut::enabled("R", "Recovery")
-            } else {
-                FooterShortcut::disabled("R", "Recovery")
-            });
-            items
-        }
+        shell
+            .company_workspace
+            .shortcuts(state, compact, wide)
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect()
     } else if shell.active_view == View::Authority {
         shell
             .authority_workspace
@@ -2065,6 +2040,11 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         String::new(),
     ];
 
+    if shell.active_view == View::Company && shell.company_workspace.has_modal() {
+        lines.extend(shell.company_workspace.help_lines(state));
+        return lines;
+    }
+
     if is_bankrupt(state) {
         lines.extend([
             "Current · Bankruptcy".into(),
@@ -2125,25 +2105,6 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
             "Current · Train Resale".into(),
             "Enter Confirm resale".into(),
             "Esc Cancel".into(),
-        ]);
-        return lines;
-    }
-
-    if shell.active_view == View::Company && shell.company_workspace.recovery_review_open() {
-        lines.extend([
-            "Current · Financial Recovery".into(),
-            "↑↓ / jk Select a recovery route".into(),
-            "Enter Open the selected recovery action".into(),
-            "Esc Back to Company".into(),
-        ]);
-        return lines;
-    }
-
-    if shell.active_view == View::Company && shell.company_workspace.receipt_details_open() {
-        lines.extend([
-            "Current · Journey Receipt".into(),
-            "Esc Back to Journey history".into(),
-            "1–6 Switch workspace".into(),
         ]);
         return lines;
     }
@@ -2245,25 +2206,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
             ]);
         }
         View::Company => {
-            lines.push("Current · Company".into());
-            lines.push("v Edit Company VKM".into());
-            if state.financials.recent_journey_receipts.is_empty() {
-                lines.extend([
-                    "No settled Journey receipts yet".into(),
-                    "1 Return to Map to operate your railway".into(),
-                ]);
-            } else {
-                lines.extend([
-                    "↑↓ / jk Select Journey receipt".into(),
-                    "PgUp / PgDn Scroll history".into(),
-                    "Enter Details".into(),
-                ]);
-            }
-            if let Ok(evaluation) = evaluate_financial_recovery(state) {
-                if evaluation.status != FinancialStatus::Operating {
-                    lines.push("r Review available financial recovery routes".into());
-                }
-            }
+            lines.extend(shell.company_workspace.help_lines(state));
         }
         View::Authority => {
             lines.extend(shell.authority_workspace.help_lines());
