@@ -79,6 +79,160 @@ impl CatalogueSelection {
     }
 }
 
+
+/// Shell-facing outcome from the Market workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MarketWorkspaceAction {
+    /// No application action is required.
+    Continue,
+    /// Clear stale Shell feedback after a successful Market-only transition.
+    ClearNotice,
+    /// Surface presentation feedback without crossing the application boundary.
+    Notice(String),
+    /// Revalidate and persist the proposed Train purchase.
+    Purchase {
+        catalogue_index: usize,
+        delivery_station_id: RailStationId,
+    },
+}
+
+/// Owns all presentation state and keyboard interaction for the Train Market.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MarketWorkspace {
+    flow: Option<MarketFlow>,
+    selection: CatalogueSelection,
+}
+
+impl MarketWorkspace {
+    /// Returns whether an uncommitted purchase flow currently owns input.
+    pub fn has_flow(&self) -> bool {
+        self.flow.is_some()
+    }
+
+    /// Returns whether delivery Rail Station selection currently owns the content area.
+    pub fn is_selecting_delivery(&self) -> bool {
+        self.flow
+            .as_ref()
+            .is_some_and(MarketFlow::is_selecting_delivery)
+    }
+
+    /// Returns whether the purchase review is currently shown as a focused modal.
+    pub fn is_confirming(&self) -> bool {
+        self.flow.as_ref().is_some_and(MarketFlow::is_confirming)
+    }
+
+    /// Routes one Market-owned keyboard event. Global view navigation remains a Shell concern.
+    pub fn handle_key(&mut self, key: KeyEvent, state: &GameState) -> MarketWorkspaceAction {
+        if self.flow.is_some() {
+            let action = self
+                .flow
+                .as_mut()
+                .expect("checked Market flow presence")
+                .handle_key(key, state);
+            return match action {
+                MarketFlowAction::Continue | MarketFlowAction::ReturnToDelivery => {
+                    MarketWorkspaceAction::Continue
+                }
+                MarketFlowAction::Cancel => {
+                    self.flow = None;
+                    MarketWorkspaceAction::Notice(
+                        "Train purchase cancelled; no changes were made.".into(),
+                    )
+                }
+                MarketFlowAction::ReturnToCatalogue => {
+                    self.flow = None;
+                    MarketWorkspaceAction::ClearNotice
+                }
+                MarketFlowAction::Confirm {
+                    catalogue_index,
+                    delivery_station_id,
+                } => MarketWorkspaceAction::Purchase {
+                    catalogue_index,
+                    delivery_station_id,
+                },
+            };
+        }
+
+        match key.code {
+            KeyCode::Enter => match self.selection.selected_catalogue_index(state) {
+                Some(catalogue_index) => match MarketFlow::start(state, catalogue_index) {
+                    Ok(flow) => {
+                        self.flow = Some(flow);
+                        MarketWorkspaceAction::ClearNotice
+                    }
+                    Err(message) => MarketWorkspaceAction::Notice(message.into()),
+                },
+                None => MarketWorkspaceAction::Notice(
+                    "No diesel Train is available in the catalogue.".into(),
+                ),
+            },
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K') => {
+                self.selection.handle_key(key.code, state);
+                MarketWorkspaceAction::Continue
+            }
+            _ => MarketWorkspaceAction::Continue,
+        }
+    }
+
+    /// Returns whether the currently focused catalogue Train can start a purchase.
+    pub fn purchase_available(&mut self, state: &GameState) -> bool {
+        self.selection
+            .selected_catalogue_index(state)
+            .is_some_and(|catalogue_index| purchase_action_available(state, catalogue_index))
+    }
+
+    /// Records an application-boundary rejection while preserving purchase context.
+    pub fn reject(&mut self, error: impl Into<String>) -> Option<String> {
+        let error = error.into();
+        if let Some(flow) = &mut self.flow {
+            flow.reject(error);
+            None
+        } else {
+            Some(error)
+        }
+    }
+
+    /// Closes the purchase flow after persistence succeeds.
+    pub fn confirm_saved(&mut self) {
+        self.flow = None;
+    }
+
+    /// Clears transient Market state, for example when starting a fresh game.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Renders the active Market content layer.
+    pub fn render_dashboard(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        if self.is_selecting_delivery() {
+            if let Some(flow) = &mut self.flow {
+                flow.render_panel(frame, area, state);
+            }
+        } else {
+            render_dashboard(frame, area, state, &mut self.selection);
+        }
+    }
+
+    /// Renders the compact text fallback used by the Shell.
+    pub fn render_text(&self, state: &GameState) -> String {
+        match &self.flow {
+            Some(flow) => flow.render(state),
+            None => render(state),
+        }
+    }
+
+    /// Renders the focused purchase-confirmation layer when one is active.
+    pub fn render_modal(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        if let Some(flow) = &mut self.flow {
+            flow.render_panel(frame, area, state);
+        }
+    }
+}
+
 /// The result of handling a key within the Buy Trains flow.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MarketFlowAction {
@@ -1468,7 +1622,7 @@ mod tests {
         sim::world::create_new_game,
     };
 
-    use super::{MarketFlow, MarketFlowAction, render};
+    use super::{MarketFlow, MarketFlowAction, MarketWorkspace, MarketWorkspaceAction, render};
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 
@@ -1493,6 +1647,47 @@ mod tests {
         assert!(rendered.contains("Purchase price:"));
         assert!(rendered.contains("Sample trip"));
         assert!(rendered.contains("Infrastructure Access Fee"));
+    }
+
+    #[test]
+    fn workspace_owns_catalogue_selection_and_purchase_flow() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = MarketWorkspace::default();
+
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Enter), &state),
+            MarketWorkspaceAction::ClearNotice
+        );
+        assert!(workspace.is_selecting_delivery());
+
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Enter), &state),
+            MarketWorkspaceAction::Continue
+        );
+        assert!(workspace.is_confirming());
+
+        assert!(matches!(
+            workspace.handle_key(key(KeyCode::Enter), &state),
+            MarketWorkspaceAction::Purchase {
+                catalogue_index: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn workspace_cancels_purchase_without_leaking_flow_state() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = MarketWorkspace::default();
+
+        workspace.handle_key(key(KeyCode::Enter), &state);
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Esc), &state),
+            MarketWorkspaceAction::Notice(
+                "Train purchase cancelled; no changes were made.".into()
+            )
+        );
+        assert!(!workspace.has_flow());
     }
 
     #[test]

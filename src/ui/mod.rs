@@ -225,8 +225,7 @@ pub struct Shell {
     fleet_selection: fleet::FleetSelection,
     fleet_details_open: bool,
     fleet_split_visible: bool,
-    market_flow: Option<market::MarketFlow>,
-    market_selection: market::CatalogueSelection,
+    market_workspace: market::MarketWorkspace,
     authority_project_selection: authority::ProjectSelection,
     authority_contribution_review: Option<authority::ContributionReview>,
     bulletin_workspace: bulletin::BulletinWorkspace,
@@ -260,8 +259,7 @@ impl Shell {
             fleet_selection: fleet::FleetSelection::default(),
             fleet_details_open: false,
             fleet_split_visible: false,
-            market_flow: None,
-            market_selection: market::CatalogueSelection::default(),
+            market_workspace: market::MarketWorkspace::default(),
             authority_project_selection: authority::ProjectSelection::default(),
             authority_contribution_review: None,
             bulletin_workspace: bulletin::BulletinWorkspace::default(),
@@ -493,35 +491,8 @@ impl Shell {
             };
         }
 
-        if let Some(flow) = &mut self.market_flow {
-            return match flow.handle_key(key, state) {
-                market::MarketFlowAction::Continue => ShellAction::Continue,
-                market::MarketFlowAction::Cancel => {
-                    self.market_flow = None;
-                    self.notice = Some("Train purchase cancelled; no changes were made.".into());
-                    ShellAction::Continue
-                }
-                market::MarketFlowAction::ReturnToCatalogue => {
-                    self.market_flow = None;
-                    self.notice = None;
-                    ShellAction::Continue
-                }
-                market::MarketFlowAction::ReturnToDelivery => ShellAction::Continue,
-                market::MarketFlowAction::Confirm {
-                    catalogue_index,
-                    delivery_station_id,
-                } => {
-                    self.pending_action = Some(pending_purchase(
-                        state,
-                        catalogue_index,
-                        delivery_station_id,
-                    ));
-                    ShellAction::PurchaseTrain {
-                        catalogue_index,
-                        delivery_station_id,
-                    }
-                }
-            };
+        if self.market_workspace.has_flow() {
+            return self.handle_market_key(key, state);
         }
 
         if self.services_open {
@@ -673,20 +644,7 @@ impl Shell {
                 self.company_receipt_details_open = false;
             }
             KeyCode::Enter if self.active_view == View::BuyTrains => {
-                match self.market_selection.selected_catalogue_index(state) {
-                    Some(catalogue_index) => {
-                        match market::MarketFlow::start(state, catalogue_index) {
-                            Ok(flow) => {
-                                self.market_flow = Some(flow);
-                                self.notice = None;
-                            }
-                            Err(message) => self.notice = Some(message.into()),
-                        }
-                    }
-                    None => {
-                        self.notice = Some("No diesel Train is available in the catalogue.".into())
-                    }
-                }
+                return self.handle_market_key(key, state);
             }
             KeyCode::Enter if self.active_view == View::Trains && !self.fleet_split_visible => {
                 if self.fleet_selection.selected_train_id(state).is_some() {
@@ -751,7 +709,7 @@ impl Shell {
             | KeyCode::Char('j' | 'J' | 'k' | 'K')
                 if self.active_view == View::BuyTrains =>
             {
-                self.market_selection.handle_key(key.code, state);
+                return self.handle_market_key(key, state);
             }
             KeyCode::Up
             | KeyCode::Down
@@ -834,6 +792,34 @@ impl Shell {
         ShellAction::Continue
     }
 
+    fn handle_market_key(&mut self, key: KeyEvent, state: &GameState) -> ShellAction {
+        match self.market_workspace.handle_key(key, state) {
+            market::MarketWorkspaceAction::Continue => ShellAction::Continue,
+            market::MarketWorkspaceAction::ClearNotice => {
+                self.notice = None;
+                ShellAction::Continue
+            }
+            market::MarketWorkspaceAction::Notice(message) => {
+                self.notice = Some(message);
+                ShellAction::Continue
+            }
+            market::MarketWorkspaceAction::Purchase {
+                catalogue_index,
+                delivery_station_id,
+            } => {
+                self.pending_action = Some(pending_purchase(
+                    state,
+                    catalogue_index,
+                    delivery_station_id,
+                ));
+                ShellAction::PurchaseTrain {
+                    catalogue_index,
+                    delivery_station_id,
+                }
+            }
+        }
+    }
+
     /// Keeps a rejected confirmation visible to explain the actual current-state cause.
     pub fn reject_manual_dispatch(&mut self, error: impl Into<String>) {
         self.pending_action = None;
@@ -866,23 +852,21 @@ impl Shell {
     /// Keeps a rejected purchase visible to explain the actual current-state cause.
     pub fn reject_purchase_train(&mut self, error: impl Into<String>) {
         self.pending_action = None;
-        if let Some(flow) = &mut self.market_flow {
-            flow.reject(error);
-        } else {
-            self.notice = Some(error.into());
+        if let Some(message) = self.market_workspace.reject(error) {
+            self.notice = Some(message);
         }
     }
 
     /// Closes a successful purchase proposal after the application boundary persisted it.
     pub fn confirm_purchase_train(&mut self) {
         self.pending_action = None;
-        self.market_flow = None;
+        self.market_workspace.confirm_saved();
         self.notice = Some("Train purchase authorised and saved to the Fleet.".into());
     }
 
     /// Publishes purchase feedback only after the save boundary succeeded.
     pub fn confirm_purchase_train_saved(&mut self, state: &GameState) {
-        self.market_flow = None;
+        self.market_workspace.confirm_saved();
         self.publish_pending_outcome(state);
     }
 
@@ -1101,7 +1085,7 @@ impl Shell {
         self.dispatch_flow = None;
         self.dispatch_returns_to_fleet = false;
         self.fleet_flow = None;
-        self.market_flow = None;
+        self.market_workspace.reset();
         self.services_open = false;
         self.service_workspace = services::ServiceWorkspace::default();
         self.restart_confirmation = false;
@@ -1570,17 +1554,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             false,
         );
     } else if shell.active_view == View::BuyTrains && !is_bankrupt(state) {
-        let delivery_flow_open = shell
-            .market_flow
-            .as_ref()
-            .is_some_and(market::MarketFlow::is_selecting_delivery);
-        if delivery_flow_open {
-            if let Some(flow) = &mut shell.market_flow {
-                flow.render_panel(frame, content_area, state);
-            }
-        } else {
-            market::render_dashboard(frame, content_area, state, &mut shell.market_selection);
-        }
+        shell
+            .market_workspace
+            .render_dashboard(frame, content_area, state);
     } else if shell.active_view == View::Authority && !is_bankrupt(state) {
         authority::render_dashboard(
             frame,
@@ -1598,10 +1574,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             match shell.active_view {
                 View::Map => map::render_at(state, now),
                 View::Trains => fleet::render_at(state, now),
-                View::BuyTrains => match &shell.market_flow {
-                    Some(flow) => flow.render(state),
-                    None => market::render(state),
-                },
+                View::BuyTrains => shell.market_workspace.render_text(state),
                 View::Company => company::render(state),
                 View::Authority => authority::render(state, now),
                 View::Bulletin => "Railway Bulletin".into(),
@@ -1661,10 +1634,7 @@ fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
         || (is_bankrupt(state) && shell.restart_confirmation)
         || shell.dispatch_flow.is_some()
         || shell.fleet_flow.is_some()
-        || shell
-            .market_flow
-            .as_ref()
-            .is_some_and(market::MarketFlow::is_confirming)
+        || shell.market_workspace.is_confirming()
         || (shell.services_open && shell.service_workspace.has_modal())
 }
 
@@ -1716,14 +1686,10 @@ fn render_focused_modal(
         flow.render_review(frame, content_area, state);
         return;
     }
-    if shell
-        .market_flow
-        .as_ref()
-        .is_some_and(market::MarketFlow::is_confirming)
-    {
-        if let Some(flow) = &mut shell.market_flow {
-            flow.render_panel(frame, content_area, state);
-        }
+    if shell.market_workspace.is_confirming() {
+        shell
+            .market_workspace
+            .render_modal(frame, content_area, state);
         return;
     }
     if shell.services_open && shell.service_workspace.has_modal() {
@@ -2086,8 +2052,8 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         ));
         items
     } else if shell.active_view == View::BuyTrains {
-        if let Some(flow) = &shell.market_flow {
-            if flow.is_selecting_delivery() {
+        if shell.market_workspace.has_flow() {
+            if shell.market_workspace.is_selecting_delivery() {
                 let mut items = vec![FooterShortcut::enabled(
                     if compact { "↑↓" } else { "↑↓/JK" },
                     "Station",
@@ -2114,13 +2080,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             if wide {
                 items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
             }
-            let can_buy = shell
-                .market_selection
-                .selected_catalogue_index(state)
-                .is_some_and(|catalogue_index| {
-                    market::purchase_action_available(state, catalogue_index)
-                });
-            items.push(if can_buy {
+            items.push(if shell.market_workspace.purchase_available(state) {
                 FooterShortcut::enabled("Enter", "Buy")
             } else {
                 FooterShortcut::disabled("Enter", "Buy")
@@ -2312,23 +2272,21 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         return lines;
     }
 
-    if shell.active_view == View::BuyTrains {
-        if let Some(flow) = &shell.market_flow {
-            lines.push("Current · Train Purchase".into());
-            if flow.is_selecting_delivery() {
-                lines.extend([
-                    "↑↓ / jk Select the delivery Rail Station".into(),
-                    "Enter Review purchase".into(),
-                    "← / Backspace Previous step   Esc Cancel".into(),
-                ]);
-            } else {
-                lines.extend([
-                    "Enter Confirm purchase".into(),
-                    "← / Backspace Previous step   Esc Cancel".into(),
-                ]);
-            }
-            return lines;
+    if shell.active_view == View::BuyTrains && shell.market_workspace.has_flow() {
+        lines.push("Current · Train Purchase".into());
+        if shell.market_workspace.is_selecting_delivery() {
+            lines.extend([
+                "↑↓ / jk Select the delivery Rail Station".into(),
+                "Enter Review purchase".into(),
+                "← / Backspace Previous step   Esc Cancel".into(),
+            ]);
+        } else {
+            lines.extend([
+                "Enter Confirm purchase".into(),
+                "← / Backspace Previous step   Esc Cancel".into(),
+            ]);
         }
+        return lines;
     }
 
     if shell.active_view == View::Trains && shell.fleet_flow.is_some() {
