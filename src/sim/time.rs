@@ -14,11 +14,7 @@ use crate::{
         RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
     },
     sim::{
-        authority::{
-            advance_authority_fiscal_periods, advance_infrastructure_planning,
-            advance_project_construction, advance_project_funding, advance_project_scheduling,
-            open_completed_infrastructure_projects,
-        },
+        authority::advance_rail_authority,
         demand::{
             record_served_passengers, replenish_directional_demand,
             synchronize_directional_demand_with_network,
@@ -178,17 +174,12 @@ pub fn advance_time_with_arrivals(
     }
 
     replenish_directional_demand(state, effective_now);
-    advance_authority_fiscal_periods(&mut state.region, effective_now)?;
-    advance_infrastructure_planning(
+    advance_rail_authority(
         &mut state.region,
         state.world_seed,
         &state.origin_destination_demand,
         effective_now,
     )?;
-    advance_project_funding(&mut state.region, effective_now)?;
-    advance_project_scheduling(&mut state.region, effective_now)?;
-    advance_project_construction(&mut state.region, effective_now)?;
-    open_completed_infrastructure_projects(&mut state.region, effective_now)?;
     synchronize_directional_demand_with_network(state, effective_now);
     Ok(settled)
 }

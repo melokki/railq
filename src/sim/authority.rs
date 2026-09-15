@@ -306,13 +306,32 @@ pub fn contribute_to_infrastructure_project(
 }
 
 
+/// Advances the complete Rail Authority lifecycle up to `now`.
+///
+/// Callers provide world context, but the Authority owns the ordering of its
+/// fiscal, planning, funding, scheduling, construction, and opening stages.
+pub fn advance_rail_authority(
+    region: &mut Region,
+    world_seed: u64,
+    demand: &[OriginDestinationDemand],
+    now: UtcSeconds,
+) -> Result<(), CalculationError> {
+    advance_authority_fiscal_periods(region, now)?;
+    advance_infrastructure_planning(region, world_seed, demand, now)?;
+    advance_project_funding(region, now)?;
+    advance_project_scheduling(region, now)?;
+    advance_project_construction(region, now)?;
+    open_completed_infrastructure_projects(region, now)?;
+    Ok(())
+}
+
 /// Advances the Rail Authority's daily UTC fiscal calendar.
 ///
 /// At each midnight the previous maintenance reserve is paid, remaining
 /// uncommitted investment carries forward, the recurring regional public
 /// allocation is deposited, and maintenance is reserved for the new day.
 /// Multiple missed calendar days are processed when RailQ is reopened.
-pub fn advance_authority_fiscal_periods(
+pub(crate) fn advance_authority_fiscal_periods(
     region: &mut Region,
     now: UtcSeconds,
 ) -> Result<u32, CalculationError> {
@@ -364,7 +383,7 @@ pub fn advance_authority_fiscal_periods(
 /// Only one New Line project is actively moving through Requested/UnderReview/
 /// Proposed at a time. Approved projects may accumulate and later compete for
 /// the Authority's finite investment budget.
-pub fn advance_infrastructure_planning(
+pub(crate) fn advance_infrastructure_planning(
     region: &mut Region,
     world_seed: u64,
     demand: &[OriginDestinationDemand],
@@ -564,7 +583,7 @@ pub fn local_rail_success_basis_points(
 /// currently available Authority investment funds in approval order. Partial
 /// funding is allowed, but only a small number of projects are actively funded
 /// at once; later approved projects remain Approved until a funding slot opens.
-pub fn advance_project_funding(
+pub(crate) fn advance_project_funding(
     region: &mut Region,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
@@ -708,7 +727,7 @@ pub fn advance_project_funding(
 /// Reserves available construction capacity for fully funded projects in
 /// funding-completion order. Projects that cannot reserve a slot remain in
 /// `Funding`, even when their financial gap is already zero.
-pub fn advance_project_scheduling(
+pub(crate) fn advance_project_scheduling(
     region: &mut Region,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
@@ -766,7 +785,7 @@ pub fn advance_project_scheduling(
 /// project that became due while RailQ was closed keeps the same construction
 /// duration it would have had while the game was open. Once written, the
 /// planned completion timestamp is never recomputed by funding changes.
-pub fn advance_project_construction(
+pub(crate) fn advance_project_construction(
     region: &mut Region,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
@@ -813,7 +832,7 @@ pub fn advance_project_construction(
 /// reopening RailQ after an offline gap produces the same opening time as
 /// keeping the game running. Authority commitments become spent public money
 /// at opening; the historical project keeps its original funding record.
-pub fn open_completed_infrastructure_projects(
+pub(crate) fn open_completed_infrastructure_projects(
     region: &mut Region,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
