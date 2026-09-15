@@ -30,7 +30,14 @@ use crate::{
         GameState, Journey, JourneyId, Money, RailStation, RailStationId, Settlement, SettlementId,
         Train, TrainId, TrainStatus, UtcSeconds,
     },
-    sim::services::path_between_stations,
+    sim::{
+        authority::{
+            COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS, local_rail_success_basis_points,
+            nearest_connection_station_id,
+        },
+        demand::effective_arrival_rate_per_hour,
+        services::path_between_stations,
+    },
     ui::theme,
 };
 
@@ -393,17 +400,26 @@ fn render_location_inspector(
                 (
                     station_name(state, pool.destination_station_id),
                     pool.waiting_passengers,
-                    pool.passenger_arrival_rate_per_hour.passengers_per_hour(),
+                    effective_arrival_rate_per_hour(state, pool),
+                    pool.market_maturity.basis_points(),
                 )
             })
             .collect::<Vec<_>>();
-        demand.sort_by_key(|(_, waiting, _)| Reverse(*waiting));
-        let waiting_total = demand.iter().fold(0_u32, |total, (_, waiting, _)| {
+        demand.sort_by_key(|(_, waiting, _, _)| Reverse(*waiting));
+        let waiting_total = demand.iter().fold(0_u32, |total, (_, waiting, _, _)| {
             total.saturating_add(*waiting)
         });
-        let arrival_rate_total = demand.iter().fold(0_u32, |total, (_, _, per_hour)| {
+        let arrival_rate_total = demand.iter().fold(0_u32, |total, (_, _, per_hour, _)| {
             total.saturating_add(*per_hour)
         });
+        let average_maturity_basis_points = if demand.is_empty() {
+            0
+        } else {
+            let total = demand.iter().fold(0_u64, |total, (_, _, _, maturity)| {
+                total.saturating_add(u64::from(*maturity))
+            });
+            (total / demand.len() as u64) as u16
+        };
 
         let mut lines = vec![
             inspector_metric("Station", &format!("{:02}", station.id.get())),
@@ -413,6 +429,10 @@ fn render_location_inspector(
         if compact {
             lines.push(inspector_metric("Ready here", &ready_count.to_string()));
             lines.push(inspector_metric("Services", &service_count.to_string()));
+            lines.push(inspector_metric(
+                "Rail adoption",
+                &market_maturity_summary(average_maturity_basis_points),
+            ));
             lines.push(inspector_metric(
                 "Demand",
                 &format!(
@@ -436,12 +456,16 @@ fn render_location_inspector(
                 "Arrival rate",
                 &format!("+{arrival_rate_total}/h"),
             ));
+            lines.push(inspector_metric(
+                "Rail adoption",
+                &market_maturity_summary(average_maturity_basis_points),
+            ));
 
             if !demand.is_empty() && area.height >= 24 {
                 lines.push(Line::from(""));
                 lines.push(inspector_section("TOP MARKETS"));
-                for (name, waiting, per_hour) in demand.into_iter().take(3) {
-                    lines.push(inspector_destination_line(&name, waiting, per_hour));
+                for (name, waiting, per_hour, maturity) in demand.into_iter().take(3) {
+                    lines.push(inspector_destination_line(&name, waiting, per_hour, maturity));
                 }
             }
         }
@@ -452,10 +476,31 @@ fn render_location_inspector(
             "Population",
             &format_population(settlement.population),
         )];
+        let council_signal = nearest_connection_station_id(&state.region, settlement.id).map(
+            |connection_station_id| {
+                local_rail_success_basis_points(
+                    &state.origin_destination_demand,
+                    connection_station_id,
+                )
+            },
+        );
 
         if compact {
             lines.push(inspector_metric("Rail access", "No station"));
-            lines.push(inspector_metric("Passenger rail", "Unavailable"));
+            if let Some(maturity) = council_signal {
+                lines.push(inspector_metric(
+                    "Council case",
+                    &format!(
+                        "{} / {}",
+                        market_maturity_percent(maturity),
+                        market_maturity_percent(
+                            COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS
+                        )
+                    ),
+                ));
+            } else {
+                lines.push(inspector_metric("Passenger rail", "Unavailable"));
+            }
         } else {
             lines.push(Line::from(""));
             lines.push(inspector_section("RAIL ACCESS"));
@@ -464,6 +509,29 @@ fn render_location_inspector(
                 "Passenger services require a connection to the rail network.",
                 theme::secondary(),
             ));
+
+            if let Some(maturity) = council_signal {
+                lines.push(Line::from(""));
+                lines.push(inspector_section("COUNCIL CONNECTION CASE"));
+                lines.push(inspector_metric(
+                    "Nearby adoption",
+                    &market_maturity_summary(maturity),
+                ));
+                lines.push(inspector_metric(
+                    "Request threshold",
+                    &market_maturity_percent(
+                        COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS,
+                    ),
+                ));
+                lines.push(Line::styled(
+                    if maturity >= COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS {
+                        "Local rail success is strong enough for a council connection request."
+                    } else {
+                        "Nearby rail use must grow before the council can request a connection."
+                    },
+                    theme::secondary(),
+                ));
+            }
         }
 
         lines
@@ -489,12 +557,44 @@ fn inspector_metric(label: &str, value: &str) -> Line<'static> {
     ])
 }
 
-fn inspector_destination_line(name: &str, waiting: u32, per_hour: u32) -> Line<'static> {
+fn inspector_destination_line(
+    name: &str,
+    waiting: u32,
+    per_hour: u32,
+    maturity_basis_points: u16,
+) -> Line<'static> {
     let name = truncate_label(name, 13);
     Line::from(vec![
         Span::styled(format!("→ {name:<13}"), theme::secondary()),
-        Span::styled(format!("{waiting} · +{per_hour}/h"), theme::primary_value()),
+        Span::styled(
+            format!(
+                "{waiting} · +{per_hour}/h · {}",
+                market_maturity_percent(maturity_basis_points)
+            ),
+            theme::primary_value(),
+        ),
     ])
+}
+
+fn market_maturity_summary(basis_points: u16) -> String {
+    format!(
+        "{} · {}",
+        market_maturity_percent(basis_points),
+        market_maturity_label(basis_points)
+    )
+}
+
+fn market_maturity_percent(basis_points: u16) -> String {
+    format!("{}%", u32::from(basis_points).saturating_add(50) / 100)
+}
+
+fn market_maturity_label(basis_points: u16) -> &'static str {
+    match basis_points {
+        0..=3_499 => "Emerging",
+        3_500..=5_999 => "Growing",
+        6_000..=8_499 => "Established",
+        _ => "Mature",
+    }
 }
 
 fn truncate_label(value: &str, max_chars: usize) -> String {
@@ -2433,9 +2533,10 @@ fn render_station_inspector(
                 Some(pool) => lines.push(Line::from(vec![
                     Span::styled(format!("→ {destination_name:<12}"), theme::secondary()),
                     Span::raw(format!(
-                        "{} waiting · +{}/h",
+                        "{} waiting · +{}/h · {} adoption",
                         pool.waiting_passengers,
-                        pool.passenger_arrival_rate_per_hour.passengers_per_hour()
+                        effective_arrival_rate_per_hour(state, pool),
+                        market_maturity_percent(pool.market_maturity.basis_points())
                     )),
                 ])),
                 None => lines.push(Line::from(vec![

@@ -31,8 +31,8 @@ use crate::{
     APPLICATION_NAME,
     catalog::{model_for_train, train_catalogue},
     model::{
-        GameState, Money, RailStationId, ServiceId, TrainId, TrainNickname, TrainStatus,
-        UtcSeconds, VehicleKeeperMark,
+        GameState, InfrastructureProjectId, Money, RailStationId, ServiceId, TrainId, TrainNickname,
+        TrainStatus, UtcSeconds, VehicleKeeperMark,
     },
     sim::{
         finance::{FinancialStatus, evaluate_financial_recovery},
@@ -41,6 +41,7 @@ use crate::{
 };
 
 pub mod authority;
+pub mod bulletin;
 pub mod company;
 pub mod dispatch;
 pub mod fleet;
@@ -58,7 +59,7 @@ pub const ARRIVAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MINIMUM_COLUMNS: u16 = 64;
 const MINIMUM_ROWS: u16 = 16;
 
-/// The five primary views in the RailQ terminal shell.
+/// The six primary views in the RailQ terminal shell.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum View {
     /// The Rail Network overview and operational home.
@@ -72,6 +73,8 @@ pub enum View {
     BuyTrains,
     /// The public Rail Authority infrastructure programme.
     Authority,
+    /// Persistent significant regional railway developments.
+    Bulletin,
 }
 
 impl View {
@@ -82,6 +85,7 @@ impl View {
             Self::Company => "Company",
             Self::BuyTrains => "Market",
             Self::Authority => "Authority",
+            Self::Bulletin => "Bulletin",
         }
     }
 
@@ -92,6 +96,7 @@ impl View {
             Self::BuyTrains => '3',
             Self::Company => '4',
             Self::Authority => '5',
+            Self::Bulletin => '6',
         }
     }
 }
@@ -129,6 +134,11 @@ pub enum ShellAction {
     /// Confirmed player input updating the Player Company's Vehicle Keeper Mark.
     UpdateCompanyVkm {
         vehicle_keeper_mark: VehicleKeeperMark,
+    },
+    /// Confirmed player contribution to one public infrastructure project.
+    ContributeInfrastructure {
+        project_id: InfrastructureProjectId,
+        amount: Money,
     },
     /// Confirmed player input changing or clearing one Train nickname.
     UpdateTrainNickname {
@@ -179,6 +189,12 @@ pub enum TerminalCommand {
         vehicle_keeper_mark: VehicleKeeperMark,
         now: UtcSeconds,
     },
+    /// Persist a Player Company contribution to one Authority project.
+    ContributeInfrastructure {
+        project_id: InfrastructureProjectId,
+        amount: Money,
+        now: UtcSeconds,
+    },
     /// Persist a Train nickname change without touching its official EVN.
     UpdateTrainNickname {
         train_id: TrainId,
@@ -205,7 +221,7 @@ struct PendingAction {
     funds_before: Money,
 }
 
-/// Presentation-only state shared by the five primary views.
+/// Presentation-only state shared by the six primary views.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Shell {
     active_view: View,
@@ -222,6 +238,8 @@ pub struct Shell {
     market_flow: Option<market::MarketFlow>,
     market_selection: market::CatalogueSelection,
     authority_project_selection: authority::ProjectSelection,
+    authority_contribution_review: Option<authority::ContributionReview>,
+    bulletin_workspace: bulletin::BulletinWorkspace,
     company_receipt_selection: company::ReceiptSelection,
     company_receipt_details_open: bool,
     company_recovery_selection: company::RecoverySelection,
@@ -255,6 +273,8 @@ impl Shell {
             market_flow: None,
             market_selection: market::CatalogueSelection::default(),
             authority_project_selection: authority::ProjectSelection::default(),
+            authority_contribution_review: None,
+            bulletin_workspace: bulletin::BulletinWorkspace::default(),
             company_receipt_selection: company::ReceiptSelection::default(),
             company_receipt_details_open: false,
             company_recovery_selection: company::RecoverySelection::default(),
@@ -394,7 +414,7 @@ impl Shell {
                     return ShellAction::Continue;
                 }
                 KeyCode::Char(
-                    '1' | '2' | '3' | '4' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C',
+                    '1' | '2' | '3' | '4' | '5' | '6' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A' | 'u' | 'U',
                 ) => {
                     self.world_details_visible = false;
                 }
@@ -427,6 +447,21 @@ impl Shell {
         }
 
         self.restart_confirmation = false;
+
+        if let Some(review) = self.authority_contribution_review {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.authority_contribution_review = None;
+                    self.notice = Some("Infrastructure contribution cancelled; no changes were made.".into());
+                    ShellAction::Continue
+                }
+                KeyCode::Enter => ShellAction::ContributeInfrastructure {
+                    project_id: review.project_id,
+                    amount: review.amount,
+                },
+                _ => ShellAction::Continue,
+            };
+        }
 
         if let Some(flow) = &mut self.dispatch_flow {
             return match flow.handle_key(key, state) {
@@ -503,7 +538,7 @@ impl Shell {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
-                    '1' | '2' | '3' | '4' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
+                    '1' | '2' | '3' | '4' | '5' | '6' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A' | 'u' | 'U'
                 )
             );
             if navigation_key {
@@ -632,6 +667,10 @@ impl Shell {
                 self.active_view = View::Authority;
                 self.services_open = false;
             }
+            KeyCode::Char('6' | 'u' | 'U') => {
+                self.active_view = View::Bulletin;
+                self.services_open = false;
+            }
             KeyCode::Enter if self.active_view == View::Company => {
                 if self.company_receipt_selection.has_selection(state) {
                     self.company_receipt_details_open = true;
@@ -733,6 +772,18 @@ impl Shell {
             {
                 self.fleet_selection.handle_key(key.code, state);
             }
+            KeyCode::Char('f' | 'F') if self.active_view == View::Authority => {
+                match self.authority_project_selection.selected_project_id(state) {
+                    Some(project_id) => match authority::ContributionReview::start(state, project_id) {
+                        Ok(review) => {
+                            self.authority_contribution_review = Some(review);
+                            self.notice = None;
+                        }
+                        Err(message) => self.notice = Some(message.into()),
+                    },
+                    None => self.notice = Some("Select an infrastructure project first.".into()),
+                }
+            }
             KeyCode::Up
             | KeyCode::Down
             | KeyCode::PageUp
@@ -741,6 +792,15 @@ impl Shell {
                 if self.active_view == View::Authority =>
             {
                 self.authority_project_selection.handle_key(key.code, state);
+            }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K' | 'f' | 'F')
+                if self.active_view == View::Bulletin =>
+            {
+                self.bulletin_workspace.handle_key(key.code, state);
             }
             KeyCode::Char('w' | 'W') if self.active_view == View::Map => {
                 self.world_details_visible = true;
@@ -862,6 +922,23 @@ impl Shell {
         self.fleet_flow = None;
         self.fleet_details_open = false;
         self.publish_pending_outcome(state);
+    }
+
+    pub fn reject_infrastructure_contribution(&mut self, error: impl Into<String>) {
+        self.notice = Some(error.into());
+    }
+
+    pub fn confirm_infrastructure_contribution_saved(&mut self, state: &GameState) {
+        let amount = self
+            .authority_contribution_review
+            .map(|review| review.amount)
+            .unwrap_or(Money::ZERO);
+        self.authority_contribution_review = None;
+        self.notice = Some(format!(
+            "Infrastructure contribution of {} saved. Company Funds {}.",
+            format_money(amount),
+            format_money(state.player_company.funds)
+        ));
     }
 
     /// Publishes arrivals only from a successfully reconciled state transition.
@@ -1352,6 +1429,21 @@ where
                             Err(error) => shell.reject_company_vkm_update(error.to_string()),
                         }
                     }
+                    ShellAction::ContributeInfrastructure { project_id, amount } => {
+                        match command(TerminalCommand::ContributeInfrastructure {
+                            project_id,
+                            amount,
+                            now: current_utc_seconds(),
+                        }) {
+                            Ok(next_state) => {
+                                state = next_state;
+                                shell.confirm_infrastructure_contribution_saved(&state);
+                            }
+                            Err(error) => {
+                                shell.reject_infrastructure_contribution(error.to_string())
+                            }
+                        }
+                    }
                     ShellAction::UpdateTrainNickname { train_id, nickname } => {
                         match command(TerminalCommand::UpdateTrainNickname {
                             train_id,
@@ -1451,6 +1543,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         View::BuyTrains,
         View::Company,
         View::Authority,
+        View::Bulletin,
     ];
     let selected = views
         .iter()
@@ -1537,6 +1630,8 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             now,
             &mut shell.authority_project_selection,
         );
+    } else if shell.active_view == View::Bulletin && !is_bankrupt(state) {
+        shell.bulletin_workspace.render(frame, content_area, state, now);
     } else {
         let content = if is_bankrupt(state) {
             bankruptcy_text(false)
@@ -1550,6 +1645,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
                 },
                 View::Company => company::render(state),
                 View::Authority => authority::render(state, now),
+                View::Bulletin => "Railway Bulletin".into(),
             }
         };
         frame.render_widget(
@@ -1598,7 +1694,8 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
 }
 
 fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
-    shell.train_nickname_editor.is_some()
+    shell.authority_contribution_review.is_some()
+        || shell.train_nickname_editor.is_some()
         || shell.company_vkm_editor.is_some()
         || shell.company_recovery_review_open
         || shell.company_receipt_details_open
@@ -1618,6 +1715,10 @@ fn render_focused_modal(
     shell: &mut Shell,
     state: &GameState,
 ) {
+    if let Some(review) = shell.authority_contribution_review {
+        authority::render_contribution_review(frame, content_area, state, review);
+        return;
+    }
     if let Some(editor) = &shell.train_nickname_editor {
         fleet::render_nickname_editor(frame, content_area, editor, state);
         return;
@@ -1801,6 +1902,13 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         return vec![
             FooterShortcut::enabled("W/Esc", "Close"),
             FooterShortcut::enabled("?", "Help"),
+            FooterShortcut::enabled("Q", "Quit"),
+        ];
+    }
+    if shell.authority_contribution_review.is_some() {
+        return vec![
+            FooterShortcut::enabled("Enter", "Contribute"),
+            FooterShortcut::enabled("Esc", "Cancel"),
             FooterShortcut::enabled("Q", "Quit"),
         ];
     }
@@ -1993,8 +2101,31 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             if wide {
                 items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
             }
+            let can_contribute = shell
+                .authority_project_selection
+                .selected_project_id(state)
+                .and_then(|project_id| authority::ContributionReview::start(state, project_id).ok())
+                .is_some();
+            items.push(if can_contribute {
+                FooterShortcut::enabled("F", "Contribute")
+            } else {
+                FooterShortcut::disabled("F", "Contribute")
+            });
             items
         }
+    } else if shell.active_view == View::Bulletin {
+        let mut items = vec![FooterShortcut::enabled(
+            if compact { "↑↓" } else { "↑↓/JK" },
+            "Item",
+        )];
+        if wide {
+            items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
+        }
+        items.push(FooterShortcut::enabled(
+            "F",
+            format!("Filter · {}", shell.bulletin_workspace.filter_label()),
+        ));
+        items
     } else if shell.active_view == View::BuyTrains {
         if let Some(flow) = &shell.market_flow {
             if flow.is_selecting_delivery() {
@@ -2146,6 +2277,7 @@ fn tab_label(view: View, compact: bool) -> String {
         (View::BuyTrains, true) => "Mkt",
         (View::Company, true) => "Co",
         (View::Authority, true) => "Auth",
+        (View::Bulletin, true) => "News",
         (View::Trains, false) => "Trains",
         (View::BuyTrains, false) => "Market",
         _ => view.label(),
@@ -2168,8 +2300,8 @@ const HELP_PAGE_STEP: usize = 5;
 fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     let mut lines = vec![
         "Navigation".into(),
-        "1 Map   2 Trains   3 Market   4 Company   5 Authority".into(),
-        "m / t / b / c / a also switch workspaces".into(),
+        "1 Map   2 Trains   3 Market   4 Company   5 Authority   6 Bulletin".into(),
+        "m / t / b / c / a / u also switch workspaces".into(),
         String::new(),
     ];
 
@@ -2263,7 +2395,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         lines.extend([
             "Current · Journey Receipt".into(),
             "Esc Back to Journey history".into(),
-            "1–5 Switch workspace".into(),
+            "1–6 Switch workspace".into(),
         ]);
         return lines;
     }
@@ -2390,8 +2522,19 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                 "Current · Rail Authority".into(),
                 "↑↓ / jk Select infrastructure project".into(),
                 "PgUp / PgDn Scroll project pipeline".into(),
+                "f Contribute to selected project while it is in Funding".into(),
                 String::new(),
-                "This workspace is read-only: the Authority controls public infrastructure.".into(),
+                "The Authority controls public infrastructure; operator contributions are optional.".into(),
+            ]);
+        }
+        View::Bulletin => {
+            lines.extend([
+                "Current · Railway Bulletin".into(),
+                "↑↓ / jk Select development".into(),
+                "PgUp / PgDn Scroll history".into(),
+                "f Cycle Local / Authority / Construction / Network filters".into(),
+                String::new(),
+                "The Bulletin records significant world developments, not routine Train movements.".into(),
             ]);
         }
     }
@@ -2821,7 +2964,7 @@ mod tests {
     };
 
     #[test]
-    fn routes_the_five_primary_views_by_number_and_keeps_letter_aliases() {
+    fn routes_the_six_primary_views_by_number_and_keeps_letter_aliases() {
         let mut shell = Shell::new();
         let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
@@ -2831,11 +2974,13 @@ mod tests {
             ('3', View::BuyTrains),
             ('1', View::Map),
             ('5', View::Authority),
+            ('6', View::Bulletin),
             ('t', View::Trains),
             ('c', View::Company),
             ('b', View::BuyTrains),
             ('m', View::Map),
             ('a', View::Authority),
+            ('u', View::Bulletin),
         ] {
             assert_eq!(
                 shell.handle_key(

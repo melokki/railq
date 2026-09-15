@@ -162,6 +162,7 @@ pub fn generate_region(seed: u64) -> Region {
         },
         population,
         settlements,
+        bulletin: vec![],
         rail_authority: RailAuthority {
             name: format!("{name} Rail Authority"),
             rail_network,
@@ -204,7 +205,12 @@ pub fn create_new_game(
     started_at: UtcSeconds,
 ) -> GameState {
     let balance = BalanceConfig::provisional();
-    let region = generate_region(world_seed);
+    let mut region = generate_region(world_seed);
+    region
+        .rail_authority
+        .finances
+        .initialize_fiscal_calendar(started_at)
+        .expect("the provisional Authority fiscal calendar must fit in UTC seconds");
     let company_name = company_name.into();
     let vehicle_keeper_mark = VehicleKeeperMark::generated_from_company_name(&company_name);
     GameState {
@@ -448,6 +454,12 @@ mod tests {
             game.rules.balance.starting_company_funds()
         );
         assert_eq!(game.last_processed_at, started_at);
-        assert_eq!(game.region, generate_region(game.world_seed));
+        let mut expected_region = generate_region(game.world_seed);
+        expected_region
+            .rail_authority
+            .finances
+            .initialize_fiscal_calendar(started_at)
+            .unwrap();
+        assert_eq!(game.region, expected_region);
     }
 }

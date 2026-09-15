@@ -12,8 +12,8 @@ use std::{
 use railq::{
     app::App,
     model::{
-        DurationSeconds, GameState, Money, PassengerArrivalRate, RailStationId, TrainStatus,
-        UtcSeconds,
+        DurationSeconds, GameState, MarketMaturity, Money, PassengerArrivalRate, RailStationId,
+        TrainStatus, UtcSeconds,
     },
     sim::{
         fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
@@ -199,6 +199,7 @@ fn offline_advancement_keeps_waiting_passengers_at_the_configured_cap() {
     for pool in &mut state.origin_destination_demand {
         pool.waiting_passengers = 0;
         pool.passenger_arrival_rate_per_hour = PassengerArrivalRate::new(3).unwrap();
+        pool.market_maturity = MarketMaturity::full();
         pool.fractional_passenger_seconds = 0;
     }
     persist(&path, state);

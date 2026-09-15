@@ -4,7 +4,7 @@
 //! time rules as the game without waiting for real-world Journeys.
 
 use railq::{
-    model::{GameState, Money, RailStationId, UtcSeconds},
+    model::{GameState, MarketMaturity, Money, RailStationId, UtcSeconds},
     sim::{
         economy::{JourneyQuote, quote_journey},
         finance::{FinancialStatus, RecoveryOption, evaluate_financial_recovery},
@@ -21,6 +21,9 @@ const B: RailStationId = RailStationId::new(2);
 
 fn starter_game(seed: u64) -> (GameState, railq::model::TrainId, railq::model::ServiceId) {
     let mut state = create_new_game(seed, "Balance Passenger", UtcSeconds::from_unix_seconds(0));
+    for pool in &mut state.origin_destination_demand {
+        pool.market_maturity = MarketMaturity::full();
+    }
     let train_id = purchase_train(&mut state, 0, A).expect("starter Local purchase succeeds");
     let service_id =
         find_or_create_service(&mut state, A, B).expect("short Passenger Service is created");

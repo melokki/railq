@@ -25,12 +25,14 @@ use crate::{
     balance::BalanceConfig,
     catalog::{TrainModel, model_for_train, train_catalogue},
     model::{
-        CalculationError, ConstructionDifficulty, DemandRules, DistanceMetres, DurationSeconds,
-        Electrification, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState,
+        BulletinCategory, BulletinEntry, CalculationError, ConstructionDifficulty, DemandRules,
+        DistanceMetres, DurationSeconds, Electrification, EuropeanVehicleNumber, Financials, Fleet,
+        GameRules, GameState,
         InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
         InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline,
-        Journey, JourneyId, JourneyPassengerGroup, JourneyReceipt, Money, MoneyPerKilometre,
-        OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity, PassengerService,
+        Journey, JourneyId, JourneyPassengerGroup, JourneyReceipt, MarketMaturity, Money,
+        MoneyPerKilometre, OriginDestinationDemand, PassengerArrivalRate, PassengerCapacity,
+        PassengerService,
         PlannedRailLine, PlannedRailStation, PlayerCompany, RailAuthority, RailAuthorityFinances,
         RailLine, RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
         ServiceId, Settlement, SettlementId, SpeedKilometresPerHour, SpeedMetresPerSecond,
@@ -38,6 +40,7 @@ use crate::{
         VehicleKeeperMark, WorldPosition,
     },
     sim::{
+        demand::waiting_passenger_cap,
         services::{path_between_stations, service_path_for_stops},
         world::{
             railway_registration_for_existing_region, settlement_positions_for_existing_region,
@@ -46,7 +49,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 20;
+pub const SAVE_VERSION: u32 = 27;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -384,6 +387,13 @@ CREATE TABLE IF NOT EXISTS region (
     rail_authority_name TEXT NOT NULL,
     rail_authority_construction_capacity INTEGER NOT NULL DEFAULT 1 CHECK (rail_authority_construction_capacity > 0)
 );
+CREATE TABLE IF NOT EXISTS bulletin_entries (
+    sequence INTEGER PRIMARY KEY,
+    occurred_at INTEGER NOT NULL,
+    category TEXT NOT NULL CHECK (category IN ('local', 'authority', 'construction', 'network')),
+    headline TEXT NOT NULL,
+    detail TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS rail_authority_finances (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
@@ -391,7 +401,8 @@ CREATE TABLE IF NOT EXISTS rail_authority_finances (
     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
     regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0),
-    infrastructure_access_fee_revenue_cents INTEGER NOT NULL CHECK (infrastructure_access_fee_revenue_cents >= 0)
+    infrastructure_access_fee_revenue_cents INTEGER NOT NULL CHECK (infrastructure_access_fee_revenue_cents >= 0),
+    next_fiscal_period_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS settlements (
     id TEXT PRIMARY KEY,
@@ -424,6 +435,9 @@ CREATE TABLE IF NOT EXISTS infrastructure_projects (
     status TEXT NOT NULL CHECK (status IN ('requested', 'under_review', 'proposed', 'approved', 'deferred', 'funding', 'scheduled', 'construction', 'open', 'cancelled')),
     estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0),
     authority_committed_cents INTEGER NOT NULL DEFAULT 0 CHECK (authority_committed_cents >= 0),
+    operator_contributed_cents INTEGER NOT NULL DEFAULT 0 CHECK (operator_contributed_cents >= 0),
+    access_fee_credit_awarded_cents INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_credit_awarded_cents >= 0),
+    access_fee_credit_remaining_cents INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_credit_remaining_cents >= 0),
     requested_at INTEGER NOT NULL,
     review_started_at INTEGER,
     proposed_at INTEGER,
@@ -435,6 +449,7 @@ CREATE TABLE IF NOT EXISTS infrastructure_projects (
     completed_at INTEGER,
     deferred_at INTEGER,
     cancelled_at INTEGER,
+    reconsideration_count INTEGER NOT NULL DEFAULT 0 CHECK (reconsideration_count BETWEEN 0 AND 255),
     target_speed_limit_kmh INTEGER CHECK (target_speed_limit_kmh IS NULL OR target_speed_limit_kmh > 0),
     target_track_count INTEGER CHECK (target_track_count IS NULL OR target_track_count > 0)
 );
@@ -513,6 +528,8 @@ CREATE TABLE IF NOT EXISTS origin_destination_demand (
     destination_station_id TEXT NOT NULL REFERENCES rail_stations(id),
     sequence INTEGER NOT NULL UNIQUE,
     waiting_passengers INTEGER NOT NULL,
+    market_maturity_basis_points INTEGER NOT NULL DEFAULT 10000
+        CHECK (market_maturity_basis_points BETWEEN 0 AND 10000),
     passenger_arrival_rate_per_hour INTEGER NOT NULL,
     fractional_passenger_seconds INTEGER NOT NULL,
     PRIMARY KEY (origin_station_id, destination_station_id)
@@ -747,7 +764,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 | 17 | 18 | 19 => {}
+        16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -782,8 +799,310 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
     }
     if current_version == 19 {
         migrate_v19_to_v20(connection, path)?;
+        current_version = 20;
+    }
+    if current_version == 20 {
+        migrate_v20_to_v21(connection, path)?;
+        current_version = 21;
+    }
+    if current_version == 21 {
+        migrate_v21_to_v22(connection, path)?;
+        current_version = 22;
+    }
+    if current_version == 22 {
+        migrate_v22_to_v23(connection, path)?;
+        current_version = 23;
+    }
+    if current_version == 23 {
+        migrate_v23_to_v24(connection, path)?;
+        current_version = 24;
+    }
+    if current_version == 24 {
+        migrate_v24_to_v25(connection, path)?;
+        current_version = 25;
+    }
+    if current_version == 25 {
+        migrate_v25_to_v26(connection, path)?;
+        current_version = 26;
+    }
+    if current_version == 26 {
+        migrate_v26_to_v27(connection, path)?;
     }
     Ok(())
+}
+
+fn migrate_v22_to_v23(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v22 to v23 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let finances_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'rail_authority_finances'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect Authority finances during v23 migration in", path, source))?;
+        if finances_exist != 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE rail_authority_finances
+                     ADD COLUMN next_fiscal_period_at INTEGER;",
+                )
+                .map_err(|source| {
+                    db_error("add Rail Authority fiscal calendar to", path, source)
+                })?;
+        }
+
+        let game_meta_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'game_meta'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "inspect game metadata during v23 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        if finances_exist != 0 && game_meta_exists != 0 {
+            connection
+                .execute_batch(
+                    "UPDATE rail_authority_finances
+                     SET next_fiscal_period_at = (
+                         SELECT last_processed_at + 21600
+                         FROM game_meta
+                         WHERE singleton = 1
+                     )
+                     WHERE singleton = 1;",
+                )
+                .map_err(|source| {
+                    db_error("seed Rail Authority fiscal calendar in", path, source)
+                })?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 23_u32)
+            .map_err(|source| db_error("write v23 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v22 to v23 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v23_to_v24(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v23 to v24 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let finances_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'rail_authority_finances'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect Authority finances during v24 migration in", path, source))?;
+        let game_meta_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'game_meta'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "inspect game metadata during v24 migration in",
+                    path,
+                    source,
+                )
+            })?;
+
+        if finances_exist != 0 && game_meta_exists != 0 {
+            connection
+                .execute_batch(
+                    "UPDATE rail_authority_finances
+                     SET next_fiscal_period_at = (
+                         SELECT ((last_processed_at / 86400) + 1) * 86400
+                         FROM game_meta
+                         WHERE singleton = 1
+                     )
+                     WHERE singleton = 1;",
+                )
+                .map_err(|source| {
+                    db_error(
+                        "align Authority fiscal calendar to UTC midnight in",
+                        path,
+                        source,
+                    )
+                })?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 24_u32)
+            .map_err(|source| db_error("write v24 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v23 to v24 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v24_to_v25(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v24 to v25 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let demand_table_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'origin_destination_demand'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "inspect Passenger Demand during v25 migration in",
+                    path,
+                    source,
+                )
+            })?;
+
+        if demand_table_exists != 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE origin_destination_demand
+                     ADD COLUMN market_maturity_basis_points INTEGER NOT NULL DEFAULT 10000
+                     CHECK (market_maturity_basis_points BETWEEN 0 AND 10000);",
+                )
+                .map_err(|source| {
+                    db_error(
+                        "add Passenger Demand maturity during v25 migration in",
+                        path,
+                        source,
+                    )
+                })?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 25_u32)
+            .map_err(|source| db_error("write v25 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v24 to v25 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v25_to_v26(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v25 to v26 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let projects_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'infrastructure_projects'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "inspect infrastructure projects during v26 migration in",
+                    path,
+                    source,
+                )
+            })?;
+
+        if projects_exist != 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE infrastructure_projects
+                     ADD COLUMN reconsideration_count INTEGER NOT NULL DEFAULT 0
+                     CHECK (reconsideration_count >= 0);",
+                )
+                .map_err(|source| {
+                    db_error(
+                        "add project reconsideration count during v26 migration in",
+                        path,
+                        source,
+                    )
+                })?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 26_u32)
+            .map_err(|source| db_error("write v26 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v25 to v26 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v26_to_v27(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v26 to v27 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS bulletin_entries (
+                     sequence INTEGER PRIMARY KEY,
+                     occurred_at INTEGER NOT NULL,
+                     category TEXT NOT NULL CHECK (category IN ('local', 'authority', 'construction', 'network')),
+                     headline TEXT NOT NULL,
+                     detail TEXT NOT NULL
+                 );",
+            )
+            .map_err(|source| db_error("add Railway Bulletin history to", path, source))?;
+        connection
+            .pragma_update(None, "user_version", 27_u32)
+            .map_err(|source| db_error("write v27 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v26 to v27 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
 }
 
 fn catalogue_model_for_persisted_id(model_id: &str) -> Option<&'static TrainModel> {
@@ -2604,6 +2923,75 @@ fn migrate_v19_to_v20(connection: &Connection, path: &Path) -> Result<(), SaveSl
     }
 }
 
+fn migrate_v20_to_v21(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v20 to v21 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE infrastructure_projects
+                 ADD COLUMN operator_contributed_cents INTEGER NOT NULL DEFAULT 0
+                 CHECK (operator_contributed_cents >= 0);",
+            )
+            .map_err(|source| {
+                db_error("add operator infrastructure contributions to", path, source)
+            })?;
+        connection
+            .pragma_update(None, "user_version", 21_u32)
+            .map_err(|source| db_error("write v21 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v20 to v21 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v21_to_v22(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v21 to v22 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE infrastructure_projects
+                 ADD COLUMN access_fee_credit_awarded_cents INTEGER NOT NULL DEFAULT 0
+                 CHECK (access_fee_credit_awarded_cents >= 0);
+                 ALTER TABLE infrastructure_projects
+                 ADD COLUMN access_fee_credit_remaining_cents INTEGER NOT NULL DEFAULT 0
+                 CHECK (access_fee_credit_remaining_cents >= 0);
+                 UPDATE infrastructure_projects
+                 SET access_fee_credit_awarded_cents = (operator_contributed_cents * 115) / 100,
+                     access_fee_credit_remaining_cents = (operator_contributed_cents * 115) / 100
+                 WHERE status = 'open' AND operator_contributed_cents > 0;",
+            )
+            .map_err(|source| db_error("add infrastructure access credits to", path, source))?;
+        connection
+            .pragma_update(None, "user_version", 22_u32)
+            .map_err(|source| db_error("write v22 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v21 to v22 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
 fn clear_state(
     transaction: &Transaction<'_>,
     path: &Path,
@@ -2640,6 +3028,7 @@ fn clear_state(
          DELETE FROM rail_lines;
          DELETE FROM rail_stations;
          DELETE FROM settlements;
+         DELETE FROM bulletin_entries;
          DELETE FROM region;
          DELETE FROM game_meta;",
         )
@@ -2684,14 +3073,37 @@ fn insert_state(
         )
         .map_err(|source| db_error("write Region to", path, source))?;
 
+    for (sequence, entry) in state.region.bulletin.iter().enumerate() {
+        let category = match entry.category {
+            BulletinCategory::Local => "local",
+            BulletinCategory::Authority => "authority",
+            BulletinCategory::Construction => "construction",
+            BulletinCategory::Network => "network",
+        };
+        transaction
+            .execute(
+                "INSERT INTO bulletin_entries(sequence, occurred_at, category, headline, detail)
+                 VALUES(?1, ?2, ?3, ?4, ?5)",
+                params![
+                    i64::try_from(sequence).unwrap_or(i64::MAX),
+                    entry.occurred_at.unix_seconds(),
+                    category,
+                    &entry.headline,
+                    &entry.detail,
+                ],
+            )
+            .map_err(|source| db_error("write Bulletin entries to", path, source))?;
+    }
+
     let authority_finances = &state.region.rail_authority.finances;
     transaction
         .execute(
             "INSERT INTO rail_authority_finances(
                  singleton, treasury_cents, maintenance_reserve_cents,
                  committed_investment_cents, carried_over_funds_cents,
-                 regional_public_allocation_cents, infrastructure_access_fee_revenue_cents
-             ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6)",
+                 regional_public_allocation_cents, infrastructure_access_fee_revenue_cents,
+                 next_fiscal_period_at
+             ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 authority_finances.treasury.cents(),
                 authority_finances.maintenance_reserve.cents(),
@@ -2699,6 +3111,9 @@ fn insert_state(
                 authority_finances.carried_over_funds.cents(),
                 authority_finances.regional_public_allocation.cents(),
                 authority_finances.infrastructure_access_fee_revenue.cents(),
+                authority_finances
+                    .next_fiscal_period_at
+                    .map(UtcSeconds::unix_seconds),
             ],
         )
         .map_err(|source| db_error("write Rail Authority finances to", path, source))?;
@@ -2842,12 +3257,13 @@ fn insert_state(
 
     for (sequence, demand) in state.origin_destination_demand.iter().enumerate() {
         transaction.execute(
-            "INSERT INTO origin_destination_demand(origin_station_id, destination_station_id, sequence, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO origin_destination_demand(origin_station_id, destination_station_id, sequence, waiting_passengers, market_maturity_basis_points, passenger_arrival_rate_per_hour, fractional_passenger_seconds)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 demand.origin_station_id.to_string(), demand.destination_station_id.to_string(),
                 i64::try_from(sequence).unwrap_or(i64::MAX),
-                i64::from(demand.waiting_passengers), i64::from(demand.passenger_arrival_rate_per_hour.passengers_per_hour()),
+                i64::from(demand.waiting_passengers), i64::from(demand.market_maturity.basis_points()),
+                i64::from(demand.passenger_arrival_rate_per_hour.passengers_per_hour()),
                 db(demand.fractional_passenger_seconds, "Demand fractional passenger seconds")?
             ],
         ).map_err(|source| db_error("write Passenger Demand to", path, source))?;
@@ -2960,10 +3376,11 @@ fn insert_infrastructure_project(
         .execute(
             "INSERT INTO infrastructure_projects(
                  id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
-                 requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
-                 scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
-                 deferred_at, cancelled_at, target_speed_limit_kmh, target_track_count
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                 operator_contributed_cents, access_fee_credit_awarded_cents, access_fee_credit_remaining_cents,
+                 requested_at, review_started_at, proposed_at, approved_at, funding_completed_at, scheduled_start_at,
+                 construction_started_at, planned_completion_at, completed_at, deferred_at, cancelled_at,
+                 reconsideration_count, target_speed_limit_kmh, target_track_count
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 project.id.to_string(),
                 i64::try_from(sequence).unwrap_or(i64::MAX),
@@ -2971,6 +3388,9 @@ fn insert_infrastructure_project(
                 status,
                 project.funding.estimated_cost.cents(),
                 project.funding.authority_committed.cents(),
+                project.funding.operator_contributed.cents(),
+                project.funding.access_fee_credit_awarded.cents(),
+                project.funding.access_fee_credit_remaining.cents(),
                 timeline.requested_at.unix_seconds(),
                 timeline.review_started_at.map(UtcSeconds::unix_seconds),
                 timeline.proposed_at.map(UtcSeconds::unix_seconds),
@@ -2982,6 +3402,7 @@ fn insert_infrastructure_project(
                 timeline.completed_at.map(UtcSeconds::unix_seconds),
                 timeline.deferred_at.map(UtcSeconds::unix_seconds),
                 timeline.cancelled_at.map(UtcSeconds::unix_seconds),
+                i64::from(timeline.reconsideration_count),
                 target_speed_limit_kmh,
                 target_track_count,
             ],
@@ -3097,9 +3518,10 @@ fn load_infrastructure_projects(
     let rows = query_all(
         connection,
         "SELECT id, kind, status, estimated_cost_cents, authority_committed_cents,
-                requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
-                scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
-                deferred_at, cancelled_at, target_speed_limit_kmh, target_track_count
+                operator_contributed_cents, access_fee_credit_awarded_cents, access_fee_credit_remaining_cents,
+                requested_at, review_started_at, proposed_at, approved_at, funding_completed_at, scheduled_start_at,
+                construction_started_at, planned_completion_at, completed_at, deferred_at, cancelled_at,
+                reconsideration_count, target_speed_limit_kmh, target_track_count
          FROM infrastructure_projects ORDER BY sequence",
         path,
         |row| {
@@ -3120,22 +3542,27 @@ fn load_infrastructure_projects(
                 funding: InfrastructureProjectFunding {
                     estimated_cost: Money::from_cents(row.get(3)?),
                     authority_committed: Money::from_cents(row.get(4)?),
+                    operator_contributed: Money::from_cents(row.get(5)?),
+                    access_fee_credit_awarded: Money::from_cents(row.get(6)?),
+                    access_fee_credit_remaining: Money::from_cents(row.get(7)?),
                 },
                 timeline: InfrastructureProjectTimeline {
-                    requested_at: UtcSeconds::from_unix_seconds(row.get(5)?),
-                    review_started_at: timestamp(6)?,
-                    proposed_at: timestamp(7)?,
-                    approved_at: timestamp(8)?,
-                    funding_completed_at: timestamp(9)?,
-                    scheduled_start_at: timestamp(10)?,
-                    construction_started_at: timestamp(11)?,
-                    planned_completion_at: timestamp(12)?,
-                    completed_at: timestamp(13)?,
-                    deferred_at: timestamp(14)?,
-                    cancelled_at: timestamp(15)?,
+                    requested_at: UtcSeconds::from_unix_seconds(row.get(8)?),
+                    review_started_at: timestamp(9)?,
+                    proposed_at: timestamp(10)?,
+                    approved_at: timestamp(11)?,
+                    funding_completed_at: timestamp(12)?,
+                    scheduled_start_at: timestamp(13)?,
+                    construction_started_at: timestamp(14)?,
+                    planned_completion_at: timestamp(15)?,
+                    completed_at: timestamp(16)?,
+                    deferred_at: timestamp(17)?,
+                    cancelled_at: timestamp(18)?,
+                    reconsideration_count: u8::try_from(row.get::<_, i64>(19)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 },
-                target_speed_limit_kmh: row.get(16)?,
-                target_track_count: row.get(17)?,
+                target_speed_limit_kmh: row.get(20)?,
+                target_track_count: row.get(21)?,
             })
         },
     )?;
@@ -3429,6 +3856,27 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         )
         .map_err(|source| db_error("read Region from", path, source))?;
 
+    let bulletin = query_all(
+        connection,
+        "SELECT occurred_at, category, headline, detail FROM bulletin_entries ORDER BY sequence",
+        path,
+        |row| {
+            let category = match row.get::<_, String>(1)?.as_str() {
+                "local" => BulletinCategory::Local,
+                "authority" => BulletinCategory::Authority,
+                "construction" => BulletinCategory::Construction,
+                "network" => BulletinCategory::Network,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            Ok(BulletinEntry {
+                occurred_at: UtcSeconds::from_unix_seconds(row.get(0)?),
+                category,
+                headline: row.get(2)?,
+                detail: row.get(3)?,
+            })
+        },
+    )?;
+
     let (
         authority_treasury,
         maintenance_reserve,
@@ -3436,11 +3884,12 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         carried_over_funds,
         regional_public_allocation,
         infrastructure_access_fee_revenue,
-    ): (i64, i64, i64, i64, i64, i64) = connection
+        next_fiscal_period_at,
+    ): (i64, i64, i64, i64, i64, i64, Option<i64>) = connection
         .query_row(
             "SELECT treasury_cents, maintenance_reserve_cents, committed_investment_cents,
                     carried_over_funds_cents, regional_public_allocation_cents,
-                    infrastructure_access_fee_revenue_cents
+                    infrastructure_access_fee_revenue_cents, next_fiscal_period_at
              FROM rail_authority_finances WHERE singleton = 1",
             [],
             |row| {
@@ -3451,6 +3900,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )
@@ -3462,6 +3912,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         carried_over_funds: Money::from_cents(carried_over_funds),
         regional_public_allocation: Money::from_cents(regional_public_allocation),
         infrastructure_access_fee_revenue: Money::from_cents(infrastructure_access_fee_revenue),
+        next_fiscal_period_at: next_fiscal_period_at.map(UtcSeconds::from_unix_seconds),
     };
 
     let settlements = query_all(
@@ -3639,7 +4090,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
 
     let demand = query_all(
         connection,
-        "SELECT origin_station_id, destination_station_id, waiting_passengers, passenger_arrival_rate_per_hour, fractional_passenger_seconds FROM origin_destination_demand ORDER BY sequence",
+        "SELECT origin_station_id, destination_station_id, waiting_passengers, market_maturity_basis_points, passenger_arrival_rate_per_hour, fractional_passenger_seconds FROM origin_destination_demand ORDER BY sequence",
         path,
         |row| {
             Ok(OriginDestinationDemand {
@@ -3652,11 +4103,13 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
                 )?,
                 waiting_passengers: u32::try_from(row.get::<_, i64>(2)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                passenger_arrival_rate_per_hour: PassengerArrivalRate::new(row.get(3)?)
+                market_maturity: MarketMaturity::from_basis_points(row.get(3)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                passenger_arrival_rate_per_hour: PassengerArrivalRate::new(row.get(4)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 fractional_passenger_seconds: row_u64(
                     row,
-                    4,
+                    5,
                     "Demand fractional passenger seconds",
                 )?,
             })
@@ -3790,6 +4243,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
             population: from_db_u64(region_population, "Region Population")
                 .map_err(|field| invalid_value(path, field))?,
             settlements,
+            bulletin,
             rail_authority: RailAuthority {
                 name: authority_name,
                 rail_network: RailNetwork {
@@ -4540,14 +4994,27 @@ fn validate_infrastructure_projects(
     for project in &authority.infrastructure_projects {
         if project.funding.estimated_cost.cents() < 0
             || project.funding.authority_committed.cents() < 0
+            || project.funding.operator_contributed.cents() < 0
+            || project.funding.access_fee_credit_awarded.cents() < 0
+            || project.funding.access_fee_credit_remaining.cents() < 0
         {
             return Err(SaveValidationError::InvalidValue {
                 field: "Infrastructure Project funding amount",
             });
         }
-        if project.funding.authority_committed > project.funding.estimated_cost {
+        if project.funding.total_funded()? > project.funding.estimated_cost {
             return Err(SaveValidationError::ImpossibleState {
-                reason: "Infrastructure Project commitment exceeds estimated cost",
+                reason: "Infrastructure Project funding exceeds estimated cost",
+            });
+        }
+        if project.funding.operator_contributed > project.funding.operator_contribution_cap()? {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Infrastructure Project operator contribution exceeds its cap",
+            });
+        }
+        if project.funding.access_fee_credit_remaining > project.funding.access_fee_credit_awarded {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "Infrastructure Project access credit remaining exceeds awarded credit",
             });
         }
         if !matches!(
@@ -4832,10 +5299,7 @@ fn validate_demand(
                 reason: "duplicate directional Passenger Demand pool",
             });
         }
-        let cap = (u128::from(demand.passenger_arrival_rate_per_hour.passengers_per_hour())
-            * u128::from(state.rules.demand.cap_duration.seconds())
-            / 3_600)
-            .min(u128::from(u32::MAX)) as u32;
+        let cap = waiting_passenger_cap(state, demand);
         if demand.waiting_passengers > cap {
             return Err(SaveValidationError::InvalidValue {
                 field: "Waiting Passengers above demand cap",
@@ -5327,6 +5791,8 @@ mod tests {
             find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))
                 .unwrap();
         dispatch_journey(&mut state, train_id, service_id, departed_at).unwrap();
+        state.origin_destination_demand[0].market_maturity =
+            MarketMaturity::from_basis_points(4_321).unwrap();
         state.origin_destination_demand[0].fractional_passenger_seconds = 1_234;
         state
     }
@@ -5362,6 +5828,12 @@ mod tests {
         let slot = SaveSlot::open(directory.save_path()).unwrap();
         let mut state = active_game();
         state.region.rail_authority.construction_capacity = 2;
+        state.region.bulletin.push(BulletinEntry {
+            occurred_at: UtcSeconds::from_unix_seconds(12_345),
+            category: BulletinCategory::Authority,
+            headline: "Alden connection approved".into(),
+            detail: "The regional case passed formal review.".into(),
+        });
         state.region.rail_authority.finances = RailAuthorityFinances {
             treasury: Money::from_cents(9_000_000),
             maintenance_reserve: Money::from_cents(1_500_000),
@@ -5369,6 +5841,7 @@ mod tests {
             carried_over_funds: Money::from_cents(750_000),
             regional_public_allocation: Money::from_cents(3_000_000),
             infrastructure_access_fee_revenue: Money::from_cents(425_000),
+            next_fiscal_period_at: Some(UtcSeconds::from_unix_seconds(25_000)),
         };
 
         slot.save(&state).unwrap();
@@ -5393,7 +5866,10 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
+        let mut reconsidered_timeline = timeline(2_004);
+        reconsidered_timeline.reconsideration_count = 2;
         state.region.rail_authority.infrastructure_projects = vec![
             InfrastructureProject {
                 id: InfrastructureProjectId::new(1),
@@ -5452,7 +5928,7 @@ mod tests {
                     rail_line_ids: vec![RailLineId::new(1)],
                 },
                 status: InfrastructureProjectStatus::Deferred,
-                timeline: timeline(2_004),
+                timeline: reconsidered_timeline,
                 funding: InfrastructureProjectFunding::default(),
             },
             InfrastructureProject {
@@ -5485,6 +5961,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         state.region.rail_authority.construction_capacity = 2;
         state.region.rail_authority.infrastructure_projects = vec![
@@ -5531,6 +6008,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         state.region.rail_authority.construction_capacity = 2;
         state.region.rail_authority.infrastructure_projects = vec![
@@ -5580,10 +6058,14 @@ mod tests {
                 completed_at: Some(UtcSeconds::from_unix_seconds(1_700)),
                 deferred_at: None,
                 cancelled_at: None,
+                reconsideration_count: 0,
             },
             funding: InfrastructureProjectFunding {
                 estimated_cost: historical_commitment,
                 authority_committed: historical_commitment,
+                operator_contributed: Money::ZERO,
+                access_fee_credit_awarded: Money::ZERO,
+                access_fee_credit_remaining: Money::ZERO,
             },
         }];
 
@@ -5606,6 +6088,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         state.region.rail_authority.infrastructure_projects = vec![
             InfrastructureProject {
@@ -6211,6 +6694,191 @@ mod tests {
         assert_eq!(journey_train_id, train_id);
         assert_eq!(model_id, "helvetra-r70");
         assert_eq!(foreign_key_violations, 0);
+    }
+
+    #[test]
+    fn v22_schema_aligns_the_next_authority_fiscal_period_to_utc_midnight() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
+                     regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0),
+                     infrastructure_access_fee_revenue_cents INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO rail_authority_finances VALUES(1, 10000000, 500000, 0, 0, 10000000, 0);
+                 CREATE TABLE game_meta (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     world_seed TEXT NOT NULL,
+                     last_processed_at INTEGER NOT NULL
+                 );
+                 INSERT INTO game_meta VALUES(1, '42', 1000);
+                 PRAGMA user_version = 22;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let next_fiscal_period_at: i64 = connection
+            .query_row(
+                "SELECT next_fiscal_period_at FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(next_fiscal_period_at, 86_400);
+    }
+
+    #[test]
+    fn v23_schema_realigns_existing_fiscal_schedule_to_next_utc_midnight() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
+                     regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0),
+                     infrastructure_access_fee_revenue_cents INTEGER NOT NULL DEFAULT 0,
+                     next_fiscal_period_at INTEGER
+                 );
+                 INSERT INTO rail_authority_finances VALUES(1, 10000000, 500000, 0, 0, 10000000, 0, 22600);
+                 CREATE TABLE game_meta (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     world_seed TEXT NOT NULL,
+                     last_processed_at INTEGER NOT NULL
+                 );
+                 INSERT INTO game_meta VALUES(1, '42', 50000);
+                 PRAGMA user_version = 23;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let next_fiscal_period_at: i64 = connection
+            .query_row(
+                "SELECT next_fiscal_period_at FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(next_fiscal_period_at, 86_400);
+    }
+
+    #[test]
+    fn v25_schema_backfills_project_reconsideration_count() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE infrastructure_projects (
+                     id TEXT PRIMARY KEY
+                 );
+                 INSERT INTO infrastructure_projects(id) VALUES('project-1');
+                 PRAGMA user_version = 25;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let reconsideration_count: i64 = connection
+            .query_row(
+                "SELECT reconsideration_count FROM infrastructure_projects WHERE id = 'project-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(reconsideration_count, 0);
+    }
+
+    #[test]
+    fn v26_schema_adds_persistent_railway_bulletin() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("PRAGMA user_version = 26;")
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let bulletin_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'bulletin_entries'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(bulletin_table, 1);
+    }
+
+    #[test]
+    fn v24_schema_backfills_existing_markets_as_fully_mature() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE origin_destination_demand (
+                     origin_station_id TEXT NOT NULL,
+                     destination_station_id TEXT NOT NULL,
+                     sequence INTEGER NOT NULL UNIQUE,
+                     waiting_passengers INTEGER NOT NULL,
+                     passenger_arrival_rate_per_hour INTEGER NOT NULL,
+                     fractional_passenger_seconds INTEGER NOT NULL,
+                     PRIMARY KEY (origin_station_id, destination_station_id)
+                 );
+                 INSERT INTO origin_destination_demand VALUES('a', 'b', 0, 12, 4, 0);
+                 PRAGMA user_version = 24;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let maturity: i64 = connection
+            .query_row(
+                "SELECT market_maturity_basis_points FROM origin_destination_demand",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(maturity, 10_000);
     }
 
     #[test]

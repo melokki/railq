@@ -412,12 +412,23 @@ impl DispatchFlow {
                     format_duration(quote.duration.seconds()),
                     format_money(quote.operating_revenue),
                 ));
-                output.push_str(&format!(
-                    "Infrastructure Access Fee: {} | Fuel Cost: {} | Paid-now total: {}\n",
-                    format_money(quote.infrastructure_access_fee),
-                    format_money(quote.fuel_cost),
-                    format_money(quote.operating_cost),
-                ));
+                if quote.infrastructure_access_fee_credit > Money::ZERO {
+                    output.push_str(&format!(
+                        "Infrastructure Access Fee: {} - {} credit = {} | Fuel Cost: {} | Paid-now total: {}\n",
+                        format_money(quote.infrastructure_access_fee_before_credit),
+                        format_money(quote.infrastructure_access_fee_credit),
+                        format_money(quote.infrastructure_access_fee),
+                        format_money(quote.fuel_cost),
+                        format_money(quote.operating_cost),
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "Infrastructure Access Fee: {} | Fuel Cost: {} | Paid-now total: {}\n",
+                        format_money(quote.infrastructure_access_fee),
+                        format_money(quote.fuel_cost),
+                        format_money(quote.operating_cost),
+                    ));
+                }
                 output.push_str(&format!(
                     "Estimated profit: {} | Company Funds after departure: {}\n",
                     format_money(quote.journey_profitability),
@@ -659,6 +670,16 @@ fn render_quote_review(
 
     let mut terms = vec![
         Line::styled("PAID AT DEPARTURE", theme::warning()),
+    ];
+    if quote.infrastructure_access_fee_credit > Money::ZERO {
+        terms.push(money_pair_line(
+            "Access before credit",
+            quote.infrastructure_access_fee_before_credit,
+            "Access credit",
+            quote.infrastructure_access_fee_credit,
+        ));
+    }
+    terms.extend([
         money_pair_line(
             "Access",
             quote.infrastructure_access_fee,
@@ -678,7 +699,7 @@ fn render_quote_review(
             "Quoted result",
             quote.journey_profitability,
         ),
-    ];
+    ]);
     if quote.boarded_passengers == 0 {
         let message = if service_stop_count(state, service_id) > 2 {
             "NO ORIGIN BOARDING · later Service stops may still board passengers."

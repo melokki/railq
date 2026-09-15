@@ -1,8 +1,8 @@
 //! Rail Authority infrastructure programme presentation.
 //!
-//! This workspace is read-only. It exposes the public infrastructure budget,
-//! construction capacity, and persisted project pipeline without allowing the
-//! Player Company to control Authority decisions directly.
+//! This workspace exposes the public infrastructure budget, construction
+//! capacity, persisted project pipeline, and optional Player Company funding
+//! contributions without giving the operator control of Authority decisions.
 
 use std::fmt::Write;
 
@@ -20,7 +20,11 @@ use crate::{
         InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus, Money,
         UtcSeconds,
     },
-    ui::{format, theme},
+    sim::authority::{
+        AUTHORITY_APPROVAL_SCORE_THRESHOLD, deferred_reconsideration_threshold,
+        local_rail_success_basis_points, project_connection_station_id, project_review_score,
+    },
+    ui::{format, modal, theme},
 };
 
 /// Persistent read-only project focus for the Authority workspace.
@@ -108,6 +112,104 @@ impl ProjectSelection {
     fn set_page_size(&mut self, page_size: usize) {
         self.page_size = page_size.max(1);
     }
+
+    pub fn selected_project_id(&mut self, state: &GameState) -> Option<InfrastructureProjectId> {
+        self.selected_project(state).map(|(_, project)| project.id)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContributionReview {
+    pub project_id: InfrastructureProjectId,
+    pub amount: Money,
+}
+
+impl ContributionReview {
+    pub fn start(state: &GameState, project_id: InfrastructureProjectId) -> Result<Self, &'static str> {
+        let project = state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .ok_or("The selected infrastructure project is no longer available.")?;
+        if project.status != InfrastructureProjectStatus::Funding {
+            return Err("Contributions are accepted only while a project is in Funding.");
+        }
+        let amount = project
+            .funding
+            .suggested_operator_contribution(state.player_company.funds)
+            .map_err(|_| "The contribution amount could not be calculated.")?;
+        if amount <= Money::ZERO {
+            return Err("No contribution can be made from the current Company Funds and project funding gap.");
+        }
+        Ok(Self { project_id, amount })
+    }
+}
+
+pub fn render_contribution_review(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    review: ContributionReview,
+) {
+    let project = state
+        .region
+        .rail_authority
+        .infrastructure_projects
+        .iter()
+        .find(|project| project.id == review.project_id);
+    let Some(project) = project else {
+        return;
+    };
+    let card = modal::centered_rect(area, 70, 18);
+    let modal_areas = modal::render_shell(
+        frame,
+        card,
+        "Infrastructure Contribution",
+        modal::shortcut_line(&[("Enter", "contribute"), ("Esc", "cancel")]),
+    );
+    let remaining_cap = project
+        .funding
+        .remaining_operator_contribution_capacity()
+        .map(format::money)
+        .unwrap_or_else(|_| "—".into());
+    let mut projected_funding = project.funding.clone();
+    projected_funding.operator_contributed = projected_funding
+        .operator_contributed
+        .checked_add(review.amount)
+        .unwrap_or(projected_funding.operator_contributed);
+    let projected_credit = projected_funding
+        .operator_access_credit_value()
+        .map(format::money)
+        .unwrap_or_else(|_| "—".into());
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Project  ", theme::secondary()),
+            Span::styled(project_scope(state, project), theme::primary_value()),
+        ]),
+        Line::from(""),
+        money_line("Company Funds", state.player_company.funds),
+        money_line("Contribution", review.amount),
+        money_line("Already contributed", project.funding.operator_contributed),
+        Line::from(vec![
+            Span::styled("Access credit after opening  ", theme::secondary()),
+            Span::styled(projected_credit, theme::success()),
+        ]),
+        Line::from(vec![
+            Span::styled("Contribution capacity  ", theme::secondary()),
+            Span::styled(remaining_cap, theme::primary_value()),
+        ]),
+        Line::from(""),
+        Line::from("This is a 10% project-cost tranche, capped by the remaining funding gap,"),
+        Line::from("the 20% operator cap, and current Company Funds."),
+        Line::from("Contributing can close funding sooner but never shortens construction time."),
+        Line::from("After opening, 115% of contributed funds become finite access-fee credit on the project infrastructure."),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).style(theme::panel()).wrap(Wrap { trim: true }),
+        modal_areas.body,
+    );
 }
 
 /// Renders the public Rail Authority as a dedicated read-only workspace.
@@ -137,12 +239,12 @@ fn render_wide(
     selection: &mut ProjectSelection,
 ) {
     let [summary_area, body_area] =
-        Layout::vertical([Constraint::Length(9), Constraint::Fill(1)]).areas(area);
+        Layout::vertical([Constraint::Length(10), Constraint::Fill(1)]).areas(area);
     let [finance_area, programme_area] =
         Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
             .spacing(1)
             .areas(summary_area);
-    render_finances(frame, finance_area, state);
+    render_finances(frame, finance_area, state, now);
     render_programme(frame, programme_area, state);
 
     let [projects_area, inspector_area] =
@@ -161,12 +263,12 @@ fn render_compact(
     selection: &mut ProjectSelection,
 ) {
     let [summary_area, projects_area, inspector_area] = Layout::vertical([
-        Constraint::Length(8),
+        Constraint::Length(9),
         Constraint::Length(8),
         Constraint::Fill(1),
     ])
     .areas(area);
-    render_finances(frame, summary_area, state);
+    render_finances(frame, summary_area, state, now);
     render_projects(frame, projects_area, state, now, selection, true);
     render_project_inspector(frame, inspector_area, state, now, selection);
 }
@@ -181,7 +283,7 @@ fn render_tiny(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSeconds
     );
 }
 
-fn render_finances(frame: &mut Frame, area: Rect, state: &GameState) {
+fn render_finances(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSeconds) {
     let authority = &state.region.rail_authority;
     let finances = &authority.finances;
     let available = finances
@@ -201,11 +303,15 @@ fn render_finances(frame: &mut Frame, area: Rect, state: &GameState) {
         ]),
         money_line("Maintenance reserve", finances.maintenance_reserve),
         money_line("Committed projects", finances.committed_investment),
-        money_line("Regional allocation", finances.regional_public_allocation),
+        money_line("Daily public allocation", finances.regional_public_allocation),
         money_line(
             "Access-fee revenue",
             finances.infrastructure_access_fee_revenue,
         ),
+        finances
+            .next_fiscal_period_at
+            .map(|timestamp| schedule_line("Next fiscal period", timestamp, now))
+            .unwrap_or_else(|| value_line("Next fiscal period", "Scheduling pending")),
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -302,7 +408,7 @@ fn render_projects(
             Paragraph::new(vec![
                 Line::styled("No infrastructure projects yet.", theme::secondary()),
                 Line::styled(
-                    "The Authority is evaluating unconnected settlements.",
+                    "Local councils will request connections as nearby rail adoption grows.",
                     theme::secondary(),
                 ),
             ])
@@ -412,14 +518,33 @@ fn render_project_inspector(
             Span::styled("Status  ", theme::secondary()),
             Span::styled(project_status(project.status), status_style(project.status)),
         ]),
-        Line::from(""),
+    ];
+
+    append_project_development_context(&mut lines, state, project);
+    lines.push(Line::from(""));
+    lines.extend([
         money_line("Estimated cost", project.funding.estimated_cost),
         money_line("Authority committed", project.funding.authority_committed),
+        money_line("Operator contribution", project.funding.operator_contributed),
         Line::from(vec![
             Span::styled("Funding gap  ", theme::secondary()),
             Span::styled(gap, theme::primary_value()),
         ]),
-    ];
+    ]);
+    if project.funding.access_fee_credit_awarded > Money::ZERO {
+        lines.push(money_line(
+            "Access credit awarded",
+            project.funding.access_fee_credit_awarded,
+        ));
+        lines.push(money_line(
+            "Access credit remaining",
+            project.funding.access_fee_credit_remaining,
+        ));
+    } else if project.funding.operator_contributed > Money::ZERO {
+        if let Ok(projected_credit) = project.funding.operator_access_credit_value() {
+            lines.push(money_line("Projected access credit", projected_credit));
+        }
+    }
 
     append_project_scope_details(&mut lines, state, project);
     lines.push(Line::from(""));
@@ -432,6 +557,79 @@ fn render_project_inspector(
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn append_project_development_context(
+    lines: &mut Vec<Line<'static>>,
+    state: &GameState,
+    project: &InfrastructureProject,
+) {
+    let InfrastructureProjectKind::NewLine { planned_stations, .. } = &project.kind else {
+        return;
+    };
+    let Some(planned_station) = planned_stations.first() else {
+        return;
+    };
+
+    lines.push(Line::from(""));
+    lines.push(Line::styled("DEVELOPMENT CASE", theme::table_header()));
+    lines.push(Line::from(vec![
+        Span::styled("Requested by  ", theme::secondary()),
+        Span::styled(
+            format!(
+                "{} Council",
+                settlement_name(state, planned_station.settlement_id)
+            ),
+            theme::primary_value(),
+        ),
+    ]));
+
+    if let Some(connection_station_id) = project_connection_station_id(project) {
+        let maturity = local_rail_success_basis_points(
+            &state.origin_destination_demand,
+            connection_station_id,
+        );
+        lines.push(Line::from(vec![
+            Span::styled("Nearby rail adoption  ", theme::secondary()),
+            Span::styled(
+                format!(
+                    "{} · {}",
+                    maturity_percent(maturity),
+                    maturity_label(maturity)
+                ),
+                theme::primary_value(),
+            ),
+        ]));
+    }
+
+    if let Some(score) = project_review_score(&state.region, project, state.world_seed) {
+        lines.push(Line::from(vec![
+            Span::styled("Authority case  ", theme::secondary()),
+            Span::styled(
+                format!("{score} / {AUTHORITY_APPROVAL_SCORE_THRESHOLD}"),
+                if score >= AUTHORITY_APPROVAL_SCORE_THRESHOLD {
+                    theme::success()
+                } else {
+                    theme::warning()
+                },
+            ),
+        ]));
+        if project.status == InfrastructureProjectStatus::Deferred
+            && score < AUTHORITY_APPROVAL_SCORE_THRESHOLD
+        {
+            lines.push(Line::styled(
+                "Deferred: current regional value does not yet justify the project cost.",
+                theme::secondary(),
+            ));
+        }
+    }
+
+    if project.timeline.reconsideration_count > 0 {
+        lines.push(value_line(
+            "Reconsiderations",
+            &project.timeline.reconsideration_count.to_string(),
+        ));
+    }
 }
 
 fn append_project_scope_details(
@@ -530,11 +728,12 @@ fn append_timeline(
     now: UtcSeconds,
 ) {
     lines.push(Line::styled("PROJECT TIMELINE", theme::table_header()));
-    lines.push(timestamp_line(
-        "Requested",
-        project.timeline.requested_at,
-        now,
-    ));
+    let request_label = if matches!(&project.kind, InfrastructureProjectKind::NewLine { .. }) {
+        "Council request"
+    } else {
+        "Requested"
+    };
+    lines.push(timestamp_line(request_label, project.timeline.requested_at, now));
     if let Some(value) = project.timeline.approved_at {
         lines.push(timestamp_line("Approved", value, now));
     }
@@ -564,18 +763,36 @@ fn append_timeline(
         }
         InfrastructureProjectStatus::Approved => {
             lines.push(Line::styled("APPROVED", theme::table_header()));
-            lines.push(value_line("Next", "Funding"));
+            lines.push(value_line("Next", "Awaiting funding slot"));
         }
         InfrastructureProjectStatus::Deferred => {
             lines.push(Line::styled("DEFERRED", theme::table_header()));
             if let Some(value) = project.timeline.deferred_at {
                 lines.push(timestamp_line("Deferred", value, now));
             }
+            let required = deferred_reconsideration_threshold(
+                project.timeline.reconsideration_count,
+            );
+            if required <= 10_000 {
+                lines.push(value_line(
+                    "Next",
+                    &format!(
+                        "Reconsider at {} nearby rail adoption",
+                        maturity_percent(required)
+                    ),
+                ));
+            } else {
+                lines.push(value_line("Next", "No further automatic reconsideration"));
+            }
         }
         InfrastructureProjectStatus::Funding => {
             lines.push(Line::styled("FUNDING", theme::table_header()));
             let estimated = i128::from(project.funding.estimated_cost.cents()).max(0);
-            let committed = i128::from(project.funding.authority_committed.cents()).max(0);
+            let committed = project
+        .funding
+        .total_funded()
+        .map(|money| i128::from(money.cents()).max(0))
+        .unwrap_or(0);
             let percent = if estimated == 0 {
                 0
             } else {
@@ -633,7 +850,7 @@ fn append_timeline(
                     ]));
                     lines.push(Line::from(vec![
                         Span::styled("Remaining  ", theme::secondary()),
-                        Span::styled(compact_duration(remaining), theme::primary_value()),
+                        Span::styled(construction_remaining_duration(remaining), theme::primary_value()),
                     ]));
                     lines.push(progress_line("Progress", progress));
                 }
@@ -812,9 +1029,8 @@ fn project_status(status: InfrastructureProjectStatus) -> &'static str {
 fn status_style(status: InfrastructureProjectStatus) -> ratatui::style::Style {
     match status {
         InfrastructureProjectStatus::Open => theme::success(),
-        InfrastructureProjectStatus::Deferred | InfrastructureProjectStatus::Cancelled => {
-            theme::error()
-        }
+        InfrastructureProjectStatus::Deferred => theme::warning(),
+        InfrastructureProjectStatus::Cancelled => theme::error(),
         InfrastructureProjectStatus::Funding
         | InfrastructureProjectStatus::Scheduled
         | InfrastructureProjectStatus::Construction => theme::warning(),
@@ -824,7 +1040,11 @@ fn status_style(status: InfrastructureProjectStatus) -> ratatui::style::Style {
 
 fn funding_percent(project: &InfrastructureProject) -> String {
     let estimated = i128::from(project.funding.estimated_cost.cents()).max(0);
-    let committed = i128::from(project.funding.authority_committed.cents()).max(0);
+    let committed = project
+        .funding
+        .total_funded()
+        .map(|money| i128::from(money.cents()).max(0))
+        .unwrap_or(0);
     if estimated == 0 {
         return "—".into();
     }
@@ -837,11 +1057,20 @@ fn funding_percent(project: &InfrastructureProject) -> String {
 
 fn project_next(project: &InfrastructureProject, now: UtcSeconds) -> String {
     match project.status {
-        InfrastructureProjectStatus::Requested => "Review pending".into(),
-        InfrastructureProjectStatus::UnderReview => "Decision pending".into(),
-        InfrastructureProjectStatus::Proposed => "Approval pending".into(),
-        InfrastructureProjectStatus::Approved => "Funding pending".into(),
-        InfrastructureProjectStatus::Deferred => "No action".into(),
+        InfrastructureProjectStatus::Requested => "Council request · review pending".into(),
+        InfrastructureProjectStatus::UnderReview => "Authority review in progress".into(),
+        InfrastructureProjectStatus::Proposed => "Authority decision pending".into(),
+        InfrastructureProjectStatus::Approved => "Awaiting funding slot".into(),
+        InfrastructureProjectStatus::Deferred => {
+            let required = deferred_reconsideration_threshold(
+                project.timeline.reconsideration_count,
+            );
+            if required <= 10_000 {
+                format!("Needs {} adoption", maturity_percent(required))
+            } else {
+                "No further automatic review".into()
+            }
+        },
         InfrastructureProjectStatus::Funding => project
             .funding
             .funding_gap()
@@ -865,6 +1094,19 @@ fn project_next(project: &InfrastructureProject, now: UtcSeconds) -> String {
             .unwrap_or_else(|| "Opening pending".into()),
         InfrastructureProjectStatus::Open => "Complete".into(),
         InfrastructureProjectStatus::Cancelled => "Cancelled".into(),
+    }
+}
+
+fn maturity_percent(basis_points: u16) -> String {
+    format!("{}%", u32::from(basis_points).saturating_add(50) / 100)
+}
+
+fn maturity_label(basis_points: u16) -> &'static str {
+    match basis_points {
+        0..=3_499 => "Emerging",
+        3_500..=5_999 => "Growing",
+        6_000..=8_499 => "Established",
+        _ => "Mature",
     }
 }
 
@@ -966,6 +1208,20 @@ fn relative_time(timestamp: UtcSeconds, now: UtcSeconds) -> String {
     }
 }
 
+
+fn construction_remaining_duration(seconds: u64) -> String {
+    if seconds <= 30 * 60 {
+        let minutes = seconds / 60;
+        let seconds = seconds % 60;
+        if minutes == 0 {
+            return format!("{seconds}s");
+        }
+        return format!("{minutes}m {seconds:02}s");
+    }
+
+    compact_duration(seconds)
+}
+
 fn compact_duration(seconds: u64) -> String {
     if seconds < 60 {
         return format!("{seconds}s");
@@ -1041,6 +1297,10 @@ pub fn render(state: &GameState, now: UtcSeconds) -> String {
         format::money(finances.maintenance_reserve)
     )
     .expect("writing to String cannot fail");
+    if let Some(next) = finances.next_fiscal_period_at {
+        writeln!(output, "Next fiscal period: {}", relative_time(next, now))
+            .expect("writing to String cannot fail");
+    }
     writeln!(
         output,
         "Construction slots: {}/{} reserved",
@@ -1068,19 +1328,30 @@ mod tests {
     use crossterm::event::KeyCode;
 
     use crate::{
-        model::UtcSeconds,
+        model::{MarketMaturity, UtcSeconds},
         sim::{authority::advance_infrastructure_planning, world::create_new_game},
     };
 
-    use super::{ProjectSelection, compact_duration, format_project_timestamp, render};
+    use super::{
+        ProjectSelection, compact_duration, construction_remaining_duration,
+        format_project_timestamp, render,
+    };
+
+    fn establish_rail_markets(state: &mut crate::model::GameState) {
+        for pool in &mut state.origin_destination_demand {
+            pool.market_maturity = MarketMaturity::full();
+        }
+    }
 
     #[test]
     fn authority_render_exposes_budget_and_project_pipeline() {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         let world_seed = state.world_seed;
+        establish_rail_markets(&mut state);
         advance_infrastructure_planning(
             &mut state.region,
             world_seed,
+            &state.origin_destination_demand,
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();
@@ -1088,7 +1359,9 @@ mod tests {
         let output = render(&state, UtcSeconds::from_unix_seconds(0));
         assert!(output.contains("Treasury:"));
         assert!(output.contains("Available investment:"));
+        assert!(output.contains("Next fiscal period:"));
         assert!(output.contains("Projects:"));
+        assert!(output.contains("Council request"));
         assert!(output.contains(" → "));
     }
 
@@ -1101,15 +1374,21 @@ mod tests {
         );
         assert_eq!(compact_duration(8_110), "2h 15m");
         assert_eq!(compact_duration(42), "42s");
+        assert_eq!(construction_remaining_duration(1_811), "30m");
+        assert_eq!(construction_remaining_duration(1_800), "30m 00s");
+        assert_eq!(construction_remaining_duration(1_742), "29m 02s");
+        assert_eq!(construction_remaining_duration(42), "42s");
     }
 
     #[test]
     fn project_selection_tracks_project_identity() {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         let world_seed = state.world_seed;
+        establish_rail_markets(&mut state);
         advance_infrastructure_planning(
             &mut state.region,
             world_seed,
+            &state.origin_destination_demand,
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();

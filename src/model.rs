@@ -834,7 +834,31 @@ pub struct Region {
     /// The total Population of every Settlement in this Region.
     pub population: u64,
     pub settlements: Vec<Settlement>,
+    /// Persistent significant regional railway developments shown in the Bulletin workspace.
+    #[serde(default)]
+    pub bulletin: Vec<BulletinEntry>,
     pub rail_authority: RailAuthority,
+}
+
+/// High-level source/type of one persistent regional Bulletin item.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum BulletinCategory {
+    Local,
+    Authority,
+    Construction,
+    Network,
+}
+
+/// One persistent, player-facing record of a significant railway-world event.
+///
+/// Routine Train movements deliberately do not belong here; the Bulletin is a
+/// compact history of developments that materially change or explain the world.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BulletinEntry {
+    pub occurred_at: UtcSeconds,
+    pub category: BulletinCategory,
+    pub headline: String,
+    pub detail: String,
 }
 
 /// Stable fictional registration identity assigned when a Region is generated.
@@ -922,25 +946,108 @@ pub struct InfrastructureProjectTimeline {
     pub completed_at: Option<UtcSeconds>,
     pub deferred_at: Option<UtcSeconds>,
     pub cancelled_at: Option<UtcSeconds>,
+    /// Number of times a Deferred request has been reopened for reconsideration.
+    ///
+    /// Persisting this keeps council pressure monotonic across save/load and lets
+    /// later reconsiderations require a stronger rail-adoption signal.
+    #[serde(default)]
+    pub reconsideration_count: u8,
 }
 
 /// Financial commitment state for one public infrastructure project.
 ///
 /// Player/operator contributions are introduced later. For now the Authority
 /// can reserve part or all of the estimated cost from its investment budget.
+pub const PROVISIONAL_OPERATOR_CONTRIBUTION_CAP_PERCENT: u64 = 20;
+pub const PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT: u64 = 10;
+/// Provisional access-fee credit granted when an operator-funded project opens.
+/// 115% gives the contribution a modest commercial return without creating ownership.
+pub const PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT: u64 = 115;
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InfrastructureProjectFunding {
     pub estimated_cost: Money,
     pub authority_committed: Money,
+    #[serde(default)]
+    pub operator_contributed: Money,
+    #[serde(default)]
+    pub access_fee_credit_awarded: Money,
+    #[serde(default)]
+    pub access_fee_credit_remaining: Money,
 }
 
 impl InfrastructureProjectFunding {
+    pub fn total_funded(&self) -> Result<Money, CalculationError> {
+        self.authority_committed.checked_add(self.operator_contributed)
+    }
+
     pub fn funding_gap(&self) -> Result<Money, CalculationError> {
-        self.estimated_cost.checked_sub(self.authority_committed)
+        self.estimated_cost.checked_sub(self.total_funded()?)
+    }
+
+    pub fn operator_contribution_cap(&self) -> Result<Money, CalculationError> {
+        let cents = i128::from(self.estimated_cost.cents())
+            .checked_mul(i128::from(PROVISIONAL_OPERATOR_CONTRIBUTION_CAP_PERCENT))
+            .ok_or(CalculationError::Overflow {
+                operation: "operator infrastructure contribution cap",
+            })?
+            / 100;
+        let cents = i64::try_from(cents).map_err(|_| CalculationError::Overflow {
+            operation: "operator infrastructure contribution cap",
+        })?;
+        Ok(Money::from_cents(cents))
+    }
+
+    pub fn remaining_operator_contribution_capacity(&self) -> Result<Money, CalculationError> {
+        self.operator_contribution_cap()?
+            .checked_sub(self.operator_contributed)
+    }
+
+    pub fn suggested_operator_contribution(&self, company_funds: Money) -> Result<Money, CalculationError> {
+        if company_funds <= Money::ZERO {
+            return Ok(Money::ZERO);
+        }
+        let cents = i128::from(self.estimated_cost.cents())
+            .checked_mul(i128::from(PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT))
+            .ok_or(CalculationError::Overflow {
+                operation: "operator infrastructure contribution tranche",
+            })?
+            / 100;
+        let cents = i64::try_from(cents).map_err(|_| CalculationError::Overflow {
+            operation: "operator infrastructure contribution tranche",
+        })?;
+        let tranche = Money::from_cents(cents.max(1));
+        Ok(tranche
+            .min(self.funding_gap()?)
+            .min(self.remaining_operator_contribution_capacity()?)
+            .min(company_funds))
+    }
+
+    pub fn operator_access_credit_value(&self) -> Result<Money, CalculationError> {
+        let cents = i128::from(self.operator_contributed.cents())
+            .checked_mul(i128::from(PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT))
+            .ok_or(CalculationError::Overflow {
+                operation: "operator infrastructure access credit",
+            })?
+            / 100;
+        let cents = i64::try_from(cents).map_err(|_| CalculationError::Overflow {
+            operation: "operator infrastructure access credit",
+        })?;
+        Ok(Money::from_cents(cents))
+    }
+
+    pub fn award_operator_access_credit(&mut self) -> Result<Money, CalculationError> {
+        if self.access_fee_credit_awarded > Money::ZERO {
+            return Ok(self.access_fee_credit_awarded);
+        }
+        let credit = self.operator_access_credit_value()?;
+        self.access_fee_credit_awarded = credit;
+        self.access_fee_credit_remaining = credit;
+        Ok(credit)
     }
 
     pub fn is_fully_funded(&self) -> bool {
-        self.authority_committed >= self.estimated_cost
+        self.total_funded().is_ok_and(|funded| funded >= self.estimated_cost)
     }
 }
 
@@ -1081,6 +1188,22 @@ impl InfrastructureProject {
     pub fn conflicts_with(&self, other: &Self) -> bool {
         self.kind.conflicts_with(&other.kind)
     }
+
+    /// Whether an access-fee credit earned by this project applies to one Rail Line.
+    pub fn access_credit_covers_line(&self, rail_line_id: RailLineId) -> bool {
+        match &self.kind {
+            InfrastructureProjectKind::NewLine { planned_lines, .. } => {
+                planned_lines.iter().any(|line| line.id == rail_line_id)
+            }
+            InfrastructureProjectKind::SpeedUpgrade { rail_line_ids, .. }
+            | InfrastructureProjectKind::DoubleTracking { rail_line_ids, .. }
+            | InfrastructureProjectKind::Electrification { rail_line_ids }
+            | InfrastructureProjectKind::Renewal { rail_line_ids } => {
+                rail_line_ids.contains(&rail_line_id)
+            }
+            InfrastructureProjectKind::StationUpgrade { .. } => false,
+        }
+    }
 }
 
 impl RailAuthority {
@@ -1139,6 +1262,26 @@ impl RailAuthority {
             .saturating_sub(self.reserved_construction_count())
     }
 
+    /// Maximum number of projects the Authority actively finances at once.
+    ///
+    /// Keeping a small funding pipeline prevents every approved proposal from
+    /// becoming a permanently half-funded project when public cash is tight.
+    /// The provisional rule keeps two funding projects per construction slot.
+    pub fn funding_pipeline_capacity(&self) -> u32 {
+        self.construction_capacity.max(1).saturating_mul(2)
+    }
+
+    /// Number of projects currently occupying the active funding pipeline.
+    pub fn active_funding_count(&self) -> u32 {
+        u32::try_from(
+            self.infrastructure_projects
+                .iter()
+                .filter(|project| project.status == InfrastructureProjectStatus::Funding)
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+    }
+
     /// Whether a fully funded project can reserve a construction slot.
     pub fn can_schedule_construction(&self, candidate: &InfrastructureProject) -> bool {
         self.construction_slots_remaining() > 0
@@ -1166,6 +1309,8 @@ fn ids_overlap<T: Eq>(left: &[T], right: &[T]) -> bool {
 /// the portion brought forward from an earlier budget cycle once fiscal
 /// periods are introduced.
 pub const PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION: Money = Money::from_cents(10_000_000);
+/// Number of seconds in one UTC calendar day.
+const SECONDS_PER_UTC_DAY: i64 = 24 * 60 * 60;
 /// Provisional maintenance reserve per physical track-kilometre and budget cycle.
 ///
 /// This is deliberately a simple balancing value until RailQ models actual
@@ -1191,6 +1336,8 @@ pub struct RailAuthorityFinances {
     pub regional_public_allocation: Money,
     #[serde(default)]
     pub infrastructure_access_fee_revenue: Money,
+    #[serde(default)]
+    pub next_fiscal_period_at: Option<UtcSeconds>,
 }
 
 const fn default_regional_public_allocation() -> Money {
@@ -1206,8 +1353,26 @@ impl Default for RailAuthorityFinances {
             carried_over_funds: Money::ZERO,
             regional_public_allocation: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
             infrastructure_access_fee_revenue: Money::ZERO,
+            next_fiscal_period_at: None,
         }
     }
+}
+
+
+/// Returns the first UTC midnight strictly after `timestamp`.
+pub fn next_utc_midnight_after(
+    timestamp: UtcSeconds,
+) -> Result<UtcSeconds, CalculationError> {
+    let day = timestamp.unix_seconds().div_euclid(SECONDS_PER_UTC_DAY);
+    let next_day = day.checked_add(1).ok_or(CalculationError::Overflow {
+        operation: "Authority fiscal day increment",
+    })?;
+    let next = next_day
+        .checked_mul(SECONDS_PER_UTC_DAY)
+        .ok_or(CalculationError::Overflow {
+            operation: "Authority fiscal midnight calculation",
+        })?;
+    Ok(UtcSeconds::from_unix_seconds(next))
 }
 
 impl RailAuthorityFinances {
@@ -1220,8 +1385,17 @@ impl RailAuthorityFinances {
         }
     }
 
-    /// Deposits one regional public-allocation cycle into the Authority
-    /// treasury. Fiscal timing is intentionally introduced later.
+    /// Starts the Authority fiscal calendar at the next UTC midnight.
+    pub fn initialize_fiscal_calendar(
+        &mut self,
+        started_at: UtcSeconds,
+    ) -> Result<UtcSeconds, CalculationError> {
+        let next = next_utc_midnight_after(started_at)?;
+        self.next_fiscal_period_at = Some(next);
+        Ok(next)
+    }
+
+    /// Deposits one regional public-allocation cycle into the Authority treasury.
     pub fn receive_regional_public_allocation(&mut self) -> Result<Money, CalculationError> {
         self.treasury = self.treasury.checked_add(self.regional_public_allocation)?;
         Ok(self.regional_public_allocation)
@@ -1661,7 +1835,16 @@ pub struct OriginDestinationDemand {
     pub origin_station_id: RailStationId,
     pub destination_station_id: RailStationId,
     pub waiting_passengers: u32,
-    /// New Waiting Passengers generated per hour for this direction.
+    /// Long-term rail adoption for this directional market.
+    ///
+    /// This is persisted independently from the seeded potential arrival rate
+    /// so later simulation batches can grow demand through actual operation.
+    #[serde(default = "MarketMaturity::full")]
+    pub market_maturity: MarketMaturity,
+    /// Seeded/base Passenger Demand potential for this direction.
+    ///
+    /// Market maturity is persisted separately and scales this base rate in
+    /// the Passenger Demand simulation.
     pub passenger_arrival_rate_per_hour: PassengerArrivalRate,
     /// Passenger-seconds left over after the last whole-passenger update.
     ///
@@ -1669,6 +1852,55 @@ pub struct OriginDestinationDemand {
     /// It is cleared when the pool reaches the cap, so capped demand cannot
     /// become a hidden backlog.
     pub fractional_passenger_seconds: u64,
+}
+
+/// Rail-adoption maturity for one directional passenger market, expressed in
+/// basis points so growth can remain gradual without floating-point state.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct MarketMaturity(u16);
+
+impl MarketMaturity {
+    pub const FULL_BASIS_POINTS: u16 = 10_000;
+
+    pub fn from_basis_points(basis_points: i64) -> Result<Self, ValidationError> {
+        let basis_points =
+            u16::try_from(basis_points).map_err(|_| ValidationError::OutOfRange {
+                unit: "market maturity basis points",
+            })?;
+        if basis_points > Self::FULL_BASIS_POINTS {
+            return Err(ValidationError::OutOfRange {
+                unit: "market maturity basis points",
+            });
+        }
+        Ok(Self(basis_points))
+    }
+
+    pub const fn full() -> Self {
+        Self(Self::FULL_BASIS_POINTS)
+    }
+
+    pub const fn basis_points(self) -> u16 {
+        self.0
+    }
+}
+
+impl Serialize for MarketMaturity {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MarketMaturity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = i64::deserialize(deserializer)?;
+        Self::from_basis_points(value).map_err(de::Error::custom)
+    }
 }
 
 /// A positive directional Passenger Demand rate, in passengers per hour.
@@ -1818,6 +2050,7 @@ mod tests {
             carried_over_funds: Money::from_cents(100_000),
             regional_public_allocation: Money::from_cents(500_000),
             infrastructure_access_fee_revenue: Money::ZERO,
+            next_fiscal_period_at: None,
         };
 
         assert_eq!(
@@ -1912,6 +2145,7 @@ mod tests {
             carried_over_funds: Money::ZERO,
             regional_public_allocation: PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
             infrastructure_access_fee_revenue: Money::ZERO,
+            next_fiscal_period_at: None,
         };
 
         assert_eq!(
@@ -1934,6 +2168,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         let blocker = InfrastructureProject {
             id: InfrastructureProjectId::new(1),
@@ -1991,6 +2226,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         let active = InfrastructureProject {
             id: InfrastructureProjectId::new(10),
@@ -2037,6 +2273,7 @@ mod tests {
             completed_at: None,
             deferred_at: None,
             cancelled_at: None,
+            reconsideration_count: 0,
         };
         let active = InfrastructureProject {
             id: InfrastructureProjectId::new(20),
@@ -2217,6 +2454,22 @@ mod tests {
     }
 
     #[test]
+    fn authority_fiscal_calendar_uses_the_next_utc_midnight() {
+        assert_eq!(
+            next_utc_midnight_after(UtcSeconds::from_unix_seconds(0)).unwrap(),
+            UtcSeconds::from_unix_seconds(86_400)
+        );
+        assert_eq!(
+            next_utc_midnight_after(UtcSeconds::from_unix_seconds(86_399)).unwrap(),
+            UtcSeconds::from_unix_seconds(86_400)
+        );
+        assert_eq!(
+            next_utc_midnight_after(UtcSeconds::from_unix_seconds(86_400)).unwrap(),
+            UtcSeconds::from_unix_seconds(172_800)
+        );
+    }
+
+    #[test]
     fn reports_overflow_boundaries() {
         assert_eq!(
             Money::from_cents(i64::MAX).checked_add(Money::from_cents(1)),
@@ -2288,6 +2541,7 @@ mod tests {
                     population: 1_000,
                     position: crate::model::WorldPosition::default(),
                 }],
+                bulletin: vec![],
                 rail_authority: RailAuthority {
                     name: "Varelia Rail Authority".into(),
                     rail_network: RailNetwork {

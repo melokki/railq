@@ -15,7 +15,10 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::{
     catalog::model_for_train,
     model::{GameState, RailStationId, ServiceId},
-    sim::services::service_path_for_stops,
+    sim::{
+        demand::effective_arrival_rate_per_hour,
+        services::service_path_for_stops,
+    },
 };
 
 use super::{format, modal, theme};
@@ -965,7 +968,7 @@ fn service_waiting_demand(state: &GameState, stops: &[RailStationId]) -> (u32, u
             }) {
                 waiting = waiting.saturating_add(demand.waiting_passengers);
                 arrival_rate = arrival_rate
-                    .saturating_add(demand.passenger_arrival_rate_per_hour.passengers_per_hour());
+                    .saturating_add(effective_arrival_rate_per_hour(state, demand));
             }
         }
     }
