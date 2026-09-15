@@ -299,7 +299,7 @@ fn render_finances(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSec
         ]),
         money_line("Maintenance reserve", finances.maintenance_reserve),
         money_line("Committed projects", finances.committed_investment),
-        money_line("Regional allocation", finances.regional_public_allocation),
+        money_line("Daily public allocation", finances.regional_public_allocation),
         money_line(
             "Access-fee revenue",
             finances.infrastructure_access_fee_revenue,

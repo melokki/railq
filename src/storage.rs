@@ -47,7 +47,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 23;
+pub const SAVE_VERSION: u32 = 24;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -752,7 +752,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 | 17 | 18 | 19 | 20 | 21 | 22 => {}
+        16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -799,6 +799,10 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
     }
     if current_version == 22 {
         migrate_v22_to_v23(connection, path)?;
+        current_version = 23;
+    }
+    if current_version == 23 {
+        migrate_v23_to_v24(connection, path)?;
     }
     Ok(())
 }
@@ -822,7 +826,9 @@ fn migrate_v22_to_v23(connection: &Connection, path: &Path) -> Result<(), SaveSl
                     "ALTER TABLE rail_authority_finances
                      ADD COLUMN next_fiscal_period_at INTEGER;",
                 )
-                .map_err(|source| db_error("add Rail Authority fiscal calendar to", path, source))?;
+                .map_err(|source| {
+                    db_error("add Rail Authority fiscal calendar to", path, source)
+                })?;
         }
 
         let game_meta_exists: i64 = connection
@@ -831,7 +837,13 @@ fn migrate_v22_to_v23(connection: &Connection, path: &Path) -> Result<(), SaveSl
                 [],
                 |row| row.get(0),
             )
-            .map_err(|source| db_error("inspect game metadata during v23 migration in", path, source))?;
+            .map_err(|source| {
+                db_error(
+                    "inspect game metadata during v23 migration in",
+                    path,
+                    source,
+                )
+            })?;
         if finances_exist != 0 && game_meta_exists != 0 {
             connection
                 .execute_batch(
@@ -843,7 +855,9 @@ fn migrate_v22_to_v23(connection: &Connection, path: &Path) -> Result<(), SaveSl
                      )
                      WHERE singleton = 1;",
                 )
-                .map_err(|source| db_error("seed Rail Authority fiscal calendar in", path, source))?;
+                .map_err(|source| {
+                    db_error("seed Rail Authority fiscal calendar in", path, source)
+                })?;
         }
 
         connection
@@ -856,6 +870,70 @@ fn migrate_v22_to_v23(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v22 to v23 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v23_to_v24(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v23 to v24 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let finances_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'rail_authority_finances'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect Authority finances during v24 migration in", path, source))?;
+        let game_meta_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'game_meta'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "inspect game metadata during v24 migration in",
+                    path,
+                    source,
+                )
+            })?;
+
+        if finances_exist != 0 && game_meta_exists != 0 {
+            connection
+                .execute_batch(
+                    "UPDATE rail_authority_finances
+                     SET next_fiscal_period_at = (
+                         SELECT ((last_processed_at / 86400) + 1) * 86400
+                         FROM game_meta
+                         WHERE singleton = 1
+                     )
+                     WHERE singleton = 1;",
+                )
+                .map_err(|source| {
+                    db_error(
+                        "align Authority fiscal calendar to UTC midnight in",
+                        path,
+                        source,
+                    )
+                })?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 24_u32)
+            .map_err(|source| db_error("write v24 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v23 to v24 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -2693,7 +2771,9 @@ fn migrate_v20_to_v21(connection: &Connection, path: &Path) -> Result<(), SaveSl
                  ADD COLUMN operator_contributed_cents INTEGER NOT NULL DEFAULT 0
                  CHECK (operator_contributed_cents >= 0);",
             )
-            .map_err(|source| db_error("add operator infrastructure contributions to", path, source))?;
+            .map_err(|source| {
+                db_error("add operator infrastructure contributions to", path, source)
+            })?;
         connection
             .pragma_update(None, "user_version", 21_u32)
             .map_err(|source| db_error("write v21 schema version to", path, source))?;
@@ -6387,7 +6467,7 @@ mod tests {
     }
 
     #[test]
-    fn v22_schema_starts_the_next_authority_fiscal_period_from_last_processed_time() {
+    fn v22_schema_aligns_the_next_authority_fiscal_period_to_utc_midnight() {
         let directory = TestDirectory::new();
         let path = directory.save_path();
         let connection = Connection::open(&path).unwrap();
@@ -6427,7 +6507,52 @@ mod tests {
             .unwrap();
 
         assert_eq!(version, SAVE_VERSION);
-        assert_eq!(next_fiscal_period_at, 1000 + 6 * 60 * 60);
+        assert_eq!(next_fiscal_period_at, 86_400);
+    }
+
+    #[test]
+    fn v23_schema_realigns_existing_fiscal_schedule_to_next_utc_midnight() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rail_authority_finances (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     treasury_cents INTEGER NOT NULL CHECK (treasury_cents >= 0),
+                     maintenance_reserve_cents INTEGER NOT NULL CHECK (maintenance_reserve_cents >= 0),
+                     committed_investment_cents INTEGER NOT NULL CHECK (committed_investment_cents >= 0),
+                     carried_over_funds_cents INTEGER NOT NULL CHECK (carried_over_funds_cents >= 0),
+                     regional_public_allocation_cents INTEGER NOT NULL CHECK (regional_public_allocation_cents >= 0),
+                     infrastructure_access_fee_revenue_cents INTEGER NOT NULL DEFAULT 0,
+                     next_fiscal_period_at INTEGER
+                 );
+                 INSERT INTO rail_authority_finances VALUES(1, 10000000, 500000, 0, 0, 10000000, 0, 22600);
+                 CREATE TABLE game_meta (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     world_seed TEXT NOT NULL,
+                     last_processed_at INTEGER NOT NULL
+                 );
+                 INSERT INTO game_meta VALUES(1, '42', 50000);
+                 PRAGMA user_version = 23;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let next_fiscal_period_at: i64 = connection
+            .query_row(
+                "SELECT next_fiscal_period_at FROM rail_authority_finances WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(next_fiscal_period_at, 86_400);
     }
 
     #[test]

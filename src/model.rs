@@ -1279,11 +1279,8 @@ fn ids_overlap<T: Eq>(left: &[T], right: &[T]) -> bool {
 /// the portion brought forward from an earlier budget cycle once fiscal
 /// periods are introduced.
 pub const PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION: Money = Money::from_cents(10_000_000);
-/// Compressed real-time fiscal cadence used while the broader RailQ calendar is still provisional.
-///
-/// Every six real hours the Authority receives another regional public allocation.
-pub const PROVISIONAL_AUTHORITY_FISCAL_PERIOD: DurationSeconds =
-    DurationSeconds::from_seconds(6 * 60 * 60);
+/// Number of seconds in one UTC calendar day.
+const SECONDS_PER_UTC_DAY: i64 = 24 * 60 * 60;
 /// Provisional maintenance reserve per physical track-kilometre and budget cycle.
 ///
 /// This is deliberately a simple balancing value until RailQ models actual
@@ -1331,6 +1328,23 @@ impl Default for RailAuthorityFinances {
     }
 }
 
+
+/// Returns the first UTC midnight strictly after `timestamp`.
+pub fn next_utc_midnight_after(
+    timestamp: UtcSeconds,
+) -> Result<UtcSeconds, CalculationError> {
+    let day = timestamp.unix_seconds().div_euclid(SECONDS_PER_UTC_DAY);
+    let next_day = day.checked_add(1).ok_or(CalculationError::Overflow {
+        operation: "Authority fiscal day increment",
+    })?;
+    let next = next_day
+        .checked_mul(SECONDS_PER_UTC_DAY)
+        .ok_or(CalculationError::Overflow {
+            operation: "Authority fiscal midnight calculation",
+        })?;
+    Ok(UtcSeconds::from_unix_seconds(next))
+}
+
 impl RailAuthorityFinances {
     /// Creates the initial Authority budget with the first recurring public
     /// allocation already deposited.
@@ -1341,12 +1355,12 @@ impl RailAuthorityFinances {
         }
     }
 
-    /// Starts the compressed Authority fiscal calendar from a known game timestamp.
+    /// Starts the Authority fiscal calendar at the next UTC midnight.
     pub fn initialize_fiscal_calendar(
         &mut self,
         started_at: UtcSeconds,
     ) -> Result<UtcSeconds, CalculationError> {
-        let next = started_at.checked_add(PROVISIONAL_AUTHORITY_FISCAL_PERIOD)?;
+        let next = next_utc_midnight_after(started_at)?;
         self.next_fiscal_period_at = Some(next);
         Ok(next)
     }
@@ -2345,6 +2359,22 @@ mod tests {
             rate.checked_charge(DistanceMetres::new(1_001).unwrap())
                 .unwrap(),
             Money::from_cents(2)
+        );
+    }
+
+    #[test]
+    fn authority_fiscal_calendar_uses_the_next_utc_midnight() {
+        assert_eq!(
+            next_utc_midnight_after(UtcSeconds::from_unix_seconds(0)).unwrap(),
+            UtcSeconds::from_unix_seconds(86_400)
+        );
+        assert_eq!(
+            next_utc_midnight_after(UtcSeconds::from_unix_seconds(86_399)).unwrap(),
+            UtcSeconds::from_unix_seconds(86_400)
+        );
+        assert_eq!(
+            next_utc_midnight_after(UtcSeconds::from_unix_seconds(86_400)).unwrap(),
+            UtcSeconds::from_unix_seconds(172_800)
         );
     }
 
