@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::OptionalExtension;
 
 pub(super) fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
     let mut version = read_schema_version(connection, path, "read schema version from")?;

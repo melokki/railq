@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::OptionalExtension;
 
 pub(super) fn clear_state(
     transaction: &Transaction<'_>,
