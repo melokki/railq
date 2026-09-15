@@ -62,6 +62,86 @@ pub struct MapLocationSelection {
     selected_settlement_id: Option<SettlementId>,
 }
 
+/// Presentation state and input ownership for the primary operational Map.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MapWorkspace {
+    location_selection: MapLocationSelection,
+    world_details_visible: bool,
+}
+
+/// Intent emitted by Map input which must be handled by the outer Shell.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MapWorkspaceAction {
+    Continue,
+    ClearNotice,
+    OpenServices,
+    StartDispatch,
+}
+
+/// Result of routing a key while the World Details overlay owns focus.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorldDetailsKeyAction {
+    Continue,
+    Closed,
+    ClosedForNavigation,
+}
+
+impl MapWorkspace {
+    /// Routes input owned by the operational Map.
+    pub fn handle_key(&mut self, key: KeyCode, state: &GameState) -> MapWorkspaceAction {
+        match key {
+            KeyCode::Char('w' | 'W') => {
+                self.world_details_visible = true;
+                MapWorkspaceAction::ClearNotice
+            }
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Char('h' | 'H' | 'j' | 'J' | 'k' | 'K' | 'l' | 'L') => {
+                self.location_selection.handle_key(key, state);
+                MapWorkspaceAction::ClearNotice
+            }
+            KeyCode::Char('s' | 'S') => MapWorkspaceAction::OpenServices,
+            KeyCode::Char('d' | 'D') => MapWorkspaceAction::StartDispatch,
+            _ => MapWorkspaceAction::Continue,
+        }
+    }
+
+    /// Routes input while World Details is the focused informational overlay.
+    pub fn handle_world_details_key(&mut self, key: KeyCode) -> WorldDetailsKeyAction {
+        match key {
+            KeyCode::Esc | KeyCode::Char('w' | 'W') => {
+                self.world_details_visible = false;
+                WorldDetailsKeyAction::Closed
+            }
+            KeyCode::Char(
+                '1' | '2' | '3' | '4' | '5' | '6' | 'm' | 'M' | 't' | 'T' | 'b' | 'B'
+                | 'c' | 'C' | 'a' | 'A' | 'u' | 'U',
+            ) => {
+                self.world_details_visible = false;
+                WorldDetailsKeyAction::ClosedForNavigation
+            }
+            _ => WorldDetailsKeyAction::Continue,
+        }
+    }
+
+    /// Returns whether the World Details overlay currently owns focus.
+    pub fn world_details_visible(&self) -> bool {
+        self.world_details_visible
+    }
+
+    /// Renders the operational Map with its stable location selection.
+    pub fn render_dashboard(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        render_operational_map(frame, area, state, &mut self.location_selection);
+    }
+
+    /// Clears transient Map presentation state for a fresh game.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 impl MapLocationSelection {
     /// Returns the selected Settlement after reconciling a stale selection.
     pub fn selected_settlement_id(&mut self, state: &GameState) -> Option<SettlementId> {
@@ -2889,6 +2969,8 @@ fn format_duration(seconds: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::KeyCode;
+
     use crate::{
         model::{RailStationId, UtcSeconds},
         sim::{
@@ -2898,13 +2980,50 @@ mod tests {
     };
 
     use super::{
-        MapCell, MapDirection, RAIL_LEFT, RAIL_RIGHT, TERMINAL_CELL_HEIGHT_TO_WIDTH,
+        MapCell, MapDirection, MapWorkspace, MapWorkspaceAction, RAIL_LEFT, RAIL_RIGHT,
+        TERMINAL_CELL_HEIGHT_TO_WIDTH, WorldDetailsKeyAction,
         directional_line_length, focus_rank, journey_progress_percent, journey_route_segments,
         map_place_label, operational_layout, place_link_distance_label,
         point_along_orthogonal_rail, rail_glyph, render_at, schematic_layout, selected_neighbours,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
+
+    #[test]
+    fn workspace_owns_primary_map_actions() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = MapWorkspace::default();
+
+        assert_eq!(
+            workspace.handle_key(KeyCode::Char('s'), &state),
+            MapWorkspaceAction::OpenServices
+        );
+        assert_eq!(
+            workspace.handle_key(KeyCode::Char('d'), &state),
+            MapWorkspaceAction::StartDispatch
+        );
+        assert_eq!(
+            workspace.handle_key(KeyCode::Right, &state),
+            MapWorkspaceAction::ClearNotice
+        );
+    }
+
+    #[test]
+    fn workspace_owns_world_details_focus() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = MapWorkspace::default();
+
+        assert_eq!(
+            workspace.handle_key(KeyCode::Char('w'), &state),
+            MapWorkspaceAction::ClearNotice
+        );
+        assert!(workspace.world_details_visible());
+        assert_eq!(
+            workspace.handle_world_details_key(KeyCode::Char('2')),
+            WorldDetailsKeyAction::ClosedForNavigation
+        );
+        assert!(!workspace.world_details_visible());
+    }
 
     #[test]
     fn map_shows_every_settlement_and_the_seeded_rail_lines_without_colour() {

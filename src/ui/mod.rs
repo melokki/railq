@@ -217,8 +217,7 @@ pub struct Shell {
     active_view: View,
     dispatch_flow: Option<dispatch::DispatchFlow>,
     dispatch_returns_to_fleet: bool,
-    map_location_selection: map::MapLocationSelection,
-    world_details_visible: bool,
+    map_workspace: map::MapWorkspace,
     services_open: bool,
     service_workspace: services::ServiceWorkspace,
     fleet_workspace: fleet::FleetWorkspace,
@@ -242,8 +241,7 @@ impl Shell {
             active_view: View::Map,
             dispatch_flow: None,
             dispatch_returns_to_fleet: false,
-            map_location_selection: map::MapLocationSelection::default(),
-            world_details_visible: false,
+            map_workspace: map::MapWorkspace::default(),
             services_open: false,
             service_workspace: services::ServiceWorkspace::default(),
             fleet_workspace: fleet::FleetWorkspace::default(),
@@ -355,19 +353,16 @@ impl Shell {
             return ShellAction::Continue;
         }
 
-        if self.world_details_visible {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('w' | 'W') => {
-                    self.world_details_visible = false;
+        if self.map_workspace.world_details_visible() {
+            match self.map_workspace.handle_world_details_key(key.code) {
+                map::WorldDetailsKeyAction::Continue => return ShellAction::Continue,
+                map::WorldDetailsKeyAction::Closed => {
                     self.notice = None;
                     return ShellAction::Continue;
                 }
-                KeyCode::Char(
-                    '1' | '2' | '3' | '4' | '5' | '6' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A' | 'u' | 'U',
-                ) => {
-                    self.world_details_visible = false;
+                map::WorldDetailsKeyAction::ClosedForNavigation => {
+                    self.notice = None;
                 }
-                _ => return ShellAction::Continue,
             }
         }
 
@@ -537,25 +532,30 @@ impl Shell {
             {
                 self.bulletin_workspace.handle_key(key.code, state);
             }
-            KeyCode::Char('w' | 'W') if self.active_view == View::Map => {
-                self.world_details_visible = true;
-                self.notice = None;
+            _ if self.active_view == View::Map => {
+                return self.handle_map_key(key, state);
             }
-            KeyCode::Left
-            | KeyCode::Right
-            | KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::Char('h' | 'H' | 'j' | 'J' | 'k' | 'K' | 'l' | 'L')
-                if self.active_view == View::Map =>
-            {
-                self.map_location_selection.handle_key(key.code, state);
-                self.notice = None;
+            _ if self.active_view == View::Company => {
+                return self.handle_company_key(key, state);
             }
-            KeyCode::Char('s' | 'S') if self.active_view == View::Map => {
+            _ => {}
+        }
+        ShellAction::Continue
+    }
+
+    fn handle_map_key(&mut self, key: KeyEvent, state: &GameState) -> ShellAction {
+        match self.map_workspace.handle_key(key.code, state) {
+            map::MapWorkspaceAction::Continue => ShellAction::Continue,
+            map::MapWorkspaceAction::ClearNotice => {
+                self.notice = None;
+                ShellAction::Continue
+            }
+            map::MapWorkspaceAction::OpenServices => {
                 self.services_open = true;
                 self.notice = None;
+                ShellAction::Continue
             }
-            KeyCode::Char('d' | 'D') if self.active_view == View::Map => {
+            map::MapWorkspaceAction::StartDispatch => {
                 match dispatch::DispatchFlow::start(state) {
                     Ok(flow) => {
                         self.dispatch_flow = Some(flow);
@@ -564,13 +564,9 @@ impl Shell {
                     }
                     Err(message) => self.notice = Some(message.into()),
                 }
+                ShellAction::Continue
             }
-            _ if self.active_view == View::Company => {
-                return self.handle_company_key(key, state);
-            }
-            _ => {}
         }
-        ShellAction::Continue
     }
 
     fn handle_company_key(&mut self, key: KeyEvent, state: &GameState) -> ShellAction {
@@ -940,6 +936,7 @@ impl Shell {
         self.fleet_workspace.reset();
         self.market_workspace.reset();
         self.authority_workspace.reset();
+        self.map_workspace.reset();
         self.services_open = false;
         self.service_workspace = services::ServiceWorkspace::default();
         self.restart_confirmation = false;
@@ -1363,12 +1360,9 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             .service_workspace
             .render_base(frame, content_area, state);
     } else if !is_bankrupt(state) && shell.active_view == View::Map {
-        map::render_operational_map(
-            frame,
-            content_area,
-            state,
-            &mut shell.map_location_selection,
-        );
+        shell
+            .map_workspace
+            .render_dashboard(frame, content_area, state);
     } else if !is_bankrupt(state) && shell.active_view == View::Trains {
         shell
             .fleet_workspace
@@ -1444,7 +1438,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
     // Informational overlays can stack above an active workflow (for example
     // Help opened from Dispatch).  Each layer dims what is already underneath
     // it, which keeps the topmost interaction visually unambiguous.
-    if shell.world_details_visible {
+    if shell.map_workspace.world_details_visible() {
         modal::dim_backdrop(frame, area);
         render_world_details_overlay(frame, area, state);
     }
@@ -1639,7 +1633,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         actions.push(FooterShortcut::enabled("Q", "Quit"));
         return actions;
     }
-    if shell.world_details_visible {
+    if shell.map_workspace.world_details_visible() {
         return vec![
             FooterShortcut::enabled("W/Esc", "Close"),
             FooterShortcut::enabled("?", "Help"),
@@ -1935,7 +1929,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         return lines;
     }
 
-    if shell.world_details_visible {
+    if shell.map_workspace.world_details_visible() {
         lines.extend([
             "Current · World Details".into(),
             "w / Esc Return to Map".into(),
@@ -2536,7 +2530,7 @@ mod tests {
             ),
             ShellAction::Continue
         );
-        assert!(shell.world_details_visible);
+        assert!(shell.map_workspace.world_details_visible());
 
         let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
         let registration = format!(
@@ -2569,7 +2563,7 @@ mod tests {
             shell.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
             ShellAction::Continue
         );
-        assert!(!shell.world_details_visible);
+        assert!(!shell.map_workspace.world_details_visible());
     }
 
     #[test]
