@@ -1820,13 +1820,6 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             FooterShortcut::enabled("Q", "Quit"),
         ];
     }
-    if shell.authority_workspace.has_modal() {
-        return vec![
-            FooterShortcut::enabled("Enter", "Contribute"),
-            FooterShortcut::enabled("Esc", "Cancel"),
-            FooterShortcut::enabled("Q", "Quit"),
-        ];
-    }
     if shell.train_nickname_editor.is_some() {
         return vec![
             FooterShortcut::enabled("Enter", "Save"),
@@ -2001,29 +1994,16 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             items
         }
     } else if shell.active_view == View::Authority {
-        if state
-            .region
-            .rail_authority
-            .infrastructure_projects
-            .is_empty()
-        {
-            vec![FooterShortcut::disabled("↑↓", "Project")]
-        } else {
-            let mut items = vec![FooterShortcut::enabled(
-                if compact { "↑↓" } else { "↑↓/JK" },
-                "Project",
-            )];
-            if wide {
-                items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
-            }
-            let can_contribute = shell.authority_workspace.can_contribute(state);
-            items.push(if can_contribute {
-                FooterShortcut::enabled("F", "Contribute")
-            } else {
-                FooterShortcut::disabled("F", "Contribute")
-            });
-            items
-        }
+        shell
+            .authority_workspace
+            .shortcuts(state, compact, wide)
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect()
     } else if shell.active_view == View::Bulletin {
         let mut items = vec![FooterShortcut::enabled(
             if compact { "↑↓" } else { "↑↓/JK" },
@@ -2386,14 +2366,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
             }
         }
         View::Authority => {
-            lines.extend([
-                "Current · Rail Authority".into(),
-                "↑↓ / jk Select infrastructure project".into(),
-                "PgUp / PgDn Scroll project pipeline".into(),
-                "f Contribute to selected project while it is in Funding".into(),
-                String::new(),
-                "The Authority controls public infrastructure; operator contributions are optional.".into(),
-            ]);
+            lines.extend(shell.authority_workspace.help_lines());
         }
         View::Bulletin => {
             lines.extend([

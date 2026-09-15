@@ -140,6 +140,31 @@ pub enum AuthorityWorkspaceAction {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityShortcut {
+    pub key: String,
+    pub action: String,
+    pub enabled: bool,
+}
+
+impl AuthorityShortcut {
+    fn enabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: true,
+        }
+    }
+
+    fn disabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: false,
+        }
+    }
+}
+
 /// Owns presentation state and keyboard interaction for the Rail Authority workspace.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AuthorityWorkspace {
@@ -159,6 +184,66 @@ impl AuthorityWorkspace {
             .selected_project_id(state)
             .and_then(|project_id| ContributionReview::start(state, project_id).ok())
             .is_some()
+    }
+
+    /// Returns the contextual footer actions for the current Authority step.
+    pub fn shortcuts(
+        &mut self,
+        state: &GameState,
+        compact: bool,
+        wide: bool,
+    ) -> Vec<AuthorityShortcut> {
+        if self.has_modal() {
+            return vec![
+                AuthorityShortcut::enabled("Enter", "Contribute"),
+                AuthorityShortcut::enabled("Esc", "Cancel"),
+            ];
+        }
+
+        if state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .is_empty()
+        {
+            return vec![AuthorityShortcut::disabled("↑↓", "Project")];
+        }
+
+        let mut items = vec![AuthorityShortcut::enabled(
+            if compact { "↑↓" } else { "↑↓/JK" },
+            "Project",
+        )];
+        if wide {
+            items.push(AuthorityShortcut::enabled("PgUp/PgDn", "Page"));
+        }
+        items.push(if self.can_contribute(state) {
+            AuthorityShortcut::enabled("F", "Contribute")
+        } else {
+            AuthorityShortcut::disabled("F", "Contribute")
+        });
+        items
+    }
+
+    /// Returns help content for the currently focused Authority state.
+    pub fn help_lines(&self) -> Vec<String> {
+        if self.has_modal() {
+            return vec![
+                "Current · Infrastructure Contribution".into(),
+                "Enter Confirm contribution".into(),
+                "Esc Cancel contribution".into(),
+                String::new(),
+                "The Rail Authority keeps ownership of the infrastructure.".into(),
+            ];
+        }
+
+        vec![
+            "Current · Rail Authority".into(),
+            "↑↓ / jk Select infrastructure project".into(),
+            "PgUp / PgDn Scroll project pipeline".into(),
+            "f Contribute to selected project while it is in Funding".into(),
+            String::new(),
+            "The Authority controls public infrastructure; operator contributions are optional.".into(),
+        ]
     }
 
     /// Routes one Authority-owned keyboard event. Global view navigation remains a Shell concern.
@@ -1529,6 +1614,10 @@ mod tests {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         state.region.rail_authority.infrastructure_projects.clear();
         let mut workspace = AuthorityWorkspace::default();
+        let shortcuts = workspace.shortcuts(&state, false, true);
+        assert_eq!(shortcuts.len(), 1);
+        assert_eq!(shortcuts[0].key, "↑↓");
+        assert!(!shortcuts[0].enabled);
 
         assert_eq!(
             workspace.handle_key(key(KeyCode::Down), &state),
@@ -1565,11 +1654,29 @@ mod tests {
 
         let mut workspace = AuthorityWorkspace::default();
         assert!(workspace.can_contribute(&state));
+        assert!(
+            workspace
+                .shortcuts(&state, false, true)
+                .iter()
+                .any(|shortcut| shortcut.key == "F" && shortcut.enabled)
+        );
         assert_eq!(
             workspace.handle_key(key(KeyCode::Char('f')), &state),
             AuthorityWorkspaceAction::ClearNotice
         );
         assert!(workspace.has_modal());
+        let modal_shortcuts = workspace.shortcuts(&state, false, true);
+        assert_eq!(
+            modal_shortcuts
+                .iter()
+                .map(|shortcut| shortcut.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Enter", "Esc"]
+        );
+        assert_eq!(
+            workspace.help_lines().first().map(String::as_str),
+            Some("Current · Infrastructure Contribution")
+        );
 
         let action = workspace.handle_key(key(KeyCode::Enter), &state);
         assert!(matches!(
