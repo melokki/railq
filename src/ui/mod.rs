@@ -1634,7 +1634,7 @@ fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
         || (is_bankrupt(state) && shell.restart_confirmation)
         || shell.dispatch_flow.is_some()
         || shell.fleet_flow.is_some()
-        || shell.market_workspace.is_confirming()
+        || shell.market_workspace.has_modal()
         || (shell.services_open && shell.service_workspace.has_modal())
 }
 
@@ -1686,7 +1686,7 @@ fn render_focused_modal(
         flow.render_review(frame, content_area, state);
         return;
     }
-    if shell.market_workspace.is_confirming() {
+    if shell.market_workspace.has_modal() {
         shell
             .market_workspace
             .render_modal(frame, content_area, state);
@@ -2052,41 +2052,16 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         ));
         items
     } else if shell.active_view == View::BuyTrains {
-        if shell.market_workspace.has_flow() {
-            if shell.market_workspace.is_selecting_delivery() {
-                let mut items = vec![FooterShortcut::enabled(
-                    if compact { "↑↓" } else { "↑↓/JK" },
-                    "Station",
-                )];
-                if wide {
-                    items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
-                }
-                items.push(FooterShortcut::enabled("Enter", "Review"));
-                items.push(FooterShortcut::enabled("←", "Model"));
-                items.push(FooterShortcut::enabled("Esc", "Cancel"));
-                items
-            } else {
-                vec![
-                    FooterShortcut::enabled("Enter", "Purchase"),
-                    FooterShortcut::enabled("←", "Back"),
-                    FooterShortcut::enabled("Esc", "Cancel"),
-                ]
-            }
-        } else {
-            let mut items = vec![FooterShortcut::enabled(
-                if compact { "↑↓" } else { "↑↓/JK" },
-                "Model",
-            )];
-            if wide {
-                items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
-            }
-            items.push(if shell.market_workspace.purchase_available(state) {
-                FooterShortcut::enabled("Enter", "Buy")
-            } else {
-                FooterShortcut::disabled("Enter", "Buy")
-            });
-            items
-        }
+        shell
+            .market_workspace
+            .shortcuts(state, compact, wide)
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect()
     } else {
         vec![FooterShortcut::enabled("Enter", "Details")]
     };
@@ -2272,21 +2247,11 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         return lines;
     }
 
-    if shell.active_view == View::BuyTrains && shell.market_workspace.has_flow() {
-        lines.push("Current · Train Purchase".into());
-        if shell.market_workspace.is_selecting_delivery() {
-            lines.extend([
-                "↑↓ / jk Select the delivery Rail Station".into(),
-                "Enter Review purchase".into(),
-                "← / Backspace Previous step   Esc Cancel".into(),
-            ]);
-        } else {
-            lines.extend([
-                "Enter Confirm purchase".into(),
-                "← / Backspace Previous step   Esc Cancel".into(),
-            ]);
+    if shell.active_view == View::BuyTrains {
+        if let Some(market_lines) = shell.market_workspace.help_lines() {
+            lines.extend(market_lines);
+            return lines;
         }
-        return lines;
     }
 
     if shell.active_view == View::Trains && shell.fleet_flow.is_some() {

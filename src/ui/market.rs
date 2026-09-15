@@ -96,6 +96,32 @@ pub enum MarketWorkspaceAction {
     },
 }
 
+/// One contextual footer action owned by the Market workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarketShortcut {
+    pub key: String,
+    pub action: String,
+    pub enabled: bool,
+}
+
+impl MarketShortcut {
+    fn enabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: true,
+        }
+    }
+
+    fn disabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: false,
+        }
+    }
+}
+
 /// Owns all presentation state and keyboard interaction for the Train Market.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MarketWorkspace {
@@ -110,15 +136,83 @@ impl MarketWorkspace {
     }
 
     /// Returns whether delivery Rail Station selection currently owns the content area.
-    pub fn is_selecting_delivery(&self) -> bool {
+    fn is_selecting_delivery(&self) -> bool {
         self.flow
             .as_ref()
             .is_some_and(MarketFlow::is_selecting_delivery)
     }
 
-    /// Returns whether the purchase review is currently shown as a focused modal.
-    pub fn is_confirming(&self) -> bool {
+    /// Returns whether this workspace currently owns the focused modal layer.
+    pub fn has_modal(&self) -> bool {
         self.flow.as_ref().is_some_and(MarketFlow::is_confirming)
+    }
+
+    /// Returns the contextual footer actions for the current Market step.
+    pub fn shortcuts(
+        &mut self,
+        state: &GameState,
+        compact: bool,
+        wide: bool,
+    ) -> Vec<MarketShortcut> {
+        if self.has_flow() {
+            if self.is_selecting_delivery() {
+                let mut items = vec![MarketShortcut::enabled(
+                    if compact { "↑↓" } else { "↑↓/JK" },
+                    "Station",
+                )];
+                if wide {
+                    items.push(MarketShortcut::enabled("PgUp/PgDn", "Page"));
+                }
+                items.extend([
+                    MarketShortcut::enabled("Enter", "Review"),
+                    MarketShortcut::enabled("←", "Model"),
+                    MarketShortcut::enabled("Esc", "Cancel"),
+                ]);
+                return items;
+            }
+
+            return vec![
+                MarketShortcut::enabled("Enter", "Purchase"),
+                MarketShortcut::enabled("←", "Back"),
+                MarketShortcut::enabled("Esc", "Cancel"),
+            ];
+        }
+
+        let mut items = vec![MarketShortcut::enabled(
+            if compact { "↑↓" } else { "↑↓/JK" },
+            "Model",
+        )];
+        if wide {
+            items.push(MarketShortcut::enabled("PgUp/PgDn", "Page"));
+        }
+        items.push(if self.purchase_available(state) {
+            MarketShortcut::enabled("Enter", "Buy")
+        } else {
+            MarketShortcut::disabled("Enter", "Buy")
+        });
+        items
+    }
+
+    /// Returns focused help text when a purchase flow owns input.
+    pub fn help_lines(&self) -> Option<Vec<String>> {
+        if !self.has_flow() {
+            return None;
+        }
+
+        let mut lines = vec!["Current · Train Purchase".into()];
+        if self.is_selecting_delivery() {
+            lines.extend([
+                "↑↓ / jk Select the delivery Rail Station".into(),
+                "Enter Review purchase".into(),
+                "← / Backspace Previous step   Esc Cancel".into(),
+            ]);
+        } else {
+            lines.extend([
+                "Enter Confirm purchase".into(),
+                "← / Backspace Previous step   Esc Cancel".into(),
+            ]);
+        }
+        Some(lines)
     }
 
     /// Routes one Market-owned keyboard event. Global view navigation remains a Shell concern.
@@ -1664,7 +1758,7 @@ mod tests {
             workspace.handle_key(key(KeyCode::Enter), &state),
             MarketWorkspaceAction::Continue
         );
-        assert!(workspace.is_confirming());
+        assert!(workspace.has_modal());
 
         assert!(matches!(
             workspace.handle_key(key(KeyCode::Enter), &state),
@@ -1673,6 +1767,37 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn workspace_owns_contextual_controls_and_help_for_purchase_steps() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = MarketWorkspace::default();
+
+        let catalogue = workspace.shortcuts(&state, false, true);
+        assert!(catalogue.iter().any(|item| item.action == "Model"));
+        assert!(catalogue.iter().any(|item| item.action == "Page"));
+        assert!(
+            catalogue
+                .iter()
+                .any(|item| item.action == "Buy" && item.enabled)
+        );
+        assert!(workspace.help_lines().is_none());
+
+        workspace.handle_key(key(KeyCode::Enter), &state);
+        let delivery = workspace.shortcuts(&state, false, true);
+        assert!(delivery.iter().any(|item| item.action == "Station"));
+        assert!(delivery.iter().any(|item| item.action == "Review"));
+        assert!(
+            workspace
+                .help_lines()
+                .is_some_and(|lines| lines.iter().any(|line| line == "Enter Review purchase"))
+        );
+
+        workspace.handle_key(key(KeyCode::Enter), &state);
+        let confirmation = workspace.shortcuts(&state, false, true);
+        assert!(confirmation.iter().any(|item| item.action == "Purchase"));
+        assert!(workspace.has_modal());
     }
 
     #[test]
