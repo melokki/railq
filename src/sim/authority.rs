@@ -58,6 +58,10 @@ const NEW_LINE_BASE_CONSTRUCTION_DURATION: DurationSeconds =
 const LOW_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 2 * 60;
 const MODERATE_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 3 * 60;
 const HIGH_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 4 * 60;
+/// Maximum number of missed daily fiscal periods applied when RailQ catches up
+/// after being closed. Older missed periods are skipped so long absences do not
+/// turn into unlimited unattended public funding.
+const MAX_OFFLINE_FISCAL_CATCHUP_PERIODS: u32 = 3;
 
 /// Why an explicit Rail Authority project action cannot be completed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,6 +246,12 @@ pub fn advance_authority_fiscal_periods(
             break;
         };
         if next_period > now {
+            break;
+        }
+
+        if processed >= MAX_OFFLINE_FISCAL_CATCHUP_PERIODS {
+            authority.finances.next_fiscal_period_at =
+                Some(crate::model::next_utc_midnight_after(now)?);
             break;
         }
 
@@ -1059,6 +1069,35 @@ mod tests {
             state.region.rail_authority.finances.next_fiscal_period_at,
             Some(UtcSeconds::from_unix_seconds(4 * 86_400))
         );
+    }
+
+    #[test]
+    fn fiscal_calendar_caps_long_offline_catch_up_at_three_periods() {
+        let started = UtcSeconds::from_unix_seconds(10_000);
+        let mut state = create_new_game(42, "One More Prime", started);
+        let allocation = state
+            .region
+            .rail_authority
+            .finances
+            .regional_public_allocation;
+        let treasury_before = state.region.rail_authority.finances.treasury;
+
+        let now = UtcSeconds::from_unix_seconds(14 * 86_400 + 12 * 60 * 60);
+        let processed = advance_authority_fiscal_periods(&mut state.region, now).unwrap();
+
+        assert_eq!(processed, MAX_OFFLINE_FISCAL_CATCHUP_PERIODS);
+        assert_eq!(
+            state.region.rail_authority.finances.next_fiscal_period_at,
+            Some(UtcSeconds::from_unix_seconds(15 * 86_400))
+        );
+        let maximum_without_maintenance = treasury_before
+            .checked_add(
+                allocation
+                    .checked_mul(u64::from(MAX_OFFLINE_FISCAL_CATCHUP_PERIODS))
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(state.region.rail_authority.finances.treasury < maximum_without_maintenance);
     }
 
     #[test]
