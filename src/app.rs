@@ -4,6 +4,10 @@
 //! is written before it replaces the state visible to the rest of the app, so
 //! a failed save never publishes a partial Player Company action.
 
+pub mod command;
+
+pub use command::{AppCommand, AppCommandResult};
+
 use std::{error::Error, fmt, path::PathBuf};
 
 use crate::{
@@ -144,6 +148,24 @@ impl<S> LoadedApp<S> {
 }
 
 impl<S: GameStore> App<S> {
+    /// Executes one presentation-independent application command at `now`.
+    ///
+    /// This is the migration seam for moving command routing out of the
+    /// terminal UI. Existing focused methods remain available while commands
+    /// are migrated incrementally.
+    pub fn execute(
+        &mut self,
+        command: AppCommand,
+        now: UtcSeconds,
+    ) -> Result<AppCommandResult, AppError<S::Error>> {
+        match command {
+            AppCommand::UpdateTrainNickname { train_id, nickname } => {
+                self.update_train_nickname(train_id, nickname, now)?;
+                Ok(AppCommandResult::TrainNicknameUpdated { train_id })
+            }
+        }
+    }
+
     /// Persists a freshly created Player Company before allowing play.
     pub fn start_new(store: S, state: GameState) -> Result<Self, AppError<S::Error>> {
         store.save(&state).map_err(AppError::Save)?;
@@ -441,14 +463,14 @@ mod tests {
 
     use crate::{
         catalog::train_catalogue,
-        model::{GameState, RailStationId, TrainStatus, UtcSeconds},
+        model::{GameState, RailStationId, TrainNickname, TrainStatus, UtcSeconds},
         sim::{
             economy::quote_journey, fleet::purchase_train, journeys::dispatch_journey,
             services::find_or_create_service, world::create_new_game,
         },
     };
 
-    use super::{App, AppError, GameStore};
+    use super::{App, AppCommand, AppCommandResult, AppError, GameStore};
 
     const ORIGIN: RailStationId = RailStationId::new(1);
     const DESTINATION: RailStationId = RailStationId::new(2);
@@ -511,6 +533,37 @@ mod tests {
 
         assert_eq!(app.state(), &state);
         assert_eq!(store.load().unwrap(), Some(state));
+    }
+
+    #[test]
+    fn execute_routes_train_nickname_through_the_application_boundary() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let nickname = TrainNickname::parse("North Star").unwrap();
+        let mut app = App::start_new(store.clone(), state).unwrap();
+
+        let result = app
+            .execute(
+                AppCommand::UpdateTrainNickname {
+                    train_id,
+                    nickname: Some(nickname.clone()),
+                },
+                STARTED_AT,
+            )
+            .unwrap();
+
+        assert_eq!(
+            result,
+            AppCommandResult::TrainNicknameUpdated { train_id }
+        );
+        assert_eq!(
+            app.state().player_company.fleet.trains[0]
+                .nickname
+                .as_ref(),
+            Some(&nickname)
+        );
+        assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
     }
 
     #[test]

@@ -96,7 +96,10 @@ fn run_dashboard(
                 nickname,
                 now,
             } => {
-                app.update_train_nickname(train_id, nickname, now)?;
+                app.execute(
+                    railq::app::AppCommand::UpdateTrainNickname { train_id, nickname },
+                    now,
+                )?;
             }
             ui::TerminalCommand::RestartAfterBankruptcy { world_seed, now } => {
                 app.restart_after_bankruptcy(world_seed, now)?;
