@@ -79,7 +79,6 @@ impl CatalogueSelection {
     }
 }
 
-
 /// Shell-facing outcome from the Market workspace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MarketWorkspaceAction {
@@ -1712,7 +1711,8 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use crate::{
-        model::{Money, RailStationId, UtcSeconds},
+        catalog::train_catalogue,
+        model::{RailStationId, UtcSeconds},
         sim::world::create_new_game,
     };
 
@@ -1808,9 +1808,7 @@ mod tests {
         workspace.handle_key(key(KeyCode::Enter), &state);
         assert_eq!(
             workspace.handle_key(key(KeyCode::Esc), &state),
-            MarketWorkspaceAction::Notice(
-                "Train purchase cancelled; no changes were made.".into()
-            )
+            MarketWorkspaceAction::Notice("Train purchase cancelled; no changes were made.".into())
         );
         assert!(!workspace.has_flow());
     }
