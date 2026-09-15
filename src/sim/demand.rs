@@ -14,12 +14,6 @@ const SECONDS_PER_HOUR: u128 = 60 * 60;
 const INITIAL_DEMAND_HOURS: u32 = 3;
 const INITIAL_MARKET_MATURITY_BASIS_POINTS: i64 = 2_500;
 
-// Newly opened rail markets need time to establish themselves. The mature OD
-// rate remains the single source of truth; this provisional ramp only scales
-// how quickly passengers appear during the first six hours after opening.
-const NEW_MARKET_STAGE_SECONDS: i64 = 2 * 60 * 60;
-const NEW_MARKET_MATURITY_SECONDS: i64 = 3 * NEW_MARKET_STAGE_SECONDS;
-
 // A 70 km/h railway is the current starter-network reference point. Better
 // infrastructure can make rail more attractive, but the first implementation
 // deliberately keeps the effect modest until services/frequency are modelled.
@@ -50,16 +44,19 @@ pub fn seed_directional_demand(region: &Region, world_seed: u64) -> Vec<OriginDe
                 .map(move |destination_station_id| {
                     let passenger_arrival_rate_per_hour =
                         seeded_arrival_rate(world_seed, origin_station_id, destination_station_id);
+                    let market_maturity = MarketMaturity::from_basis_points(
+                        INITIAL_MARKET_MATURITY_BASIS_POINTS,
+                    )
+                    .expect("initial market maturity is valid");
                     OriginDestinationDemand {
                         origin_station_id,
                         destination_station_id,
+                        // Keep the starter backlog generous enough for the first
+                        // service to be viable; maturity controls replenishment.
                         waiting_passengers: passenger_arrival_rate_per_hour
                             .passengers_per_hour()
                             .saturating_mul(INITIAL_DEMAND_HOURS),
-                        market_maturity: MarketMaturity::from_basis_points(
-                            INITIAL_MARKET_MATURITY_BASIS_POINTS,
-                        )
-                        .expect("initial market maturity is valid"),
+                        market_maturity,
                         passenger_arrival_rate_per_hour,
                         fractional_passenger_seconds: 0,
                     }
@@ -94,11 +91,11 @@ pub fn replenish_directional_demand(state: &mut GameState, now: UtcSeconds) {
             pool.origin_station_id,
             pool.destination_station_id,
         );
-        let effective_elapsed_seconds =
-            market_effective_elapsed_seconds(interval_start, effective_now, market_opened_at);
+        let elapsed_seconds =
+            market_elapsed_seconds(interval_start, effective_now, market_opened_at);
         replenish_pool(
             pool,
-            effective_elapsed_seconds,
+            elapsed_seconds,
             cap_duration_seconds,
             effective_rate_per_hour,
         );
@@ -110,8 +107,8 @@ pub fn replenish_directional_demand(state: &mut GameState, now: UtcSeconds) {
 ///
 /// This is intentionally idempotent. When RailQ is reopened after a project
 /// completed while offline, a newly created market catches up only from the
-/// infrastructure opening timestamp and uses the same maturity ramp as normal
-/// demand replenishment. Existing markets are never reseeded or overwritten.
+/// infrastructure opening timestamp at its persisted market maturity. Existing
+/// markets are never reseeded or overwritten.
 pub fn synchronize_directional_demand_with_network(state: &mut GameState, now: UtcSeconds) {
     let station_ids = state
         .region
@@ -156,17 +153,17 @@ pub fn synchronize_directional_demand_with_network(state: &mut GameState, now: U
                 origin_station_id,
                 destination_station_id,
             ) {
-                let effective_elapsed_seconds =
-                    market_effective_elapsed_seconds(opened_at, now, Some(opened_at));
+                let elapsed_seconds = market_elapsed_seconds(opened_at, now, Some(opened_at));
                 let effective_rate_per_hour = effective_arrival_rate_for_pair(
                     state,
                     origin_station_id,
                     destination_station_id,
                     passenger_arrival_rate_per_hour.passengers_per_hour(),
+                    pool.market_maturity,
                 );
                 replenish_pool(
                     &mut pool,
-                    effective_elapsed_seconds,
+                    elapsed_seconds,
                     cap_duration_seconds,
                     effective_rate_per_hour,
                 );
@@ -221,66 +218,31 @@ fn market_opening_time(
     }
 }
 
-/// Converts wall-clock seconds into mature-market-equivalent seconds.
+/// Returns the wall-clock time during which an OD market has existed.
 ///
-/// New markets run at 25%, 50%, and 75% of their mature arrival rate for two
-/// hours each, then at 100%. Mature starter markets simply return the elapsed
-/// wall-clock duration.
-fn market_effective_elapsed_seconds(
+/// Market maturity now scales the arrival rate directly. Opening timestamps are
+/// retained only so offline catch-up cannot create passengers before the
+/// infrastructure actually opened.
+fn market_elapsed_seconds(
     interval_start: UtcSeconds,
     interval_end: UtcSeconds,
     market_opened_at: Option<UtcSeconds>,
 ) -> u128 {
     let end = interval_end.unix_seconds();
     let start = interval_start.unix_seconds().min(end);
-    let Some(opened_at) = market_opened_at.map(UtcSeconds::unix_seconds) else {
-        return u128::try_from(end.saturating_sub(start)).unwrap_or(0);
-    };
+    let start = market_opened_at
+        .map(UtcSeconds::unix_seconds)
+        .map(|opened_at| start.max(opened_at))
+        .unwrap_or(start);
 
-    let start = start.max(opened_at);
-    if end <= start {
-        return 0;
-    }
-
-    let boundaries = [
-        opened_at,
-        opened_at.saturating_add(NEW_MARKET_STAGE_SECONDS),
-        opened_at.saturating_add(2 * NEW_MARKET_STAGE_SECONDS),
-        opened_at.saturating_add(NEW_MARKET_MATURITY_SECONDS),
-    ];
-    let mut weighted_seconds = 0_u128;
-
-    for (stage_start, stage_end, percentage) in [
-        (boundaries[0], boundaries[1], 25_u128),
-        (boundaries[1], boundaries[2], 50_u128),
-        (boundaries[2], boundaries[3], 75_u128),
-    ] {
-        let overlap_start = start.max(stage_start);
-        let overlap_end = end.min(stage_end);
-        if overlap_end > overlap_start {
-            weighted_seconds = weighted_seconds.saturating_add(
-                u128::try_from(overlap_end - overlap_start)
-                    .unwrap_or(0)
-                    .saturating_mul(percentage)
-                    / 100,
-            );
-        }
-    }
-
-    let mature_start = start.max(boundaries[3]);
-    if end > mature_start {
-        weighted_seconds =
-            weighted_seconds.saturating_add(u128::try_from(end - mature_start).unwrap_or(0));
-    }
-
-    weighted_seconds
+    u128::try_from(end.saturating_sub(start)).unwrap_or(0)
 }
 
 /// Returns the currently effective hourly Passenger Demand for one OD market.
 ///
-/// `passenger_arrival_rate_per_hour` remains the market's seeded/base rate. The
-/// effective rate is derived from the infrastructure path so future speed
-/// upgrades can influence demand without permanently rewriting that base rate.
+/// `passenger_arrival_rate_per_hour` remains the market's seeded potential. The
+/// effective rate is scaled by persistent market maturity and infrastructure
+/// attractiveness without permanently rewriting that potential.
 pub fn effective_arrival_rate_per_hour(
     state: &GameState,
     pool: &OriginDestinationDemand,
@@ -290,6 +252,7 @@ pub fn effective_arrival_rate_per_hour(
         pool.origin_station_id,
         pool.destination_station_id,
         pool.passenger_arrival_rate_per_hour.passengers_per_hour(),
+        pool.market_maturity,
     )
 }
 
@@ -306,17 +269,41 @@ fn effective_arrival_rate_for_pair(
     origin_station_id: RailStationId,
     destination_station_id: RailStationId,
     base_rate_per_hour: u32,
+    market_maturity: MarketMaturity,
 ) -> u32 {
-    let attractiveness = infrastructure_attractiveness_percent(
+    effective_arrival_rate_for_region(
         &state.region,
         origin_station_id,
         destination_station_id,
+        base_rate_per_hour,
+        market_maturity,
+    )
+}
+
+fn effective_arrival_rate_for_region(
+    region: &Region,
+    origin_station_id: RailStationId,
+    destination_station_id: RailStationId,
+    base_rate_per_hour: u32,
+    market_maturity: MarketMaturity,
+) -> u32 {
+    let maturity_basis_points = u128::from(market_maturity.basis_points());
+    if maturity_basis_points == 0 {
+        return 0;
+    }
+
+    let attractiveness = infrastructure_attractiveness_percent(
+        region,
+        origin_station_id,
+        destination_station_id,
     );
-    let adjusted = u64::from(base_rate_per_hour)
-        .saturating_mul(u64::from(attractiveness))
-        .saturating_add(50)
-        / 100;
-    u32::try_from(adjusted.max(1)).unwrap_or(u32::MAX)
+    let denominator = 100_u128 * u128::from(MarketMaturity::FULL_BASIS_POINTS);
+    let adjusted = u128::from(base_rate_per_hour)
+        .saturating_mul(u128::from(attractiveness))
+        .saturating_mul(maturity_basis_points)
+        .saturating_add(denominator / 2)
+        / denominator;
+    u32::try_from(adjusted).unwrap_or(u32::MAX)
 }
 
 /// Provisional demand attractiveness from infrastructure journey quality.
@@ -438,8 +425,9 @@ mod tests {
             ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
             InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
             InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline,
-            Money, PassengerArrivalRate, PlannedRailLine, PlannedRailStation, RailLine, RailLineId,
-            RailStation, RailStationId, SpeedKilometresPerHour, TrackCount, UtcSeconds,
+            MarketMaturity, Money, PassengerArrivalRate, PlannedRailLine, PlannedRailStation,
+            RailLine, RailLineId, RailStation, RailStationId, SpeedKilometresPerHour, TrackCount,
+            UtcSeconds,
         },
         sim::world::create_new_game,
     };
@@ -476,15 +464,28 @@ mod tests {
     }
 
     #[test]
-    fn starter_network_has_neutral_infrastructure_attractiveness() {
-        let game = game();
+    fn market_maturity_scales_effective_demand() {
+        let mut game = game();
+        game.origin_destination_demand[0].passenger_arrival_rate_per_hour =
+            PassengerArrivalRate::new(8).unwrap();
 
-        for pool in &game.origin_destination_demand {
-            assert_eq!(
-                effective_arrival_rate_per_hour(&game, pool),
-                pool.passenger_arrival_rate_per_hour.passengers_per_hour()
-            );
-        }
+        assert_eq!(
+            effective_arrival_rate_per_hour(&game, &game.origin_destination_demand[0]),
+            2
+        );
+
+        game.origin_destination_demand[0].market_maturity = MarketMaturity::full();
+        assert_eq!(
+            effective_arrival_rate_per_hour(&game, &game.origin_destination_demand[0]),
+            8
+        );
+
+        game.origin_destination_demand[0].market_maturity =
+            MarketMaturity::from_basis_points(0).unwrap();
+        assert_eq!(
+            effective_arrival_rate_per_hour(&game, &game.origin_destination_demand[0]),
+            0
+        );
     }
 
     #[test]
@@ -496,6 +497,7 @@ mod tests {
         game.origin_destination_demand[0].waiting_passengers = 0;
         game.origin_destination_demand[0].passenger_arrival_rate_per_hour =
             PassengerArrivalRate::new(8).unwrap();
+        game.origin_destination_demand[0].market_maturity = MarketMaturity::full();
         game.origin_destination_demand[0].fractional_passenger_seconds = 0;
 
         assert_eq!(
@@ -520,6 +522,7 @@ mod tests {
         let pool = &mut game.origin_destination_demand[0];
         pool.waiting_passengers = 0;
         pool.passenger_arrival_rate_per_hour = PassengerArrivalRate::new(3).unwrap();
+        pool.market_maturity = MarketMaturity::full();
         pool.fractional_passenger_seconds = 0;
 
         replenish_directional_demand(&mut game, UtcSeconds::from_unix_seconds(600));
@@ -544,6 +547,7 @@ mod tests {
         let pool = &mut game.origin_destination_demand[0];
         pool.waiting_passengers = 2;
         pool.passenger_arrival_rate_per_hour = PassengerArrivalRate::new(3).unwrap();
+        pool.market_maturity = MarketMaturity::full();
         pool.fractional_passenger_seconds = 3_000;
 
         replenish_directional_demand(&mut game, UtcSeconds::from_unix_seconds(600));
@@ -567,6 +571,7 @@ mod tests {
         game.origin_destination_demand[0].waiting_passengers = 0;
         game.origin_destination_demand[0].passenger_arrival_rate_per_hour =
             PassengerArrivalRate::new(6).unwrap();
+        game.origin_destination_demand[0].market_maturity = MarketMaturity::full();
 
         replenish_directional_demand(&mut game, UtcSeconds::from_unix_seconds(600));
         let after_first = game.origin_destination_demand[0].clone();
@@ -584,6 +589,7 @@ mod tests {
         let pool = &mut game.origin_destination_demand[0];
         pool.waiting_passengers = 0;
         pool.passenger_arrival_rate_per_hour = PassengerArrivalRate::new(7).unwrap();
+        pool.market_maturity = MarketMaturity::full();
         pool.fractional_passenger_seconds = 0;
 
         replenish_directional_demand(&mut game, UtcSeconds::from_unix_seconds(i64::MAX));
@@ -719,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn new_market_demand_ramps_before_reaching_mature_rate() {
+    fn new_market_demand_uses_persisted_maturity_instead_of_time_ramp() {
         let mut game = game();
         let existing_station_id = game.region.rail_authority.rail_network.rail_stations[0].id;
         let settlement_id = game.region.settlements[4].id;
@@ -781,11 +787,9 @@ mod tests {
                     && pool.destination_station_id == existing_station_id
             })
             .unwrap();
-        let mature_two_hour_arrivals = pool
-            .passenger_arrival_rate_per_hour
-            .passengers_per_hour()
+        assert_eq!(pool.market_maturity.basis_points(), 2_500);
+        let effective_two_hour_arrivals = effective_arrival_rate_per_hour(&game, pool)
             .saturating_mul(2);
-        assert!(pool.waiting_passengers < mature_two_hour_arrivals);
-        assert!(pool.waiting_passengers > 0);
+        assert_eq!(pool.waiting_passengers, effective_two_hour_arrivals);
     }
 }

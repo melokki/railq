@@ -5,7 +5,10 @@ use std::{error::Error, fs, path::Path};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
     balance::BalanceConfig,
-    model::{GameState, Money, MoneyPerKilometre, PassengerArrivalRate, RailStationId, UtcSeconds},
+    model::{
+        GameState, MarketMaturity, Money, MoneyPerKilometre, PassengerArrivalRate, RailStationId,
+        UtcSeconds,
+    },
     sim::{
         fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
         time::advance_time, world::create_new_game,
@@ -28,6 +31,7 @@ fn finance_fixture(waiting_passengers: u32) -> GameState {
         pool.waiting_passengers = 0;
         pool.passenger_arrival_rate_per_hour =
             PassengerArrivalRate::new(1).expect("fixture demand rate is positive");
+        pool.market_maturity = MarketMaturity::full();
         pool.fractional_passenger_seconds = 0;
     }
     state

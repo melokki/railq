@@ -7,8 +7,8 @@ use railq::{
     balance::BalanceConfig,
     catalog::train_catalogue,
     model::{
-        GameState, Money, MoneyPerKilometre, PassengerArrivalRate, RailStationId, TrainStatus,
-        UtcSeconds,
+        GameState, MarketMaturity, Money, MoneyPerKilometre, PassengerArrivalRate, RailStationId,
+        TrainStatus, UtcSeconds,
     },
     sim::{
         economy::quote_journey,
@@ -48,6 +48,7 @@ fn operating_game(company_funds: Money) -> GameState {
         pool.waiting_passengers = 0;
         pool.passenger_arrival_rate_per_hour =
             PassengerArrivalRate::new(1).expect("fixture demand rate is positive");
+        pool.market_maturity = MarketMaturity::full();
         pool.fractional_passenger_seconds = 0;
     }
 
