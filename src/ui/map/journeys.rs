@@ -17,10 +17,9 @@ use crate::{
     ui::theme,
 };
 
-use super::{
-    format_duration, journey_next_stop_station_id, journey_progress_percent, labelled_line,
-    panel_block, remaining_seconds, station_name,
-};
+use super::{format_duration, journey_progress_percent, remaining_seconds};
+use super::network::{labelled_line, panel_block, station_name};
+use super::operational::journey_next_stop_station_id;
 
 /// Presentation-only selection for the active departure board.
 ///

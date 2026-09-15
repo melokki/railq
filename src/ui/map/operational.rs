@@ -1,0 +1,1072 @@
+//! Operational geographic map presentation.
+//!
+//! This module owns map layout, rail drawing, location inspection, and active
+//! Train markers. The parent Map workspace owns input and selected location.
+
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
+};
+
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Wrap},
+};
+
+use super::{MapLocationSelection, format_distance};
+use super::geometry::{
+    MapCell, MapInk, can_place_text, draw_orthogonal_rail, map_ink_style, put_cell, put_text,
+    rail_glyph,
+};
+use super::network::{format_population, panel_block, ready_trains, station_name};
+use crate::{
+    model::{GameState, Journey, RailStationId, SettlementId, UtcSeconds},
+    sim::{
+        authority::{
+            COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS, local_rail_success_basis_points,
+            nearest_connection_station_id,
+        },
+        demand::effective_arrival_rate_per_hour,
+        services::path_between_stations,
+    },
+    ui::theme,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MapDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+// Most terminal cells are roughly twice as tall as they are wide. Keep this
+// isolated so the visual calibration can be tuned later without touching the
+// distance curve itself.
+pub(super) const TERMINAL_CELL_HEIGHT_TO_WIDTH: i32 = 2;
+
+#[derive(Clone, Debug)]
+pub(super) struct OperationalLayout {
+    pub(super) places: Vec<OperationalPlace>,
+    lines: Vec<OperationalLine>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct OperationalPlace {
+    pub(super) settlement_id: SettlementId,
+    station_id: Option<RailStationId>,
+    name: String,
+    pub(super) x: i32,
+    pub(super) y: i32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OperationalLine {
+    first_settlement_id: SettlementId,
+    second_settlement_id: SettlementId,
+    distance_metres: u64,
+    track_count: u8,
+}
+
+/// Renders one persistent operational map containing both connected and
+/// unconnected Settlements. Wide terminals keep a contextual inspector beside
+/// the network; compact terminals stack it underneath without replacing the map.
+pub(super) fn render_operational_map(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut MapLocationSelection,
+) {
+    selection.synchronize(state);
+    if area.width >= 92 && area.height >= 14 {
+        let inspector_width = if area.width >= 120 { 40 } else { 36 };
+        let [map_area, inspector_area] =
+            Layout::horizontal([Constraint::Min(48), Constraint::Length(inspector_width)])
+                .spacing(1)
+                .areas(area);
+        render_operational_network(frame, map_area, state, selection);
+        render_location_inspector(frame, inspector_area, state, selection);
+    } else if area.height >= 17 {
+        let inspector_height = area.height.min(10);
+        let [map_area, inspector_area] =
+            Layout::vertical([Constraint::Min(7), Constraint::Length(inspector_height)])
+                .spacing(1)
+                .areas(area);
+        render_operational_network(frame, map_area, state, selection);
+        render_location_inspector(frame, inspector_area, state, selection);
+    } else {
+        render_operational_network(frame, area, state, selection);
+    }
+}
+
+fn render_operational_network(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut MapLocationSelection,
+) {
+    let selected = selection.selected_settlement_id(state);
+    let block = operational_network_block(state, area.width);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let Some(layout) = operational_layout(state) else {
+        frame.render_widget(
+            Paragraph::new("No Settlements are available.")
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
+        return;
+    };
+    if inner.width < 8 || inner.height < 4 {
+        return;
+    }
+
+    let rows = render_map_rows(&layout, selected, inner.width, inner.height, state);
+    frame.render_widget(
+        Paragraph::new(rows)
+            .style(theme::panel())
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn operational_network_block(state: &GameState, width: u16) -> Block<'static> {
+    let registration = format!(
+        "{} {}",
+        state.region.railway_registration.display_code(),
+        state.region.railway_registration.mark
+    );
+
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::focused_border())
+        .title_top(Line::styled(" Network ", theme::focused_title()).left_aligned())
+        .style(theme::panel());
+
+    // Keep identity separate from the workspace name. The previous single title
+    // mixed registration and map-marker explanations into one long sentence,
+    // which made the panel harder to scan than the map itself.
+    if width >= 40 {
+        block = block.title_top(
+            Line::from(vec![
+                Span::styled(" Registration · ", theme::secondary()),
+                Span::styled(format!("{registration} "), theme::primary_value()),
+            ])
+            .right_aligned(),
+        );
+    }
+
+    // Marker meanings are spatial information, so the map keeps only this
+    // compact legend. The selected location is already identified by its map
+    // marker/label and by the inspector when one is visible.
+    if width >= 82 {
+        block = block.title_bottom(
+            Line::from(vec![
+                Span::styled(" ● ", theme::primary_value()),
+                Span::styled("station", theme::secondary()),
+                Span::styled("   ○ ", theme::secondary()),
+                Span::styled("settlement", theme::secondary()),
+                Span::styled("   ─ ", theme::secondary()),
+                Span::styled("single", theme::secondary()),
+                Span::styled("   ═ ", theme::secondary()),
+                Span::styled("double", theme::secondary()),
+                Span::styled("   ▶ ", theme::warning()),
+                Span::styled("train ", theme::secondary()),
+            ])
+            .right_aligned(),
+        );
+    }
+
+    block
+}
+
+fn render_location_inspector(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut MapLocationSelection,
+) {
+    let selected_id = selection.selected_settlement_id(state);
+    let settlement = selected_id.and_then(|selected_id| {
+        state
+            .region
+            .settlements
+            .iter()
+            .find(|settlement| settlement.id == selected_id)
+    });
+    let Some(settlement) = settlement else {
+        frame.render_widget(
+            Paragraph::new("No Settlement selected.")
+                .block(panel_block("Inspector", false))
+                .style(theme::panel()),
+            area,
+        );
+        return;
+    };
+
+    let station = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .find(|station| station.settlement_id == settlement.id);
+    let compact = area.height < 18;
+
+    // The inspector owns facts about the selected location. Connectivity and
+    // route geometry stay on the map; keyboard actions stay in the footer.
+    let lines = if let Some(station) = station {
+        let ready_count = ready_trains(state, station.id).len();
+        let service_count = state
+            .player_company
+            .passenger_services
+            .iter()
+            .filter(|service| service.stop_station_ids.contains(&station.id))
+            .count();
+
+        let mut demand = state
+            .origin_destination_demand
+            .iter()
+            .filter(|pool| pool.origin_station_id == station.id)
+            .map(|pool| {
+                (
+                    station_name(state, pool.destination_station_id),
+                    pool.waiting_passengers,
+                    effective_arrival_rate_per_hour(state, pool),
+                    pool.market_maturity.basis_points(),
+                )
+            })
+            .collect::<Vec<_>>();
+        demand.sort_by_key(|(_, waiting, _, _)| Reverse(*waiting));
+        let waiting_total = demand.iter().fold(0_u32, |total, (_, waiting, _, _)| {
+            total.saturating_add(*waiting)
+        });
+        let arrival_rate_total = demand.iter().fold(0_u32, |total, (_, _, per_hour, _)| {
+            total.saturating_add(*per_hour)
+        });
+        let average_maturity_basis_points = if demand.is_empty() {
+            0
+        } else {
+            let total = demand.iter().fold(0_u64, |total, (_, _, _, maturity)| {
+                total.saturating_add(u64::from(*maturity))
+            });
+            (total / demand.len() as u64) as u16
+        };
+
+        let mut lines = vec![
+            inspector_metric("Station", &format!("{:02}", station.id.get())),
+            inspector_metric("Population", &format_population(settlement.population)),
+        ];
+
+        if compact {
+            lines.push(inspector_metric("Ready here", &ready_count.to_string()));
+            lines.push(inspector_metric("Services", &service_count.to_string()));
+            lines.push(inspector_metric(
+                "Rail adoption",
+                &market_maturity_summary(average_maturity_basis_points),
+            ));
+            lines.push(inspector_metric(
+                "Demand",
+                &format!(
+                    "{} · +{arrival_rate_total}/h",
+                    format_population(u64::from(waiting_total))
+                ),
+            ));
+        } else {
+            lines.push(Line::from(""));
+            lines.push(inspector_section("OPERATIONS"));
+            lines.push(inspector_metric("Ready here", &ready_count.to_string()));
+            lines.push(inspector_metric("Services", &service_count.to_string()));
+
+            lines.push(Line::from(""));
+            lines.push(inspector_section("PASSENGERS"));
+            lines.push(inspector_metric(
+                "Waiting",
+                &format_population(u64::from(waiting_total)),
+            ));
+            lines.push(inspector_metric(
+                "Arrival rate",
+                &format!("+{arrival_rate_total}/h"),
+            ));
+            lines.push(inspector_metric(
+                "Rail adoption",
+                &market_maturity_summary(average_maturity_basis_points),
+            ));
+
+            if !demand.is_empty() && area.height >= 24 {
+                lines.push(Line::from(""));
+                lines.push(inspector_section("TOP MARKETS"));
+                for (name, waiting, per_hour, maturity) in demand.into_iter().take(3) {
+                    lines.push(inspector_destination_line(&name, waiting, per_hour, maturity));
+                }
+            }
+        }
+
+        lines
+    } else {
+        let mut lines = vec![inspector_metric(
+            "Population",
+            &format_population(settlement.population),
+        )];
+        let council_signal = nearest_connection_station_id(&state.region, settlement.id).map(
+            |connection_station_id| {
+                local_rail_success_basis_points(
+                    &state.origin_destination_demand,
+                    connection_station_id,
+                )
+            },
+        );
+
+        if compact {
+            lines.push(inspector_metric("Rail access", "No station"));
+            if let Some(maturity) = council_signal {
+                lines.push(inspector_metric(
+                    "Council case",
+                    &format!(
+                        "{} / {}",
+                        market_maturity_percent(maturity),
+                        market_maturity_percent(
+                            COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS
+                        )
+                    ),
+                ));
+            } else {
+                lines.push(inspector_metric("Passenger rail", "Unavailable"));
+            }
+        } else {
+            lines.push(Line::from(""));
+            lines.push(inspector_section("RAIL ACCESS"));
+            lines.push(Line::styled("No rail station", theme::primary_value()));
+            lines.push(Line::styled(
+                "Passenger services require a connection to the rail network.",
+                theme::secondary(),
+            ));
+
+            if let Some(maturity) = council_signal {
+                lines.push(Line::from(""));
+                lines.push(inspector_section("COUNCIL CONNECTION CASE"));
+                lines.push(inspector_metric(
+                    "Nearby adoption",
+                    &market_maturity_summary(maturity),
+                ));
+                lines.push(inspector_metric(
+                    "Request threshold",
+                    &market_maturity_percent(
+                        COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS,
+                    ),
+                ));
+                lines.push(Line::styled(
+                    if maturity >= COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS {
+                        "Local rail success is strong enough for a council connection request."
+                    } else {
+                        "Nearby rail use must grow before the council can request a connection."
+                    },
+                    theme::secondary(),
+                ));
+            }
+        }
+
+        lines
+    };
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel_block(&settlement.name, false))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn inspector_section(label: &str) -> Line<'static> {
+    Line::styled(label.to_owned(), theme::secondary().bold())
+}
+
+fn inspector_metric(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<15}"), theme::secondary()),
+        Span::styled(value.to_owned(), theme::primary_value()),
+    ])
+}
+
+fn inspector_destination_line(
+    name: &str,
+    waiting: u32,
+    per_hour: u32,
+    maturity_basis_points: u16,
+) -> Line<'static> {
+    let name = truncate_label(name, 13);
+    Line::from(vec![
+        Span::styled(format!("→ {name:<13}"), theme::secondary()),
+        Span::styled(
+            format!(
+                "{waiting} · +{per_hour}/h · {}",
+                market_maturity_percent(maturity_basis_points)
+            ),
+            theme::primary_value(),
+        ),
+    ])
+}
+
+fn market_maturity_summary(basis_points: u16) -> String {
+    format!(
+        "{} · {}",
+        market_maturity_percent(basis_points),
+        market_maturity_label(basis_points)
+    )
+}
+
+pub(super) fn market_maturity_percent(basis_points: u16) -> String {
+    format!("{}%", u32::from(basis_points).saturating_add(50) / 100)
+}
+
+fn market_maturity_label(basis_points: u16) -> &'static str {
+    match basis_points {
+        0..=3_499 => "Emerging",
+        3_500..=5_999 => "Growing",
+        6_000..=8_499 => "Established",
+        _ => "Mature",
+    }
+}
+
+fn truncate_label(value: &str, max_chars: usize) -> String {
+    let mut characters = value.chars();
+    let prefix = characters.by_ref().take(max_chars).collect::<String>();
+    if characters.next().is_some() && max_chars > 1 {
+        let mut shortened = prefix.chars().take(max_chars - 1).collect::<String>();
+        shortened.push('…');
+        shortened
+    } else {
+        prefix
+    }
+}
+
+pub(super) fn operational_layout(state: &GameState) -> Option<OperationalLayout> {
+    let network = &state.region.rail_authority.rail_network;
+    if state.region.settlements.is_empty() {
+        return None;
+    }
+
+    let station_by_id = network
+        .rail_stations
+        .iter()
+        .map(|station| (station.id, station))
+        .collect::<BTreeMap<_, _>>();
+    let station_by_settlement = network
+        .rail_stations
+        .iter()
+        .map(|station| (station.settlement_id, station.id))
+        .collect::<BTreeMap<_, _>>();
+
+    let places = state
+        .region
+        .settlements
+        .iter()
+        .map(|settlement| OperationalPlace {
+            settlement_id: settlement.id,
+            station_id: station_by_settlement.get(&settlement.id).copied(),
+            name: settlement.name.clone(),
+            x: settlement.position.x,
+            // Terminal cells are roughly twice as tall as they are wide.
+            // Compress world-space Y only for presentation so geography stays
+            // visually proportional while the persisted coordinates remain
+            // simulation-grade kilometres.
+            y: settlement
+                .position
+                .y
+                .div_euclid(TERMINAL_CELL_HEIGHT_TO_WIDTH),
+        })
+        .collect::<Vec<_>>();
+
+    let lines = network
+        .rail_lines
+        .iter()
+        .filter_map(|line| {
+            let first = station_by_id.get(&line.first_station_id)?;
+            let second = station_by_id.get(&line.second_station_id)?;
+            Some(OperationalLine {
+                first_settlement_id: first.settlement_id,
+                second_settlement_id: second.settlement_id,
+                distance_metres: line.distance.metres(),
+                track_count: line.track_count.tracks(),
+            })
+        })
+        .collect();
+
+    Some(OperationalLayout { places, lines })
+}
+
+fn render_map_rows(
+    layout: &OperationalLayout,
+    selected: Option<SettlementId>,
+    width: u16,
+    height: u16,
+    state: &GameState,
+) -> Vec<Line<'static>> {
+    let width = usize::from(width);
+    let height = usize::from(height);
+    let mut grid = vec![vec![MapCell::default(); width]; height];
+    let mut rail_mask = vec![vec![0_u8; width]; height];
+    let mut rail_accent = vec![vec![false; width]; height];
+    let mut rail_double = vec![vec![false; width]; height];
+
+    let min_x = layout.places.iter().map(|place| place.x).min().unwrap_or(0) - 2;
+    let max_x = layout.places.iter().map(|place| place.x).max().unwrap_or(0) + 2;
+    let min_y = layout.places.iter().map(|place| place.y).min().unwrap_or(0) - 2;
+    let max_y = layout.places.iter().map(|place| place.y).max().unwrap_or(0) + 2;
+    let logical_width = (max_x - min_x).max(1) as f64;
+    let logical_height = (max_y - min_y).max(1) as f64;
+    let width_scale = if width <= 2 {
+        1.0
+    } else {
+        (width - 1) as f64 / logical_width
+    };
+    let height_scale = if height <= 2 {
+        1.0
+    } else {
+        (height - 1) as f64 / logical_height
+    };
+    // Use one scale for both axes. The logical layout has already compensated
+    // for terminal-cell aspect ratio, so stretching X and Y independently
+    // would make the same route distance look different by orientation.
+    let map_scale = width_scale.min(height_scale).min(1.30);
+    let x_scale = map_scale;
+    let y_scale = map_scale;
+    let scaled_width = (logical_width * x_scale).round() as i32;
+    let scaled_height = (logical_height * y_scale).round() as i32;
+    let x_padding = ((i32::try_from(width).unwrap_or(i32::MAX) - scaled_width) / 2).max(0);
+    let y_padding = ((i32::try_from(height).unwrap_or(i32::MAX) - scaled_height) / 2).max(0);
+
+    let screen_position = |place: &OperationalPlace| {
+        let x = (((place.x - min_x) as f64) * x_scale).round() as i32 + x_padding;
+        let y = (((place.y - min_y) as f64) * y_scale).round() as i32 + y_padding;
+        (x, y)
+    };
+    let by_id = layout
+        .places
+        .iter()
+        .map(|place| (place.settlement_id, place))
+        .collect::<BTreeMap<_, _>>();
+    let adjacent = selected_neighbours(layout, selected);
+
+    for line in &layout.lines {
+        let (Some(first), Some(second)) = (
+            by_id.get(&line.first_settlement_id),
+            by_id.get(&line.second_settlement_id),
+        ) else {
+            continue;
+        };
+        let start = screen_position(first);
+        let end = screen_position(second);
+        let accent = selected.is_some_and(|selected_id| {
+            selected_id == line.first_settlement_id || selected_id == line.second_settlement_id
+        });
+        draw_orthogonal_rail(
+            &mut rail_mask,
+            &mut rail_accent,
+            &mut rail_double,
+            start,
+            end,
+            accent,
+            line.track_count >= 2,
+        );
+    }
+
+    for y in 0..height {
+        for x in 0..width {
+            if rail_mask[y][x] != 0 {
+                grid[y][x] = MapCell {
+                    ch: rail_glyph(rail_mask[y][x], rail_accent[y][x], rail_double[y][x]),
+                    ink: if rail_accent[y][x] {
+                        MapInk::RailAccent
+                    } else {
+                        MapInk::Rail
+                    },
+                };
+            }
+        }
+    }
+
+    // Draw place markers before moving Trains. A Train that is exactly on a
+    // station cell should win visually for that instant, while labels are
+    // placed afterwards and therefore avoid both markers and Trains.
+    for place in &layout.places {
+        let (x, y) = screen_position(place);
+        let ink = place_ink(place, selected, &adjacent);
+        let marker = if selected == Some(place.settlement_id) {
+            '◆'
+        } else if place.station_id.is_some() {
+            '●'
+        } else {
+            '○'
+        };
+        put_cell(&mut grid, x, y, marker, ink);
+    }
+
+    let place_positions = layout
+        .places
+        .iter()
+        .map(|place| (place.settlement_id, screen_position(place)))
+        .collect::<BTreeMap<_, _>>();
+    let station_positions = layout
+        .places
+        .iter()
+        .filter_map(|place| {
+            place
+                .station_id
+                .map(|station_id| (station_id, screen_position(place)))
+        })
+        .collect::<BTreeMap<_, _>>();
+    draw_active_train_markers(
+        &mut grid,
+        state,
+        &station_positions,
+        state.last_processed_at,
+    );
+
+    // Labels follow the same focus hierarchy as the markers. Place the current
+    // focus first, then its direct neighbours, so background labels cannot steal
+    // the best collision-free position from the context the player is operating.
+    // Operational counts live in the inspector instead of being repeated beside
+    // every station name.
+    let mut label_places = layout.places.iter().collect::<Vec<_>>();
+    label_places.sort_by_key(|place| focus_rank(place, selected, &adjacent));
+    for place in label_places {
+        let (x, y) = screen_position(place);
+        let label = map_place_label(place, selected);
+        let preferred_direction =
+            preferred_label_direction(place, &label, &layout.places, &place_positions, selected);
+        place_map_label(
+            &mut grid,
+            x,
+            y,
+            &label,
+            place_ink(place, selected, &adjacent),
+            preferred_direction,
+        );
+    }
+
+    // Exact distances appear only for Rail Links incident to the current
+    // selection. If every candidate would collide with a place label, Train,
+    // or rail geometry, omit the map annotation; the inspector still carries
+    // the exact distance.
+    if let Some(selected_id) = selected {
+        for line in layout.lines.iter().filter(|line| {
+            line.first_settlement_id == selected_id || line.second_settlement_id == selected_id
+        }) {
+            let (Some(first), Some(second)) = (
+                by_id.get(&line.first_settlement_id),
+                by_id.get(&line.second_settlement_id),
+            ) else {
+                continue;
+            };
+            place_link_distance_label(
+                &mut grid,
+                screen_position(first),
+                screen_position(second),
+                line.distance_metres,
+            );
+        }
+    }
+
+    grid.into_iter()
+        .map(|row| {
+            let mut spans = Vec::new();
+            let mut current_ink = MapInk::Empty;
+            let mut current = String::new();
+            for cell in row {
+                if !current.is_empty() && cell.ink != current_ink {
+                    spans.push(Span::styled(current, map_ink_style(current_ink)));
+                    current = String::new();
+                }
+                current_ink = cell.ink;
+                current.push(cell.ch);
+            }
+            if !current.is_empty() {
+                spans.push(Span::styled(current, map_ink_style(current_ink)));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct JourneyRouteSegment {
+    pub(super) from_station_id: RailStationId,
+    pub(super) to_station_id: RailStationId,
+    distance_metres: u64,
+}
+
+fn draw_active_train_markers(
+    grid: &mut [Vec<MapCell>],
+    state: &GameState,
+    station_positions: &BTreeMap<RailStationId, (i32, i32)>,
+    now: UtcSeconds,
+) {
+    let mut markers = BTreeMap::<(i32, i32), (char, usize)>::new();
+    for journey in &state.active_journeys {
+        let Some((position, glyph)) = journey_map_marker(state, journey, station_positions, now)
+        else {
+            continue;
+        };
+        markers
+            .entry(position)
+            .and_modify(|(_, count)| *count = count.saturating_add(1))
+            .or_insert((glyph, 1));
+    }
+
+    for (position, (direction, count)) in markers {
+        let glyph = match count {
+            1 => direction,
+            2..=9 => char::from_digit(u32::try_from(count).unwrap_or(9), 10).unwrap_or('+'),
+            _ => '+',
+        };
+        put_cell(grid, position.0, position.1, glyph, MapInk::Train);
+    }
+}
+
+fn journey_map_marker(
+    state: &GameState,
+    journey: &Journey,
+    station_positions: &BTreeMap<RailStationId, (i32, i32)>,
+    now: UtcSeconds,
+) -> Option<((i32, i32), char)> {
+    let segments = journey_route_segments(state, journey)?;
+    let total_distance = segments.iter().try_fold(0_u64, |total, segment| {
+        total.checked_add(segment.distance_metres)
+    })?;
+    if total_distance == 0 {
+        return None;
+    }
+
+    let total_seconds = journey
+        .arrives_at
+        .unix_seconds()
+        .saturating_sub(journey.departed_at.unix_seconds())
+        .max(1);
+    let elapsed_seconds = now
+        .unix_seconds()
+        .saturating_sub(journey.departed_at.unix_seconds())
+        .clamp(0, total_seconds);
+    let travelled_metres = total_distance as f64 * (elapsed_seconds as f64 / total_seconds as f64);
+
+    let mut distance_before = 0.0_f64;
+    for (index, segment) in segments.iter().enumerate() {
+        let segment_distance = segment.distance_metres as f64;
+        let distance_after = distance_before + segment_distance;
+        if travelled_metres <= distance_after || index + 1 == segments.len() {
+            let local_progress = if segment_distance <= f64::EPSILON {
+                0.0
+            } else {
+                ((travelled_metres - distance_before) / segment_distance).clamp(0.0, 1.0)
+            };
+            let start = station_positions.get(&segment.from_station_id).copied()?;
+            let end = station_positions.get(&segment.to_station_id).copied()?;
+            return Some(point_along_orthogonal_rail(start, end, local_progress));
+        }
+        distance_before = distance_after;
+    }
+
+    None
+}
+
+pub(super) fn journey_route_segments(
+    state: &GameState,
+    journey: &Journey,
+) -> Option<Vec<JourneyRouteSegment>> {
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)?;
+    let network = &state.region.rail_authority.rail_network;
+    let direction = journey_service_direction(service, journey)?;
+    let next_index = if direction > 0 {
+        journey.current_stop_index.checked_add(1)?
+    } else {
+        journey.current_stop_index.checked_sub(1)?
+    };
+    let from_station_id = *service.stop_station_ids.get(journey.current_stop_index)?;
+    let to_station_id = *service.stop_station_ids.get(next_index)?;
+    let line_ids = path_between_stations(network, from_station_id, to_station_id).ok()?;
+
+    let mut current_station_id = from_station_id;
+    let mut segments = Vec::with_capacity(line_ids.len());
+    for rail_line_id in line_ids {
+        let line = network
+            .rail_lines
+            .iter()
+            .find(|line| line.id == rail_line_id)?;
+        let next_station_id = if line.first_station_id == current_station_id {
+            line.second_station_id
+        } else if line.second_station_id == current_station_id {
+            line.first_station_id
+        } else {
+            return None;
+        };
+        segments.push(JourneyRouteSegment {
+            from_station_id: current_station_id,
+            to_station_id: next_station_id,
+            distance_metres: line.distance.metres(),
+        });
+        current_station_id = next_station_id;
+    }
+
+    (current_station_id == to_station_id).then_some(segments)
+}
+
+fn journey_service_direction(
+    service: &crate::model::PassengerService,
+    journey: &Journey,
+) -> Option<i32> {
+    let first = service.stop_station_ids.first().copied()?;
+    let last = service.stop_station_ids.last().copied()?;
+    if journey.origin_station_id == first && journey.destination_station_id == last {
+        Some(1)
+    } else if journey.origin_station_id == last && journey.destination_station_id == first {
+        Some(-1)
+    } else {
+        None
+    }
+}
+
+pub(super) fn journey_next_stop_station_id(state: &GameState, journey: &Journey) -> Option<RailStationId> {
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)?;
+    let direction = journey_service_direction(service, journey)?;
+    let index = if direction > 0 {
+        journey.current_stop_index.checked_add(1)?
+    } else {
+        journey.current_stop_index.checked_sub(1)?
+    };
+    service.stop_station_ids.get(index).copied()
+}
+
+pub(super) fn point_along_orthogonal_rail(
+    start: (i32, i32),
+    end: (i32, i32),
+    progress: f64,
+) -> ((i32, i32), char) {
+    let horizontal_steps = (end.0 - start.0).unsigned_abs();
+    let vertical_steps = (end.1 - start.1).unsigned_abs();
+    let total_steps = horizontal_steps.saturating_add(vertical_steps);
+    if total_steps == 0 {
+        return (start, '▶');
+    }
+
+    let progress = progress.clamp(0.0, 1.0);
+    let mut travelled_steps = if progress <= 0.0 {
+        0
+    } else if progress >= 1.0 {
+        total_steps
+    } else {
+        ((progress * f64::from(total_steps)).floor() as u32)
+            .max(1)
+            .min(total_steps.saturating_sub(1).max(1))
+    };
+
+    if travelled_steps <= horizontal_steps && horizontal_steps > 0 {
+        let direction = (end.0 - start.0).signum();
+        let x = start.0.saturating_add(
+            direction.saturating_mul(i32::try_from(travelled_steps).unwrap_or(i32::MAX)),
+        );
+        return ((x, start.1), if direction >= 0 { '▶' } else { '◀' });
+    }
+
+    travelled_steps = travelled_steps.saturating_sub(horizontal_steps);
+    let direction = (end.1 - start.1).signum();
+    let y = start.1.saturating_add(
+        direction.saturating_mul(i32::try_from(travelled_steps).unwrap_or(i32::MAX)),
+    );
+    ((end.0, y), if direction >= 0 { '▼' } else { '▲' })
+}
+
+pub(super) fn selected_neighbours(
+    layout: &OperationalLayout,
+    selected: Option<SettlementId>,
+) -> BTreeSet<SettlementId> {
+    let Some(selected) = selected else {
+        return BTreeSet::new();
+    };
+
+    layout
+        .lines
+        .iter()
+        .filter_map(|line| {
+            if line.first_settlement_id == selected {
+                Some(line.second_settlement_id)
+            } else if line.second_settlement_id == selected {
+                Some(line.first_settlement_id)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn place_ink(
+    place: &OperationalPlace,
+    selected: Option<SettlementId>,
+    adjacent: &BTreeSet<SettlementId>,
+) -> MapInk {
+    if selected == Some(place.settlement_id) {
+        MapInk::Selected
+    } else if adjacent.contains(&place.settlement_id) {
+        MapInk::ConnectedAdjacent
+    } else if place.station_id.is_some() {
+        MapInk::Connected
+    } else {
+        MapInk::Unconnected
+    }
+}
+
+pub(super) fn focus_rank(
+    place: &OperationalPlace,
+    selected: Option<SettlementId>,
+    adjacent: &BTreeSet<SettlementId>,
+) -> u8 {
+    if selected == Some(place.settlement_id) {
+        0
+    } else if adjacent.contains(&place.settlement_id) {
+        1
+    } else if place.station_id.is_some() {
+        2
+    } else {
+        3
+    }
+}
+
+pub(super) fn map_place_label(place: &OperationalPlace, selected: Option<SettlementId>) -> String {
+    if selected == Some(place.settlement_id) {
+        place.name.to_uppercase()
+    } else {
+        place.name.clone()
+    }
+}
+
+pub(super) fn place_link_distance_label(
+    grid: &mut [Vec<MapCell>],
+    start: (i32, i32),
+    end: (i32, i32),
+    distance_metres: u64,
+) {
+    let text = format_distance(distance_metres);
+    let text_width = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+    let horizontal_steps = (end.0 - start.0).abs();
+    let vertical_steps = (end.1 - start.1).abs();
+
+    let candidates = if horizontal_steps >= vertical_steps && horizontal_steps > 0 {
+        let midpoint_x = start.0 + (end.0 - start.0) / 2;
+        let start_x = midpoint_x - text_width / 2;
+        vec![(start_x, start.1 - 1), (start_x, start.1 + 1)]
+    } else {
+        let midpoint_y = start.1 + (end.1 - start.1) / 2;
+        let rail_x = end.0;
+        vec![
+            (rail_x + 2, midpoint_y),
+            (rail_x - text_width - 2, midpoint_y),
+        ]
+    };
+
+    if let Some((x, y)) = candidates
+        .into_iter()
+        .find(|(x, y)| can_place_text(grid, *x, *y, &text))
+    {
+        put_text(grid, x, y, &text, MapInk::RailLabel);
+    }
+}
+
+fn preferred_label_direction(
+    place: &OperationalPlace,
+    label: &str,
+    places: &[OperationalPlace],
+    positions: &BTreeMap<SettlementId, (i32, i32)>,
+    selected: Option<SettlementId>,
+) -> Option<MapDirection> {
+    let &(x, y) = positions.get(&place.settlement_id)?;
+    let own_width = i32::try_from(label.chars().count()).unwrap_or(i32::MAX);
+
+    places
+        .iter()
+        .filter(|other| other.settlement_id != place.settlement_id)
+        .filter_map(|other| {
+            let &(other_x, other_y) = positions.get(&other.settlement_id)?;
+            let other_label = map_place_label(other, selected);
+            let other_width = i32::try_from(other_label.chars().count()).unwrap_or(i32::MAX);
+            let dx = other_x - x;
+            let dy = other_y - y;
+            let horizontal = dx.abs() >= dy.abs();
+            let crowded = if horizontal {
+                dy.abs() <= 2 && dx.abs() <= ((own_width + other_width) / 2 + 6).max(12)
+            } else {
+                dx.abs() <= 3 && dy.abs() <= 6
+            };
+            crowded.then_some((dx.abs() + dy.abs(), dx, dy))
+        })
+        .min_by_key(|(distance, _, _)| *distance)
+        .map(|(_, dx, dy)| {
+            if dx.abs() >= dy.abs() {
+                if dx > 0 {
+                    MapDirection::Left
+                } else {
+                    MapDirection::Right
+                }
+            } else if dy > 0 {
+                MapDirection::Up
+            } else {
+                MapDirection::Down
+            }
+        })
+}
+
+fn place_map_label(
+    grid: &mut [Vec<MapCell>],
+    marker_x: i32,
+    marker_y: i32,
+    text: &str,
+    ink: MapInk,
+    preferred_direction: Option<MapDirection>,
+) {
+    let label_width = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+    let centered_x = marker_x - label_width / 2;
+    let position_for = |direction| match direction {
+        MapDirection::Up => (centered_x, marker_y - 1),
+        MapDirection::Down => (centered_x, marker_y + 1),
+        MapDirection::Right => (marker_x + 2, marker_y),
+        MapDirection::Left => (marker_x - label_width - 2, marker_y),
+    };
+
+    let mut candidates = Vec::with_capacity(4);
+    if let Some(direction) = preferred_direction {
+        candidates.push(position_for(direction));
+    }
+    for direction in [
+        MapDirection::Up,
+        MapDirection::Down,
+        MapDirection::Right,
+        MapDirection::Left,
+    ] {
+        let candidate = position_for(direction);
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+
+    if let Some((x, y)) = candidates
+        .into_iter()
+        .find(|(x, y)| can_place_text(grid, *x, *y, text))
+    {
+        put_text(grid, x, y, text, ink);
+        return;
+    }
+
+    // Very small terminals may leave no collision-free row. In that case,
+    // prefer the normal centred-above placement and let put_text clip safely.
+    put_text(grid, centered_x, marker_y - 1, text, ink);
+}

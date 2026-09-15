@@ -17,7 +17,8 @@ use ratatui::{
     },
 };
 
-use super::{format_distance, market_maturity_percent, train_model_name};
+use super::{format_distance, train_model_name};
+use super::operational::market_maturity_percent;
 use super::journeys::{
     JourneySelection, render_compact_journey_board, render_journey_inspector,
     render_journey_workspace,
@@ -306,15 +307,15 @@ fn render_settlement_workspace(
 /// horizontal lane, and the stable ID order separates stations vertically.
 /// They intentionally describe a schematic, not geography.
 #[derive(Clone, Debug, PartialEq)]
-struct SchematicLayout {
-    stations: Vec<SchematicStation>,
+pub(super) struct SchematicLayout {
+    pub(super) stations: Vec<SchematicStation>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct SchematicStation {
-    station_id: RailStationId,
-    x: f64,
-    y: f64,
+pub(super) struct SchematicStation {
+    pub(super) station_id: RailStationId,
+    pub(super) x: f64,
+    pub(super) y: f64,
     name: String,
 }
 
