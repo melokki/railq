@@ -159,6 +159,27 @@ impl<S: GameStore> App<S> {
         now: UtcSeconds,
     ) -> Result<AppCommandResult, AppError<S::Error>> {
         match command {
+            AppCommand::PurchaseTrain {
+                catalogue_index,
+                delivery_station_id,
+            } => {
+                let train_id = self.purchase_train(catalogue_index, delivery_station_id, now)?;
+                Ok(AppCommandResult::TrainPurchased { train_id })
+            }
+            AppCommand::SellTrain { train_id } => {
+                let proceeds = self.sell_train(train_id, now)?;
+                Ok(AppCommandResult::TrainSold { train_id, proceeds })
+            }
+            AppCommand::ContributeInfrastructure { project_id, amount } => {
+                self.contribute_to_infrastructure_project(project_id, amount, now)?;
+                Ok(AppCommandResult::InfrastructureContributionRecorded { project_id, amount })
+            }
+            AppCommand::UpdateCompanyVkm {
+                vehicle_keeper_mark,
+            } => {
+                self.update_company_vkm(vehicle_keeper_mark, now)?;
+                Ok(AppCommandResult::CompanyVkmUpdated)
+            }
             AppCommand::UpdateTrainNickname { train_id, nickname } => {
                 self.update_train_nickname(train_id, nickname, now)?;
                 Ok(AppCommandResult::TrainNicknameUpdated { train_id })
@@ -652,13 +673,29 @@ mod tests {
         store.fail_next_save.set(true);
 
         assert!(matches!(
-            app.purchase_train(0, ORIGIN, STARTED_AT),
+            app.execute(
+                AppCommand::PurchaseTrain {
+                    catalogue_index: 0,
+                    delivery_station_id: ORIGIN,
+                },
+                STARTED_AT,
+            ),
             Err(AppError::Save(TestStoreError::SimulatedWriteFailure))
         ));
         assert_eq!(app.state(), &before);
         assert_eq!(store.load().unwrap(), Some(before));
 
-        app.purchase_train(0, ORIGIN, STARTED_AT).unwrap();
+        let result = app
+            .execute(
+                AppCommand::PurchaseTrain {
+                    catalogue_index: 0,
+                    delivery_station_id: ORIGIN,
+                },
+                STARTED_AT,
+            )
+            .unwrap();
+        let train_id = app.state().player_company.fleet.trains[0].id;
+        assert_eq!(result, AppCommandResult::TrainPurchased { train_id });
         assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
         assert_eq!(app.state().player_company.fleet.trains.len(), 1);
     }
@@ -717,8 +754,18 @@ mod tests {
         let funds_before_sale = state.player_company.funds;
         let mut app = App::start_new(store.clone(), state).unwrap();
 
-        let proceeds = app.sell_train(train_id, STARTED_AT).unwrap();
+        let result = app
+            .execute(AppCommand::SellTrain { train_id }, STARTED_AT)
+            .unwrap();
+        let AppCommandResult::TrainSold {
+            train_id: sold_train_id,
+            proceeds,
+        } = result
+        else {
+            panic!("expected TrainSold command result");
+        };
 
+        assert_eq!(sold_train_id, train_id);
         assert_eq!(proceeds.cents(), expected_proceeds);
         assert_eq!(
             app.state().player_company.funds.cents(),
@@ -913,6 +960,29 @@ mod tests {
 
         assert!(app.state().player_company.passenger_services.is_empty());
         assert_eq!(store.load().unwrap(), Some(app.state().clone()));
+    }
+
+    #[test]
+    fn execute_updates_company_vkm_through_the_application_boundary() {
+        let store = TestStore::default();
+        let mut app = App::start_new(store.clone(), new_game()).unwrap();
+        let vehicle_keeper_mark = crate::model::VehicleKeeperMark::parse("OMP").unwrap();
+
+        let result = app
+            .execute(
+                AppCommand::UpdateCompanyVkm {
+                    vehicle_keeper_mark: vehicle_keeper_mark.clone(),
+                },
+                STARTED_AT,
+            )
+            .unwrap();
+
+        assert_eq!(result, AppCommandResult::CompanyVkmUpdated);
+        assert_eq!(
+            app.state().player_company.vehicle_keeper_mark,
+            vehicle_keeper_mark
+        );
+        assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
     }
 
     #[test]

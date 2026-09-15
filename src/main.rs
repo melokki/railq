@@ -57,10 +57,16 @@ fn run_dashboard(
                 delivery_station_id,
                 now,
             } => {
-                app.purchase_train(catalogue_index, delivery_station_id, now)?;
+                app.execute(
+                    railq::app::AppCommand::PurchaseTrain {
+                        catalogue_index,
+                        delivery_station_id,
+                    },
+                    now,
+                )?;
             }
             ui::TerminalCommand::SellTrain { train_id, now } => {
-                app.sell_train(train_id, now)?;
+                app.execute(railq::app::AppCommand::SellTrain { train_id }, now)?;
             }
             ui::TerminalCommand::CreatePassengerService {
                 stop_station_ids,
@@ -82,14 +88,22 @@ fn run_dashboard(
                 vehicle_keeper_mark,
                 now,
             } => {
-                app.update_company_vkm(vehicle_keeper_mark, now)?;
+                app.execute(
+                    railq::app::AppCommand::UpdateCompanyVkm {
+                        vehicle_keeper_mark,
+                    },
+                    now,
+                )?;
             }
             ui::TerminalCommand::ContributeInfrastructure {
                 project_id,
                 amount,
                 now,
             } => {
-                app.contribute_to_infrastructure_project(project_id, amount, now)?;
+                app.execute(
+                    railq::app::AppCommand::ContributeInfrastructure { project_id, amount },
+                    now,
+                )?;
             }
             ui::TerminalCommand::UpdateTrainNickname {
                 train_id,
