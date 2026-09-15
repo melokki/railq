@@ -74,16 +74,28 @@ fn run_dashboard(
                 app.execute(railq::app::AppCommand::SellTrain { train_id }, now)?;
             }
             ui::TerminalCommand::CreatePassengerService { stop_station_ids } => {
-                app.create_passenger_service(stop_station_ids, now)?;
+                app.execute(
+                    railq::app::AppCommand::CreatePassengerService { stop_station_ids },
+                    now,
+                )?;
             }
             ui::TerminalCommand::UpdatePassengerService {
                 service_id,
                 stop_station_ids,
             } => {
-                app.update_passenger_service(service_id, stop_station_ids, now)?;
+                app.execute(
+                    railq::app::AppCommand::UpdatePassengerService {
+                        service_id,
+                        stop_station_ids,
+                    },
+                    now,
+                )?;
             }
             ui::TerminalCommand::DeletePassengerService { service_id } => {
-                app.delete_passenger_service(service_id, now)?;
+                app.execute(
+                    railq::app::AppCommand::DeletePassengerService { service_id },
+                    now,
+                )?;
             }
             ui::TerminalCommand::UpdateCompanyVkm {
                 vehicle_keeper_mark,

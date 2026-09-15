@@ -170,6 +170,21 @@ impl<S: GameStore> App<S> {
                 let proceeds = self.sell_train(train_id, now)?;
                 Ok(AppCommandResult::TrainSold { train_id, proceeds })
             }
+            AppCommand::CreatePassengerService { stop_station_ids } => {
+                let service_id = self.create_passenger_service(stop_station_ids, now)?;
+                Ok(AppCommandResult::PassengerServiceCreated { service_id })
+            }
+            AppCommand::UpdatePassengerService {
+                service_id,
+                stop_station_ids,
+            } => {
+                self.update_passenger_service(service_id, stop_station_ids, now)?;
+                Ok(AppCommandResult::PassengerServiceUpdated { service_id })
+            }
+            AppCommand::DeletePassengerService { service_id } => {
+                self.delete_passenger_service(service_id, now)?;
+                Ok(AppCommandResult::PassengerServiceDeleted { service_id })
+            }
             AppCommand::ManualDispatch {
                 train_id,
                 service_id,
@@ -729,6 +744,47 @@ mod tests {
         ));
         assert_eq!(app.state(), &before);
         assert_eq!(store.load().unwrap(), Some(before));
+    }
+
+    #[test]
+    fn execute_routes_passenger_service_lifecycle_through_the_application_boundary() {
+        let store = TestStore::default();
+        let mut app = App::start_new(store.clone(), new_game()).unwrap();
+        let stops = vec![ORIGIN, DESTINATION];
+
+        let created = app
+            .execute(
+                AppCommand::CreatePassengerService {
+                    stop_station_ids: stops.clone(),
+                },
+                STARTED_AT,
+            )
+            .unwrap();
+        let AppCommandResult::PassengerServiceCreated { service_id } = created else {
+            panic!("expected PassengerServiceCreated command result");
+        };
+
+        assert_eq!(
+            app.execute(
+                AppCommand::UpdatePassengerService {
+                    service_id,
+                    stop_station_ids: stops,
+                },
+                STARTED_AT,
+            )
+            .unwrap(),
+            AppCommandResult::PassengerServiceUpdated { service_id }
+        );
+        assert_eq!(
+            app.execute(
+                AppCommand::DeletePassengerService { service_id },
+                STARTED_AT,
+            )
+            .unwrap(),
+            AppCommandResult::PassengerServiceDeleted { service_id }
+        );
+        assert!(app.state().player_company.passenger_services.is_empty());
+        assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
     }
 
     #[test]

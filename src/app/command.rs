@@ -18,6 +18,17 @@ pub enum AppCommand {
     },
     /// Sell one READY owned Train.
     SellTrain { train_id: TrainId },
+    /// Create one persistent directional Passenger Service.
+    CreatePassengerService {
+        stop_station_ids: Vec<RailStationId>,
+    },
+    /// Update the stop pattern of one unused Passenger Service.
+    UpdatePassengerService {
+        service_id: ServiceId,
+        stop_station_ids: Vec<RailStationId>,
+    },
+    /// Delete one unused Passenger Service.
+    DeletePassengerService { service_id: ServiceId },
     /// Authorise one Manual Dispatch over an existing Passenger Service.
     ManualDispatch {
         train_id: TrainId,
@@ -46,6 +57,12 @@ pub enum AppCommandResult {
     TrainPurchased { train_id: TrainId },
     /// One Train sale was durably committed.
     TrainSold { train_id: TrainId, proceeds: Money },
+    /// One Passenger Service creation was durably committed.
+    PassengerServiceCreated { service_id: ServiceId },
+    /// One Passenger Service update was durably committed.
+    PassengerServiceUpdated { service_id: ServiceId },
+    /// One Passenger Service deletion was durably committed.
+    PassengerServiceDeleted { service_id: ServiceId },
     /// One Manual Dispatch was durably committed.
     JourneyDispatched { journey_id: JourneyId },
     /// One infrastructure contribution was durably committed.
