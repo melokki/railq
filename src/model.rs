@@ -834,7 +834,31 @@ pub struct Region {
     /// The total Population of every Settlement in this Region.
     pub population: u64,
     pub settlements: Vec<Settlement>,
+    /// Persistent significant regional railway developments shown in the Bulletin workspace.
+    #[serde(default)]
+    pub bulletin: Vec<BulletinEntry>,
     pub rail_authority: RailAuthority,
+}
+
+/// High-level source/type of one persistent regional Bulletin item.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum BulletinCategory {
+    Local,
+    Authority,
+    Construction,
+    Network,
+}
+
+/// One persistent, player-facing record of a significant railway-world event.
+///
+/// Routine Train movements deliberately do not belong here; the Bulletin is a
+/// compact history of developments that materially change or explain the world.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BulletinEntry {
+    pub occurred_at: UtcSeconds,
+    pub category: BulletinCategory,
+    pub headline: String,
+    pub detail: String,
 }
 
 /// Stable fictional registration identity assigned when a Region is generated.
@@ -2517,6 +2541,7 @@ mod tests {
                     population: 1_000,
                     position: crate::model::WorldPosition::default(),
                 }],
+                bulletin: vec![],
                 rail_authority: RailAuthority {
                     name: "Varelia Rail Authority".into(),
                     rail_network: RailNetwork {

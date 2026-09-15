@@ -588,6 +588,7 @@ mod tests {
                         position: crate::model::WorldPosition::default(),
                     },
                 ],
+                bulletin: vec![],
                 rail_authority: RailAuthority {
                     name: "Fixture Rail Authority".into(),
                     rail_network: RailNetwork {

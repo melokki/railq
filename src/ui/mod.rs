@@ -41,6 +41,7 @@ use crate::{
 };
 
 pub mod authority;
+pub mod bulletin;
 pub mod company;
 pub mod dispatch;
 pub mod fleet;
@@ -58,7 +59,7 @@ pub const ARRIVAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MINIMUM_COLUMNS: u16 = 64;
 const MINIMUM_ROWS: u16 = 16;
 
-/// The five primary views in the RailQ terminal shell.
+/// The six primary views in the RailQ terminal shell.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum View {
     /// The Rail Network overview and operational home.
@@ -72,6 +73,8 @@ pub enum View {
     BuyTrains,
     /// The public Rail Authority infrastructure programme.
     Authority,
+    /// Persistent significant regional railway developments.
+    Bulletin,
 }
 
 impl View {
@@ -82,6 +85,7 @@ impl View {
             Self::Company => "Company",
             Self::BuyTrains => "Market",
             Self::Authority => "Authority",
+            Self::Bulletin => "Bulletin",
         }
     }
 
@@ -92,6 +96,7 @@ impl View {
             Self::BuyTrains => '3',
             Self::Company => '4',
             Self::Authority => '5',
+            Self::Bulletin => '6',
         }
     }
 }
@@ -216,7 +221,7 @@ struct PendingAction {
     funds_before: Money,
 }
 
-/// Presentation-only state shared by the five primary views.
+/// Presentation-only state shared by the six primary views.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Shell {
     active_view: View,
@@ -234,6 +239,7 @@ pub struct Shell {
     market_selection: market::CatalogueSelection,
     authority_project_selection: authority::ProjectSelection,
     authority_contribution_review: Option<authority::ContributionReview>,
+    bulletin_workspace: bulletin::BulletinWorkspace,
     company_receipt_selection: company::ReceiptSelection,
     company_receipt_details_open: bool,
     company_recovery_selection: company::RecoverySelection,
@@ -268,6 +274,7 @@ impl Shell {
             market_selection: market::CatalogueSelection::default(),
             authority_project_selection: authority::ProjectSelection::default(),
             authority_contribution_review: None,
+            bulletin_workspace: bulletin::BulletinWorkspace::default(),
             company_receipt_selection: company::ReceiptSelection::default(),
             company_receipt_details_open: false,
             company_recovery_selection: company::RecoverySelection::default(),
@@ -407,7 +414,7 @@ impl Shell {
                     return ShellAction::Continue;
                 }
                 KeyCode::Char(
-                    '1' | '2' | '3' | '4' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C',
+                    '1' | '2' | '3' | '4' | '5' | '6' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A' | 'u' | 'U',
                 ) => {
                     self.world_details_visible = false;
                 }
@@ -531,7 +538,7 @@ impl Shell {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
-                    '1' | '2' | '3' | '4' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
+                    '1' | '2' | '3' | '4' | '5' | '6' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A' | 'u' | 'U'
                 )
             );
             if navigation_key {
@@ -660,6 +667,10 @@ impl Shell {
                 self.active_view = View::Authority;
                 self.services_open = false;
             }
+            KeyCode::Char('6' | 'u' | 'U') => {
+                self.active_view = View::Bulletin;
+                self.services_open = false;
+            }
             KeyCode::Enter if self.active_view == View::Company => {
                 if self.company_receipt_selection.has_selection(state) {
                     self.company_receipt_details_open = true;
@@ -781,6 +792,15 @@ impl Shell {
                 if self.active_view == View::Authority =>
             {
                 self.authority_project_selection.handle_key(key.code, state);
+            }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K' | 'f' | 'F')
+                if self.active_view == View::Bulletin =>
+            {
+                self.bulletin_workspace.handle_key(key.code, state);
             }
             KeyCode::Char('w' | 'W') if self.active_view == View::Map => {
                 self.world_details_visible = true;
@@ -1523,6 +1543,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         View::BuyTrains,
         View::Company,
         View::Authority,
+        View::Bulletin,
     ];
     let selected = views
         .iter()
@@ -1609,6 +1630,8 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
             now,
             &mut shell.authority_project_selection,
         );
+    } else if shell.active_view == View::Bulletin && !is_bankrupt(state) {
+        shell.bulletin_workspace.render(frame, content_area, state, now);
     } else {
         let content = if is_bankrupt(state) {
             bankruptcy_text(false)
@@ -1622,6 +1645,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
                 },
                 View::Company => company::render(state),
                 View::Authority => authority::render(state, now),
+                View::Bulletin => "Railway Bulletin".into(),
             }
         };
         frame.render_widget(
@@ -2089,6 +2113,19 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             });
             items
         }
+    } else if shell.active_view == View::Bulletin {
+        let mut items = vec![FooterShortcut::enabled(
+            if compact { "↑↓" } else { "↑↓/JK" },
+            "Item",
+        )];
+        if wide {
+            items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
+        }
+        items.push(FooterShortcut::enabled(
+            "F",
+            format!("Filter · {}", shell.bulletin_workspace.filter_label()),
+        ));
+        items
     } else if shell.active_view == View::BuyTrains {
         if let Some(flow) = &shell.market_flow {
             if flow.is_selecting_delivery() {
@@ -2240,6 +2277,7 @@ fn tab_label(view: View, compact: bool) -> String {
         (View::BuyTrains, true) => "Mkt",
         (View::Company, true) => "Co",
         (View::Authority, true) => "Auth",
+        (View::Bulletin, true) => "News",
         (View::Trains, false) => "Trains",
         (View::BuyTrains, false) => "Market",
         _ => view.label(),
@@ -2262,8 +2300,8 @@ const HELP_PAGE_STEP: usize = 5;
 fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     let mut lines = vec![
         "Navigation".into(),
-        "1 Map   2 Trains   3 Market   4 Company   5 Authority".into(),
-        "m / t / b / c / a also switch workspaces".into(),
+        "1 Map   2 Trains   3 Market   4 Company   5 Authority   6 Bulletin".into(),
+        "m / t / b / c / a / u also switch workspaces".into(),
         String::new(),
     ];
 
@@ -2357,7 +2395,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         lines.extend([
             "Current · Journey Receipt".into(),
             "Esc Back to Journey history".into(),
-            "1–5 Switch workspace".into(),
+            "1–6 Switch workspace".into(),
         ]);
         return lines;
     }
@@ -2487,6 +2525,16 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                 "f Contribute to selected project while it is in Funding".into(),
                 String::new(),
                 "The Authority controls public infrastructure; operator contributions are optional.".into(),
+            ]);
+        }
+        View::Bulletin => {
+            lines.extend([
+                "Current · Railway Bulletin".into(),
+                "↑↓ / jk Select development".into(),
+                "PgUp / PgDn Scroll history".into(),
+                "f Cycle Local / Authority / Construction / Network filters".into(),
+                String::new(),
+                "The Bulletin records significant world developments, not routine Train movements.".into(),
             ]);
         }
     }
@@ -2916,7 +2964,7 @@ mod tests {
     };
 
     #[test]
-    fn routes_the_five_primary_views_by_number_and_keeps_letter_aliases() {
+    fn routes_the_six_primary_views_by_number_and_keeps_letter_aliases() {
         let mut shell = Shell::new();
         let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
@@ -2926,11 +2974,13 @@ mod tests {
             ('3', View::BuyTrains),
             ('1', View::Map),
             ('5', View::Authority),
+            ('6', View::Bulletin),
             ('t', View::Trains),
             ('c', View::Company),
             ('b', View::BuyTrains),
             ('m', View::Map),
             ('a', View::Authority),
+            ('u', View::Bulletin),
         ] {
             assert_eq!(
                 shell.handle_key(

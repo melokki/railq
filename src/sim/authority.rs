@@ -8,7 +8,8 @@
 use std::{collections::BTreeSet, error::Error, fmt};
 
 use crate::model::{
-    CalculationError, ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
+    BulletinCategory, BulletinEntry, CalculationError, ConstructionDifficulty, DistanceMetres,
+    DurationSeconds, Electrification,
     GameState, InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
     InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline, Money,
     MoneyPerKilometre, PlannedRailLine, PlannedRailStation, RailLine, RailLineId, RailStation,
@@ -84,6 +85,43 @@ const HIGH_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 4 * 60;
 /// turn into unlimited unattended public funding.
 const MAX_OFFLINE_FISCAL_CATCHUP_PERIODS: u32 = 3;
 
+fn project_target_settlement_name(region: &Region, project_index: usize) -> String {
+    let Some(project) = region
+        .rail_authority
+        .infrastructure_projects
+        .get(project_index)
+    else {
+        return "Regional".into();
+    };
+    let InfrastructureProjectKind::NewLine { planned_stations, .. } = &project.kind else {
+        return "Regional".into();
+    };
+    let Some(planned_station) = planned_stations.first() else {
+        return "Regional".into();
+    };
+    region
+        .settlements
+        .iter()
+        .find(|settlement| settlement.id == planned_station.settlement_id)
+        .map(|settlement| settlement.name.clone())
+        .unwrap_or_else(|| "Regional".into())
+}
+
+fn push_bulletin(
+    region: &mut Region,
+    occurred_at: UtcSeconds,
+    category: BulletinCategory,
+    headline: String,
+    detail: String,
+) {
+    region.bulletin.push(BulletinEntry {
+        occurred_at,
+        category,
+        headline,
+        detail,
+    });
+}
+
 /// Why an explicit Rail Authority project action cannot be completed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InfrastructureProjectActionError {
@@ -158,12 +196,14 @@ pub fn cancel_infrastructure_project(
     project_id: InfrastructureProjectId,
     now: UtcSeconds,
 ) -> Result<(), InfrastructureProjectActionError> {
-    let authority = &mut region.rail_authority;
-    let index = authority
+    let index = region
+        .rail_authority
         .infrastructure_projects
         .iter()
         .position(|project| project.id == project_id)
         .ok_or(InfrastructureProjectActionError::ProjectNotFound { project_id })?;
+    let target_name = project_target_settlement_name(region, index);
+    let authority = &mut region.rail_authority;
 
     let status = authority.infrastructure_projects[index].status;
     if matches!(
@@ -187,6 +227,14 @@ pub fn cancel_infrastructure_project(
     project.funding.authority_committed = Money::ZERO;
     project.status = InfrastructureProjectStatus::Cancelled;
     project.timeline.cancelled_at = Some(now);
+
+    push_bulletin(
+        region,
+        now,
+        BulletinCategory::Authority,
+        format!("{target_name} connection cancelled"),
+        "The Rail Authority cancelled the project before physical construction began.".into(),
+    );
 
     Ok(())
 }
@@ -214,6 +262,7 @@ pub fn contribute_to_infrastructure_project(
         .position(|project| project.id == project_id)
         .ok_or(InfrastructureProjectActionError::ProjectNotFound { project_id })?;
 
+    let target_name = project_target_settlement_name(&state.region, project_index);
     let project = &state.region.rail_authority.infrastructure_projects[project_index];
     if project.status != InfrastructureProjectStatus::Funding {
         return Err(InfrastructureProjectActionError::CannotContribute {
@@ -237,10 +286,22 @@ pub fn contribute_to_infrastructure_project(
         .funding
         .operator_contributed
         .checked_add(amount)?;
-    if project.funding.is_fully_funded() && project.timeline.funding_completed_at.is_none() {
+    let funding_completed =
+        project.funding.is_fully_funded() && project.timeline.funding_completed_at.is_none();
+    if funding_completed {
         project.timeline.funding_completed_at = Some(now);
     }
     state.player_company.funds = funds_after;
+    if funding_completed {
+        push_bulletin(
+            &mut state.region,
+            now,
+            BulletinCategory::Authority,
+            format!("Funding secured for {target_name} connection"),
+            "The public funding gap is closed and the project can wait for a construction slot."
+                .into(),
+        );
+    }
     Ok(())
 }
 
@@ -329,6 +390,7 @@ pub fn advance_infrastructure_planning(
     // stronger local rail adoption each time, and resets only the review-stage
     // timestamps. Funding/construction history is never rewritten here.
     if let Some(index) = deferred_project_ready_for_reconsideration(region, demand, now)? {
+        let target_name = project_target_settlement_name(region, index);
         let project = &mut region.rail_authority.infrastructure_projects[index];
         project.status = InfrastructureProjectStatus::Requested;
         project.timeline.requested_at = now;
@@ -340,6 +402,13 @@ pub fn advance_infrastructure_planning(
             .timeline
             .reconsideration_count
             .saturating_add(1);
+        push_bulletin(
+            region,
+            now,
+            BulletinCategory::Local,
+            format!("{target_name} Council renews rail connection request"),
+            "Stronger nearby rail adoption has reopened the case for a connection.".into(),
+        );
         return Ok(());
     }
 
@@ -359,10 +428,24 @@ pub fn advance_infrastructure_planning(
     });
 
     if let Some(candidate) = next_candidate {
+        let target_name = region
+            .settlements
+            .iter()
+            .find(|settlement| settlement.id == candidate.settlement_id)
+            .map(|settlement| settlement.name.clone())
+            .unwrap_or_else(|| "Regional".into());
         region
             .rail_authority
             .infrastructure_projects
             .push(project_from_candidate(candidate, now));
+        push_bulletin(
+            region,
+            now,
+            BulletinCategory::Local,
+            format!("{target_name} Council requests railway connection"),
+            "Growing use of the nearby railway has strengthened the local case for joining the network."
+                .into(),
+        );
     }
 
     Ok(())
@@ -485,6 +568,12 @@ pub fn advance_project_funding(
     region: &mut Region,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
+    let before = region
+        .rail_authority
+        .infrastructure_projects
+        .iter()
+        .map(|project| (project.status, project.timeline.funding_completed_at))
+        .collect::<Vec<_>>();
     let authority = &mut region.rail_authority;
     let funding_capacity = authority.funding_pipeline_capacity();
 
@@ -582,6 +671,37 @@ pub fn advance_project_funding(
         }
     }
 
+    for (index, (previous_status, previous_funded_at)) in before.into_iter().enumerate() {
+        let Some(project) = region.rail_authority.infrastructure_projects.get(index) else {
+            continue;
+        };
+        let status = project.status;
+        let funding_completed_at = project.timeline.funding_completed_at;
+        let target_name = project_target_settlement_name(region, index);
+        if previous_status == InfrastructureProjectStatus::Approved
+            && status == InfrastructureProjectStatus::Funding
+        {
+            push_bulletin(
+                region,
+                now,
+                BulletinCategory::Authority,
+                format!("{target_name} connection enters public funding"),
+                "The approved project has entered the Rail Authority investment pipeline.".into(),
+            );
+        }
+        if previous_funded_at.is_none() {
+            if let Some(funded_at) = funding_completed_at {
+                push_bulletin(
+                    region,
+                    funded_at,
+                    BulletinCategory::Authority,
+                    format!("Funding secured for {target_name} connection"),
+                    "The funding gap is closed and the project can wait for construction capacity.".into(),
+                );
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -624,9 +744,17 @@ pub fn advance_project_scheduling(
         };
 
         let scheduled_start = now.checked_add(CONSTRUCTION_MOBILISATION_DELAY)?;
+        let target_name = project_target_settlement_name(region, index);
         let project = &mut region.rail_authority.infrastructure_projects[index];
         project.status = InfrastructureProjectStatus::Scheduled;
         project.timeline.scheduled_start_at = Some(scheduled_start);
+        push_bulletin(
+            region,
+            now,
+            BulletinCategory::Construction,
+            format!("Construction scheduled for {target_name} connection"),
+            "The funded project has secured construction capacity and entered mobilisation.".into(),
+        );
     }
 
     Ok(())
@@ -642,7 +770,8 @@ pub fn advance_project_construction(
     region: &mut Region,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
-    for project in &mut region.rail_authority.infrastructure_projects {
+    for index in 0..region.rail_authority.infrastructure_projects.len() {
+        let project = &region.rail_authority.infrastructure_projects[index];
         if project.status != InfrastructureProjectStatus::Scheduled {
             continue;
         }
@@ -660,9 +789,18 @@ pub fn advance_project_construction(
 
         let duration = new_line_construction_duration(project)?;
         let planned_completion = scheduled_start.checked_add(duration)?;
+        let target_name = project_target_settlement_name(region, index);
+        let project = &mut region.rail_authority.infrastructure_projects[index];
         project.status = InfrastructureProjectStatus::Construction;
         project.timeline.construction_started_at = Some(scheduled_start);
         project.timeline.planned_completion_at = Some(planned_completion);
+        push_bulletin(
+            region,
+            scheduled_start,
+            BulletinCategory::Construction,
+            format!("Construction begins on {target_name} connection"),
+            "Rail Authority crews have started physical work on the new railway connection.".into(),
+        );
     }
 
     Ok(())
@@ -765,10 +903,18 @@ pub fn open_completed_infrastructure_projects(
             .finances
             .refresh_maintenance_reserve(&region.rail_authority.rail_network)?;
 
+        let target_name = project_target_settlement_name(region, index);
         let project = &mut region.rail_authority.infrastructure_projects[index];
         project.funding.award_operator_access_credit()?;
         project.status = InfrastructureProjectStatus::Open;
         project.timeline.completed_at = Some(completion);
+        push_bulletin(
+            region,
+            completion,
+            BulletinCategory::Network,
+            format!("{target_name} joins the rail network"),
+            "The new public railway connection and station are open for passenger operations.".into(),
+        );
     }
 
     Ok(())
@@ -832,9 +978,17 @@ fn advance_existing_planning_projects(
                     if due > now {
                         break;
                     }
+                    let target_name = project_target_settlement_name(region, index);
                     let project = &mut region.rail_authority.infrastructure_projects[index];
                     project.status = InfrastructureProjectStatus::UnderReview;
                     project.timeline.review_started_at = Some(due);
+                    push_bulletin(
+                        region,
+                        due,
+                        BulletinCategory::Authority,
+                        format!("Rail Authority opens review of {target_name} connection"),
+                        "The council request has entered formal regional infrastructure review.".into(),
+                    );
                 }
                 InfrastructureProjectStatus::UnderReview => {
                     let project = &region.rail_authority.infrastructure_projects[index];
@@ -846,10 +1000,18 @@ fn advance_existing_planning_projects(
                     if due > now {
                         break;
                     }
+                    let target_name = project_target_settlement_name(region, index);
                     let project = &mut region.rail_authority.infrastructure_projects[index];
                     project.timeline.review_started_at.get_or_insert(started_at);
                     project.status = InfrastructureProjectStatus::Proposed;
                     project.timeline.proposed_at = Some(due);
+                    push_bulletin(
+                        region,
+                        due,
+                        BulletinCategory::Authority,
+                        format!("{target_name} connection proposal prepared"),
+                        "The Rail Authority has completed its initial review and prepared the project for a decision.".into(),
+                    );
                 }
                 InfrastructureProjectStatus::Proposed => {
                     let project = &region.rail_authority.infrastructure_projects[index];
@@ -868,16 +1030,34 @@ fn advance_existing_planning_projects(
                         &region.rail_authority.infrastructure_projects[index],
                         world_seed,
                     );
+                    let target_name = project_target_settlement_name(region, index);
+                    let approved = approval_score
+                        .is_some_and(|score| score >= AUTHORITY_APPROVAL_SCORE_THRESHOLD);
                     let project = &mut region.rail_authority.infrastructure_projects[index];
                     project.timeline.proposed_at.get_or_insert(proposed_at);
-                    if approval_score
-                        .is_some_and(|score| score >= AUTHORITY_APPROVAL_SCORE_THRESHOLD)
-                    {
+                    if approved {
                         project.status = InfrastructureProjectStatus::Approved;
                         project.timeline.approved_at = Some(due);
                     } else {
                         project.status = InfrastructureProjectStatus::Deferred;
                         project.timeline.deferred_at = Some(due);
+                    }
+                    if approved {
+                        push_bulletin(
+                            region,
+                            due,
+                            BulletinCategory::Authority,
+                            format!("Rail Authority approves {target_name} connection"),
+                            "The regional case has passed review and the project can enter the public funding pipeline.".into(),
+                        );
+                    } else {
+                        push_bulletin(
+                            region,
+                            due,
+                            BulletinCategory::Authority,
+                            format!("Rail Authority defers {target_name} connection"),
+                            "The current regional case does not yet justify the project cost; stronger rail adoption can trigger reconsideration.".into(),
+                        );
                     }
                 }
                 _ => break,
@@ -1240,8 +1420,9 @@ mod tests {
 
     use crate::{
         model::{
-            ConstructionDifficulty, DistanceMetres, DurationSeconds, InfrastructureProjectId,
-            InfrastructureProjectKind, InfrastructureProjectStatus, MarketMaturity, Money,
+            BulletinCategory, ConstructionDifficulty, DistanceMetres, DurationSeconds,
+            InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus,
+            MarketMaturity, Money,
             OriginDestinationDemand, UtcSeconds,
         },
         sim::{
@@ -1493,6 +1674,12 @@ mod tests {
         assert_eq!(planned_lines[0].distance, expected.estimated_distance);
         assert_eq!(project.funding.estimated_cost, expected.estimated_cost);
         assert_eq!(project.funding.authority_committed, Money::ZERO);
+        let [bulletin] = region.bulletin.as_slice() else {
+            panic!("expected one persistent council Bulletin item");
+        };
+        assert_eq!(bulletin.category, BulletinCategory::Local);
+        assert_eq!(bulletin.occurred_at, now);
+        assert!(bulletin.headline.contains("Council requests railway connection"));
     }
 
     #[test]

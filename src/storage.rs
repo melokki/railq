@@ -25,8 +25,9 @@ use crate::{
     balance::BalanceConfig,
     catalog::{TrainModel, model_for_train, train_catalogue},
     model::{
-        CalculationError, ConstructionDifficulty, DemandRules, DistanceMetres, DurationSeconds,
-        Electrification, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState,
+        BulletinCategory, BulletinEntry, CalculationError, ConstructionDifficulty, DemandRules,
+        DistanceMetres, DurationSeconds, Electrification, EuropeanVehicleNumber, Financials, Fleet,
+        GameRules, GameState,
         InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectId,
         InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline,
         Journey, JourneyId, JourneyPassengerGroup, JourneyReceipt, MarketMaturity, Money,
@@ -48,7 +49,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 26;
+pub const SAVE_VERSION: u32 = 27;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -385,6 +386,13 @@ CREATE TABLE IF NOT EXISTS region (
     population INTEGER NOT NULL,
     rail_authority_name TEXT NOT NULL,
     rail_authority_construction_capacity INTEGER NOT NULL DEFAULT 1 CHECK (rail_authority_construction_capacity > 0)
+);
+CREATE TABLE IF NOT EXISTS bulletin_entries (
+    sequence INTEGER PRIMARY KEY,
+    occurred_at INTEGER NOT NULL,
+    category TEXT NOT NULL CHECK (category IN ('local', 'authority', 'construction', 'network')),
+    headline TEXT NOT NULL,
+    detail TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS rail_authority_finances (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -756,7 +764,7 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
             migrate_v15_to_v16(connection, path)?;
         }
         15 => migrate_v15_to_v16(connection, path)?,
-        16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 => {}
+        16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 => {}
         SAVE_VERSION => {
             connection
                 .execute_batch(SCHEMA)
@@ -815,6 +823,10 @@ fn ensure_schema(connection: &Connection, path: &Path) -> Result<(), SaveSlotErr
     }
     if current_version == 25 {
         migrate_v25_to_v26(connection, path)?;
+        current_version = 26;
+    }
+    if current_version == 26 {
+        migrate_v26_to_v27(connection, path)?;
     }
     Ok(())
 }
@@ -1052,6 +1064,40 @@ fn migrate_v25_to_v26(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v25 to v26 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v26_to_v27(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v26 to v27 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS bulletin_entries (
+                     sequence INTEGER PRIMARY KEY,
+                     occurred_at INTEGER NOT NULL,
+                     category TEXT NOT NULL CHECK (category IN ('local', 'authority', 'construction', 'network')),
+                     headline TEXT NOT NULL,
+                     detail TEXT NOT NULL
+                 );",
+            )
+            .map_err(|source| db_error("add Railway Bulletin history to", path, source))?;
+        connection
+            .pragma_update(None, "user_version", 27_u32)
+            .map_err(|source| db_error("write v27 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v26 to v27 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
@@ -2982,6 +3028,7 @@ fn clear_state(
          DELETE FROM rail_lines;
          DELETE FROM rail_stations;
          DELETE FROM settlements;
+         DELETE FROM bulletin_entries;
          DELETE FROM region;
          DELETE FROM game_meta;",
         )
@@ -3025,6 +3072,28 @@ fn insert_state(
             ],
         )
         .map_err(|source| db_error("write Region to", path, source))?;
+
+    for (sequence, entry) in state.region.bulletin.iter().enumerate() {
+        let category = match entry.category {
+            BulletinCategory::Local => "local",
+            BulletinCategory::Authority => "authority",
+            BulletinCategory::Construction => "construction",
+            BulletinCategory::Network => "network",
+        };
+        transaction
+            .execute(
+                "INSERT INTO bulletin_entries(sequence, occurred_at, category, headline, detail)
+                 VALUES(?1, ?2, ?3, ?4, ?5)",
+                params![
+                    i64::try_from(sequence).unwrap_or(i64::MAX),
+                    entry.occurred_at.unix_seconds(),
+                    category,
+                    &entry.headline,
+                    &entry.detail,
+                ],
+            )
+            .map_err(|source| db_error("write Bulletin entries to", path, source))?;
+    }
 
     let authority_finances = &state.region.rail_authority.finances;
     transaction
@@ -3787,6 +3856,27 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
         )
         .map_err(|source| db_error("read Region from", path, source))?;
 
+    let bulletin = query_all(
+        connection,
+        "SELECT occurred_at, category, headline, detail FROM bulletin_entries ORDER BY sequence",
+        path,
+        |row| {
+            let category = match row.get::<_, String>(1)?.as_str() {
+                "local" => BulletinCategory::Local,
+                "authority" => BulletinCategory::Authority,
+                "construction" => BulletinCategory::Construction,
+                "network" => BulletinCategory::Network,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            Ok(BulletinEntry {
+                occurred_at: UtcSeconds::from_unix_seconds(row.get(0)?),
+                category,
+                headline: row.get(2)?,
+                detail: row.get(3)?,
+            })
+        },
+    )?;
+
     let (
         authority_treasury,
         maintenance_reserve,
@@ -4153,6 +4243,7 @@ fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>,
             population: from_db_u64(region_population, "Region Population")
                 .map_err(|field| invalid_value(path, field))?,
             settlements,
+            bulletin,
             rail_authority: RailAuthority {
                 name: authority_name,
                 rail_network: RailNetwork {
@@ -5737,6 +5828,12 @@ mod tests {
         let slot = SaveSlot::open(directory.save_path()).unwrap();
         let mut state = active_game();
         state.region.rail_authority.construction_capacity = 2;
+        state.region.bulletin.push(BulletinEntry {
+            occurred_at: UtcSeconds::from_unix_seconds(12_345),
+            category: BulletinCategory::Authority,
+            headline: "Alden connection approved".into(),
+            detail: "The regional case passed formal review.".into(),
+        });
         state.region.rail_authority.finances = RailAuthorityFinances {
             treasury: Money::from_cents(9_000_000),
             maintenance_reserve: Money::from_cents(1_500_000),
@@ -6718,6 +6815,32 @@ mod tests {
 
         assert_eq!(version, SAVE_VERSION);
         assert_eq!(reconsideration_count, 0);
+    }
+
+    #[test]
+    fn v26_schema_adds_persistent_railway_bulletin() {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("PRAGMA user_version = 26;")
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let bulletin_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'bulletin_entries'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(bulletin_table, 1);
     }
 
     #[test]

@@ -162,6 +162,7 @@ pub fn generate_region(seed: u64) -> Region {
         },
         population,
         settlements,
+        bulletin: vec![],
         rail_authority: RailAuthority {
             name: format!("{name} Rail Authority"),
             rail_network,
