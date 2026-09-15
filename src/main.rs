@@ -1,16 +1,16 @@
-use std::{
-    error::Error,
-    time::{SystemTime, UNIX_EPOCH},
-};
+mod runtime;
+
+use std::error::Error;
 
 use railq::{
-    model::UtcSeconds,
     storage::SaveSlot,
     ui::{
         self,
         start::{Startup, capture_new_game, start},
     },
 };
+
+use runtime::{current_utc_seconds, new_world_seed};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let slot = SaveSlot::open_default()?;
@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn run_onboarding(
     onboarding: railq::ui::start::Onboarding<SaveSlot>,
 ) -> Result<(), Box<dyn Error>> {
-    let world_seed = startup_seed();
+    let world_seed = new_world_seed();
     let started_at = current_utc_seconds();
     let Some(game) = capture_new_game(world_seed, started_at)? else {
         return Ok(());
@@ -43,12 +43,12 @@ fn run_dashboard(
     settled_arrivals: Vec<railq::sim::time::SettledJourney>,
 ) -> Result<(), Box<dyn Error>> {
     ui::run_terminal_with_arrivals(app.state().clone(), settled_arrivals, |command| {
+        let now = current_utc_seconds();
         match command {
-            ui::TerminalCommand::Reconcile { now } => app.reconcile(now)?,
+            ui::TerminalCommand::Reconcile => app.reconcile(now)?,
             ui::TerminalCommand::ManualDispatch {
                 train_id,
                 service_id,
-                now,
             } => {
                 app.execute(
                     railq::app::AppCommand::ManualDispatch {
@@ -61,7 +61,6 @@ fn run_dashboard(
             ui::TerminalCommand::PurchaseTrain {
                 catalogue_index,
                 delivery_station_id,
-                now,
             } => {
                 app.execute(
                     railq::app::AppCommand::PurchaseTrain {
@@ -71,28 +70,23 @@ fn run_dashboard(
                     now,
                 )?;
             }
-            ui::TerminalCommand::SellTrain { train_id, now } => {
+            ui::TerminalCommand::SellTrain { train_id } => {
                 app.execute(railq::app::AppCommand::SellTrain { train_id }, now)?;
             }
-            ui::TerminalCommand::CreatePassengerService {
-                stop_station_ids,
-                now,
-            } => {
+            ui::TerminalCommand::CreatePassengerService { stop_station_ids } => {
                 app.create_passenger_service(stop_station_ids, now)?;
             }
             ui::TerminalCommand::UpdatePassengerService {
                 service_id,
                 stop_station_ids,
-                now,
             } => {
                 app.update_passenger_service(service_id, stop_station_ids, now)?;
             }
-            ui::TerminalCommand::DeletePassengerService { service_id, now } => {
+            ui::TerminalCommand::DeletePassengerService { service_id } => {
                 app.delete_passenger_service(service_id, now)?;
             }
             ui::TerminalCommand::UpdateCompanyVkm {
                 vehicle_keeper_mark,
-                now,
             } => {
                 app.execute(
                     railq::app::AppCommand::UpdateCompanyVkm {
@@ -101,46 +95,23 @@ fn run_dashboard(
                     now,
                 )?;
             }
-            ui::TerminalCommand::ContributeInfrastructure {
-                project_id,
-                amount,
-                now,
-            } => {
+            ui::TerminalCommand::ContributeInfrastructure { project_id, amount } => {
                 app.execute(
                     railq::app::AppCommand::ContributeInfrastructure { project_id, amount },
                     now,
                 )?;
             }
-            ui::TerminalCommand::UpdateTrainNickname {
-                train_id,
-                nickname,
-                now,
-            } => {
+            ui::TerminalCommand::UpdateTrainNickname { train_id, nickname } => {
                 app.execute(
                     railq::app::AppCommand::UpdateTrainNickname { train_id, nickname },
                     now,
                 )?;
             }
-            ui::TerminalCommand::RestartAfterBankruptcy { world_seed, now } => {
-                app.restart_after_bankruptcy(world_seed, now)?;
+            ui::TerminalCommand::RestartAfterBankruptcy => {
+                app.restart_after_bankruptcy(new_world_seed(), now)?;
             }
         }
         Ok::<_, railq::app::AppError<railq::storage::SaveSlotError>>(app.state().clone())
     })?;
     Ok(())
-}
-
-fn current_utc_seconds() -> UtcSeconds {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    UtcSeconds::from_unix_seconds(i64::try_from(seconds).unwrap_or(i64::MAX))
-}
-
-fn startup_seed() -> u64 {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    let nanos = u64::try_from(nanos).unwrap_or(u64::MAX);
-    nanos ^ u64::from(std::process::id())
 }

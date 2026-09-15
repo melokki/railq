@@ -9,7 +9,7 @@ use std::{
     fmt,
     io::{self, Stdout},
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use crossterm::{
@@ -153,56 +153,46 @@ pub enum ShellAction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminalCommand {
     /// Reconcile elapsed demand and due Journey arrivals before presentation or input.
-    Reconcile { now: UtcSeconds },
+    Reconcile,
     /// Revalidate and authorise a player-requested Manual Dispatch.
     ManualDispatch {
         train_id: TrainId,
         service_id: ServiceId,
-        now: UtcSeconds,
     },
     /// Revalidate and purchase a selected catalogue Train.
     PurchaseTrain {
         catalogue_index: usize,
         delivery_station_id: RailStationId,
-        now: UtcSeconds,
     },
     /// Revalidate and resell a selected READY Train.
-    SellTrain { train_id: TrainId, now: UtcSeconds },
+    SellTrain { train_id: TrainId },
     /// Create one directional Passenger Service.
     CreatePassengerService {
         stop_station_ids: Vec<RailStationId>,
-        now: UtcSeconds,
     },
     /// Update one unused directional Passenger Service.
     UpdatePassengerService {
         service_id: ServiceId,
         stop_station_ids: Vec<RailStationId>,
-        now: UtcSeconds,
     },
     /// Delete one unused Passenger Service.
-    DeletePassengerService {
-        service_id: ServiceId,
-        now: UtcSeconds,
-    },
+    DeletePassengerService { service_id: ServiceId },
     /// Persist a new Player Company Vehicle Keeper Mark.
     UpdateCompanyVkm {
         vehicle_keeper_mark: VehicleKeeperMark,
-        now: UtcSeconds,
     },
     /// Persist a Player Company contribution to one Authority project.
     ContributeInfrastructure {
         project_id: InfrastructureProjectId,
         amount: Money,
-        now: UtcSeconds,
     },
     /// Persist a Train nickname change without touching its official EVN.
     UpdateTrainNickname {
         train_id: TrainId,
         nickname: Option<TrainNickname>,
-        now: UtcSeconds,
     },
     /// Archive the Bankrupt Player Company save and start a fresh game.
-    RestartAfterBankruptcy { world_seed: u64, now: UtcSeconds },
+    RestartAfterBankruptcy,
 }
 
 /// Presentation-only record of a command which crossed the save boundary.
@@ -1309,9 +1299,7 @@ where
             .draw(|frame| render_frame(frame, &mut shell, &state))
             .map_err(RunError::Terminal)?;
         let before_reconciliation = state.clone();
-        let reconciled_state = command(TerminalCommand::Reconcile {
-            now: current_utc_seconds(),
-        })
+        let reconciled_state = command(TerminalCommand::Reconcile)
         .map_err(RunError::Reconcile)?;
         shell.publish_committed_arrivals(&before_reconciliation, &reconciled_state);
         state = reconciled_state;
@@ -1323,9 +1311,7 @@ where
         match event::read().map_err(RunError::Terminal)? {
             Event::Key(key) => {
                 let before_reconciliation = state.clone();
-                let reconciled_state = command(TerminalCommand::Reconcile {
-                    now: current_utc_seconds(),
-                })
+                let reconciled_state = command(TerminalCommand::Reconcile)
                 .map_err(RunError::Reconcile)?;
                 shell.publish_committed_arrivals(&before_reconciliation, &reconciled_state);
                 state = reconciled_state;
@@ -1337,7 +1323,6 @@ where
                     } => match command(TerminalCommand::ManualDispatch {
                         train_id,
                         service_id,
-                        now: current_utc_seconds(),
                     }) {
                         Ok(next_state) => {
                             let before_command = state.clone();
@@ -1353,7 +1338,6 @@ where
                     } => match command(TerminalCommand::PurchaseTrain {
                         catalogue_index,
                         delivery_station_id,
-                        now: current_utc_seconds(),
                     }) {
                         Ok(next_state) => {
                             let before_command = state.clone();
@@ -1366,7 +1350,6 @@ where
                     ShellAction::SellTrain { train_id } => {
                         match command(TerminalCommand::SellTrain {
                             train_id,
-                            now: current_utc_seconds(),
                         }) {
                             Ok(next_state) => {
                                 let before_command = state.clone();
@@ -1380,7 +1363,6 @@ where
                     ShellAction::CreatePassengerService { stop_station_ids } => {
                         match command(TerminalCommand::CreatePassengerService {
                             stop_station_ids,
-                            now: current_utc_seconds(),
                         }) {
                             Ok(next_state) => {
                                 state = next_state;
@@ -1395,7 +1377,6 @@ where
                     } => match command(TerminalCommand::UpdatePassengerService {
                         service_id,
                         stop_station_ids,
-                        now: current_utc_seconds(),
                     }) {
                         Ok(next_state) => {
                             state = next_state;
@@ -1406,7 +1387,6 @@ where
                     ShellAction::DeletePassengerService { service_id } => {
                         match command(TerminalCommand::DeletePassengerService {
                             service_id,
-                            now: current_utc_seconds(),
                         }) {
                             Ok(next_state) => {
                                 state = next_state;
@@ -1420,7 +1400,6 @@ where
                     } => {
                         match command(TerminalCommand::UpdateCompanyVkm {
                             vehicle_keeper_mark,
-                            now: current_utc_seconds(),
                         }) {
                             Ok(next_state) => {
                                 state = next_state;
@@ -1433,7 +1412,6 @@ where
                         match command(TerminalCommand::ContributeInfrastructure {
                             project_id,
                             amount,
-                            now: current_utc_seconds(),
                         }) {
                             Ok(next_state) => {
                                 state = next_state;
@@ -1448,7 +1426,6 @@ where
                         match command(TerminalCommand::UpdateTrainNickname {
                             train_id,
                             nickname,
-                            now: current_utc_seconds(),
                         }) {
                             Ok(next_state) => {
                                 state = next_state;
@@ -1458,10 +1435,7 @@ where
                         }
                     }
                     ShellAction::RestartAfterBankruptcy => {
-                        match command(TerminalCommand::RestartAfterBankruptcy {
-                            world_seed: restart_seed(),
-                            now: current_utc_seconds(),
-                        }) {
+                        match command(TerminalCommand::RestartAfterBankruptcy) {
                             Ok(next_state) => {
                                 state = next_state;
                                 shell.confirm_restart_after_bankruptcy();
@@ -1476,21 +1450,6 @@ where
             _ => {}
         }
     }
-}
-
-fn current_utc_seconds() -> UtcSeconds {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    UtcSeconds::from_unix_seconds(i64::try_from(seconds).unwrap_or(i64::MAX))
-}
-
-fn restart_seed() -> u64 {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    let nanos = u64::try_from(nanos).unwrap_or(u64::MAX);
-    nanos ^ u64::from(std::process::id())
 }
 
 fn is_bankrupt(state: &GameState) -> bool {
