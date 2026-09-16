@@ -43,7 +43,9 @@ use overlays::{
     render_outcome_overlay, render_world_details_overlay,
 };
 mod runtime;
-pub use runtime::{RunError, run_terminal, run_terminal_with_arrivals};
+pub use runtime::{
+    RunError, TerminalCommand, TerminalCommandOutcome, run_terminal, run_terminal_with_arrivals,
+};
 pub mod services;
 pub mod start;
 pub mod theme;
@@ -104,54 +106,6 @@ pub enum ShellAction {
     Player(AppCommand),
     /// Confirmed Bankruptcy restart requiring an archived-save application action.
     RestartAfterBankruptcy,
-}
-
-/// One command accepted by the terminal shell at the application boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TerminalCommand {
-    /// Reconcile elapsed demand and due Journey arrivals before presentation or input.
-    Reconcile,
-    /// Execute one presentation-independent player command.
-    Player(AppCommand),
-    /// Archive the Bankrupt Player Company save and start a fresh game.
-    RestartAfterBankruptcy,
-}
-
-/// State returned by the runtime command boundary after a durable application action.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TerminalCommandOutcome {
-    state: GameState,
-    player_result: Option<AppCommandResult>,
-}
-
-impl TerminalCommandOutcome {
-    /// Returns a state produced by elapsed-time reconciliation.
-    pub fn reconciled(state: GameState) -> Self {
-        Self {
-            state,
-            player_result: None,
-        }
-    }
-
-    /// Returns a state and typed result produced by one player command.
-    pub fn player(state: GameState, player_result: AppCommandResult) -> Self {
-        Self {
-            state,
-            player_result: Some(player_result),
-        }
-    }
-
-    /// Returns a fresh state produced by a confirmed Bankruptcy restart.
-    pub fn restarted(state: GameState) -> Self {
-        Self {
-            state,
-            player_result: None,
-        }
-    }
-
-    fn into_parts(self) -> (GameState, Option<AppCommandResult>) {
-        (self.state, self.player_result)
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
