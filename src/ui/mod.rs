@@ -17,6 +17,7 @@ use crate::{
 pub mod authority;
 pub mod bulletin;
 pub mod company;
+pub mod components;
 pub mod dispatch;
 pub mod fleet;
 pub mod format;

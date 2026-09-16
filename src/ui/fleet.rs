@@ -21,7 +21,11 @@ use crate::{
         GameState, Journey, Money, RailStationId, Train, TrainId, TrainNickname, TrainStatus,
         UtcSeconds,
     },
-    ui::{layout::UiSize, modal, theme},
+    ui::{
+        components::{labelled_line, labelled_line_styled, panel_block, section_heading},
+        layout::UiSize,
+        modal, theme,
+    },
 };
 
 const FLEET_SELECTION_MARKER: &str = "› ";
@@ -1380,40 +1384,6 @@ fn horizontal_inset(area: Rect, amount: u16) -> Rect {
     )
 }
 
-fn labelled_line(label: &str, value: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label:<18}"), theme::secondary()),
-        Span::raw(value.to_owned()),
-    ])
-}
-
-fn labelled_line_styled(label: &str, value: &str, style: Style) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label:<18}"), theme::secondary()),
-        Span::styled(value.to_owned(), style),
-    ])
-}
-
-fn section_heading(label: &str) -> Line<'static> {
-    Line::styled(label.to_owned(), theme::table_header())
-}
-
-fn panel_block(title: &str, focused: bool) -> Block<'_> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(if focused {
-            theme::focused_border()
-        } else {
-            theme::border()
-        })
-        .title(title)
-        .title_style(if focused {
-            theme::focused_title()
-        } else {
-            theme::title()
-        })
-        .style(theme::panel())
-}
 
 struct TrainFields {
     model: String,
