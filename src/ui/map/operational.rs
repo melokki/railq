@@ -23,7 +23,7 @@ use super::geometry::{
 use super::network::{format_population, panel_block, ready_trains, station_name};
 use super::shared::{format_distance, format_duration, remaining_seconds};
 use crate::{
-    model::{GameState, Journey, RailStationId, SettlementId, UtcSeconds},
+    model::{GameState, Journey, RailStationId, SettlementId, TrainStatus, UtcSeconds},
     sim::{
         authority::{
             COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS, local_rail_success_basis_points,
@@ -168,6 +168,8 @@ fn operational_network_block(state: &GameState, width: u16) -> Block<'static> {
             Line::from(vec![
                 Span::styled(" ● ", theme::primary_value()),
                 Span::styled("station", theme::secondary()),
+                Span::styled("   ◉ ", theme::success()),
+                Span::styled("ready", theme::secondary()),
                 Span::styled("   ○ ", theme::secondary()),
                 Span::styled("settlement", theme::secondary()),
                 Span::styled("   ─ ", theme::secondary()),
@@ -607,18 +609,24 @@ fn render_map_rows(
         }
     }
 
-    // Draw place markers before moving Trains. A Train that is exactly on a
-    // station cell should win visually for that instant, while labels are
-    // placed afterwards and therefore avoid both markers and Trains.
+    // Draw place markers before moving Trains. A READY Train is persistent
+    // operational state, so its station marker remains visible even after an
+    // arrival notice disappears. Selection keeps precedence over READY state;
+    // the inspector still exposes the selected station's READY count.
+    let ready_station_ids = ready_station_ids(state);
     for place in &layout.places {
         let (x, y) = screen_position(place);
-        let ink = place_ink(place, selected, &adjacent);
-        let marker = if selected == Some(place.settlement_id) {
-            '◆'
+        let is_ready_station = place
+            .station_id
+            .is_some_and(|station_id| ready_station_ids.contains(&station_id));
+        let (marker, ink) = if selected == Some(place.settlement_id) {
+            ('◆', MapInk::Selected)
+        } else if is_ready_station {
+            ('◉', MapInk::Ready)
         } else if place.station_id.is_some() {
-            '●'
+            ('●', place_ink(place, selected, &adjacent))
         } else {
-            '○'
+            ('○', place_ink(place, selected, &adjacent))
         };
         put_cell(&mut grid, x, y, marker, ink);
     }
@@ -978,6 +986,19 @@ pub(super) fn point_along_orthogonal_rail(
         direction.saturating_mul(i32::try_from(travelled_steps).unwrap_or(i32::MAX)),
     );
     ((end.0, y), if direction >= 0 { '▼' } else { '▲' })
+}
+
+pub(super) fn ready_station_ids(state: &GameState) -> BTreeSet<RailStationId> {
+    state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .filter_map(|train| match &train.status {
+            TrainStatus::Ready { at } => Some(*at),
+            TrainStatus::Travelling { .. } => None,
+        })
+        .collect()
 }
 
 pub(super) fn selected_neighbours(

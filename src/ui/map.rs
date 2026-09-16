@@ -164,9 +164,12 @@ impl MapWorkspace {
         if train_count == 0 {
             items.push(MapShortcut::enabled("3", "Market"));
         } else if ready == 0 {
-            items.push(MapShortcut::disabled("D", "Dispatch"));
+            items.push(MapShortcut::disabled("D", "Dispatch · 0 ready"));
         } else {
-            items.push(MapShortcut::enabled("D", "Dispatch"));
+            items.push(MapShortcut::enabled(
+                "D",
+                format!("Dispatch · {ready} ready"),
+            ));
         }
         items.push(MapShortcut::enabled("S", "Services"));
         items.push(MapShortcut::enabled("W", "World"));
@@ -370,8 +373,8 @@ mod tests {
     use super::{
         MapWorkspace, MapWorkspaceAction, WorldDetailsKeyAction, focus_rank,
         journey_progress_percent, journey_route_segments, map_place_label, operational_layout,
-        place_link_distance_label, point_along_orthogonal_rail, render_at, schematic_layout,
-        selected_neighbours,
+        place_link_distance_label, point_along_orthogonal_rail, ready_station_ids, render_at,
+        schematic_layout, selected_neighbours,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
@@ -513,6 +516,27 @@ mod tests {
         assert_eq!(modal_shortcuts.len(), 1);
         assert_eq!(modal_shortcuts[0].key, "W/Esc");
         assert!(workspace.help_lines(&state)[0].contains("World Details"));
+    }
+
+    #[test]
+    fn ready_trains_are_exposed_in_map_shortcuts_and_station_state() {
+        let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let station_id = RailStationId::new(2);
+        purchase_train(&mut state, 0, station_id).unwrap();
+        purchase_train(&mut state, 0, station_id).unwrap();
+
+        let mut workspace = MapWorkspace::default();
+        let dispatch = workspace
+            .shortcuts(&state, false)
+            .into_iter()
+            .find(|shortcut| shortcut.key == "D")
+            .expect("READY fleet should expose Dispatch");
+        assert!(dispatch.enabled);
+        assert_eq!(dispatch.action, "Dispatch · 2 ready");
+
+        let ready_stations = ready_station_ids(&state);
+        assert_eq!(ready_stations.len(), 1);
+        assert!(ready_stations.contains(&station_id));
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub(super) enum MapInk {
     ConnectedAdjacent,
     Unconnected,
     Selected,
+    Ready,
     Train,
 }
 
@@ -263,6 +264,7 @@ pub(super) fn map_ink_style(ink: MapInk) -> Style {
         MapInk::ConnectedAdjacent => theme::primary_value().add_modifier(Modifier::BOLD),
         MapInk::Unconnected => theme::secondary().add_modifier(Modifier::DIM),
         MapInk::Selected => theme::focused_title(),
+        MapInk::Ready => theme::success().add_modifier(Modifier::BOLD),
         MapInk::Train => theme::warning().add_modifier(Modifier::BOLD),
     }
 }
