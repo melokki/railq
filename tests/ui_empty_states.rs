@@ -54,7 +54,7 @@ fn all_travelling_fleet_shows_nearest_arrival_and_empty_queue_explains_dispatch(
 
     let arrives_at = state.active_journeys[0].arrives_at;
     railq::sim::time::advance_time(&mut state, arrives_at)?;
-    press(&mut shell, &state, KeyCode::Char('m'));
+    press(&mut shell, &state, KeyCode::Char('1'));
     press(&mut shell, &state, KeyCode::Tab);
     press(&mut shell, &state, KeyCode::Tab);
     let queue = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
@@ -98,7 +98,7 @@ fn empty_history_and_zero_passenger_dispatch_are_explained_without_profit_promis
         &history,
     )?;
 
-    press(&mut shell, &state, KeyCode::Char('m'));
+    press(&mut shell, &state, KeyCode::Char('1'));
     press(&mut shell, &state, KeyCode::Char('d'));
     press(&mut shell, &state, KeyCode::Enter);
     press(&mut shell, &state, KeyCode::Enter);

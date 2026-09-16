@@ -14,7 +14,7 @@
     };
 
     #[test]
-    fn routes_the_six_primary_views_by_number_and_keeps_letter_aliases() {
+    fn routes_the_six_primary_views_by_number_and_keeps_non_map_letter_aliases() {
         let mut shell = Shell::new();
         let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
@@ -28,7 +28,6 @@
             ('t', View::Trains),
             ('c', View::Company),
             ('b', View::BuyTrains),
-            ('m', View::Map),
             ('a', View::Authority),
             ('u', View::Bulletin),
         ] {
@@ -41,6 +40,16 @@
             );
             assert_eq!(shell.active_view(), expected_view);
         }
+
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+            &state,
+        );
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+            &state,
+        );
+        assert_eq!(shell.active_view(), View::Trains);
     }
 
     #[test]

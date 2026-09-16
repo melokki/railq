@@ -316,7 +316,7 @@ impl Shell {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
-                    '1' | '2' | '3' | '4' | '5' | '6' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A' | 'u' | 'U'
+                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A' | 'u' | 'U'
                 )
             );
             if navigation_key {
@@ -351,7 +351,7 @@ impl Shell {
         }
 
         match key.code {
-            KeyCode::Char('1' | 'm' | 'M') => {
+            KeyCode::Char('1') => {
                 self.active_view = View::Map;
                 self.service_workspace.close();
             }

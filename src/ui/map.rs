@@ -123,7 +123,7 @@ impl MapWorkspace {
                 WorldDetailsKeyAction::Closed
             }
             KeyCode::Char(
-                '1' | '2' | '3' | '4' | '5' | '6' | 'm' | 'M' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
+                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
                 | 'a' | 'A' | 'u' | 'U',
             ) => {
                 self.world_details_visible = false;

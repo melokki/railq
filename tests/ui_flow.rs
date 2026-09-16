@@ -186,7 +186,7 @@ fn fresh_launch_buy_dispatch_arrive_return_and_resale_are_keyboard_reachable() {
         }
     );
 
-    press(&mut shell, &mut app, KeyCode::Char('m'), OUTBOUND_DEPARTURE);
+    press(&mut shell, &mut app, KeyCode::Char('1'), OUTBOUND_DEPARTURE);
     dispatch_first_ready_train(&mut shell, &mut app, OUTBOUND_DEPARTURE);
     assert_eq!(app.state().active_journeys.len(), 1);
     let outbound = app.state().active_journeys[0].clone();
@@ -247,7 +247,7 @@ fn cancellation_and_rejected_error_paths_preserve_player_company_state() {
         )
         .unwrap();
     let before_cancelled_dispatch = app.state().clone();
-    press(&mut shell, &mut app, KeyCode::Char('m'), OUTBOUND_DEPARTURE);
+    press(&mut shell, &mut app, KeyCode::Char('1'), OUTBOUND_DEPARTURE);
     press(&mut shell, &mut app, KeyCode::Char('d'), OUTBOUND_DEPARTURE);
     press(&mut shell, &mut app, KeyCode::Enter, OUTBOUND_DEPARTURE);
     press(&mut shell, &mut app, KeyCode::Esc, OUTBOUND_DEPARTURE);
