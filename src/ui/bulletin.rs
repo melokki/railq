@@ -89,7 +89,9 @@ impl BulletinWorkspace {
                 selected.saturating_add(1).min(count.saturating_sub(1))
             }
             KeyCode::PageUp => selected.saturating_sub(page_size),
-            KeyCode::PageDown => selected.saturating_add(page_size).min(count.saturating_sub(1)),
+            KeyCode::PageDown => selected
+                .saturating_add(page_size)
+                .min(count.saturating_sub(1)),
             _ => selected,
         };
         self.table_state.select((count > 0).then_some(next));
@@ -207,7 +209,10 @@ impl BulletinWorkspace {
     fn render_detail(&mut self, frame: &mut Frame, area: Rect, state: &GameState, now: UtcSeconds) {
         self.synchronize(state);
         let entries = visible_entries(state, self.filter);
-        let selected = self.table_state.selected().and_then(|index| entries.get(index));
+        let selected = self
+            .table_state
+            .selected()
+            .and_then(|index| entries.get(index));
         let Some((_, entry)) = selected else {
             frame.render_widget(
                 Paragraph::new("No development selected.")
@@ -220,7 +225,10 @@ impl BulletinWorkspace {
 
         let lines = vec![
             Line::from(vec![
-                Span::styled(category_label(entry.category), category_style(entry.category)),
+                Span::styled(
+                    category_label(entry.category),
+                    category_style(entry.category),
+                ),
                 Span::styled(
                     format!("  ·  {}", relative_time(entry.occurred_at, now)),
                     theme::secondary(),
@@ -241,10 +249,7 @@ impl BulletinWorkspace {
     }
 }
 
-fn visible_entries(
-    state: &GameState,
-    filter: BulletinFilter,
-) -> Vec<(usize, &BulletinEntry)> {
+fn visible_entries(state: &GameState, filter: BulletinFilter) -> Vec<(usize, &BulletinEntry)> {
     state
         .region
         .bulletin
@@ -309,7 +314,7 @@ mod tests {
 
     #[test]
     fn newest_matching_items_are_shown_first() {
-        let mut state = create_new_game(7, "One More Prime".into(), UtcSeconds::from_unix_seconds(1));
+        let mut state = create_new_game(7, "One More Prime", UtcSeconds::from_unix_seconds(1));
         state.region.bulletin = vec![
             BulletinEntry {
                 occurred_at: UtcSeconds::from_unix_seconds(10),

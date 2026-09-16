@@ -6,7 +6,7 @@
 
 use std::fmt::Write;
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -122,6 +122,214 @@ impl ProjectSelection {
 pub struct ContributionReview {
     pub project_id: InfrastructureProjectId,
     pub amount: Money,
+}
+
+/// Shell-facing outcome from the Rail Authority workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthorityWorkspaceAction {
+    /// No application action is required.
+    Continue,
+    /// Clear stale Shell feedback after an Authority-only transition.
+    ClearNotice,
+    /// Surface presentation feedback without crossing the application boundary.
+    Notice(String),
+    /// Revalidate and persist the proposed infrastructure contribution.
+    Contribute {
+        project_id: InfrastructureProjectId,
+        amount: Money,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityShortcut {
+    pub key: String,
+    pub action: String,
+    pub enabled: bool,
+}
+
+impl AuthorityShortcut {
+    fn enabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: true,
+        }
+    }
+
+    fn disabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: false,
+        }
+    }
+}
+
+/// Owns presentation state and keyboard interaction for the Rail Authority workspace.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AuthorityWorkspace {
+    selection: ProjectSelection,
+    contribution_review: Option<ContributionReview>,
+}
+
+impl AuthorityWorkspace {
+    /// Returns whether the contribution review currently owns the focused modal layer.
+    pub fn has_modal(&self) -> bool {
+        self.contribution_review.is_some()
+    }
+
+    /// Returns whether the focused project currently accepts an operator contribution.
+    pub fn can_contribute(&mut self, state: &GameState) -> bool {
+        self.selection
+            .selected_project_id(state)
+            .and_then(|project_id| ContributionReview::start(state, project_id).ok())
+            .is_some()
+    }
+
+    /// Returns the contextual footer actions for the current Authority step.
+    pub fn shortcuts(
+        &mut self,
+        state: &GameState,
+        compact: bool,
+        wide: bool,
+    ) -> Vec<AuthorityShortcut> {
+        if self.has_modal() {
+            return vec![
+                AuthorityShortcut::enabled("Enter", "Contribute"),
+                AuthorityShortcut::enabled("Esc", "Cancel"),
+            ];
+        }
+
+        if state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .is_empty()
+        {
+            return vec![AuthorityShortcut::disabled("↑↓", "Project")];
+        }
+
+        let mut items = vec![AuthorityShortcut::enabled(
+            if compact { "↑↓" } else { "↑↓/JK" },
+            "Project",
+        )];
+        if wide {
+            items.push(AuthorityShortcut::enabled("PgUp/PgDn", "Page"));
+        }
+        items.push(if self.can_contribute(state) {
+            AuthorityShortcut::enabled("F", "Contribute")
+        } else {
+            AuthorityShortcut::disabled("F", "Contribute")
+        });
+        items
+    }
+
+    /// Returns help content for the currently focused Authority state.
+    pub fn help_lines(&self) -> Vec<String> {
+        if self.has_modal() {
+            return vec![
+                "Current · Infrastructure Contribution".into(),
+                "Enter Confirm contribution".into(),
+                "Esc Cancel contribution".into(),
+                String::new(),
+                "The Rail Authority keeps ownership of the infrastructure.".into(),
+            ];
+        }
+
+        vec![
+            "Current · Rail Authority".into(),
+            "↑↓ / jk Select infrastructure project".into(),
+            "PgUp / PgDn Scroll project pipeline".into(),
+            "f Contribute to selected project while it is in Funding".into(),
+            String::new(),
+            "The Authority controls public infrastructure; operator contributions are optional.".into(),
+        ]
+    }
+
+    /// Routes one Authority-owned keyboard event. Global view navigation remains a Shell concern.
+    pub fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        state: &GameState,
+    ) -> AuthorityWorkspaceAction {
+        if let Some(review) = self.contribution_review {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.contribution_review = None;
+                    AuthorityWorkspaceAction::Notice(
+                        "Infrastructure contribution cancelled; no changes were made.".into(),
+                    )
+                }
+                KeyCode::Enter => AuthorityWorkspaceAction::Contribute {
+                    project_id: review.project_id,
+                    amount: review.amount,
+                },
+                _ => AuthorityWorkspaceAction::Continue,
+            };
+        }
+
+        match key.code {
+            KeyCode::Char('f' | 'F') => match self.selection.selected_project_id(state) {
+                Some(project_id) => match ContributionReview::start(state, project_id) {
+                    Ok(review) => {
+                        self.contribution_review = Some(review);
+                        AuthorityWorkspaceAction::ClearNotice
+                    }
+                    Err(message) => AuthorityWorkspaceAction::Notice(message.into()),
+                },
+                None => AuthorityWorkspaceAction::Notice(
+                    "Select an infrastructure project first.".into(),
+                ),
+            },
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K') => {
+                self.selection.handle_key(key.code, state);
+                AuthorityWorkspaceAction::Continue
+            }
+            _ => AuthorityWorkspaceAction::Continue,
+        }
+    }
+
+    /// Renders the active Authority content layer.
+    pub fn render_dashboard(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &GameState,
+        now: UtcSeconds,
+    ) {
+        render_dashboard(frame, area, state, now, &mut self.selection);
+    }
+
+    /// Renders the compact text fallback used by the Shell.
+    pub fn render_text(&self, state: &GameState, now: UtcSeconds) -> String {
+        render(state, now)
+    }
+
+    /// Renders the focused contribution review when one is active.
+    pub fn render_modal(&self, frame: &mut Frame, area: Rect, state: &GameState) {
+        if let Some(review) = self.contribution_review {
+            render_contribution_review(frame, area, state, review);
+        }
+    }
+
+    /// Closes a contribution review after persistence succeeds and returns its amount.
+    pub fn confirm_saved(&mut self) -> Money {
+        let amount = self
+            .contribution_review
+            .map(|review| review.amount)
+            .unwrap_or(Money::ZERO);
+        self.contribution_review = None;
+        amount
+    }
+
+    /// Clears transient Authority presentation state when starting a fresh game.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl ContributionReview {
@@ -1325,7 +1533,7 @@ pub fn render(state: &GameState, now: UtcSeconds) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use crate::{
         model::{MarketMaturity, UtcSeconds},
@@ -1333,14 +1541,18 @@ mod tests {
     };
 
     use super::{
-        ProjectSelection, compact_duration, construction_remaining_duration,
-        format_project_timestamp, render,
+        AuthorityWorkspace, AuthorityWorkspaceAction, ProjectSelection, compact_duration,
+        construction_remaining_duration, format_project_timestamp, render,
     };
 
     fn establish_rail_markets(state: &mut crate::model::GameState) {
         for pool in &mut state.origin_destination_demand {
             pool.market_maturity = MarketMaturity::full();
         }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
     }
 
     #[test]
@@ -1396,4 +1608,86 @@ mod tests {
         selection.handle_key(KeyCode::Down, &state);
         assert!(selection.selected_project(&state).is_some());
     }
+
+    #[test]
+    fn authority_workspace_owns_project_navigation_and_missing_contribution_feedback() {
+        let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
+        state.region.rail_authority.infrastructure_projects.clear();
+        let mut workspace = AuthorityWorkspace::default();
+        let shortcuts = workspace.shortcuts(&state, false, true);
+        assert_eq!(shortcuts.len(), 1);
+        assert_eq!(shortcuts[0].key, "↑↓");
+        assert!(!shortcuts[0].enabled);
+
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Down), &state),
+            AuthorityWorkspaceAction::Continue
+        );
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('f')), &state),
+            AuthorityWorkspaceAction::Notice(
+                "Select an infrastructure project first.".into()
+            )
+        );
+        assert!(!workspace.has_modal());
+    }
+
+    #[test]
+    fn authority_workspace_owns_contribution_review_lifecycle() {
+        let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
+        let world_seed = state.world_seed;
+        establish_rail_markets(&mut state);
+        advance_infrastructure_planning(
+            &mut state.region,
+            world_seed,
+            &state.origin_destination_demand,
+            UtcSeconds::from_unix_seconds(0),
+        )
+        .unwrap();
+        let project = state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .first_mut()
+            .expect("planning should create an infrastructure project");
+        project.status = crate::model::InfrastructureProjectStatus::Funding;
+
+        let mut workspace = AuthorityWorkspace::default();
+        assert!(workspace.can_contribute(&state));
+        assert!(
+            workspace
+                .shortcuts(&state, false, true)
+                .iter()
+                .any(|shortcut| shortcut.key == "F" && shortcut.enabled)
+        );
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('f')), &state),
+            AuthorityWorkspaceAction::ClearNotice
+        );
+        assert!(workspace.has_modal());
+        let modal_shortcuts = workspace.shortcuts(&state, false, true);
+        assert_eq!(
+            modal_shortcuts
+                .iter()
+                .map(|shortcut| shortcut.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Enter", "Esc"]
+        );
+        assert_eq!(
+            workspace.help_lines().first().map(String::as_str),
+            Some("Current · Infrastructure Contribution")
+        );
+
+        let action = workspace.handle_key(key(KeyCode::Enter), &state);
+        assert!(matches!(
+            action,
+            AuthorityWorkspaceAction::Contribute { amount, .. } if amount > crate::model::Money::ZERO
+        ));
+        assert!(workspace.has_modal());
+
+        let amount = workspace.confirm_saved();
+        assert!(amount > crate::model::Money::ZERO);
+        assert!(!workspace.has_modal());
+    }
+
 }

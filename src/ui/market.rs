@@ -79,6 +79,253 @@ impl CatalogueSelection {
     }
 }
 
+/// Shell-facing outcome from the Market workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MarketWorkspaceAction {
+    /// No application action is required.
+    Continue,
+    /// Clear stale Shell feedback after a successful Market-only transition.
+    ClearNotice,
+    /// Surface presentation feedback without crossing the application boundary.
+    Notice(String),
+    /// Revalidate and persist the proposed Train purchase.
+    Purchase {
+        catalogue_index: usize,
+        delivery_station_id: RailStationId,
+    },
+}
+
+/// One contextual footer action owned by the Market workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarketShortcut {
+    pub key: String,
+    pub action: String,
+    pub enabled: bool,
+}
+
+impl MarketShortcut {
+    fn enabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: true,
+        }
+    }
+
+    fn disabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: false,
+        }
+    }
+}
+
+/// Owns all presentation state and keyboard interaction for the Train Market.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MarketWorkspace {
+    flow: Option<MarketFlow>,
+    selection: CatalogueSelection,
+}
+
+impl MarketWorkspace {
+    /// Returns whether an uncommitted purchase flow currently owns input.
+    pub fn has_flow(&self) -> bool {
+        self.flow.is_some()
+    }
+
+    /// Returns whether delivery Rail Station selection currently owns the content area.
+    fn is_selecting_delivery(&self) -> bool {
+        self.flow
+            .as_ref()
+            .is_some_and(MarketFlow::is_selecting_delivery)
+    }
+
+    /// Returns whether this workspace currently owns the focused modal layer.
+    pub fn has_modal(&self) -> bool {
+        self.flow.as_ref().is_some_and(MarketFlow::is_confirming)
+    }
+
+    /// Returns the contextual footer actions for the current Market step.
+    pub fn shortcuts(
+        &mut self,
+        state: &GameState,
+        compact: bool,
+        wide: bool,
+    ) -> Vec<MarketShortcut> {
+        if self.has_flow() {
+            if self.is_selecting_delivery() {
+                let mut items = vec![MarketShortcut::enabled(
+                    if compact { "↑↓" } else { "↑↓/JK" },
+                    "Station",
+                )];
+                if wide {
+                    items.push(MarketShortcut::enabled("PgUp/PgDn", "Page"));
+                }
+                items.extend([
+                    MarketShortcut::enabled("Enter", "Review"),
+                    MarketShortcut::enabled("←", "Model"),
+                    MarketShortcut::enabled("Esc", "Cancel"),
+                ]);
+                return items;
+            }
+
+            return vec![
+                MarketShortcut::enabled("Enter", "Purchase"),
+                MarketShortcut::enabled("←", "Back"),
+                MarketShortcut::enabled("Esc", "Cancel"),
+            ];
+        }
+
+        let mut items = vec![MarketShortcut::enabled(
+            if compact { "↑↓" } else { "↑↓/JK" },
+            "Model",
+        )];
+        if wide {
+            items.push(MarketShortcut::enabled("PgUp/PgDn", "Page"));
+        }
+        items.push(if self.purchase_available(state) {
+            MarketShortcut::enabled("Enter", "Buy")
+        } else {
+            MarketShortcut::disabled("Enter", "Buy")
+        });
+        items
+    }
+
+    /// Returns focused help text when a purchase flow owns input.
+    pub fn help_lines(&self) -> Option<Vec<String>> {
+        if !self.has_flow() {
+            return None;
+        }
+
+        let mut lines = vec!["Current · Train Purchase".into()];
+        if self.is_selecting_delivery() {
+            lines.extend([
+                "↑↓ / jk Select the delivery Rail Station".into(),
+                "Enter Review purchase".into(),
+                "← / Backspace Previous step   Esc Cancel".into(),
+            ]);
+        } else {
+            lines.extend([
+                "Enter Confirm purchase".into(),
+                "← / Backspace Previous step   Esc Cancel".into(),
+            ]);
+        }
+        Some(lines)
+    }
+
+    /// Routes one Market-owned keyboard event. Global view navigation remains a Shell concern.
+    pub fn handle_key(&mut self, key: KeyEvent, state: &GameState) -> MarketWorkspaceAction {
+        if self.flow.is_some() {
+            let action = self
+                .flow
+                .as_mut()
+                .expect("checked Market flow presence")
+                .handle_key(key, state);
+            return match action {
+                MarketFlowAction::Continue | MarketFlowAction::ReturnToDelivery => {
+                    MarketWorkspaceAction::Continue
+                }
+                MarketFlowAction::Cancel => {
+                    self.flow = None;
+                    MarketWorkspaceAction::Notice(
+                        "Train purchase cancelled; no changes were made.".into(),
+                    )
+                }
+                MarketFlowAction::ReturnToCatalogue => {
+                    self.flow = None;
+                    MarketWorkspaceAction::ClearNotice
+                }
+                MarketFlowAction::Confirm {
+                    catalogue_index,
+                    delivery_station_id,
+                } => MarketWorkspaceAction::Purchase {
+                    catalogue_index,
+                    delivery_station_id,
+                },
+            };
+        }
+
+        match key.code {
+            KeyCode::Enter => match self.selection.selected_catalogue_index(state) {
+                Some(catalogue_index) => match MarketFlow::start(state, catalogue_index) {
+                    Ok(flow) => {
+                        self.flow = Some(flow);
+                        MarketWorkspaceAction::ClearNotice
+                    }
+                    Err(message) => MarketWorkspaceAction::Notice(message.into()),
+                },
+                None => MarketWorkspaceAction::Notice(
+                    "No diesel Train is available in the catalogue.".into(),
+                ),
+            },
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K') => {
+                self.selection.handle_key(key.code, state);
+                MarketWorkspaceAction::Continue
+            }
+            _ => MarketWorkspaceAction::Continue,
+        }
+    }
+
+    /// Returns whether the currently focused catalogue Train can start a purchase.
+    pub fn purchase_available(&mut self, state: &GameState) -> bool {
+        self.selection
+            .selected_catalogue_index(state)
+            .is_some_and(|catalogue_index| purchase_action_available(state, catalogue_index))
+    }
+
+    /// Records an application-boundary rejection while preserving purchase context.
+    pub fn reject(&mut self, error: impl Into<String>) -> Option<String> {
+        let error = error.into();
+        if let Some(flow) = &mut self.flow {
+            flow.reject(error);
+            None
+        } else {
+            Some(error)
+        }
+    }
+
+    /// Closes the purchase flow after persistence succeeds.
+    pub fn confirm_saved(&mut self) {
+        self.flow = None;
+    }
+
+    /// Clears transient Market state, for example when starting a fresh game.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Renders the active Market content layer.
+    pub fn render_dashboard(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        if self.is_selecting_delivery() {
+            if let Some(flow) = &mut self.flow {
+                flow.render_panel(frame, area, state);
+            }
+        } else {
+            render_dashboard(frame, area, state, &mut self.selection);
+        }
+    }
+
+    /// Renders the compact text fallback used by the Shell.
+    pub fn render_text(&self, state: &GameState) -> String {
+        match &self.flow {
+            Some(flow) => flow.render(state),
+            None => render(state),
+        }
+    }
+
+    /// Renders the focused purchase-confirmation layer when one is active.
+    pub fn render_modal(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
+        if let Some(flow) = &mut self.flow {
+            flow.render_panel(frame, area, state);
+        }
+    }
+}
+
 /// The result of handling a key within the Buy Trains flow.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MarketFlowAction {
@@ -1464,11 +1711,12 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use crate::{
-        model::{Money, RailStationId, UtcSeconds},
+        catalog::train_catalogue,
+        model::{RailStationId, UtcSeconds},
         sim::world::create_new_game,
     };
 
-    use super::{MarketFlow, MarketFlowAction, render};
+    use super::{MarketFlow, MarketFlowAction, MarketWorkspace, MarketWorkspaceAction, render};
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 
@@ -1493,6 +1741,76 @@ mod tests {
         assert!(rendered.contains("Purchase price:"));
         assert!(rendered.contains("Sample trip"));
         assert!(rendered.contains("Infrastructure Access Fee"));
+    }
+
+    #[test]
+    fn workspace_owns_catalogue_selection_and_purchase_flow() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = MarketWorkspace::default();
+
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Enter), &state),
+            MarketWorkspaceAction::ClearNotice
+        );
+        assert!(workspace.is_selecting_delivery());
+
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Enter), &state),
+            MarketWorkspaceAction::Continue
+        );
+        assert!(workspace.has_modal());
+
+        assert!(matches!(
+            workspace.handle_key(key(KeyCode::Enter), &state),
+            MarketWorkspaceAction::Purchase {
+                catalogue_index: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn workspace_owns_contextual_controls_and_help_for_purchase_steps() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = MarketWorkspace::default();
+
+        let catalogue = workspace.shortcuts(&state, false, true);
+        assert!(catalogue.iter().any(|item| item.action == "Model"));
+        assert!(catalogue.iter().any(|item| item.action == "Page"));
+        assert!(
+            catalogue
+                .iter()
+                .any(|item| item.action == "Buy" && item.enabled)
+        );
+        assert!(workspace.help_lines().is_none());
+
+        workspace.handle_key(key(KeyCode::Enter), &state);
+        let delivery = workspace.shortcuts(&state, false, true);
+        assert!(delivery.iter().any(|item| item.action == "Station"));
+        assert!(delivery.iter().any(|item| item.action == "Review"));
+        assert!(
+            workspace
+                .help_lines()
+                .is_some_and(|lines| lines.iter().any(|line| line == "Enter Review purchase"))
+        );
+
+        workspace.handle_key(key(KeyCode::Enter), &state);
+        let confirmation = workspace.shortcuts(&state, false, true);
+        assert!(confirmation.iter().any(|item| item.action == "Purchase"));
+        assert!(workspace.has_modal());
+    }
+
+    #[test]
+    fn workspace_cancels_purchase_without_leaking_flow_state() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = MarketWorkspace::default();
+
+        workspace.handle_key(key(KeyCode::Enter), &state);
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Esc), &state),
+            MarketWorkspaceAction::Notice("Train purchase cancelled; no changes were made.".into())
+        );
+        assert!(!workspace.has_flow());
     }
 
     #[test]

@@ -3,11 +3,7 @@
 //! Each load uses a new [`SaveSlot`] to exercise the same close/reopen path as
 //! an offline player, rather than only advancing an in-memory [`GameState`].
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::path::Path;
 
 use railq::{
     app::App,
@@ -17,46 +13,21 @@ use railq::{
     },
     sim::{
         fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
-        world::create_new_game,
     },
     storage::SaveSlot,
 };
+
+mod support;
+
+use support::{TestDirectory, new_game};
 
 const ORIGIN: RailStationId = RailStationId::new(1);
 const DESTINATION: RailStationId = RailStationId::new(2);
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(0);
 const DEPARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 
-static NEXT_TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
-
-struct TestDirectory {
-    path: PathBuf,
-}
-
-impl TestDirectory {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "railq-offline-test-{}-{}",
-            std::process::id(),
-            NEXT_TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path).expect("test directory is created");
-        Self { path }
-    }
-
-    fn save_path(&self) -> PathBuf {
-        self.path.join("company.db")
-    }
-}
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
 fn travelling_game() -> GameState {
-    let mut state = create_new_game(42, "Offline Passenger", STARTED_AT);
+    let mut state = new_game("Offline Passenger", STARTED_AT);
     let train_id = purchase_train(&mut state, 0, ORIGIN).expect("Train purchase succeeds");
     let service_id =
         find_or_create_service(&mut state, ORIGIN, DESTINATION).expect("Service is created");
@@ -81,8 +52,8 @@ fn reopen(path: &Path, now: UtcSeconds) -> GameState {
 
 #[test]
 fn load_before_eta_leaves_the_train_travelling() {
-    let directory = TestDirectory::new();
-    let path = directory.save_path();
+    let directory = TestDirectory::new("offline-test");
+    let path = directory.join("company.db");
     let state = travelling_game();
     let journey = state.active_journeys[0].clone();
     persist(&path, state);
@@ -104,8 +75,8 @@ fn load_before_eta_leaves_the_train_travelling() {
 
 #[test]
 fn load_at_eta_settles_the_journey_once() {
-    let directory = TestDirectory::new();
-    let path = directory.save_path();
+    let directory = TestDirectory::new("offline-test");
+    let path = directory.join("company.db");
     let state = travelling_game();
     let journey = state.active_journeys[0].clone();
     persist(&path, state);
@@ -119,8 +90,8 @@ fn load_at_eta_settles_the_journey_once() {
 
 #[test]
 fn load_long_after_eta_settles_once_and_leaves_the_train_waiting() {
-    let directory = TestDirectory::new();
-    let path = directory.save_path();
+    let directory = TestDirectory::new("offline-test");
+    let path = directory.join("company.db");
     let state = travelling_game();
     let journey = state.active_journeys[0].clone();
     persist(&path, state);
@@ -135,8 +106,8 @@ fn load_long_after_eta_settles_once_and_leaves_the_train_waiting() {
 
 #[test]
 fn repeated_save_reload_cycles_do_not_repeat_journey_accounting() {
-    let directory = TestDirectory::new();
-    let path = directory.save_path();
+    let directory = TestDirectory::new("offline-test");
+    let path = directory.join("company.db");
     let state = travelling_game();
     let journey = state.active_journeys[0].clone();
     let funds_after_departure = state.player_company.funds;
@@ -175,8 +146,8 @@ fn repeated_save_reload_cycles_do_not_repeat_journey_accounting() {
 
 #[test]
 fn a_backward_clock_cannot_reverse_progress_or_duplicate_effects() {
-    let directory = TestDirectory::new();
-    let path = directory.save_path();
+    let directory = TestDirectory::new("offline-test");
+    let path = directory.join("company.db");
     let state = travelling_game();
     let journey = state.active_journeys[0].clone();
     persist(&path, state);
@@ -192,9 +163,9 @@ fn a_backward_clock_cannot_reverse_progress_or_duplicate_effects() {
 
 #[test]
 fn offline_advancement_keeps_waiting_passengers_at_the_configured_cap() {
-    let directory = TestDirectory::new();
-    let path = directory.save_path();
-    let mut state = create_new_game(42, "Offline Passenger", STARTED_AT);
+    let directory = TestDirectory::new("offline-test");
+    let path = directory.join("company.db");
+    let mut state = new_game("Offline Passenger", STARTED_AT);
     state.rules.demand.cap_duration = DurationSeconds::from_seconds(3_600);
     for pool in &mut state.origin_destination_demand {
         pool.waiting_passengers = 0;
@@ -221,8 +192,8 @@ fn offline_advancement_keeps_waiting_passengers_at_the_configured_cap() {
 
 #[test]
 fn reload_never_creates_an_automatic_departure() {
-    let directory = TestDirectory::new();
-    let path = directory.save_path();
+    let directory = TestDirectory::new("offline-test");
+    let path = directory.join("company.db");
     let state = travelling_game();
     let journey = state.active_journeys[0].clone();
     persist(&path, state);

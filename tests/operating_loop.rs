@@ -16,9 +16,12 @@ use railq::{
         journeys::dispatch_journey,
         services::find_or_create_service,
         time::advance_time,
-        world::create_new_game,
     },
 };
+
+mod support;
+
+use support::new_game;
 
 const ORIGIN: RailStationId = RailStationId::new(1);
 const DESTINATION: RailStationId = RailStationId::new(2);
@@ -40,7 +43,7 @@ const OPERATING_COST: Money = Money::from_cents(480);
 fn operating_game(company_funds: Money) -> GameState {
     let fare_rate = MoneyPerKilometre::new(10).expect("fixture fare rate is positive");
     let access_rate = MoneyPerKilometre::new(10).expect("fixture access rate is positive");
-    let mut state = create_new_game(42, "Regression Passenger", DEPARTURE);
+    let mut state = new_game("Regression Passenger", DEPARTURE);
 
     state.rules.balance = BalanceConfig::new(fare_rate, access_rate, company_funds);
     state.player_company.funds = company_funds;

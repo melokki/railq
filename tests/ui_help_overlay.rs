@@ -1,6 +1,4 @@
-//! Help overlay evidence for task 22.
-
-use std::{fs, path::Path};
+//! Help overlay behavior tests.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
@@ -12,7 +10,6 @@ use railq::{
     },
 };
 
-const EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/22";
 const NOW: UtcSeconds = UtcSeconds::from_unix_seconds(1_700_000_000);
 
 fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) -> ShellAction {
@@ -21,9 +18,6 @@ fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) -> S
 
 #[test]
 fn help_is_scrollable_and_uses_a_focused_page_when_compact() {
-    let evidence = Path::new(EVIDENCE_DIR);
-    fs::create_dir_all(evidence).expect("evidence directory");
-
     let state = create_new_game(42, "Help Passenger", NOW);
     let mut shell = Shell::new();
     assert_eq!(
@@ -46,8 +40,6 @@ fn help_is_scrollable_and_uses_a_focused_page_when_compact() {
         Some((theme::ACCENT, theme::PANEL)),
         "Help should use the shared focused-modal border",
     );
-    fs::write(evidence.join("help-overlay-120x40.txt"), &wide).expect("wide capture");
-
     let compact_before = capture_rendered_buffer_mut(&mut shell, &state, 64, 16);
     assert!(compact_before.contains("Keyboard Help"));
     assert!(compact_before.contains("Navigation"));
@@ -58,8 +50,6 @@ fn help_is_scrollable_and_uses_a_focused_page_when_compact() {
     let compact_after = capture_rendered_buffer_mut(&mut shell, &state, 64, 16);
     assert!(compact_after.contains("Tip"));
     assert_ne!(compact_before, compact_after);
-    fs::write(evidence.join("help-focused-page-64x16.txt"), &compact_after)
-        .expect("compact capture");
 }
 
 #[test]

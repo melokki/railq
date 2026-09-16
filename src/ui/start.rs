@@ -25,7 +25,7 @@ use crate::{
     sim::world::create_new_game,
 };
 
-use super::{TerminalSession, format, theme};
+use super::{format, runtime::TerminalSession, theme};
 
 /// The maximum visible length of a Player Company name.
 pub const MAXIMUM_COMPANY_NAME_CHARACTERS: usize = 60;

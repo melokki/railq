@@ -41,6 +41,7 @@ pub enum ServiceWorkspaceAction {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ServiceWorkspace {
+    open: bool,
     selected_service_index: usize,
     create_flow: Option<CreateServiceFlow>,
     delete_confirmation: Option<ServiceId>,
@@ -56,6 +57,21 @@ struct CreateServiceFlow {
 }
 
 impl ServiceWorkspace {
+    /// Returns whether the Passenger Services workspace is currently open.
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Opens Passenger Services without discarding any in-progress presentation state.
+    pub fn open(&mut self) {
+        self.open = true;
+    }
+
+    /// Returns to the Map while preserving any in-progress presentation state.
+    pub fn close(&mut self) {
+        self.open = false;
+    }
+
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) -> ServiceWorkspaceAction {
         if let Some(service_id) = self.delete_confirmation {
             return match key {
@@ -243,6 +259,7 @@ impl ServiceWorkspace {
     }
 
     pub fn confirm_created(&mut self, state: &GameState) {
+        self.open = true;
         self.create_flow = None;
         self.delete_confirmation = None;
         self.selected_service_index = state
@@ -253,6 +270,7 @@ impl ServiceWorkspace {
     }
 
     pub fn confirm_updated(&mut self, state: &GameState) {
+        self.open = true;
         self.create_flow = None;
         self.delete_confirmation = None;
         self.selected_service_index = self.selected_service_index.min(
@@ -265,6 +283,7 @@ impl ServiceWorkspace {
     }
 
     pub fn confirm_deleted(&mut self, state: &GameState) {
+        self.open = true;
         self.delete_confirmation = None;
         self.selected_service_index = self.selected_service_index.min(
             state
@@ -279,27 +298,6 @@ impl ServiceWorkspace {
         if let Some(flow) = &mut self.create_flow {
             flow.review = false;
             flow.error = Some(message.into());
-        }
-    }
-
-    /// Legacy textual description of the current Service controls.
-    /// Kept for callers outside the shell; the in-game footer now renders
-    /// structured shortcuts with per-key styling.
-    pub fn controls(&self) -> &'static str {
-        if self.delete_confirmation.is_some() {
-            "Enter Delete  Esc Cancel"
-        } else if let Some(flow) = &self.create_flow {
-            if flow.review {
-                if flow.editing_service_id.is_some() {
-                    "Enter Save  ←/Backspace Edit  Esc Cancel"
-                } else {
-                    "Enter Create  ←/Backspace Edit  Esc Cancel"
-                }
-            } else {
-                "↑↓/jk Station  Enter Add stop  Backspace Remove  f Review  Esc Cancel"
-            }
-        } else {
-            "↑↓/jk Service  n New  e Edit  d Delete  Esc Map"
         }
     }
 
@@ -375,6 +373,33 @@ impl ServiceWorkspace {
             ("Esc", "Map", true),
         ]);
         actions
+    }
+
+    /// Contextual help for Passenger Services. Keeping this beside input and
+    /// footer shortcuts means the workspace owns the interaction vocabulary.
+    pub fn help_lines(&self, state: &GameState) -> Vec<String> {
+        let mut lines = vec!["Current · Passenger Services".into()];
+        if state.player_company.passenger_services.is_empty() {
+            lines.extend([
+                "n Create the first directional Passenger Service".into(),
+                "Esc Return to Map".into(),
+            ]);
+        } else {
+            lines.extend([
+                "↑↓ / jk Select Passenger Service".into(),
+                "PgUp / PgDn Move through longer Service lists".into(),
+                "n Create a new directional Passenger Service".into(),
+                "e Edit the selected Service when it has no active Journeys".into(),
+                "d Delete the selected Service when it has no active Journeys".into(),
+                "Esc Return to Map".into(),
+            ]);
+        }
+        lines.extend([
+            String::new(),
+            "During create/edit: Enter adds a stop, Backspace removes the last stop, f reviews."
+                .into(),
+        ]);
+        lines
     }
 
     fn selected_service_id(&self, state: &GameState) -> Option<ServiceId> {
