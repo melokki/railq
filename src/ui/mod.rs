@@ -131,8 +131,7 @@ struct PendingAction {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Shell {
     active_view: View,
-    dispatch_flow: Option<dispatch::DispatchFlow>,
-    dispatch_returns_to_fleet: bool,
+    dispatch_workspace: dispatch::DispatchWorkspace,
     map_workspace: map::MapWorkspace,
     service_workspace: services::ServiceWorkspace,
     fleet_workspace: fleet::FleetWorkspace,
@@ -154,8 +153,7 @@ impl Shell {
     pub fn new() -> Self {
         Self {
             active_view: View::Map,
-            dispatch_flow: None,
-            dispatch_returns_to_fleet: false,
+            dispatch_workspace: dispatch::DispatchWorkspace::default(),
             map_workspace: map::MapWorkspace::default(),
             service_workspace: services::ServiceWorkspace::default(),
             fleet_workspace: fleet::FleetWorkspace::default(),
@@ -310,15 +308,13 @@ impl Shell {
             return self.handle_authority_key(key, state);
         }
 
-        if let Some(flow) = &mut self.dispatch_flow {
+        if let Some(flow) = self.dispatch_workspace.flow_mut() {
             return match flow.handle_key(key, state) {
                 dispatch::DispatchFlowAction::Continue => ShellAction::Continue,
                 dispatch::DispatchFlowAction::Cancel => {
-                    self.dispatch_flow = None;
-                    if self.dispatch_returns_to_fleet {
+                    if self.dispatch_workspace.close() {
                         self.fleet_workspace.close_details();
                     }
-                    self.dispatch_returns_to_fleet = false;
                     self.notice = Some("Manual Dispatch cancelled; no changes were made.".into());
                     ShellAction::Continue
                 }
@@ -470,10 +466,8 @@ impl Shell {
                 ShellAction::Continue
             }
             map::MapWorkspaceAction::StartDispatch => {
-                match dispatch::DispatchFlow::start(state) {
-                    Ok(flow) => {
-                        self.dispatch_flow = Some(flow);
-                        self.dispatch_returns_to_fleet = false;
+                match self.dispatch_workspace.start_from_map(state) {
+                    Ok(()) => {
                         self.notice = None;
                     }
                     Err(message) => self.notice = Some(message.into()),
@@ -582,10 +576,8 @@ impl Shell {
                 ShellAction::Player(AppCommand::UpdateTrainNickname { train_id, nickname })
             }
             fleet::FleetWorkspaceAction::Dispatch { train_id } => {
-                match dispatch::DispatchFlow::start_with_selected_train(state, train_id) {
-                    Ok(flow) => {
-                        self.dispatch_flow = Some(flow);
-                        self.dispatch_returns_to_fleet = true;
+                match self.dispatch_workspace.start_from_fleet(state, train_id) {
+                    Ok(()) => {
                         self.notice = None;
                     }
                     Err(message) => self.notice = Some(message),
@@ -598,7 +590,7 @@ impl Shell {
     /// Keeps a rejected confirmation visible to explain the actual current-state cause.
     pub fn reject_manual_dispatch(&mut self, error: impl Into<String>) {
         self.pending_action = None;
-        if let Some(flow) = &mut self.dispatch_flow {
+        if let Some(flow) = self.dispatch_workspace.flow_mut() {
             flow.reject(error);
         } else {
             self.notice = Some(error.into());
@@ -608,19 +600,16 @@ impl Shell {
     /// Closes a successful proposal after the application boundary persisted it.
     pub fn confirm_manual_dispatch(&mut self) {
         self.pending_action = None;
-        self.dispatch_flow = None;
-        if self.dispatch_returns_to_fleet {
+        if self.dispatch_workspace.close() {
             self.fleet_workspace.close_details();
         }
-        self.dispatch_returns_to_fleet = false;
         self.notice = Some("Manual Dispatch authorised and saved.".into());
     }
 
     /// Publishes dispatch feedback only after the caller has saved and supplied
     /// the resulting game state.
     pub fn confirm_manual_dispatch_saved(&mut self, state: &GameState) {
-        self.dispatch_flow = None;
-        self.dispatch_returns_to_fleet = false;
+        self.dispatch_workspace.reset();
         self.publish_pending_outcome(state);
     }
 
@@ -882,8 +871,7 @@ impl Shell {
     /// Shows the persisted outcome of an explicitly confirmed Bankruptcy restart.
     pub fn confirm_restart_after_bankruptcy(&mut self) {
         self.active_view = View::Map;
-        self.dispatch_flow = None;
-        self.dispatch_returns_to_fleet = false;
+        self.dispatch_workspace.reset();
         self.fleet_workspace.reset();
         self.market_workspace.reset();
         self.authority_workspace.reset();
@@ -1166,7 +1154,7 @@ fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
         || shell.fleet_workspace.has_modal()
         || shell.company_workspace.has_modal()
         || (is_bankrupt(state) && shell.restart_confirmation)
-        || shell.dispatch_flow.is_some()
+        || shell.dispatch_workspace.has_flow()
         || shell.market_workspace.has_modal()
         || (shell.service_workspace.is_open() && shell.service_workspace.has_modal())
 }
@@ -1199,7 +1187,7 @@ fn render_focused_modal(
         render_bankruptcy_restart_confirmation(frame, content_area);
         return;
     }
-    if let Some(flow) = &mut shell.dispatch_flow {
+    if let Some(flow) = shell.dispatch_workspace.flow_mut() {
         flow.render_panel(frame, modal::workflow_rect(content_area), state);
         return;
     }
@@ -1401,7 +1389,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         };
     }
 
-    let mut actions = if let Some(flow) = &shell.dispatch_flow {
+    let mut actions = if let Some(flow) = shell.dispatch_workspace.flow() {
         if flow.is_selecting_train() {
             vec![
                 FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Train"),
@@ -1631,7 +1619,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         return lines;
     }
 
-    if let Some(flow) = &shell.dispatch_flow {
+    if let Some(flow) = shell.dispatch_workspace.flow() {
         lines.push("Current · Manual Dispatch".into());
         if flow.is_selecting_train() {
             lines.extend([

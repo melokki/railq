@@ -63,6 +63,54 @@ pub struct DispatchFlow {
     rejection: Option<String>,
 }
 
+/// Presentation-only owner of the active Manual Dispatch workflow.
+///
+/// The shell only needs to know whether dispatch is active and whether a
+/// cancelled flow should return to Fleet. The concrete step state remains
+/// inside this workspace.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DispatchWorkspace {
+    flow: Option<DispatchFlow>,
+    returns_to_fleet: bool,
+}
+
+impl DispatchWorkspace {
+    pub fn has_flow(&self) -> bool {
+        self.flow.is_some()
+    }
+
+    pub fn flow(&self) -> Option<&DispatchFlow> {
+        self.flow.as_ref()
+    }
+
+    pub fn flow_mut(&mut self) -> Option<&mut DispatchFlow> {
+        self.flow.as_mut()
+    }
+
+    pub fn start_from_map(&mut self, state: &GameState) -> Result<(), &'static str> {
+        self.flow = Some(DispatchFlow::start(state)?);
+        self.returns_to_fleet = false;
+        Ok(())
+    }
+
+    pub fn start_from_fleet(&mut self, state: &GameState, train_id: TrainId) -> Result<(), String> {
+        self.flow = Some(DispatchFlow::start_with_selected_train(state, train_id)?);
+        self.returns_to_fleet = true;
+        Ok(())
+    }
+
+    /// Clears the workflow and reports whether Fleet was its launch context.
+    pub fn close(&mut self) -> bool {
+        self.flow = None;
+        std::mem::take(&mut self.returns_to_fleet)
+    }
+
+    pub fn reset(&mut self) {
+        self.flow = None;
+        self.returns_to_fleet = false;
+    }
+}
+
 impl DispatchFlow {
     /// Returns the active step so the shell can publish only controls this
     /// flow actually handles.
