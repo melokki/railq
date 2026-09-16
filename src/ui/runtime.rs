@@ -22,7 +22,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{model::GameState, sim::time::SettledJourney};
 
-use super::{Shell, ShellAction, TerminalCommand, render_frame};
+use super::{Shell, ShellAction, TerminalCommand, TerminalCommandOutcome, render_frame};
 
 /// How frequently the terminal checks for elapsed arrivals while no key is pressed.
 const ARRIVAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -34,6 +34,8 @@ pub enum RunError<E> {
     Terminal(io::Error),
     /// Reconciliation failed before the shell could accept input.
     Reconcile(E),
+    /// The supplied runtime boundary returned an outcome inconsistent with the command.
+    Protocol(&'static str),
 }
 
 impl<E: fmt::Display> fmt::Display for RunError<E> {
@@ -42,6 +44,9 @@ impl<E: fmt::Display> fmt::Display for RunError<E> {
             Self::Terminal(error) => write!(formatter, "terminal error: {error}"),
             Self::Reconcile(error) => {
                 write!(formatter, "could not reconcile elapsed time: {error}")
+            }
+            Self::Protocol(message) => {
+                write!(formatter, "terminal command protocol error: {message}")
             }
         }
     }
@@ -52,6 +57,7 @@ impl<E: Error + 'static> Error for RunError<E> {
         match self {
             Self::Terminal(error) => Some(error),
             Self::Reconcile(error) => Some(error),
+            Self::Protocol(_) => None,
         }
     }
 }
@@ -63,7 +69,7 @@ impl<E: Error + 'static> Error for RunError<E> {
 /// restored on ordinary errors and while unwinding a panic.
 pub fn run_terminal<E>(
     initial_state: GameState,
-    command: impl FnMut(TerminalCommand) -> Result<GameState, E>,
+    command: impl FnMut(TerminalCommand) -> Result<TerminalCommandOutcome, E>,
 ) -> Result<(), RunError<E>>
 where
     E: fmt::Display,
@@ -75,7 +81,7 @@ where
 pub fn run_terminal_with_arrivals<E>(
     initial_state: GameState,
     startup_arrivals: Vec<SettledJourney>,
-    mut command: impl FnMut(TerminalCommand) -> Result<GameState, E>,
+    mut command: impl FnMut(TerminalCommand) -> Result<TerminalCommandOutcome, E>,
 ) -> Result<(), RunError<E>>
 where
     E: fmt::Display,
@@ -103,7 +109,7 @@ fn run_event_loop<E>(
     terminal: &mut TerminalSession,
     mut state: GameState,
     startup_arrivals: Vec<SettledJourney>,
-    command: &mut impl FnMut(TerminalCommand) -> Result<GameState, E>,
+    command: &mut impl FnMut(TerminalCommand) -> Result<TerminalCommandOutcome, E>,
 ) -> Result<(), RunError<E>>
 where
     E: fmt::Display,
@@ -116,7 +122,14 @@ where
             .draw(|frame| render_frame(frame, &mut shell, &state))
             .map_err(RunError::Terminal)?;
         let before_reconciliation = state.clone();
-        let reconciled_state = command(TerminalCommand::Reconcile).map_err(RunError::Reconcile)?;
+        let (reconciled_state, player_result) = command(TerminalCommand::Reconcile)
+            .map_err(RunError::Reconcile)?
+            .into_parts();
+        if player_result.is_some() {
+            return Err(RunError::Protocol(
+                "reconciliation returned a player command result",
+            ));
+        }
         shell.publish_committed_arrivals(&before_reconciliation, &reconciled_state);
         state = reconciled_state;
 
@@ -127,8 +140,14 @@ where
         match event::read().map_err(RunError::Terminal)? {
             Event::Key(key) => {
                 let before_reconciliation = state.clone();
-                let reconciled_state =
-                    command(TerminalCommand::Reconcile).map_err(RunError::Reconcile)?;
+                let (reconciled_state, player_result) = command(TerminalCommand::Reconcile)
+                    .map_err(RunError::Reconcile)?
+                    .into_parts();
+                if player_result.is_some() {
+                    return Err(RunError::Protocol(
+                        "reconciliation returned a player command result",
+                    ));
+                }
                 shell.publish_committed_arrivals(&before_reconciliation, &reconciled_state);
                 state = reconciled_state;
                 match shell.handle_key(key, &state) {
@@ -136,9 +155,15 @@ where
                     ShellAction::Player(player_command) => {
                         let before_command = state.clone();
                         match command(TerminalCommand::Player(player_command.clone())) {
-                            Ok(next_state) => {
+                            Ok(outcome) => {
+                                let (next_state, player_result) = outcome.into_parts();
+                                let Some(player_result) = player_result else {
+                                    return Err(RunError::Protocol(
+                                        "player command returned no application result",
+                                    ));
+                                };
                                 state = next_state;
-                                shell.confirm_player_command_saved(&player_command, &state);
+                                shell.confirm_player_command_saved(&player_result, &state);
                                 shell.publish_committed_arrivals(&before_command, &state);
                             }
                             Err(error) => {
@@ -148,7 +173,13 @@ where
                     }
                     ShellAction::RestartAfterBankruptcy => {
                         match command(TerminalCommand::RestartAfterBankruptcy) {
-                            Ok(next_state) => {
+                            Ok(outcome) => {
+                                let (next_state, player_result) = outcome.into_parts();
+                                if player_result.is_some() {
+                                    return Err(RunError::Protocol(
+                                        "bankruptcy restart returned a player command result",
+                                    ));
+                                }
                                 state = next_state;
                                 shell.confirm_restart_after_bankruptcy();
                             }

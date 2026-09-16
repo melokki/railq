@@ -16,7 +16,7 @@ use ratatui::{
 
 use crate::{
     APPLICATION_NAME,
-    app::AppCommand,
+    app::{AppCommand, AppCommandResult},
     catalog::{model_for_train, train_catalogue},
     model::{
         GameState, Money, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
@@ -109,6 +109,43 @@ pub enum TerminalCommand {
     Player(AppCommand),
     /// Archive the Bankrupt Player Company save and start a fresh game.
     RestartAfterBankruptcy,
+}
+
+/// State returned by the runtime command boundary after a durable application action.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalCommandOutcome {
+    state: GameState,
+    player_result: Option<AppCommandResult>,
+}
+
+impl TerminalCommandOutcome {
+    /// Returns a state produced by elapsed-time reconciliation.
+    pub fn reconciled(state: GameState) -> Self {
+        Self {
+            state,
+            player_result: None,
+        }
+    }
+
+    /// Returns a state and typed result produced by one player command.
+    pub fn player(state: GameState, player_result: AppCommandResult) -> Self {
+        Self {
+            state,
+            player_result: Some(player_result),
+        }
+    }
+
+    /// Returns a fresh state produced by a confirmed Bankruptcy restart.
+    pub fn restarted(state: GameState) -> Self {
+        Self {
+            state,
+            player_result: None,
+        }
+    }
+
+    fn into_parts(self) -> (GameState, Option<AppCommandResult>) {
+        (self.state, self.player_result)
+    }
 }
 
 /// Presentation-only record of a command which crossed the save boundary.
@@ -613,26 +650,28 @@ impl Shell {
         self.publish_pending_outcome(state);
     }
 
-    /// Keeps a rejected purchase visible to explain the actual current-state cause.
-    fn confirm_player_command_saved(&mut self, command: &AppCommand, state: &GameState) {
-        match command {
-            AppCommand::ManualDispatch { .. } => self.confirm_manual_dispatch_saved(state),
-            AppCommand::PurchaseTrain { .. } => self.confirm_purchase_train_saved(state),
-            AppCommand::SellTrain { .. } => self.confirm_train_resale_saved(state),
-            AppCommand::CreatePassengerService { .. } => {
+    /// Publishes UI feedback from the typed result of a durably saved player command.
+    fn confirm_player_command_saved(&mut self, result: &AppCommandResult, state: &GameState) {
+        match result {
+            AppCommandResult::JourneyDispatched { .. } => self.confirm_manual_dispatch_saved(state),
+            AppCommandResult::TrainPurchased { .. } => self.confirm_purchase_train_saved(state),
+            AppCommandResult::TrainSold { .. } => self.confirm_train_resale_saved(state),
+            AppCommandResult::PassengerServiceCreated { .. } => {
                 self.confirm_passenger_service_created(state)
             }
-            AppCommand::UpdatePassengerService { .. } => {
+            AppCommandResult::PassengerServiceUpdated { .. } => {
                 self.confirm_passenger_service_updated(state)
             }
-            AppCommand::DeletePassengerService { .. } => {
+            AppCommandResult::PassengerServiceDeleted { .. } => {
                 self.confirm_passenger_service_deleted(state)
             }
-            AppCommand::UpdateCompanyVkm { .. } => self.confirm_company_vkm_saved(state),
-            AppCommand::ContributeInfrastructure { .. } => {
+            AppCommandResult::CompanyVkmUpdated => self.confirm_company_vkm_saved(state),
+            AppCommandResult::InfrastructureContributionRecorded { .. } => {
                 self.confirm_infrastructure_contribution_saved(state)
             }
-            AppCommand::UpdateTrainNickname { .. } => self.confirm_train_nickname_saved(state),
+            AppCommandResult::TrainNicknameUpdated { .. } => {
+                self.confirm_train_nickname_saved(state)
+            }
         }
     }
 

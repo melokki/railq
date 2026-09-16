@@ -44,16 +44,21 @@ fn run_dashboard(
 ) -> Result<(), Box<dyn Error>> {
     ui::run_terminal_with_arrivals(app.state().clone(), settled_arrivals, |command| {
         let now = current_utc_seconds();
-        match command {
-            ui::TerminalCommand::Reconcile => app.reconcile(now)?,
+        let outcome = match command {
+            ui::TerminalCommand::Reconcile => {
+                app.reconcile(now)?;
+                ui::TerminalCommandOutcome::reconciled(app.state().clone())
+            }
             ui::TerminalCommand::Player(command) => {
-                app.execute(command, now)?;
+                let result = app.execute(command, now)?;
+                ui::TerminalCommandOutcome::player(app.state().clone(), result)
             }
             ui::TerminalCommand::RestartAfterBankruptcy => {
                 app.restart_after_bankruptcy(new_world_seed(), now)?;
+                ui::TerminalCommandOutcome::restarted(app.state().clone())
             }
-        }
-        Ok::<_, railq::app::AppError<railq::storage::SaveSlotError>>(app.state().clone())
+        };
+        Ok::<_, railq::app::AppError<railq::storage::SaveSlotError>>(outcome)
     })?;
     Ok(())
 }
