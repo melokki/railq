@@ -216,20 +216,18 @@
         let funds = super::format_money(state.player_company.funds);
 
         let wide = capture_rendered_buffer(&shell, &state, 120, 40);
-        assert!(wide.contains("RailQ · Northstar Passenger"));
-        assert!(wide.contains(&format!("Company Funds {funds}")));
-        assert!(wide.contains("READY 0"));
-        assert!(wide.contains("TRAVELLING 1"));
-        assert!(wide.contains("ETA"));
+        assert!(wide.contains("RailQ  │  Northstar Passenger"));
+        assert!(wide.contains(&format!("Cash {funds}")));
+        assert!(wide.contains("Fleet 0 ready · 1 travelling"));
+        assert!(wide.contains("Next arrival"));
         assert!(wide.contains("1 Map"));
         assert!(wide.contains("2 Trains"));
         assert!(wide.contains("q Quit"));
 
         let compact = capture_rendered_buffer(&shell, &state, 80, 24);
-        assert!(compact.contains(&format!("Funds {funds}")));
-        assert!(compact.contains("R 0"));
-        assert!(compact.contains("T 1"));
-        assert!(compact.contains("ETA"));
+        assert!(compact.contains(&funds));
+        assert!(compact.contains("R0/T1"));
+        assert!(compact.contains("Next"));
         assert!(compact.contains("4 Co"));
         assert!(compact.contains("3 Mkt"));
         assert!(compact.contains("q Quit"));

@@ -315,25 +315,19 @@ pub(super) fn shell_status_line(state: &GameState, now: UtcSeconds, width: u16) 
         .iter()
         .filter(|train| matches!(train.status, TrainStatus::Travelling { .. }))
         .count();
-    let eta = nearest_eta(state, now)
-        .map(|remaining| format!("ETA {remaining}"))
-        .unwrap_or_else(|| "ETA —".into());
+    let next_arrival = nearest_eta(state, now).unwrap_or_else(|| "—".into());
 
     if width >= 100 {
         format!(
-            "{APPLICATION_NAME} · {}   Company Funds {}   READY {}   TRAVELLING {}   {eta}",
-            shorten(&state.player_company.name, 34),
+            "{APPLICATION_NAME}  │  {}  │  Cash {}  │  Fleet {ready} ready · {travelling} travelling  │  Next arrival {next_arrival}",
+            shorten(&state.player_company.name, 30),
             format::money(state.player_company.funds),
-            ready,
-            travelling,
         )
     } else {
         format!(
-            "{APPLICATION_NAME} · {}   Funds {}   R {}   T {}   {eta}",
+            "{APPLICATION_NAME}  │  {}  │  {}  │  R{ready}/T{travelling}  │  Next {next_arrival}",
             shorten(&state.player_company.name, 16),
             format::money(state.player_company.funds),
-            ready,
-            travelling,
         )
     }
 }
