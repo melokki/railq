@@ -9,12 +9,14 @@ use ratatui::{Frame, layout::Rect};
 
 mod geometry;
 mod journeys;
+mod movements;
 mod network;
 mod operational;
 mod shared;
 mod text;
 
 pub use journeys::JourneySelection;
+pub(crate) use movements::render_movements_overlay;
 #[cfg(test)]
 use network::schematic_layout;
 pub use network::{
@@ -48,6 +50,8 @@ pub struct MapLocationSelection {
 pub struct MapWorkspace {
     location_selection: MapLocationSelection,
     world_details_visible: bool,
+    movements_visible: bool,
+    movements_scroll_offset: usize,
 }
 
 /// Intent emitted by Map input which must be handled by the outer Shell.
@@ -62,6 +66,14 @@ pub enum MapWorkspaceAction {
 /// Result of routing a key while the World Details overlay owns focus.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorldDetailsKeyAction {
+    Continue,
+    Closed,
+    ClosedForNavigation,
+}
+
+/// Result of routing a key while the Movements overlay owns focus.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MovementsKeyAction {
     Continue,
     Closed,
     ClosedForNavigation,
@@ -101,6 +113,11 @@ impl MapWorkspace {
                 self.world_details_visible = true;
                 MapWorkspaceAction::ClearNotice
             }
+            KeyCode::Char('m' | 'M') => {
+                self.movements_visible = true;
+                self.movements_scroll_offset = 0;
+                MapWorkspaceAction::ClearNotice
+            }
             KeyCode::Left
             | KeyCode::Right
             | KeyCode::Up
@@ -133,15 +150,51 @@ impl MapWorkspace {
         }
     }
 
+    /// Routes input while Movements is the focused informational overlay.
+    pub fn handle_movements_key(&mut self, key: KeyCode) -> MovementsKeyAction {
+        match key {
+            KeyCode::Up | KeyCode::Char('k' | 'K') => {
+                self.movements_scroll_offset = self.movements_scroll_offset.saturating_sub(1);
+                MovementsKeyAction::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j' | 'J') => {
+                self.movements_scroll_offset = self.movements_scroll_offset.saturating_add(1);
+                MovementsKeyAction::Continue
+            }
+            KeyCode::Esc => {
+                self.movements_visible = false;
+                self.movements_scroll_offset = 0;
+                MovementsKeyAction::Closed
+            }
+            KeyCode::Char(
+                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
+                | 'a' | 'A' | 'u' | 'U',
+            ) => {
+                self.movements_visible = false;
+                self.movements_scroll_offset = 0;
+                MovementsKeyAction::ClosedForNavigation
+            }
+            _ => MovementsKeyAction::Continue,
+        }
+    }
+
     /// Returns whether the World Details overlay currently owns focus.
     pub fn world_details_visible(&self) -> bool {
         self.world_details_visible
+    }
+
+    /// Returns whether the live Movements overlay currently owns focus.
+    pub fn movements_visible(&self) -> bool {
+        self.movements_visible
     }
 
     /// Returns the contextual controls owned by the Map workspace.
     pub fn shortcuts(&self, state: &GameState, compact: bool) -> Vec<MapShortcut> {
         if self.world_details_visible {
             return vec![MapShortcut::enabled("W/Esc", "Close")];
+        }
+        if self.movements_visible {
+            return vec![MapShortcut::enabled("M/Esc", "Close")];
         }
 
         let train_count = state.player_company.fleet.trains.len();
@@ -171,6 +224,7 @@ impl MapWorkspace {
                 format!("Dispatch · {ready} ready"),
             ));
         }
+        items.push(MapShortcut::enabled("M", "Movements"));
         items.push(MapShortcut::enabled("S", "Services"));
         items.push(MapShortcut::enabled("W", "World"));
         items
@@ -186,6 +240,14 @@ impl MapWorkspace {
                     .into(),
             ];
         }
+        if self.movements_visible {
+            return vec![
+                "Current · Movements".into(),
+                "m / Esc Return to Map".into(),
+                "↑↓ / jk Scroll when more Trains are available than fit on screen.".into(),
+                "Shows live Train movements ordered by their next arrival.".into(),
+            ];
+        }
 
         let train_count = state.player_company.fleet.trains.len();
         let ready = state
@@ -198,6 +260,7 @@ impl MapWorkspace {
         let mut lines = vec![
             "Current · Map".into(),
             "↑↓←→ / hjkl Select a connected Rail Station".into(),
+            "m Open Movements".into(),
             "s Open Passenger Services".into(),
             "w Open World Details".into(),
         ];
@@ -371,7 +434,7 @@ mod tests {
 
     use super::geometry::{MapCell, RAIL_LEFT, RAIL_RIGHT, rail_glyph};
     use super::{
-        MapWorkspace, MapWorkspaceAction, WorldDetailsKeyAction, focus_rank,
+        MapWorkspace, MapWorkspaceAction, MovementsKeyAction, WorldDetailsKeyAction, focus_rank,
         journey_progress_percent, journey_route_segments, map_place_label, operational_layout,
         place_link_distance_label, point_along_orthogonal_rail, ready_station_ids, render_at,
         schematic_layout, selected_neighbours,
@@ -485,6 +548,38 @@ mod tests {
     }
 
     #[test]
+    fn workspace_owns_movements_overlay_focus() {
+        let state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let mut workspace = MapWorkspace::default();
+
+        assert_eq!(
+            workspace.handle_key(KeyCode::Char('m'), &state),
+            MapWorkspaceAction::ClearNotice
+        );
+        assert!(workspace.movements_visible());
+        assert_eq!(
+            workspace.handle_movements_key(KeyCode::Down),
+            MovementsKeyAction::Continue
+        );
+        assert_eq!(workspace.movements_scroll_offset, 1);
+        assert_eq!(
+            workspace.handle_movements_key(KeyCode::Up),
+            MovementsKeyAction::Continue
+        );
+        assert_eq!(workspace.movements_scroll_offset, 0);
+        assert_eq!(
+            workspace.handle_movements_key(KeyCode::Char('m')),
+            MovementsKeyAction::Continue
+        );
+        assert!(workspace.movements_visible());
+        assert_eq!(
+            workspace.handle_movements_key(KeyCode::Esc),
+            MovementsKeyAction::Closed
+        );
+        assert!(!workspace.movements_visible());
+    }
+
+    #[test]
     fn workspace_owns_world_details_focus() {
         let state = create_new_game(42, "Alden Passenger", STARTED_AT);
         let mut workspace = MapWorkspace::default();
@@ -508,6 +603,7 @@ mod tests {
 
         let shortcuts = workspace.shortcuts(&state, false);
         assert!(shortcuts.iter().any(|shortcut| shortcut.key == "3"));
+        assert!(shortcuts.iter().any(|shortcut| shortcut.key == "M"));
         assert!(shortcuts.iter().any(|shortcut| shortcut.key == "W"));
         assert!(workspace.help_lines(&state)[0].contains("Map"));
 

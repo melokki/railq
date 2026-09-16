@@ -4,7 +4,8 @@
     use crate::{
         model::{Money, RailStationId, UtcSeconds},
         sim::{
-            fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
+            fleet::purchase_train, journeys::dispatch_journey,
+            services::{create_service, find_or_create_service},
             world::create_new_game,
         },
     };
@@ -98,6 +99,110 @@
             ShellAction::Continue
         );
         assert!(!shell.map_workspace.world_details_visible());
+    }
+
+    #[test]
+    fn map_movements_overlay_shows_service_route_and_next_stop() {
+        let started_at = UtcSeconds::from_unix_seconds(13 * 3_600);
+        let mut shell = Shell::new();
+        let mut state = create_new_game(42, "One More Prime", started_at);
+        let stops = [
+            RailStationId::new(1),
+            RailStationId::new(2),
+            RailStationId::new(3),
+        ];
+        let train_id = purchase_train(&mut state, 0, stops[0]).unwrap();
+        let service_id = create_service(&mut state, stops.to_vec()).unwrap();
+        dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
+
+        assert_eq!(
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+                &state,
+            ),
+            ShellAction::Continue
+        );
+        assert!(shell.map_workspace.movements_visible());
+
+        let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+        let station_name = |station_id: RailStationId| {
+            let station = state
+                .region
+                .rail_authority
+                .rail_network
+                .rail_stations
+                .iter()
+                .find(|station| station.id == station_id)
+                .unwrap();
+            state
+                .region
+                .settlements
+                .iter()
+                .find(|settlement| settlement.id == station.settlement_id)
+                .unwrap()
+                .name
+                .clone()
+        };
+
+        assert!(rendered.contains("Movements"));
+        assert!(rendered.contains("ARRIVAL"));
+        assert!(rendered.contains("SERVICE"));
+        assert!(rendered.contains("NEXT STOP"));
+        assert!(rendered.contains("ETA"));
+        assert!(rendered.contains(&format!("T{:02}", train_id.get())));
+        assert!(rendered.contains(&format!(
+            "{} → {}",
+            station_name(stops[0]),
+            station_name(stops[2])
+        )));
+        assert!(rendered.contains(&station_name(stops[1])));
+        assert!(rendered.contains("[M/Esc] close"));
+
+        assert_eq!(
+            shell.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),
+            ShellAction::Continue
+        );
+        assert!(!shell.map_workspace.movements_visible());
+    }
+
+    #[test]
+    fn map_movements_overlay_lists_ready_trains_and_their_locations() {
+        let started_at = UtcSeconds::from_unix_seconds(13 * 3_600);
+        let mut shell = Shell::new();
+        let mut state = create_new_game(42, "One More Prime", started_at);
+        let ready_station_id = RailStationId::new(2);
+        let train_id = purchase_train(&mut state, 0, ready_station_id).unwrap();
+
+        assert_eq!(
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+                &state,
+            ),
+            ShellAction::Continue
+        );
+
+        let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+        let station = state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .iter()
+            .find(|station| station.id == ready_station_id)
+            .unwrap();
+        let station_name = &state
+            .region
+            .settlements
+            .iter()
+            .find(|settlement| settlement.id == station.settlement_id)
+            .unwrap()
+            .name;
+
+        assert!(rendered.contains("No trains are currently travelling."));
+        assert!(rendered.contains("READY TRAINS · 1"));
+        assert!(rendered.contains("LOCATION"));
+        assert!(rendered.contains(&format!("T{:02}", train_id.get())));
+        assert!(rendered.contains(station_name));
     }
 
     #[test]
