@@ -166,6 +166,46 @@
     }
 
     #[test]
+    fn map_movements_overlay_lists_ready_trains_and_their_locations() {
+        let started_at = UtcSeconds::from_unix_seconds(13 * 3_600);
+        let mut shell = Shell::new();
+        let mut state = create_new_game(42, "One More Prime", started_at);
+        let ready_station_id = RailStationId::new(2);
+        let train_id = purchase_train(&mut state, 0, ready_station_id).unwrap();
+
+        assert_eq!(
+            shell.handle_key(
+                KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+                &state,
+            ),
+            ShellAction::Continue
+        );
+
+        let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+        let station = state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .iter()
+            .find(|station| station.id == ready_station_id)
+            .unwrap();
+        let station_name = &state
+            .region
+            .settlements
+            .iter()
+            .find(|settlement| settlement.id == station.settlement_id)
+            .unwrap()
+            .name;
+
+        assert!(rendered.contains("No trains are currently travelling."));
+        assert!(rendered.contains("READY TRAINS · 1"));
+        assert!(rendered.contains("LOCATION"));
+        assert!(rendered.contains(&format!("T{:02}", train_id.get())));
+        assert!(rendered.contains(station_name));
+    }
+
+    #[test]
     fn company_vkm_editor_normalizes_input_and_emits_a_persisted_action() {
         let mut shell = Shell::new();
         let state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
