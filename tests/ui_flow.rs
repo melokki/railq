@@ -6,7 +6,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
-    app::{App, GameStore},
+    app::{App, AppCommand, AppCommandResult, GameStore},
     model::{GameState, Money, RailStationId, TrainStatus, UtcSeconds},
     sim::time::advance_time,
     ui::{
@@ -18,14 +18,12 @@ use std::{
     cell::{Cell, RefCell},
     convert::Infallible,
     error::Error,
-    fmt, fs,
-    path::Path,
+    fmt,
     rc::Rc,
 };
 
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 const OUTBOUND_DEPARTURE: UtcSeconds = UtcSeconds::from_unix_seconds(2_000);
-const OUTCOME_EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/23";
 
 #[derive(Clone, Debug, Default)]
 struct TestStore {
@@ -88,58 +86,33 @@ fn handle_action(
     action: ShellAction,
     now: UtcSeconds,
 ) {
-    match action {
-        ShellAction::ManualDispatch {
-            train_id,
-            service_id,
-        } => {
-            app.dispatch_journey(train_id, service_id, now).unwrap();
-            shell.confirm_manual_dispatch();
+    let ShellAction::Player(command) = action else {
+        return;
+    };
+
+    let result = app.execute(command, now).unwrap();
+    match result {
+        AppCommandResult::JourneyDispatched { .. } => {
+            shell.confirm_manual_dispatch_saved(app.state())
         }
-        ShellAction::PurchaseTrain {
-            catalogue_index,
-            delivery_station_id,
-        } => {
-            app.purchase_train(catalogue_index, delivery_station_id, now)
-                .unwrap();
-            shell.confirm_purchase_train();
+        AppCommandResult::TrainPurchased { .. } => shell.confirm_purchase_train_saved(app.state()),
+        AppCommandResult::TrainSold { .. } => shell.confirm_train_resale_saved(app.state()),
+        AppCommandResult::PassengerServiceCreated { .. } => {
+            shell.confirm_passenger_service_created(app.state())
         }
-        ShellAction::SellTrain { train_id } => {
-            let proceeds = app.sell_train(train_id, now).unwrap();
-            shell.confirm_train_resale(proceeds);
+        AppCommandResult::PassengerServiceUpdated { .. } => {
+            shell.confirm_passenger_service_updated(app.state())
         }
-        ShellAction::CreatePassengerService { stop_station_ids } => {
-            app.create_passenger_service(stop_station_ids, now).unwrap();
-            shell.confirm_passenger_service_created(app.state());
+        AppCommandResult::PassengerServiceDeleted { .. } => {
+            shell.confirm_passenger_service_deleted(app.state())
         }
-        ShellAction::UpdatePassengerService {
-            service_id,
-            stop_station_ids,
-        } => {
-            app.update_passenger_service(service_id, stop_station_ids, now)
-                .unwrap();
-            shell.confirm_passenger_service_updated(app.state());
+        AppCommandResult::CompanyVkmUpdated => shell.confirm_company_vkm_saved(app.state()),
+        AppCommandResult::InfrastructureContributionRecorded { .. } => {
+            shell.confirm_infrastructure_contribution_saved(app.state())
         }
-        ShellAction::DeletePassengerService { service_id } => {
-            app.delete_passenger_service(service_id, now).unwrap();
-            shell.confirm_passenger_service_deleted(app.state());
+        AppCommandResult::TrainNicknameUpdated { .. } => {
+            shell.confirm_train_nickname_saved(app.state())
         }
-        ShellAction::UpdateCompanyVkm {
-            vehicle_keeper_mark,
-        } => {
-            app.update_company_vkm(vehicle_keeper_mark, now).unwrap();
-            shell.confirm_company_vkm_saved(app.state());
-        }
-        ShellAction::ContributeInfrastructure { project_id, amount } => {
-            app.contribute_to_infrastructure_project(project_id, amount, now)
-                .unwrap();
-            shell.confirm_infrastructure_contribution_saved(app.state());
-        }
-        ShellAction::UpdateTrainNickname { train_id, nickname } => {
-            app.update_train_nickname(train_id, nickname, now).unwrap();
-            shell.confirm_train_nickname_saved(app.state());
-        }
-        ShellAction::Continue | ShellAction::Exit | ShellAction::RestartAfterBankruptcy => {}
     }
 }
 
@@ -287,19 +260,13 @@ fn cancellation_and_rejected_error_paths_preserve_player_company_state() {
     press(&mut shell, &mut app, KeyCode::Enter, OUTBOUND_DEPARTURE);
     let before_rejected_dispatch = app.state().clone();
     let action = shell.handle_key(key(KeyCode::Enter), app.state());
-    let ShellAction::ManualDispatch {
-        train_id,
-        service_id: selected_service_id,
-    } = action
-    else {
+    let ShellAction::Player(command @ AppCommand::ManualDispatch { .. }) = action else {
         panic!("dispatch confirmation should request an application command");
     };
     let mut stale_state = app.state().clone();
     stale_state.player_company.funds = Money::ZERO;
     let mut stale_app = App::start_new(TestStore::default(), stale_state).unwrap();
-    let error = stale_app
-        .dispatch_journey(train_id, selected_service_id, OUTBOUND_DEPARTURE)
-        .unwrap_err();
+    let error = stale_app.execute(command, OUTBOUND_DEPARTURE).unwrap_err();
     shell.reject_manual_dispatch(error.to_string());
     assert_eq!(app.state(), &before_rejected_dispatch);
 
@@ -335,9 +302,11 @@ fn failed_resale_save_keeps_the_review_open_without_a_success_notice() {
     store.reject_next_save.set(true);
     assert_eq!(
         shell.handle_key(key(KeyCode::Enter), app.state()),
-        ShellAction::SellTrain { train_id }
+        ShellAction::Player(AppCommand::SellTrain { train_id })
     );
-    let error = app.sell_train(train_id, STARTED_AT).unwrap_err();
+    let error = app
+        .execute(AppCommand::SellTrain { train_id }, STARTED_AT)
+        .unwrap_err();
     shell.reject_train_resale(error.to_string());
 
     assert_eq!(app.state(), &before);
@@ -350,8 +319,7 @@ fn failed_resale_save_keeps_the_review_open_without_a_success_notice() {
 }
 
 #[test]
-fn saved_purchase_feedback_is_non_blocking_and_details_are_optional() -> Result<(), Box<dyn Error>>
-{
+fn saved_purchase_feedback_is_non_blocking_and_details_are_optional() {
     let (_, mut app) = dashboard_from_fresh_launch();
     let mut shell = Shell::new();
 
@@ -367,15 +335,13 @@ fn saved_purchase_feedback_is_non_blocking_and_details_are_optional() -> Result<
         shell.handle_key(key(KeyCode::Enter), app.state()),
         ShellAction::Continue
     );
-    let ShellAction::PurchaseTrain {
-        catalogue_index,
-        delivery_station_id,
-    } = shell.handle_key(key(KeyCode::Enter), app.state())
+    let ShellAction::Player(command @ AppCommand::PurchaseTrain { .. }) =
+        shell.handle_key(key(KeyCode::Enter), app.state())
     else {
         panic!("purchase review should request an application command");
     };
-    app.purchase_train(catalogue_index, delivery_station_id, STARTED_AT)
-        .unwrap();
+    let result = app.execute(command, STARTED_AT).unwrap();
+    assert!(matches!(result, AppCommandResult::TrainPurchased { .. }));
     shell.confirm_purchase_train_saved(app.state());
 
     let banner = capture_rendered_buffer(&shell, app.state(), 120, 40);
@@ -383,10 +349,6 @@ fn saved_purchase_feedback_is_non_blocking_and_details_are_optional() -> Result<
     assert!(banner.contains("saved — Company Funds -$"));
     assert!(banner.contains("[i] Details"));
     assert!(!banner.contains("[Enter] Read"));
-
-    let evidence_dir = Path::new(OUTCOME_EVIDENCE_DIR);
-    fs::create_dir_all(evidence_dir)?;
-    fs::write(evidence_dir.join("purchase-saved-120x40.txt"), &banner)?;
 
     // Details remain available deliberately, but opening them is optional.
     assert_eq!(
@@ -397,11 +359,6 @@ fn saved_purchase_feedback_is_non_blocking_and_details_are_optional() -> Result<
     assert!(details.contains("Saved action outcome"));
     assert!(details.contains("Company Funds:"));
     assert!(details.contains("Saved successfully."));
-    fs::write(
-        evidence_dir.join("purchase-outcome-details-120x40.txt"),
-        &details,
-    )?;
-
     assert_eq!(
         shell.handle_key(key(KeyCode::Esc), app.state()),
         ShellAction::Continue
@@ -417,7 +374,6 @@ fn saved_purchase_feedback_is_non_blocking_and_details_are_optional() -> Result<
     let continued = capture_rendered_buffer(&shell, app.state(), 120, 40);
     assert!(!continued.contains("Saved action outcome"));
     assert!(!continued.contains("[i] Details"));
-    Ok(())
 }
 
 #[test]
