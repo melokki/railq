@@ -1,6 +1,6 @@
 //! Shared, exact display formatting for operating values.
 
-use crate::model::Money;
+use crate::model::{Money, UtcSeconds};
 
 /// Formats signed integer cents as currency without changing the stored value.
 pub(crate) fn money(value: Money) -> String {
@@ -65,11 +65,19 @@ pub(crate) fn duration(seconds: u64) -> String {
     }
 }
 
+/// Formats a UTC timestamp as a compact 24-hour clock value.
+pub(crate) fn clock_time(timestamp: UtcSeconds) -> String {
+    let seconds_of_day = timestamp.unix_seconds().rem_euclid(86_400);
+    let hours = seconds_of_day / 3_600;
+    let minutes = (seconds_of_day % 3_600) / 60;
+    format!("{hours:02}:{minutes:02}")
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::model::Money;
+    use crate::model::{Money, UtcSeconds};
 
-    use super::{distance, duration, money, signed_cents, speed_kmh};
+    use super::{clock_time, distance, duration, money, signed_cents, speed_kmh};
 
     #[test]
     fn formats_exact_money_signs_and_large_values() {
@@ -88,5 +96,14 @@ mod tests {
         assert_eq!(speed_kmh(100), "360.0 km/h");
         assert_eq!(duration(3_723), "1h 02m 03s");
         assert_eq!(duration(65), "1m 05s");
+    }
+
+    #[test]
+    fn formats_utc_clock_time_without_date_noise() {
+        assert_eq!(clock_time(UtcSeconds::from_unix_seconds(0)), "00:00");
+        assert_eq!(
+            clock_time(UtcSeconds::from_unix_seconds(13 * 3_600 + 21 * 60)),
+            "13:21"
+        );
     }
 }

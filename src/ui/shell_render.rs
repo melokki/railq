@@ -172,6 +172,10 @@ pub(super) fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state:
         modal::dim_backdrop(frame, area);
         render_world_details_overlay(frame, area, state);
     }
+    if shell.map_workspace.movements_visible() {
+        modal::dim_backdrop(frame, area);
+        map::render_movements_overlay(frame, area, state, now);
+    }
     if shell.help_visible {
         modal::dim_backdrop(frame, area);
         render_help_overlay(frame, area, shell, state);

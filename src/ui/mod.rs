@@ -250,6 +250,19 @@ impl Shell {
             }
         }
 
+        if self.map_workspace.movements_visible() {
+            match self.map_workspace.handle_movements_key(key.code) {
+                map::MovementsKeyAction::Continue => return ShellAction::Continue,
+                map::MovementsKeyAction::Closed => {
+                    self.notice = None;
+                    return ShellAction::Continue;
+                }
+                map::MovementsKeyAction::ClosedForNavigation => {
+                    self.notice = None;
+                }
+            }
+        }
+
         if is_bankrupt(state) {
             if self.restart_confirmation {
                 return match key.code {
