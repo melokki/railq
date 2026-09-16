@@ -134,7 +134,6 @@ pub struct Shell {
     dispatch_flow: Option<dispatch::DispatchFlow>,
     dispatch_returns_to_fleet: bool,
     map_workspace: map::MapWorkspace,
-    services_open: bool,
     service_workspace: services::ServiceWorkspace,
     fleet_workspace: fleet::FleetWorkspace,
     market_workspace: market::MarketWorkspace,
@@ -158,7 +157,6 @@ impl Shell {
             dispatch_flow: None,
             dispatch_returns_to_fleet: false,
             map_workspace: map::MapWorkspace::default(),
-            services_open: false,
             service_workspace: services::ServiceWorkspace::default(),
             fleet_workspace: fleet::FleetWorkspace::default(),
             market_workspace: market::MarketWorkspace::default(),
@@ -346,7 +344,7 @@ impl Shell {
             return self.handle_market_key(key, state);
         }
 
-        if self.services_open {
+        if self.service_workspace.is_open() {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
@@ -354,12 +352,12 @@ impl Shell {
                 )
             );
             if navigation_key {
-                self.services_open = false;
+                self.service_workspace.close();
             } else {
                 return match self.service_workspace.handle_key(key.code, state) {
                     services::ServiceWorkspaceAction::Continue => ShellAction::Continue,
                     services::ServiceWorkspaceAction::Close => {
-                        self.services_open = false;
+                        self.service_workspace.close();
                         self.notice = None;
                         ShellAction::Continue
                     }
@@ -387,29 +385,29 @@ impl Shell {
         match key.code {
             KeyCode::Char('1' | 'm' | 'M') => {
                 self.active_view = View::Map;
-                self.services_open = false;
+                self.service_workspace.close();
             }
             KeyCode::Char('2' | 't' | 'T') => {
                 self.active_view = View::Trains;
-                self.services_open = false;
+                self.service_workspace.close();
                 self.fleet_workspace.activate();
             }
             KeyCode::Char('4' | 'c' | 'C') => {
                 self.active_view = View::Company;
-                self.services_open = false;
+                self.service_workspace.close();
                 self.company_workspace.activate();
             }
             KeyCode::Char('3' | 'b' | 'B') => {
                 self.active_view = View::BuyTrains;
-                self.services_open = false;
+                self.service_workspace.close();
             }
             KeyCode::Char('5' | 'a' | 'A') => {
                 self.active_view = View::Authority;
-                self.services_open = false;
+                self.service_workspace.close();
             }
             KeyCode::Char('6' | 'u' | 'U') => {
                 self.active_view = View::Bulletin;
-                self.services_open = false;
+                self.service_workspace.close();
             }
             KeyCode::Enter if self.active_view == View::BuyTrains => {
                 return self.handle_market_key(key, state);
@@ -467,7 +465,7 @@ impl Shell {
                 ShellAction::Continue
             }
             map::MapWorkspaceAction::OpenServices => {
-                self.services_open = true;
+                self.service_workspace.open();
                 self.notice = None;
                 ShellAction::Continue
             }
@@ -816,14 +814,12 @@ impl Shell {
     /// Closes a saved Passenger Service creation and keeps the Services workspace open.
     pub fn confirm_passenger_service_created(&mut self, state: &GameState) {
         self.service_workspace.confirm_created(state);
-        self.services_open = true;
         self.notice = Some("Passenger Service created and saved.".into());
     }
 
     /// Closes a saved Passenger Service edit and keeps the Services workspace open.
     pub fn confirm_passenger_service_updated(&mut self, state: &GameState) {
         self.service_workspace.confirm_updated(state);
-        self.services_open = true;
         self.notice = Some("Passenger Service updated and saved.".into());
     }
 
@@ -837,7 +833,6 @@ impl Shell {
     /// Closes a saved Passenger Service deletion and keeps the Services workspace open.
     pub fn confirm_passenger_service_deleted(&mut self, state: &GameState) {
         self.service_workspace.confirm_deleted(state);
-        self.services_open = true;
         self.notice = Some("Passenger Service deleted and saved.".into());
     }
 
@@ -893,7 +888,6 @@ impl Shell {
         self.market_workspace.reset();
         self.authority_workspace.reset();
         self.map_workspace.reset();
-        self.services_open = false;
         self.service_workspace = services::ServiceWorkspace::default();
         self.restart_confirmation = false;
         self.company_workspace.reset();
@@ -1068,7 +1062,7 @@ fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state: &GameState
         navigation_area,
     );
 
-    if !is_bankrupt(state) && shell.active_view == View::Map && shell.services_open {
+    if !is_bankrupt(state) && shell.active_view == View::Map && shell.service_workspace.is_open() {
         shell
             .service_workspace
             .render_base(frame, content_area, state);
@@ -1174,7 +1168,7 @@ fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {
         || (is_bankrupt(state) && shell.restart_confirmation)
         || shell.dispatch_flow.is_some()
         || shell.market_workspace.has_modal()
-        || (shell.services_open && shell.service_workspace.has_modal())
+        || (shell.service_workspace.is_open() && shell.service_workspace.has_modal())
 }
 
 fn render_focused_modal(
@@ -1215,7 +1209,7 @@ fn render_focused_modal(
             .render_modal(frame, content_area, state);
         return;
     }
-    if shell.services_open && shell.service_workspace.has_modal() {
+    if shell.service_workspace.is_open() && shell.service_workspace.has_modal() {
         shell
             .service_workspace
             .render_modal(frame, content_area, state);
@@ -1444,7 +1438,7 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
                 enabled: shortcut.enabled,
             })
             .collect()
-    } else if shell.active_view == View::Map && shell.services_open {
+    } else if shell.active_view == View::Map && shell.service_workspace.is_open() {
         shell
             .service_workspace
             .footer_shortcuts(compact, wide, state)
@@ -1672,7 +1666,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         }
     }
 
-    if shell.active_view == View::Map && shell.services_open {
+    if shell.active_view == View::Map && shell.service_workspace.is_open() {
         lines.push("Current · Passenger Services".into());
         if state.player_company.passenger_services.is_empty() {
             lines.extend([

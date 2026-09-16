@@ -41,6 +41,7 @@ pub enum ServiceWorkspaceAction {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ServiceWorkspace {
+    open: bool,
     selected_service_index: usize,
     create_flow: Option<CreateServiceFlow>,
     delete_confirmation: Option<ServiceId>,
@@ -56,6 +57,21 @@ struct CreateServiceFlow {
 }
 
 impl ServiceWorkspace {
+    /// Returns whether the Passenger Services workspace is currently open.
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Opens Passenger Services without discarding any in-progress presentation state.
+    pub fn open(&mut self) {
+        self.open = true;
+    }
+
+    /// Returns to the Map while preserving any in-progress presentation state.
+    pub fn close(&mut self) {
+        self.open = false;
+    }
+
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) -> ServiceWorkspaceAction {
         if let Some(service_id) = self.delete_confirmation {
             return match key {
@@ -243,6 +259,7 @@ impl ServiceWorkspace {
     }
 
     pub fn confirm_created(&mut self, state: &GameState) {
+        self.open = true;
         self.create_flow = None;
         self.delete_confirmation = None;
         self.selected_service_index = state
@@ -253,6 +270,7 @@ impl ServiceWorkspace {
     }
 
     pub fn confirm_updated(&mut self, state: &GameState) {
+        self.open = true;
         self.create_flow = None;
         self.delete_confirmation = None;
         self.selected_service_index = self.selected_service_index.min(
@@ -265,6 +283,7 @@ impl ServiceWorkspace {
     }
 
     pub fn confirm_deleted(&mut self, state: &GameState) {
+        self.open = true;
         self.delete_confirmation = None;
         self.selected_service_index = self.selected_service_index.min(
             state
