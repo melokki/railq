@@ -26,8 +26,13 @@ fn captures_company_status_at_wide_and_compact_sizes() -> Result<(), Box<dyn Err
     for (columns, rows) in [(120, 40), (80, 24)] {
         let rendered = capture_rendered_buffer(&shell, &state, columns, rows);
         assert_eq!(rendered.lines().count(), usize::from(rows));
-        assert!(rendered.contains("Funds"));
-        assert!(rendered.contains("ETA"));
+        if columns >= 100 {
+            assert!(rendered.contains("Cash"));
+            assert!(rendered.contains("Next arrival"));
+        } else {
+            assert!(rendered.contains("R0/T1"));
+            assert!(rendered.contains("Next"));
+        }
     }
     Ok(())
 }
@@ -113,6 +118,7 @@ fn map_footer_contains_actions_without_repeating_header_status() -> Result<(), B
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
     assert!(rendered.contains("[D] Dispatch"));
+    assert!(rendered.contains("│ [?] Help [Q] Quit"));
     assert!(!rendered.contains("Dispatch · 1 ready"));
     Ok(())
 }

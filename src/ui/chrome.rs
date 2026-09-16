@@ -106,7 +106,12 @@ fn shortcut_line(shortcuts: &[FooterShortcut]) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, shortcut) in shortcuts.iter().enumerate() {
         if index > 0 {
-            spans.push(Span::styled(" ", theme::shortcut_action()));
+            let separates_utilities = is_utility_shortcut(shortcut)
+                && !is_utility_shortcut(&shortcuts[index - 1]);
+            spans.push(Span::styled(
+                if separates_utilities { " │ " } else { " " },
+                theme::shortcut_action(),
+            ));
         }
         let key_style = if shortcut.enabled {
             theme::shortcut_key()
@@ -122,6 +127,10 @@ fn shortcut_line(shortcuts: &[FooterShortcut]) -> Line<'static> {
         spans.push(Span::styled(format!(" {}", shortcut.action), action_style));
     }
     Line::from(spans)
+}
+
+fn is_utility_shortcut(shortcut: &FooterShortcut) -> bool {
+    matches!(shortcut.key.as_str(), "?" | "Q")
 }
 
 fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<FooterShortcut> {
