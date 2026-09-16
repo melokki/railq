@@ -538,13 +538,18 @@ fn render_service_picker(
         .map(|service| {
             let direction = service_direction_label(state, service);
             if wide {
-                let active = service_active_journeys(state, service.id);
-                let state_label = if active == 0 {
-                    "IDLE".to_owned()
+                let snapshot = service_operating_snapshot(state, service.id);
+                let active = if snapshot.active_trains == 0 {
+                    "—".to_owned()
                 } else {
-                    format!("LIVE · {active}")
+                    format!("{} active", snapshot.active_trains)
                 };
-                Row::new([service.name.clone(), direction, state_label])
+                Row::new([
+                    service.name.clone(),
+                    direction,
+                    active,
+                    snapshot.waiting_passengers.to_string(),
+                ])
             } else {
                 Row::new([service.name.clone(), direction])
             }
@@ -553,13 +558,14 @@ fn render_service_picker(
 
     let (header, widths) = if wide {
         (
-            Row::new(["Service", "Direction", "State"])
+            Row::new(["Service", "Direction", "Trains", "Waiting"])
                 .style(theme::table_header())
                 .bottom_margin(1),
             vec![
-                Constraint::Length(12),
-                Constraint::Min(20),
                 Constraint::Length(10),
+                Constraint::Min(16),
+                Constraint::Length(9),
+                Constraint::Length(8),
             ],
         )
     } else {

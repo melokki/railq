@@ -173,7 +173,7 @@ fn compact_service_workspace_prioritizes_live_summary_without_clipping() {
 }
 
 #[test]
-fn wide_service_picker_surfaces_live_state_without_repeating_full_stop_pattern() {
+fn wide_service_picker_surfaces_operational_summary_without_repeating_full_stop_pattern() {
     let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
     let mut state = create_new_game(42, "Alden Passenger", started_at);
     state.player_company.funds = Money::from_cents(10_000_000);
@@ -189,8 +189,9 @@ fn wide_service_picker_surfaces_live_state_without_repeating_full_stop_pattern()
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
-    assert!(rendered.contains("State"));
-    assert!(rendered.contains("LIVE · 1"));
+    assert!(rendered.contains("Trains"));
+    assert!(rendered.contains("Waiting"));
+    assert!(rendered.contains("1 active"));
 }
 
 #[test]
