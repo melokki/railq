@@ -1092,45 +1092,10 @@ fn render_catalogue_inspector(
 
     let detailed = wide && inner.height >= 33;
     if detailed {
+        // Lead with the information that answers the buying decision. Technical
+        // registration metadata remains available, but no longer pushes price
+        // and operating implications below catalogue details.
         lines.extend([
-            Line::from(""),
-            Line::styled("IDENTITY", theme::secondary()),
-            labelled_value("EVN type", &format!("{:02}", train.evn_type_code())),
-            labelled_value("Vehicle type", train.evn_type_label()),
-            labelled_value("EVN series", &format!("{:04}", train.evn_series_code())),
-            labelled_value(
-                "Registration",
-                &format!(
-                    "{:02} · {}",
-                    state.region.railway_registration.numeric_code,
-                    state.region.railway_registration.mark
-                ),
-            ),
-            labelled_value("Official EVN", "assigned on purchase"),
-            Line::from(""),
-            Line::styled("OWNERSHIP", theme::secondary()),
-            labelled_value("Owned", &ownership.owned.to_string()),
-            labelled_value("Ready", &ownership.ready.to_string()),
-            labelled_value("Travelling", &ownership.travelling.to_string()),
-            Line::from(""),
-            Line::styled("CAPACITY", theme::secondary()),
-            labelled_value(
-                "Seats",
-                &format!("{} passengers", train.passenger_capacity().passengers()),
-            ),
-            Line::from(""),
-            Line::styled("PERFORMANCE", theme::secondary()),
-            labelled_value("Top speed", &format_speed_kmh(train)),
-            labelled_value("Propulsion", train.propulsion_label()),
-            labelled_value(
-                "Fuel cost",
-                &format!(
-                    "{}/km",
-                    format_money_per_kilometre(
-                        train.fuel_cost_per_kilometre().cents_per_kilometre()
-                    )
-                ),
-            ),
             Line::from(""),
             Line::styled("ECONOMICS", theme::secondary()),
             labelled_value("Purchase price", &format_money(train.purchase_price())),
@@ -1158,6 +1123,47 @@ fn render_catalogue_inspector(
                 theme::secondary(),
             ));
         }
+
+        lines.extend([
+            Line::from(""),
+            Line::styled("CAPACITY", theme::secondary()),
+            labelled_value(
+                "Seats",
+                &format!("{} passengers", train.passenger_capacity().passengers()),
+            ),
+            Line::from(""),
+            Line::styled("PERFORMANCE", theme::secondary()),
+            labelled_value("Top speed", &format_speed_kmh(train)),
+            labelled_value("Propulsion", train.propulsion_label()),
+            labelled_value(
+                "Fuel cost",
+                &format!(
+                    "{}/km",
+                    format_money_per_kilometre(
+                        train.fuel_cost_per_kilometre().cents_per_kilometre()
+                    )
+                ),
+            ),
+            Line::from(""),
+            Line::styled("OWNERSHIP", theme::secondary()),
+            labelled_value("Owned", &ownership.owned.to_string()),
+            labelled_value("Ready", &ownership.ready.to_string()),
+            labelled_value("Travelling", &ownership.travelling.to_string()),
+            Line::from(""),
+            Line::styled("IDENTITY", theme::secondary()),
+            labelled_value("EVN type", &format!("{:02}", train.evn_type_code())),
+            labelled_value("Vehicle type", train.evn_type_label()),
+            labelled_value("EVN series", &format!("{:04}", train.evn_series_code())),
+            labelled_value(
+                "Registration",
+                &format!(
+                    "{:02} · {}",
+                    state.region.railway_registration.numeric_code,
+                    state.region.railway_registration.mark
+                ),
+            ),
+            labelled_value("Official EVN", "assigned on purchase"),
+        ]);
     } else {
         lines.extend([
             Line::from(""),
