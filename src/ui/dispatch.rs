@@ -717,7 +717,7 @@ fn render_quote_review(
         status_area,
     ] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(2),
+        Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Min(3),
         Constraint::Length(status_rows),
@@ -738,11 +738,7 @@ fn render_quote_review(
             Line::from(vec![
                 Span::styled("TRAIN  ", theme::secondary()),
                 Span::styled(
-                    format!(
-                        "{:02} · {}",
-                        quote.train_id.get(),
-                        train_model_name(state, quote.train_id)
-                    ),
+                    format!("Train {:02}", quote.train_id.get()),
                     theme::primary_value(),
                 ),
                 Span::styled("   SERVICE  ", theme::secondary()),
@@ -752,6 +748,17 @@ fn render_quote_review(
                         service_name(state, service_id),
                         service_route_label(state, service_id),
                     ),
+                    theme::primary_value(),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    train_registration(state, quote.train_id),
+                    theme::secondary(),
+                ),
+                Span::styled(" · ", theme::secondary()),
+                Span::styled(
+                    train_model_name(state, quote.train_id),
                     theme::primary_value(),
                 ),
             ]),

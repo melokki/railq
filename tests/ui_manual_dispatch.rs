@@ -84,6 +84,7 @@ fn manual_dispatch_moves_from_train_to_service_to_review() {
     assert!(review.contains("Review Dispatch"));
     assert!(review.contains("SERVICE"));
     assert!(review.contains("R1"));
+    assert!(review.contains(&registration));
 
     let train_id = state.player_company.fleet.trains[0].id;
     assert_eq!(
