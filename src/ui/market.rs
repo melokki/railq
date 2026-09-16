@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
         TableState, Wrap,
@@ -935,18 +935,18 @@ pub fn render_dashboard(
                     let (status, status_style) = purchase_status(state, train);
                     Row::new(vec![
                         Cell::from(train.name().to_owned()),
-                        Cell::from(train.passenger_capacity().passengers().to_string()),
-                        Cell::from(format_speed_kmh(train)),
+                        right_cell(train.passenger_capacity().passengers().to_string()),
+                        right_cell(format_speed_kmh(train)),
                         Cell::from(train.propulsion_label()),
-                        Cell::from(format!(
+                        right_cell(format!(
                             "{}/km",
                             format_money_per_kilometre(
                                 train.fuel_cost_per_kilometre().cents_per_kilometre()
                             )
                         )),
-                        Cell::from(owned_count(train).to_string()),
+                        right_cell(owned_count(train).to_string()),
                         Cell::from(status).style(status_style),
-                        Cell::from(format_money(train.purchase_price())),
+                        right_cell(format_money(train.purchase_price())),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -978,17 +978,17 @@ pub fn render_dashboard(
                 .map(|train| {
                     Row::new(vec![
                         Cell::from(train.name().to_owned()),
-                        Cell::from(train.passenger_capacity().passengers().to_string()),
-                        Cell::from(format_speed_kmh(train)),
+                        right_cell(train.passenger_capacity().passengers().to_string()),
+                        right_cell(format_speed_kmh(train)),
                         Cell::from(train.propulsion_label()),
-                        Cell::from(format!(
+                        right_cell(format!(
                             "{}/km",
                             format_money_per_kilometre(
                                 train.fuel_cost_per_kilometre().cents_per_kilometre()
                             )
                         )),
-                        Cell::from(owned_count(train).to_string()),
-                        Cell::from(format_money(train.purchase_price())),
+                        right_cell(owned_count(train).to_string()),
+                        right_cell(format_money(train.purchase_price())),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1018,16 +1018,16 @@ pub fn render_dashboard(
                 .map(|train| {
                     Row::new(vec![
                         Cell::from(train.name().to_owned()),
-                        Cell::from(train.passenger_capacity().passengers().to_string()),
-                        Cell::from(format_speed_kmh(train)),
-                        Cell::from(format!(
+                        right_cell(train.passenger_capacity().passengers().to_string()),
+                        right_cell(format_speed_kmh(train)),
+                        right_cell(format!(
                             "{}/km",
                             format_money_per_kilometre(
                                 train.fuel_cost_per_kilometre().cents_per_kilometre()
                             )
                         )),
-                        Cell::from(owned_count(train).to_string()),
-                        Cell::from(format_money(train.purchase_price())),
+                        right_cell(owned_count(train).to_string()),
+                        right_cell(format_money(train.purchase_price())),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1048,9 +1048,9 @@ pub fn render_dashboard(
                 .map(|train| {
                     Row::new(vec![
                         Cell::from(train.name().to_owned()),
-                        Cell::from(train.passenger_capacity().passengers().to_string()),
-                        Cell::from(format_speed_kmh(train)),
-                        Cell::from(format_money(train.purchase_price())),
+                        right_cell(train.passenger_capacity().passengers().to_string()),
+                        right_cell(format_speed_kmh(train)),
+                        right_cell(format_money(train.purchase_price())),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1069,7 +1069,7 @@ pub fn render_dashboard(
                 .map(|train| {
                     Row::new(vec![
                         Cell::from(train.name().to_owned()),
-                        Cell::from(format_money(train.purchase_price())),
+                        right_cell(format_money(train.purchase_price())),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1080,7 +1080,7 @@ pub fn render_dashboard(
 
     let table = Table::new(rows, widths)
         .header(
-            Row::new(headers)
+            catalogue_header_row(headers)
                 .style(theme::table_header())
                 .bottom_margin(1),
         )
@@ -1094,6 +1094,20 @@ pub fn render_dashboard(
         .selected_catalogue_index(state)
         .and_then(|index| catalogue.get(index));
     render_catalogue_inspector(frame, inspector_area, state, selected_train, wide, true);
+}
+
+fn catalogue_header_row(headers: Vec<&str>) -> Row<'static> {
+    Row::new(headers.into_iter().map(|header| {
+        if matches!(header, "Seats" | "Top speed" | "Fuel/km" | "Owned" | "Price") {
+            Cell::from(Text::from(header.to_owned()).right_aligned())
+        } else {
+            Cell::from(header.to_owned())
+        }
+    }))
+}
+
+fn right_cell(value: impl Into<String>) -> Cell<'static> {
+    Cell::from(Text::from(value.into()).right_aligned())
 }
 
 fn render_catalogue_inspector(
