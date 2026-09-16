@@ -71,6 +71,8 @@ fn manual_dispatch_moves_from_train_to_service_to_review() {
     );
     let service_step = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(service_step.contains("Choose Passenger Service"));
+    assert!(service_step.contains("Train 01"));
+    assert!(service_step.contains(&registration));
     assert!(service_step.contains("R1"));
     assert!(service_step.contains("Service Preview"));
 
