@@ -32,11 +32,12 @@ pub use text::{render, render_at};
 
 use crate::model::{GameState, RailStationId, SettlementId, TrainStatus};
 
-/// One keyboard selection across every Settlement shown by the operational map.
+/// One keyboard selection across the connected Rail Stations shown by the
+/// operational map.
 ///
-/// Connected Settlements resolve to a Rail Station and can start Manual Dispatch;
-/// unconnected Settlements remain inspectable without pretending they already
-/// have railway infrastructure.
+/// Unconnected Settlements remain visible as world context, but directional
+/// navigation follows the physical Rail Network instead of jumping to whichever
+/// Settlement happens to be geometrically closest.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MapLocationSelection {
     selected_settlement_id: Option<SettlementId>,
@@ -193,7 +194,7 @@ impl MapWorkspace {
             .count();
         let mut lines = vec![
             "Current · Map".into(),
-            "↑↓←→ / hjkl Select a map location".into(),
+            "↑↓←→ / hjkl Select a connected Rail Station".into(),
             "s Open Passenger Services".into(),
             "w Open World Details".into(),
         ];
@@ -248,10 +249,21 @@ impl MapLocationSelection {
             .map(|station| station.id)
     }
 
-    /// Moves spatially through the same logical layout used by the map.
+    /// Moves through directly connected Rail Stations using the same logical
+    /// layout as the map to choose the neighbour matching the requested
+    /// direction.
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
         self.synchronize(state);
         let Some(current_id) = self.selected_settlement_id else {
+            return;
+        };
+        let network = &state.region.rail_authority.rail_network;
+        let Some(current_station_id) = network
+            .rail_stations
+            .iter()
+            .find(|station| station.settlement_id == current_id)
+            .map(|station| station.id)
+        else {
             return;
         };
         let Some(layout) = operational_layout(state) else {
@@ -280,6 +292,16 @@ impl MapLocationSelection {
             .places
             .iter()
             .filter(|candidate| candidate.settlement_id != current.settlement_id)
+            .filter(|candidate| {
+                candidate.station_id.is_some_and(|candidate_station_id| {
+                    network.rail_lines.iter().any(|line| {
+                        (line.first_station_id == current_station_id
+                            && line.second_station_id == candidate_station_id)
+                            || (line.second_station_id == current_station_id
+                                && line.first_station_id == candidate_station_id)
+                    })
+                })
+            })
             .filter_map(|candidate| {
                 let dx = candidate.x - current.x;
                 let dy = candidate.y - current.y;
@@ -290,8 +312,8 @@ impl MapLocationSelection {
                     MapDirection::Down if dy > 0 => (dy, dx.abs()),
                     _ => return None,
                 };
-                // Prefer the nearest place in the requested direction while
-                // strongly penalising a large perpendicular jump.
+                // Geometry only ranks directly connected neighbours. It never
+                // makes an unrelated Settlement a navigation candidate.
                 Some((
                     primary.saturating_mul(10) + secondary,
                     candidate.settlement_id,
@@ -370,6 +392,92 @@ mod tests {
         assert_eq!(
             workspace.handle_key(KeyCode::Right, &state),
             MapWorkspaceAction::ClearNotice
+        );
+    }
+
+    #[test]
+    fn directional_navigation_ignores_closer_unconnected_settlements() {
+        let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let stations = state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .clone();
+        assert!(stations.len() >= 4);
+        assert!(state.region.settlements.len() > stations.len());
+
+        let hub = stations[1].clone();
+        let connected_right = stations[2].clone();
+        let unconnected_id = state
+            .region
+            .settlements
+            .iter()
+            .find(|settlement| {
+                !stations
+                    .iter()
+                    .any(|station| station.settlement_id == settlement.id)
+            })
+            .expect("starter world includes an unconnected Settlement")
+            .id;
+
+        for settlement in &mut state.region.settlements {
+            if settlement.id == hub.settlement_id {
+                settlement.position = crate::model::WorldPosition::new(0, 0);
+            } else if settlement.id == stations[0].settlement_id {
+                settlement.position = crate::model::WorldPosition::new(-100, 0);
+            } else if settlement.id == connected_right.settlement_id {
+                settlement.position = crate::model::WorldPosition::new(100, 0);
+            } else if settlement.id == stations[3].settlement_id {
+                settlement.position = crate::model::WorldPosition::new(0, 100);
+            } else if settlement.id == unconnected_id {
+                // This Settlement is much closer and directly to the right. The
+                // old geometric navigation selected it instead of following rail.
+                settlement.position = crate::model::WorldPosition::new(1, 0);
+            }
+        }
+
+        let mut selection = super::MapLocationSelection {
+            selected_settlement_id: Some(hub.settlement_id),
+        };
+        selection.handle_key(KeyCode::Right, &state);
+
+        assert_eq!(
+            selection.selected_settlement_id(&state),
+            Some(connected_right.settlement_id)
+        );
+    }
+
+    #[test]
+    fn directional_navigation_does_not_jump_without_a_connected_neighbour() {
+        let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let stations = state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .clone();
+        let leaf = stations[0].clone();
+        let connected = stations[1].clone();
+
+        for settlement in &mut state.region.settlements {
+            if settlement.id == leaf.settlement_id {
+                settlement.position = crate::model::WorldPosition::new(0, 0);
+            } else if settlement.id == connected.settlement_id {
+                settlement.position = crate::model::WorldPosition::new(100, 0);
+            } else {
+                settlement.position = crate::model::WorldPosition::new(-10, 0);
+            }
+        }
+
+        let mut selection = super::MapLocationSelection {
+            selected_settlement_id: Some(leaf.settlement_id),
+        };
+        selection.handle_key(KeyCode::Left, &state);
+
+        assert_eq!(
+            selection.selected_settlement_id(&state),
+            Some(leaf.settlement_id)
         );
     }
 
