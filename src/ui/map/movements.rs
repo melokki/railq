@@ -79,7 +79,7 @@ pub(crate) fn render_movements_overlay(
         .saturating_sub(hidden_movements)
         .min(hidden_ready);
 
-    let footer = modal::shortcut_line(&[("↑↓/JK", "scroll"), ("M/Esc", "close")]);
+    let footer = modal::shortcut_line(&[("Esc", "close"), ("↑↓/JK", "scroll")]);
     let modal_areas = modal::render_shell(frame, card, "Movements", footer);
     let [movements_area, separator_area, ready_area] = Layout::vertical([
         Constraint::Min(6),
