@@ -37,7 +37,7 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     assert!(create.contains("Create Passenger Service"));
     assert!(create.contains("1 STOPS"));
     assert!(create.contains("Route Preview"));
-    assert!(create.contains("Choose the next stop"));
+    assert!(create.contains("Choose stops"));
     assert_eq!(
         capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
         Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
@@ -45,19 +45,24 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     );
 
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Enter),
+        press(&mut shell, &state, KeyCode::Char(' ')),
         ShellAction::Continue
     );
+    let first_stop = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(first_stop.contains("[1]"));
+    assert!(first_stop.contains("Selected stop 1 · Space to remove"));
+    assert!(!first_stop.contains("is already a stop"));
+
     assert_eq!(
         press(&mut shell, &state, KeyCode::Down),
         ShellAction::Continue
     );
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Enter),
+        press(&mut shell, &state, KeyCode::Char(' ')),
         ShellAction::Continue
     );
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Char('f')),
+        press(&mut shell, &state, KeyCode::Enter),
         ShellAction::Continue
     );
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
@@ -298,12 +303,12 @@ fn idle_service_uses_the_shared_editor_for_route_changes() {
         "Edit Service should use the same dimmed focused-modal treatment as Create Service",
     );
 
-    // Remove Fairford, choose the next station in the catalogue, and save the
-    // replacement stop pattern through the same STOPS → REVIEW workflow.
-    press(&mut shell, &state, KeyCode::Backspace);
+    // Toggle Fairford off, choose the next station in the catalogue, and save
+    // the replacement stop pattern through the same STOPS → REVIEW workflow.
+    press(&mut shell, &state, KeyCode::Char(' '));
     press(&mut shell, &state, KeyCode::Down);
+    press(&mut shell, &state, KeyCode::Char(' '));
     press(&mut shell, &state, KeyCode::Enter);
-    press(&mut shell, &state, KeyCode::Char('f'));
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("Review Service Changes"));
     assert!(review.contains("[Enter] save"));

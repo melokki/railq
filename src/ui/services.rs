@@ -120,18 +120,16 @@ impl ServiceWorkspace {
             match key {
                 KeyCode::Up | KeyCode::Char('k' | 'K') => {
                     flow.selected_station_index = flow.selected_station_index.saturating_sub(1);
+                    flow.error = None;
                 }
                 KeyCode::Down | KeyCode::Char('j' | 'J') => {
                     if station_count > 0 {
                         flow.selected_station_index =
                             (flow.selected_station_index + 1).min(station_count.saturating_sub(1));
                     }
-                }
-                KeyCode::Backspace | KeyCode::Left => {
-                    flow.stop_station_ids.pop();
                     flow.error = None;
                 }
-                KeyCode::Enter => {
+                KeyCode::Char(' ') => {
                     let Some(station_id) = state
                         .region
                         .rail_authority
@@ -142,6 +140,17 @@ impl ServiceWorkspace {
                     else {
                         return ServiceWorkspaceAction::Continue;
                     };
+
+                    if let Some(selected_index) = flow
+                        .stop_station_ids
+                        .iter()
+                        .position(|selected_id| *selected_id == station_id)
+                    {
+                        flow.stop_station_ids.remove(selected_index);
+                        flow.error = None;
+                        return ServiceWorkspaceAction::Continue;
+                    }
+
                     let mut candidate = flow.stop_station_ids.clone();
                     candidate.push(station_id);
                     if candidate.len() == 1 {
@@ -160,10 +169,10 @@ impl ServiceWorkspace {
                         }
                     }
                 }
-                KeyCode::Char('f' | 'F') => {
+                KeyCode::Enter => {
                     if flow.stop_station_ids.len() < 2 {
                         flow.error =
-                            Some("Add at least two stops before reviewing the Service.".into());
+                            Some("Select at least two stops before reviewing the Service.".into());
                     } else {
                         match service_path_for_stops(
                             &state.region.rail_authority.rail_network,
@@ -336,17 +345,15 @@ impl ServiceWorkspace {
             } else if compact {
                 vec![
                     ("↑↓", "Station", true),
-                    ("Enter", "Add stop", true),
-                    ("Backspace", "Remove", true),
-                    ("F", "Review", true),
+                    ("Space", "Toggle", true),
+                    ("Enter", "Review", true),
                     ("Esc", "Cancel", true),
                 ]
             } else {
                 vec![
                     ("↑↓/JK", "Station", true),
-                    ("Enter", "Add stop", true),
-                    ("Backspace", "Remove", true),
-                    ("F", "Review", true),
+                    ("Space", "Toggle stop", true),
+                    ("Enter", "Review", true),
                     ("Esc", "Cancel", true),
                 ]
             };
@@ -396,8 +403,9 @@ impl ServiceWorkspace {
         }
         lines.extend([
             String::new(),
-            "During create/edit: Enter adds a stop, Backspace removes the last stop, f reviews."
+            "During create/edit: Space toggles the highlighted stop; Enter reviews the route."
                 .into(),
+            "During review: Enter creates/saves; Backspace or Left returns to editing.".into(),
         ]);
         lines
     }
@@ -1151,15 +1159,18 @@ fn create_service_footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'sta
     if width >= 76 {
         modal::shortcut_line(&[
             ("↑/↓", "choose"),
-            ("Enter", "add"),
-            ("Backspace", "remove"),
-            ("F", "review"),
+            ("Space", "toggle"),
+            ("Enter", "review"),
             ("Esc", "cancel"),
         ])
     } else {
-        // On narrow terminals keep the primary progression controls readable;
-        // navigation and undo remain available and are also exposed globally.
-        modal::shortcut_line(&[("Enter", "add"), ("F", "review"), ("Esc", "cancel")])
+        // On narrow terminals keep the primary selection and progression
+        // controls readable; navigation remains available globally.
+        modal::shortcut_line(&[
+            ("Space", "toggle"),
+            ("Enter", "review"),
+            ("Esc", "cancel"),
+        ])
     }
 }
 
@@ -1217,7 +1228,7 @@ fn render_create_service_picker(
     let [picker_title_area, table_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).areas(picker_area);
     frame.render_widget(
-        Paragraph::new(Line::styled("Choose the next stop", theme::title())).style(theme::panel()),
+        Paragraph::new(Line::styled("Choose stops", theme::title())).style(theme::panel()),
         picker_title_area,
     );
 
@@ -1227,7 +1238,15 @@ fn render_create_service_picker(
         .rail_network
         .rail_stations
         .iter()
-        .map(|station| Row::new([station_label(state, station.id)]))
+        .map(|station| {
+            let selection = flow
+                .stop_station_ids
+                .iter()
+                .position(|station_id| *station_id == station.id)
+                .map(|index| format!("[{}]", index + 1))
+                .unwrap_or_else(|| "[ ]".to_owned());
+            Row::new([selection, station_label(state, station.id)])
+        })
         .collect::<Vec<_>>();
     let mut table_state = TableState::default();
     table_state.select(
@@ -1236,7 +1255,7 @@ fn render_create_service_picker(
                 .min(rows.len().saturating_sub(1)),
         ),
     );
-    let table = Table::new(rows, [Constraint::Min(1)])
+    let table = Table::new(rows, [Constraint::Length(4), Constraint::Min(1)])
         .row_highlight_style(theme::selected_row())
         .highlight_symbol("› ")
         .highlight_spacing(HighlightSpacing::Always);
@@ -1307,15 +1326,24 @@ fn render_create_service_preview(
         theme::focused_title(),
     ));
 
-    if flow.stop_station_ids.is_empty() {
-        lines.push(Line::styled("Valid origin stop", theme::success()));
+    if let Some(selected_index) = flow
+        .stop_station_ids
+        .iter()
+        .position(|selected_id| *selected_id == station_id)
+    {
+        lines.push(Line::styled(
+            format!("Selected stop {} · Space to remove", selected_index + 1),
+            theme::success(),
+        ));
+    } else if flow.stop_station_ids.is_empty() {
+        lines.push(Line::styled("Valid origin · Space to select", theme::success()));
     } else {
         let mut candidate = flow.stop_station_ids.clone();
         candidate.push(station_id);
         match service_path_for_stops(&state.region.rail_authority.rail_network, &candidate) {
             Ok(line_ids) => {
                 let distance = distance_for_line_ids(state, &line_ids);
-                lines.push(Line::styled("Valid next stop", theme::success()));
+                lines.push(Line::styled("Valid next stop · Space to select", theme::success()));
                 lines.push(Line::styled(
                     format!("Route after add · {}", format::distance(distance)),
                     theme::secondary(),
