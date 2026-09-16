@@ -17,6 +17,7 @@ use crate::{
 };
 
 use super::{
+    MapWorkspace,
     network::station_name,
     operational::journey_next_stop_station_id,
     shared::remaining_seconds,
@@ -27,14 +28,9 @@ pub(crate) fn render_movements_overlay(
     area: Rect,
     state: &GameState,
     now: UtcSeconds,
+    workspace: &mut MapWorkspace,
 ) {
     let card = modal::centered_rect(area, 112, 28);
-    let modal_areas = modal::render_shell(
-        frame,
-        card,
-        "Movements",
-        modal::shortcut_line(&[("M/Esc", "close")]),
-    );
 
     let mut journeys = state.active_journeys.iter().collect::<Vec<_>>();
     journeys.sort_by_key(|journey| (journey.arrives_at, journey.train_id));
@@ -56,6 +52,39 @@ pub(crate) fn render_movements_overlay(
     } else {
         ready_trains.len().saturating_add(3).min(9) as u16
     };
+
+    // The focused modal body is the card height minus borders, separator, and
+    // footer. Table headers consume two rows because they include a bottom
+    // margin. Scroll only the rows that cannot fit, first live movements and
+    // then READY trains, so both sections remain visible and predictable.
+    let body_height = card.height.saturating_sub(4);
+    let movements_height = body_height.saturating_sub(ready_height.saturating_add(1));
+    let movement_capacity = if journeys.is_empty() {
+        0
+    } else {
+        usize::from(movements_height.saturating_sub(2))
+    };
+    let ready_capacity = if ready_trains.is_empty() {
+        0
+    } else {
+        usize::from(ready_height.saturating_sub(3))
+    };
+    let hidden_movements = journeys.len().saturating_sub(movement_capacity);
+    let hidden_ready = ready_trains.len().saturating_sub(ready_capacity);
+    let max_scroll = hidden_movements.saturating_add(hidden_ready);
+    workspace.movements_scroll_offset = workspace.movements_scroll_offset.min(max_scroll);
+    let movement_offset = workspace.movements_scroll_offset.min(hidden_movements);
+    let ready_offset = workspace
+        .movements_scroll_offset
+        .saturating_sub(hidden_movements)
+        .min(hidden_ready);
+
+    let footer = if max_scroll > 0 {
+        modal::shortcut_line(&[("↑↓/JK", "scroll"), ("M/Esc", "close")])
+    } else {
+        modal::shortcut_line(&[("M/Esc", "close")])
+    };
+    let modal_areas = modal::render_shell(frame, card, "Movements", footer);
     let [movements_area, separator_area, ready_area] = Layout::vertical([
         Constraint::Min(6),
         Constraint::Length(1),
@@ -74,7 +103,7 @@ pub(crate) fn render_movements_overlay(
             movements_area,
         );
     } else {
-        let rows = journeys.into_iter().map(|journey| {
+        let rows = journeys.into_iter().skip(movement_offset).map(|journey| {
             let next_stop = journey_next_stop_station_id(state, journey)
                 .map(|station_id| station_name(state, station_id))
                 .unwrap_or_else(|| "—".into());
@@ -112,7 +141,7 @@ pub(crate) fn render_movements_overlay(
     }
 
     modal::render_horizontal_separator(frame, separator_area);
-    render_ready_trains(frame, ready_area, state, ready_trains);
+    render_ready_trains(frame, ready_area, state, ready_trains, ready_offset);
 }
 
 fn render_ready_trains(
@@ -120,6 +149,7 @@ fn render_ready_trains(
     area: Rect,
     state: &GameState,
     ready_trains: Vec<(&crate::model::Train, crate::model::RailStationId)>,
+    scroll_offset: usize,
 ) {
     if ready_trains.is_empty() {
         frame.render_widget(
@@ -145,12 +175,15 @@ fn render_ready_trains(
         heading_area,
     );
 
-    let rows = ready_trains.into_iter().map(|(train, station_id)| {
-        Row::new([
-            Cell::from(format!("T{:02}", train.id.get())),
-            Cell::from(station_name(state, station_id)),
-        ])
-    });
+    let rows = ready_trains
+        .into_iter()
+        .skip(scroll_offset)
+        .map(|(train, station_id)| {
+            Row::new([
+                Cell::from(format!("T{:02}", train.id.get())),
+                Cell::from(station_name(state, station_id)),
+            ])
+        });
     let table = Table::new(
         rows,
         [Constraint::Length(10), Constraint::Min(1)],

@@ -51,6 +51,7 @@ pub struct MapWorkspace {
     location_selection: MapLocationSelection,
     world_details_visible: bool,
     movements_visible: bool,
+    movements_scroll_offset: usize,
 }
 
 /// Intent emitted by Map input which must be handled by the outer Shell.
@@ -114,6 +115,7 @@ impl MapWorkspace {
             }
             KeyCode::Char('m' | 'M') => {
                 self.movements_visible = true;
+                self.movements_scroll_offset = 0;
                 MapWorkspaceAction::ClearNotice
             }
             KeyCode::Left
@@ -151,8 +153,17 @@ impl MapWorkspace {
     /// Routes input while Movements is the focused informational overlay.
     pub fn handle_movements_key(&mut self, key: KeyCode) -> MovementsKeyAction {
         match key {
+            KeyCode::Up | KeyCode::Char('k' | 'K') => {
+                self.movements_scroll_offset = self.movements_scroll_offset.saturating_sub(1);
+                MovementsKeyAction::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j' | 'J') => {
+                self.movements_scroll_offset = self.movements_scroll_offset.saturating_add(1);
+                MovementsKeyAction::Continue
+            }
             KeyCode::Esc | KeyCode::Char('m' | 'M') => {
                 self.movements_visible = false;
+                self.movements_scroll_offset = 0;
                 MovementsKeyAction::Closed
             }
             KeyCode::Char(
@@ -160,6 +171,7 @@ impl MapWorkspace {
                 | 'a' | 'A' | 'u' | 'U',
             ) => {
                 self.movements_visible = false;
+                self.movements_scroll_offset = 0;
                 MovementsKeyAction::ClosedForNavigation
             }
             _ => MovementsKeyAction::Continue,
@@ -232,6 +244,7 @@ impl MapWorkspace {
             return vec![
                 "Current · Movements".into(),
                 "m / Esc Return to Map".into(),
+                "↑↓ / jk Scroll when more Trains are available than fit on screen.".into(),
                 "Shows live Train movements ordered by their next arrival.".into(),
             ];
         }
@@ -544,6 +557,16 @@ mod tests {
             MapWorkspaceAction::ClearNotice
         );
         assert!(workspace.movements_visible());
+        assert_eq!(
+            workspace.handle_movements_key(KeyCode::Down),
+            MovementsKeyAction::Continue
+        );
+        assert_eq!(workspace.movements_scroll_offset, 1);
+        assert_eq!(
+            workspace.handle_movements_key(KeyCode::Up),
+            MovementsKeyAction::Continue
+        );
+        assert_eq!(workspace.movements_scroll_offset, 0);
         assert_eq!(
             workspace.handle_movements_key(KeyCode::Esc),
             MovementsKeyAction::Closed
