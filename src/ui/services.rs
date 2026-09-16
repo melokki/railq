@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -539,16 +539,17 @@ fn render_service_picker(
             let direction = service_direction_label(state, service);
             if wide {
                 let snapshot = service_operating_snapshot(state, service.id);
-                let active = if snapshot.active_trains == 0 {
-                    "—".to_owned()
+                let (state_label, state_style) = if snapshot.active_trains > 0 {
+                    ("LIVE", theme::success())
                 } else {
-                    format!("{} active", snapshot.active_trains)
+                    ("IDLE", theme::secondary())
                 };
-                Row::new([
-                    service.name.clone(),
-                    direction,
-                    active,
-                    snapshot.waiting_passengers.to_string(),
+                Row::new(vec![
+                    Cell::from(service.name.clone()),
+                    Cell::from(direction),
+                    Cell::from(state_label).style(state_style),
+                    Cell::from(snapshot.active_trains.to_string()),
+                    Cell::from(snapshot.waiting_passengers.to_string()),
                 ])
             } else {
                 Row::new([service.name.clone(), direction])
@@ -558,13 +559,14 @@ fn render_service_picker(
 
     let (header, widths) = if wide {
         (
-            Row::new(["Service", "Direction", "Trains", "Waiting"])
+            Row::new(["Service", "Direction", "State", "Trains", "Waiting"])
                 .style(theme::table_header())
                 .bottom_margin(1),
             vec![
                 Constraint::Length(10),
                 Constraint::Min(16),
-                Constraint::Length(9),
+                Constraint::Length(7),
+                Constraint::Length(7),
                 Constraint::Length(8),
             ],
         )

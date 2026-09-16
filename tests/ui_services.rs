@@ -189,9 +189,11 @@ fn wide_service_picker_surfaces_operational_summary_without_repeating_full_stop_
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
+    assert!(rendered.contains("State"));
     assert!(rendered.contains("Trains"));
     assert!(rendered.contains("Waiting"));
-    assert!(rendered.contains("1 active"));
+    assert!(rendered.contains("LIVE"));
+    assert!(!rendered.contains("1 active"));
 }
 
 #[test]
