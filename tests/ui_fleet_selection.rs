@@ -157,6 +157,12 @@ fn fleet_inspector_surfaces_state_specific_information() {
     press(&mut shell, &state, KeyCode::Char('t'));
 
     let travelling = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    let selected_train = &state.player_company.fleet.trains[0];
+    let registration = selected_train.evn.marking(
+        &state.region.railway_registration.mark,
+        &state.player_company.vehicle_keeper_mark,
+    );
+    assert!(travelling.contains(&registration));
     assert!(travelling.contains("STATUS"));
     assert!(travelling.contains("TRAVELLING"));
     assert!(travelling.contains("JOURNEY"));

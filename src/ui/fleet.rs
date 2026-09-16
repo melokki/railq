@@ -906,15 +906,22 @@ fn render_wide_dashboard(
     let header = Row::new(["Train", "State", "Position", "ETA"])
         .style(theme::table_header())
         .bottom_margin(1);
-    let table = Table::new(
-        rows,
+    let widths = if list_area.width >= 90 {
+        [
+            Constraint::Length(30),
+            Constraint::Length(13),
+            Constraint::Length(24),
+            Constraint::Length(10),
+        ]
+    } else {
         [
             Constraint::Min(16),
             Constraint::Length(11),
             Constraint::Min(10),
             Constraint::Length(9),
-        ],
-    )
+        ]
+    };
+    let table = Table::new(rows, widths)
         .header(header)
         .style(theme::panel())
         .row_highlight_style(theme::selected_row())
@@ -1068,7 +1075,14 @@ fn render_train_inspector(
     let mut lines = Vec::new();
     if embedded {
         lines.push(Line::styled(title.clone(), theme::focused_title()));
-        lines.push(Line::styled(fields.model.clone(), theme::secondary()));
+        lines.push(Line::styled(
+            train.evn.marking(
+                &state.region.railway_registration.mark,
+                &state.player_company.vehicle_keeper_mark,
+            ),
+            theme::secondary(),
+        ));
+        lines.push(Line::styled(fields.model.clone(), theme::primary_value()));
         lines.push(Line::from(""));
     } else {
         lines.push(Line::from(vec![
