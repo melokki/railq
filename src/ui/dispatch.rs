@@ -1114,6 +1114,10 @@ fn render_train_inspector(
         .map(|station_id| station_label(state, station_id))
         .unwrap_or("Unknown");
     let service_count = service_options(state, train_id).len();
+    let registration = train.evn.marking(
+        &state.region.railway_registration.mark,
+        &state.player_company.vehicle_keeper_mark,
+    );
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled("Train Preview", theme::title()),
@@ -1121,6 +1125,7 @@ fn render_train_inspector(
                 format!("Train {:02}", train.id.get()),
                 theme::focused_title(),
             ),
+            Line::styled(registration, theme::secondary()),
             Line::styled(train_model_name(state, train_id), theme::primary_value()),
             Line::from(""),
             detail_line("Location", location),
