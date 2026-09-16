@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
 };
 
@@ -649,9 +649,11 @@ fn render_projects(
                 Row::new(vec![
                     Cell::from(format!("{:02}", index + 1)),
                     Cell::from(scope),
-                    Cell::from(status),
-                    Cell::from(format::money(project.funding.estimated_cost)),
-                    Cell::from(funding_percent(project)),
+                    Cell::from(status).style(status_style(project.status)),
+                    Cell::from(
+                        Text::from(format::money(project.funding.estimated_cost)).right_aligned(),
+                    ),
+                    Cell::from(Text::from(funding_percent(project)).right_aligned()),
                     Cell::from(next),
                 ])
             }
@@ -669,8 +671,15 @@ fn render_projects(
         )
     } else {
         (
-            Row::new(["#", "Project", "Status", "Cost", "Funded", "Next milestone"])
-                .style(theme::table_header()),
+            Row::new(vec![
+                Cell::from("#"),
+                Cell::from("Project"),
+                Cell::from("Status"),
+                Cell::from(Text::from("Cost").right_aligned()),
+                Cell::from(Text::from("Funded").right_aligned()),
+                Cell::from("Next milestone"),
+            ])
+            .style(theme::table_header()),
             vec![
                 Constraint::Length(3),
                 Constraint::Fill(2),
