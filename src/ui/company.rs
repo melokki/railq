@@ -13,7 +13,7 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
     widgets::{
-        Block, Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
+        Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
         TableState, Wrap,
     },
 };
@@ -25,7 +25,7 @@ use crate::{
         FinancialEvaluation, FinancialStatus, RecoveryJourney, RecoveryOption,
         evaluate_financial_recovery,
     },
-    ui::{modal, theme},
+    ui::{components, modal, theme},
 };
 
 const MAXIMUM_RECOVERY_OPTIONS_SHOWN: usize = 3;
@@ -975,7 +975,7 @@ fn render_wide_dashboard(
     // Company is a dashboard rather than a collection of neighbouring windows.
     // One focused shell owns the workspace; section headings create hierarchy
     // without surrounding every group of values with another border.
-    let shell = panel_block("Company", true);
+    let shell = components::panel_block("Company", true);
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
@@ -1286,7 +1286,7 @@ fn render_compact_dashboard(
     selection: &mut ReceiptSelection,
 ) {
     let evaluation = evaluate_financial_recovery(state);
-    let shell = panel_block("Company", true);
+    let shell = components::panel_block("Company", true);
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
@@ -1300,7 +1300,7 @@ fn render_compact_dashboard(
 
 fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
     let evaluation = evaluate_financial_recovery(state);
-    let shell = panel_block("Company", true);
+    let shell = components::panel_block("Company", true);
     let inner = shell.inner(area);
     frame.render_widget(shell, area);
 
@@ -1654,23 +1654,6 @@ fn receipt_detail_lines(state: &GameState, receipt: Option<&JourneyReceipt>) -> 
             theme::secondary(),
         )],
     }
-}
-
-fn panel_block(title: &str, focused: bool) -> Block<'_> {
-    Block::default()
-        .borders(theme::THIN_BORDERS)
-        .border_style(if focused {
-            theme::focused_border()
-        } else {
-            theme::border()
-        })
-        .title(title)
-        .title_style(if focused {
-            theme::focused_title()
-        } else {
-            theme::title()
-        })
-        .style(theme::panel())
 }
 
 fn section_heading(title: &str) -> Line<'static> {
