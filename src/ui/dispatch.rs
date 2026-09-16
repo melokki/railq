@@ -717,7 +717,7 @@ fn render_quote_review(
         status_area,
     ] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(2),
+        Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Min(3),
         Constraint::Length(status_rows),
@@ -738,11 +738,7 @@ fn render_quote_review(
             Line::from(vec![
                 Span::styled("TRAIN  ", theme::secondary()),
                 Span::styled(
-                    format!(
-                        "{:02} · {}",
-                        quote.train_id.get(),
-                        train_model_name(state, quote.train_id)
-                    ),
+                    format!("Train {:02}", quote.train_id.get()),
                     theme::primary_value(),
                 ),
                 Span::styled("   SERVICE  ", theme::secondary()),
@@ -752,6 +748,17 @@ fn render_quote_review(
                         service_name(state, service_id),
                         service_route_label(state, service_id),
                     ),
+                    theme::primary_value(),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    train_registration(state, quote.train_id),
+                    theme::secondary(),
+                ),
+                Span::styled(" · ", theme::secondary()),
+                Span::styled(
+                    train_model_name(state, quote.train_id),
                     theme::primary_value(),
                 ),
             ]),
@@ -900,6 +907,22 @@ fn dispatch_step_line(active: u8) -> Line<'static> {
         spans.push(Span::styled(format!("{step} {label}"), style));
     }
     Line::from(spans)
+}
+
+fn train_registration(state: &GameState, train_id: TrainId) -> String {
+    state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .map(|train| {
+            train.evn.marking(
+                &state.region.railway_registration.mark,
+                &state.player_company.vehicle_keeper_mark,
+            )
+        })
+        .unwrap_or_else(|| "Registration unavailable".into())
 }
 
 fn train_model_name(state: &GameState, train_id: TrainId) -> String {
@@ -1114,6 +1137,7 @@ fn render_train_inspector(
         .map(|station_id| station_label(state, station_id))
         .unwrap_or("Unknown");
     let service_count = service_options(state, train_id).len();
+    let registration = train_registration(state, train_id);
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled("Train Preview", theme::title()),
@@ -1121,6 +1145,7 @@ fn render_train_inspector(
                 format!("Train {:02}", train.id.get()),
                 theme::focused_title(),
             ),
+            Line::styled(registration, theme::secondary()),
             Line::styled(train_model_name(state, train_id), theme::primary_value()),
             Line::from(""),
             detail_line("Location", location),
@@ -1181,12 +1206,13 @@ fn render_service_chooser(
     synchronize_service_selection(selected_service_id, table_state, &services);
     let status_rows = u16::from(chooser.rejection.is_some());
     let [context_area, body_area, status_area] = Layout::vertical([
-        Constraint::Length(2),
+        Constraint::Length(3),
         Constraint::Min(4),
         Constraint::Length(status_rows),
     ])
     .areas(area);
     let model = train_model_name(state, train_id);
+    let registration = train_registration(state, train_id);
     frame.render_widget(
         Paragraph::new(vec![
             dispatch_step_line(2),
@@ -1198,9 +1224,14 @@ fn render_service_chooser(
                 ),
                 Span::styled("   TRAIN  ", theme::secondary()),
                 Span::styled(
-                    format!("{:02} · {model}", train_id.get()),
+                    format!("Train {:02}", train_id.get()),
                     theme::primary_value(),
                 ),
+            ]),
+            Line::from(vec![
+                Span::styled(registration, theme::secondary()),
+                Span::styled(" · ", theme::secondary()),
+                Span::styled(model, theme::primary_value()),
             ]),
         ])
         .style(theme::panel())

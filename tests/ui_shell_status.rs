@@ -26,8 +26,13 @@ fn captures_company_status_at_wide_and_compact_sizes() -> Result<(), Box<dyn Err
     for (columns, rows) in [(120, 40), (80, 24)] {
         let rendered = capture_rendered_buffer(&shell, &state, columns, rows);
         assert_eq!(rendered.lines().count(), usize::from(rows));
-        assert!(rendered.contains("Funds"));
-        assert!(rendered.contains("ETA"));
+        if columns >= 100 {
+            assert!(rendered.contains("Cash"));
+            assert!(rendered.contains("Next arrival"));
+        } else {
+            assert!(rendered.contains("R0/T1"));
+            assert!(rendered.contains("Next"));
+        }
     }
     Ok(())
 }
@@ -79,6 +84,7 @@ fn map_station_inspector_uses_operational_sections_without_embedded_shortcuts() 
 
     assert!(rendered.contains("OPERATIONS"));
     assert!(rendered.contains("Ready here"));
+    assert!(rendered.contains("Arriving"));
     assert!(rendered.contains("Services"));
     assert!(rendered.contains("PASSENGERS"));
     assert!(rendered.contains("Waiting"));
@@ -89,6 +95,22 @@ fn map_station_inspector_uses_operational_sections_without_embedded_shortcuts() 
 }
 
 #[test]
+fn map_station_inspector_surfaces_the_next_arrival() -> Result<(), Box<dyn Error>> {
+    let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    state.player_company.funds = Money::from_cents(1_000_000);
+    let train = purchase_train(&mut state, 0, RailStationId::new(2))?;
+    let service = find_or_create_service(&mut state, RailStationId::new(2), RailStationId::new(1))?;
+    dispatch_journey(&mut state, train, service, STARTED_AT)?;
+
+    let shell = Shell::new();
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+
+    assert!(rendered.contains("Arriving"));
+    assert!(rendered.contains("1 · next"));
+    Ok(())
+}
+
+#[test]
 fn map_footer_contains_actions_without_repeating_header_status() -> Result<(), Box<dyn Error>> {
     let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
     purchase_train(&mut state, 0, RailStationId::new(1))?;
@@ -96,6 +118,7 @@ fn map_footer_contains_actions_without_repeating_header_status() -> Result<(), B
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
     assert!(rendered.contains("[D] Dispatch"));
+    assert!(rendered.contains("│ [?] Help [Q] Quit"));
     assert!(!rendered.contains("Dispatch · 1 ready"));
     Ok(())
 }

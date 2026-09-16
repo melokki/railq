@@ -24,7 +24,7 @@ use operational::{MapDirection, operational_layout, render_operational_map};
 #[cfg(test)]
 use operational::{
     focus_rank, journey_route_segments, map_place_label, place_link_distance_label,
-    point_along_orthogonal_rail, selected_neighbours,
+    point_along_orthogonal_rail, point_along_rendered_rail, selected_neighbours,
 };
 #[cfg(test)]
 use shared::journey_progress_percent;
@@ -582,6 +582,21 @@ mod tests {
         assert_eq!(
             point_along_orthogonal_rail((0, 6), (0, 0), 0.5),
             ((0, 3), '▲')
+        );
+    }
+
+    #[test]
+    fn reverse_train_follows_the_same_rendered_l_shaped_rail() {
+        let first_endpoint = (0, 0);
+        let second_endpoint = (4, 6);
+
+        assert_eq!(
+            point_along_rendered_rail(first_endpoint, second_endpoint, false, 0.25),
+            ((4, 3), '▲')
+        );
+        assert_eq!(
+            point_along_rendered_rail(first_endpoint, second_endpoint, false, 0.75),
+            ((2, 0), '◀')
         );
     }
 

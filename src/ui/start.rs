@@ -152,7 +152,7 @@ impl CompanyNameForm {
             .borders(Borders::ALL)
             .border_style(theme::focused_border())
             .style(theme::panel())
-            .title(Line::from(" NEW RAILWAY COMPANY ").style(theme::focused_title()));
+            .title(Line::from(" NEW RAILWAY COMPANY · 1/2 ").style(theme::focused_title()));
         let inner = block.inner(card);
         frame.render_widget(block, card);
 
@@ -162,7 +162,7 @@ impl CompanyNameForm {
         frame.render_widget(
             Paragraph::new(
                 Line::from(
-                    "A passenger operating concession is available in a newly generated region.",
+                    "Choose the company that will operate passenger services in a newly generated region.",
                 )
                 .style(theme::primary_value()),
             )
@@ -181,7 +181,13 @@ impl CompanyNameForm {
             input,
         );
         let feedback = self.validation_error.map_or_else(
-            || "Name your railway company · Enter Continue · Esc Cancel".to_owned(),
+            || {
+                format!(
+                    "Enter Continue · Esc Cancel · {}/{}",
+                    self.character_count(),
+                    MAXIMUM_COMPANY_NAME_CHARACTERS
+                )
+            },
             |error| error.to_string(),
         );
         frame.render_widget(
@@ -390,7 +396,7 @@ fn render_concession_review(frame: &mut Frame, state: &GameState) {
         .borders(Borders::ALL)
         .border_style(theme::focused_border())
         .style(theme::panel())
-        .title(Line::from(" NEW PASSENGER CONCESSION ").style(theme::focused_title()));
+        .title(Line::from(" NEW PASSENGER CONCESSION · 2/2 ").style(theme::focused_title()));
     let inner = block.inner(card);
     frame.render_widget(block, card);
 
@@ -834,13 +840,13 @@ mod tests {
             .expect("compact evidence");
 
         let normal = capture_company_name_form(&mut form, 80, 24);
-        assert!(normal.contains("NEW RAILWAY COMPANY"));
+        assert!(normal.contains("NEW RAILWAY COMPANY · 1/2"));
         fs::write(evidence.join("company-name-form-80x24.txt"), &normal).expect("normal evidence");
 
         form.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
         let wide = capture_company_name_form(&mut form, 120, 40);
         assert_eq!(form.scroll_cells, 0);
-        assert!(wide.contains("NEW RAILWAY COMPANY"));
+        assert!(wide.contains("NEW RAILWAY COMPANY · 1/2"));
         assert!(wide.contains("Company name"));
         fs::write(evidence.join("company-name-form-120x40.txt"), &wide).expect("wide evidence");
 
@@ -906,7 +912,7 @@ mod tests {
         assert!(summary.contains("Rail stations: 4"));
         assert!(summary.contains("Rail network: 83 km"));
         assert!(summary.contains("Starting funds: $"));
-        assert!(review.contains("NEW PASSENGER CONCESSION"));
+        assert!(review.contains("NEW PASSENGER CONCESSION · 2/2"));
         assert!(review.contains(&game.region.name));
         assert!(review.contains(&game.region.railway_registration.display_code()));
         assert!(review.contains(&game.region.railway_registration.mark));

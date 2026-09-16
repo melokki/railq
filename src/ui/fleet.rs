@@ -21,7 +21,11 @@ use crate::{
         GameState, Journey, Money, RailStationId, Train, TrainId, TrainNickname, TrainStatus,
         UtcSeconds,
     },
-    ui::{modal, theme},
+    ui::{
+        components::{labelled_line, labelled_line_styled, panel_block, section_heading},
+        layout::UiSize,
+        modal, theme,
+    },
 };
 
 const FLEET_SELECTION_MARKER: &str = "› ";
@@ -722,7 +726,7 @@ impl FleetWorkspace {
         state: &GameState,
         now: UtcSeconds,
     ) {
-        self.split_visible = area.width >= 96 && area.height >= 18;
+        self.split_visible = UiSize::from_rect(area).supports_split_view();
         if self.split_visible {
             self.details_open = false;
         }
@@ -855,7 +859,7 @@ pub fn render_dashboard(
         return;
     }
 
-    if area.width >= 96 && area.height >= 18 {
+    if UiSize::from_rect(area).supports_split_view() {
         render_wide_dashboard(frame, area, state, now, selection);
     } else if details_open {
         render_compact_details(frame, area, state, now, selection);
@@ -894,13 +898,30 @@ fn render_wide_dashboard(
             Row::new([
                 Cell::from(train_picker_label(train, &fields.model)),
                 Cell::from(fields.status).style(train_status_style(train)),
+                Cell::from(fields.place),
+                Cell::from(fields.eta),
             ])
         })
         .collect::<Vec<_>>();
-    let header = Row::new(["Train", "State"])
+    let header = Row::new(["Train", "State", "Position", "ETA"])
         .style(theme::table_header())
         .bottom_margin(1);
-    let table = Table::new(rows, [Constraint::Min(24), Constraint::Length(11)])
+    let widths = if list_area.width >= 90 {
+        [
+            Constraint::Length(30),
+            Constraint::Length(13),
+            Constraint::Length(24),
+            Constraint::Length(10),
+        ]
+    } else {
+        [
+            Constraint::Min(16),
+            Constraint::Length(11),
+            Constraint::Min(10),
+            Constraint::Length(9),
+        ]
+    };
+    let table = Table::new(rows, widths)
         .header(header)
         .style(theme::panel())
         .row_highlight_style(theme::selected_row())
@@ -1054,7 +1075,14 @@ fn render_train_inspector(
     let mut lines = Vec::new();
     if embedded {
         lines.push(Line::styled(title.clone(), theme::focused_title()));
-        lines.push(Line::styled(fields.model.clone(), theme::secondary()));
+        lines.push(Line::styled(
+            train.evn.marking(
+                &state.region.railway_registration.mark,
+                &state.player_company.vehicle_keeper_mark,
+            ),
+            theme::secondary(),
+        ));
+        lines.push(Line::styled(fields.model.clone(), theme::primary_value()));
         lines.push(Line::from(""));
     } else {
         lines.push(Line::from(vec![
@@ -1380,40 +1408,6 @@ fn horizontal_inset(area: Rect, amount: u16) -> Rect {
     )
 }
 
-fn labelled_line(label: &str, value: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label:<18}"), theme::secondary()),
-        Span::raw(value.to_owned()),
-    ])
-}
-
-fn labelled_line_styled(label: &str, value: &str, style: Style) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label:<18}"), theme::secondary()),
-        Span::styled(value.to_owned(), style),
-    ])
-}
-
-fn section_heading(label: &str) -> Line<'static> {
-    Line::styled(label.to_owned(), theme::table_header())
-}
-
-fn panel_block(title: &str, focused: bool) -> Block<'_> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(if focused {
-            theme::focused_border()
-        } else {
-            theme::border()
-        })
-        .title(title)
-        .title_style(if focused {
-            theme::focused_title()
-        } else {
-            theme::title()
-        })
-        .style(theme::panel())
-}
 
 struct TrainFields {
     model: String,

@@ -10,8 +10,8 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    text::{Line, Span},
-    widgets::{Block, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
+    text::{Line, Span, Text},
+    widgets::{Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
 };
 
 use crate::{
@@ -24,7 +24,7 @@ use crate::{
         AUTHORITY_APPROVAL_SCORE_THRESHOLD, deferred_reconsideration_threshold,
         local_rail_success_basis_points, project_connection_station_id, project_review_score,
     },
-    ui::{format, modal, theme},
+    ui::{components::panel_block, format, modal, theme},
 };
 
 /// Persistent read-only project focus for the Authority workspace.
@@ -484,7 +484,7 @@ fn render_compact(
 fn render_tiny(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSeconds) {
     frame.render_widget(
         Paragraph::new(render(state, now))
-            .block(panel("Rail Authority"))
+            .block(panel_block("Rail Authority", false))
             .style(theme::panel())
             .wrap(Wrap { trim: false }),
         area,
@@ -523,7 +523,7 @@ fn render_finances(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSec
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("Infrastructure Finances"))
+            .block(panel_block("Infrastructure Finances", false))
             .style(theme::panel()),
         area,
     );
@@ -596,7 +596,7 @@ fn render_programme(frame: &mut Frame, area: Rect, state: &GameState) {
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("Development Programme"))
+            .block(panel_block("Development Programme", false))
             .style(theme::panel()),
         area,
     );
@@ -620,7 +620,7 @@ fn render_projects(
                     theme::secondary(),
                 ),
             ])
-            .block(panel("Infrastructure Projects"))
+            .block(panel_block("Infrastructure Projects", false))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
             area,
@@ -649,9 +649,11 @@ fn render_projects(
                 Row::new(vec![
                     Cell::from(format!("{:02}", index + 1)),
                     Cell::from(scope),
-                    Cell::from(status),
-                    Cell::from(format::money(project.funding.estimated_cost)),
-                    Cell::from(funding_percent(project)),
+                    Cell::from(status).style(status_style(project.status)),
+                    Cell::from(
+                        Text::from(format::money(project.funding.estimated_cost)).right_aligned(),
+                    ),
+                    Cell::from(Text::from(funding_percent(project)).right_aligned()),
                     Cell::from(next),
                 ])
             }
@@ -669,8 +671,15 @@ fn render_projects(
         )
     } else {
         (
-            Row::new(["#", "Project", "Status", "Cost", "Funded", "Next milestone"])
-                .style(theme::table_header()),
+            Row::new(vec![
+                Cell::from("#"),
+                Cell::from("Project"),
+                Cell::from("Status"),
+                Cell::from(Text::from("Cost").right_aligned()),
+                Cell::from(Text::from("Funded").right_aligned()),
+                Cell::from("Next milestone"),
+            ])
+            .style(theme::table_header()),
             vec![
                 Constraint::Length(3),
                 Constraint::Fill(2),
@@ -684,7 +693,7 @@ fn render_projects(
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(panel("Infrastructure Projects"))
+        .block(panel_block("Infrastructure Projects", false))
         .row_highlight_style(theme::selected_row())
         .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
@@ -701,7 +710,7 @@ fn render_project_inspector(
     let Some((index, project)) = selection.selected_project(state) else {
         frame.render_widget(
             Paragraph::new("No project selected.")
-                .block(panel("Project Details"))
+                .block(panel_block("Selected Project", false))
                 .style(theme::panel()),
             area,
         );
@@ -725,6 +734,10 @@ fn render_project_inspector(
         Line::from(vec![
             Span::styled("Status  ", theme::secondary()),
             Span::styled(project_status(project.status), status_style(project.status)),
+        ]),
+        Line::from(vec![
+            Span::styled("Next  ", theme::secondary()),
+            Span::styled(project_next(project, now), theme::primary_value()),
         ]),
     ];
 
@@ -760,7 +773,7 @@ fn render_project_inspector(
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("Project Details"))
+            .block(panel_block("Selected Project", false))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         area,
@@ -1475,15 +1488,6 @@ fn difficulty_label(value: ConstructionDifficulty) -> &'static str {
         ConstructionDifficulty::Moderate => "moderate",
         ConstructionDifficulty::High => "high",
     }
-}
-
-fn panel(title: &'static str) -> Block<'static> {
-    Block::default()
-        .borders(theme::THIN_BORDERS)
-        .border_style(theme::border())
-        .title(title)
-        .title_style(theme::title())
-        .style(theme::panel())
 }
 
 /// Compact textual fallback used by very small terminals and tests.

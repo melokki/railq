@@ -10,12 +10,12 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
 };
 
 use crate::{
     model::{BulletinCategory, BulletinEntry, GameState, UtcSeconds},
-    ui::theme,
+    ui::{components::panel_block, theme},
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -101,7 +101,7 @@ impl BulletinWorkspace {
         if area.height < 12 {
             frame.render_widget(
                 Paragraph::new("Railway Bulletin\n\nOpen this workspace in a taller terminal to inspect regional developments.")
-                    .block(panel("Bulletin"))
+                    .block(panel_block("Bulletin", false))
                     .style(theme::panel())
                     .wrap(Wrap { trim: true }),
                 area,
@@ -116,7 +116,7 @@ impl BulletinWorkspace {
         ])
         .areas(area);
 
-        self.render_summary(frame, summary_area, state);
+        self.render_summary(frame, summary_area, state, now);
         self.render_list(frame, list_area, state, now);
         self.render_detail(frame, detail_area, state, now);
     }
@@ -136,23 +136,36 @@ impl BulletinWorkspace {
         self.table_state.select(Some(selected));
     }
 
-    fn render_summary(&self, frame: &mut Frame, area: Rect, state: &GameState) {
-        let visible = visible_entries(state, self.filter).len();
+    fn render_summary(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &GameState,
+        now: UtcSeconds,
+    ) {
+        let entries = visible_entries(state, self.filter);
+        let visible = entries.len();
         let total = state.region.bulletin.len();
+        let latest = entries
+            .first()
+            .map(|(_, entry)| relative_time(entry.occurred_at, now))
+            .unwrap_or_else(|| "—".into());
         let lines = vec![
             Line::from(vec![
-                Span::styled("Regional railway developments  ", theme::secondary()),
+                Span::styled("History  ", theme::secondary()),
                 Span::styled(format!("{total} recorded"), theme::primary_value()),
+                Span::styled(format!(" · {visible} shown"), theme::secondary()),
             ]),
             Line::from(vec![
-                Span::styled("Filter  ", theme::secondary()),
+                Span::styled("View  ", theme::secondary()),
                 Span::styled(self.filter.label(), theme::focused_title()),
-                Span::styled(format!(" · {visible} visible"), theme::secondary()),
+                Span::styled(" · Latest  ", theme::secondary()),
+                Span::styled(latest, theme::primary_value()),
             ]),
         ];
         frame.render_widget(
             Paragraph::new(lines)
-                .block(panel("Railway Bulletin"))
+                .block(panel_block("Railway Bulletin", false))
                 .style(theme::panel()),
             area,
         );
@@ -169,7 +182,7 @@ impl BulletinWorkspace {
                         theme::secondary(),
                     ),
                 ])
-                .block(panel("Latest Developments"))
+                .block(panel_block("Latest Developments", false))
                 .style(theme::panel())
                 .wrap(Wrap { trim: true }),
                 area,
@@ -185,7 +198,8 @@ impl BulletinWorkspace {
             .map(|(_, entry)| {
                 Row::new(vec![
                     Cell::from(relative_time(entry.occurred_at, now)),
-                    Cell::from(category_label(entry.category)),
+                    Cell::from(category_label(entry.category))
+                        .style(category_style(entry.category)),
                     Cell::from(entry.headline.clone()),
                 ])
             })
@@ -198,8 +212,8 @@ impl BulletinWorkspace {
                 Constraint::Fill(1),
             ],
         )
-        .header(Row::new(["When", "Source", "Headline"]).style(theme::table_header()))
-        .block(panel("Latest Developments"))
+        .header(Row::new(["When", "Type", "Development"]).style(theme::table_header()))
+        .block(panel_block("Latest Developments", false))
         .row_highlight_style(theme::selected_row())
         .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
@@ -216,7 +230,7 @@ impl BulletinWorkspace {
         let Some((_, entry)) = selected else {
             frame.render_widget(
                 Paragraph::new("No development selected.")
-                    .block(panel("Development"))
+                    .block(panel_block("Development", false))
                     .style(theme::panel()),
                 area,
             );
@@ -241,7 +255,7 @@ impl BulletinWorkspace {
         ];
         frame.render_widget(
             Paragraph::new(lines)
-                .block(panel("Development"))
+                .block(panel_block("Development", false))
                 .style(theme::panel())
                 .wrap(Wrap { trim: true }),
             area,
@@ -292,15 +306,6 @@ fn relative_time(timestamp: UtcSeconds, now: UtcSeconds) -> String {
     } else {
         format!("{}d ago", seconds / 86_400)
     }
-}
-
-fn panel(title: &'static str) -> Block<'static> {
-    Block::default()
-        .borders(theme::THIN_BORDERS)
-        .border_style(theme::border())
-        .title(title)
-        .title_style(theme::title())
-        .style(theme::panel())
 }
 
 #[cfg(test)]

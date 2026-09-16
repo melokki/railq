@@ -53,6 +53,12 @@ fn manual_dispatch_moves_from_train_to_service_to_review() {
     assert!(train_step.contains("Choose Train"));
     assert!(train_step.contains("Train 01"));
     assert!(train_step.contains("Train 02"));
+    let selected_train = &state.player_company.fleet.trains[0];
+    let registration = selected_train.evn.marking(
+        &state.region.railway_registration.mark,
+        &state.player_company.vehicle_keeper_mark,
+    );
+    assert!(train_step.contains(&registration));
     assert_eq!(
         capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
         Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
@@ -65,6 +71,8 @@ fn manual_dispatch_moves_from_train_to_service_to_review() {
     );
     let service_step = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(service_step.contains("Choose Passenger Service"));
+    assert!(service_step.contains("Train 01"));
+    assert!(service_step.contains(&registration));
     assert!(service_step.contains("R1"));
     assert!(service_step.contains("Service Preview"));
 
@@ -76,6 +84,7 @@ fn manual_dispatch_moves_from_train_to_service_to_review() {
     assert!(review.contains("Review Dispatch"));
     assert!(review.contains("SERVICE"));
     assert!(review.contains("R1"));
+    assert!(review.contains(&registration));
 
     let train_id = state.player_company.fleet.trains[0].id;
     assert_eq!(

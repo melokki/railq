@@ -146,6 +146,18 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                     rendered.contains("COMPANY IDENTITY"),
                     "{slug} should show Company identity section"
                 );
+                let financial_row = rendered
+                    .lines()
+                    .position(|line| line.contains("FINANCIAL PERFORMANCE"))
+                    .expect("wide Company dashboard should show financial performance");
+                let fleet_row = rendered
+                    .lines()
+                    .position(|line| line.contains("FLEET"))
+                    .expect("wide Company dashboard should show Fleet summary");
+                assert!(
+                    financial_row < fleet_row,
+                    "{slug} should prioritize financial performance before operating footprint"
+                );
             }
             assert!(
                 rendered.contains("$3,000.00"),

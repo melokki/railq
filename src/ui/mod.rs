@@ -17,9 +17,11 @@ use crate::{
 pub mod authority;
 pub mod bulletin;
 pub mod company;
+pub mod components;
 pub mod dispatch;
 pub mod fleet;
 pub mod format;
+pub mod layout;
 pub mod map;
 pub mod market;
 pub mod modal;
@@ -375,7 +377,14 @@ impl Shell {
                 self.active_view = View::Bulletin;
                 self.service_workspace.close();
             }
-            KeyCode::Enter if self.active_view == View::BuyTrains => {
+            KeyCode::Enter
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'J' | 'k' | 'K')
+                if self.active_view == View::BuyTrains =>
+            {
                 return self.handle_market_key(key, state);
             }
             KeyCode::Enter

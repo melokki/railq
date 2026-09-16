@@ -104,6 +104,20 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
             "wide catalogue should show {expected}"
         );
     }
+    let economics = wide.find("ECONOMICS").expect("economics section is visible");
+    let capacity = wide.find("CAPACITY").expect("capacity section is visible");
+    let performance = wide
+        .find("PERFORMANCE")
+        .expect("performance section is visible");
+    let ownership = wide.find("OWNERSHIP").expect("ownership section is visible");
+    let identity = wide.find("IDENTITY").expect("identity section is visible");
+    assert!(
+        economics < capacity
+            && capacity < performance
+            && performance < ownership
+            && ownership < identity,
+        "the Market inspector should lead with buying information and leave registration metadata last"
+    );
     assert!(
         !wide.contains("Train Market ·"),
         "the workspace frame should own a simple Market title"
@@ -136,7 +150,15 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     );
 
     let comparison = capture_rendered_buffer_mut(&mut shell, &state, 160, 40);
-    for expected in ["Seats", "Top speed", "Propulsion", "Fuel/km", "Owned"] {
+    for expected in [
+        "Seats",
+        "Top speed",
+        "Propulsion",
+        "Fuel/km",
+        "Owned",
+        "Status",
+        "AFFORDABLE",
+    ] {
         assert!(
             comparison.contains(expected),
             "wide catalogue should expose comparison column {expected}"

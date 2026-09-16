@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
         TableState, Wrap,
@@ -20,7 +20,7 @@ use ratatui::{
 use crate::{
     catalog::{TrainModel, train_catalogue},
     model::{GameState, Money, RailLine, RailStationId, TrainStatus},
-    ui::{modal, theme},
+    ui::{components::panel_block, modal, theme},
 };
 
 /// Persistent catalogue focus. Catalogue records are saved with a game, so an
@@ -927,24 +927,68 @@ pub fn render_dashboard(
     // Use the catalogue width for comparison data rather than stretching only
     // Model and Price across a large pane. The inspector still owns the full
     // details; the list surfaces only the fields useful when comparing models.
-    let (rows, widths, headers) = if catalogue_area.width >= 82 {
+    let (rows, widths, headers) = if catalogue_area.width >= 96 {
+        (
+            catalogue
+                .iter()
+                .map(|train| {
+                    let (status, status_style) = purchase_status(state, train);
+                    Row::new(vec![
+                        Cell::from(train.name().to_owned()),
+                        right_cell(train.passenger_capacity().passengers().to_string()),
+                        right_cell(format_speed_kmh(train)),
+                        Cell::from(train.propulsion_label()),
+                        right_cell(format!(
+                            "{}/km",
+                            format_money_per_kilometre(
+                                train.fuel_cost_per_kilometre().cents_per_kilometre()
+                            )
+                        )),
+                        right_cell(owned_count(train).to_string()),
+                        Cell::from(status).style(status_style),
+                        right_cell(format_money(train.purchase_price())),
+                    ])
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                Constraint::Min(16),
+                Constraint::Length(7),
+                Constraint::Length(11),
+                Constraint::Length(11),
+                Constraint::Length(10),
+                Constraint::Length(7),
+                Constraint::Length(12),
+                Constraint::Length(13),
+            ],
+            vec![
+                "Model",
+                "Seats",
+                "Top speed",
+                "Propulsion",
+                "Fuel/km",
+                "Owned",
+                "Status",
+                "Price",
+            ],
+        )
+    } else if catalogue_area.width >= 82 {
         (
             catalogue
                 .iter()
                 .map(|train| {
                     Row::new(vec![
                         Cell::from(train.name().to_owned()),
-                        Cell::from(train.passenger_capacity().passengers().to_string()),
-                        Cell::from(format_speed_kmh(train)),
+                        right_cell(train.passenger_capacity().passengers().to_string()),
+                        right_cell(format_speed_kmh(train)),
                         Cell::from(train.propulsion_label()),
-                        Cell::from(format!(
+                        right_cell(format!(
                             "{}/km",
                             format_money_per_kilometre(
                                 train.fuel_cost_per_kilometre().cents_per_kilometre()
                             )
                         )),
-                        Cell::from(owned_count(train).to_string()),
-                        Cell::from(format_money(train.purchase_price())),
+                        right_cell(owned_count(train).to_string()),
+                        right_cell(format_money(train.purchase_price())),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -974,16 +1018,16 @@ pub fn render_dashboard(
                 .map(|train| {
                     Row::new(vec![
                         Cell::from(train.name().to_owned()),
-                        Cell::from(train.passenger_capacity().passengers().to_string()),
-                        Cell::from(format_speed_kmh(train)),
-                        Cell::from(format!(
+                        right_cell(train.passenger_capacity().passengers().to_string()),
+                        right_cell(format_speed_kmh(train)),
+                        right_cell(format!(
                             "{}/km",
                             format_money_per_kilometre(
                                 train.fuel_cost_per_kilometre().cents_per_kilometre()
                             )
                         )),
-                        Cell::from(owned_count(train).to_string()),
-                        Cell::from(format_money(train.purchase_price())),
+                        right_cell(owned_count(train).to_string()),
+                        right_cell(format_money(train.purchase_price())),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1004,9 +1048,9 @@ pub fn render_dashboard(
                 .map(|train| {
                     Row::new(vec![
                         Cell::from(train.name().to_owned()),
-                        Cell::from(train.passenger_capacity().passengers().to_string()),
-                        Cell::from(format_speed_kmh(train)),
-                        Cell::from(format_money(train.purchase_price())),
+                        right_cell(train.passenger_capacity().passengers().to_string()),
+                        right_cell(format_speed_kmh(train)),
+                        right_cell(format_money(train.purchase_price())),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1025,7 +1069,7 @@ pub fn render_dashboard(
                 .map(|train| {
                     Row::new(vec![
                         Cell::from(train.name().to_owned()),
-                        Cell::from(format_money(train.purchase_price())),
+                        right_cell(format_money(train.purchase_price())),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1036,7 +1080,7 @@ pub fn render_dashboard(
 
     let table = Table::new(rows, widths)
         .header(
-            Row::new(headers)
+            catalogue_header_row(headers)
                 .style(theme::table_header())
                 .bottom_margin(1),
         )
@@ -1050,6 +1094,20 @@ pub fn render_dashboard(
         .selected_catalogue_index(state)
         .and_then(|index| catalogue.get(index));
     render_catalogue_inspector(frame, inspector_area, state, selected_train, wide, true);
+}
+
+fn catalogue_header_row(headers: Vec<&str>) -> Row<'static> {
+    Row::new(headers.into_iter().map(|header| {
+        if matches!(header, "Seats" | "Top speed" | "Fuel/km" | "Owned" | "Price") {
+            Cell::from(Text::from(header.to_owned()).right_aligned())
+        } else {
+            Cell::from(header.to_owned())
+        }
+    }))
+}
+
+fn right_cell(value: impl Into<String>) -> Cell<'static> {
+    Cell::from(Text::from(value.into()).right_aligned())
 }
 
 fn render_catalogue_inspector(
@@ -1092,45 +1150,10 @@ fn render_catalogue_inspector(
 
     let detailed = wide && inner.height >= 33;
     if detailed {
+        // Lead with the information that answers the buying decision. Technical
+        // registration metadata remains available, but no longer pushes price
+        // and operating implications below catalogue details.
         lines.extend([
-            Line::from(""),
-            Line::styled("IDENTITY", theme::secondary()),
-            labelled_value("EVN type", &format!("{:02}", train.evn_type_code())),
-            labelled_value("Vehicle type", train.evn_type_label()),
-            labelled_value("EVN series", &format!("{:04}", train.evn_series_code())),
-            labelled_value(
-                "Registration",
-                &format!(
-                    "{:02} · {}",
-                    state.region.railway_registration.numeric_code,
-                    state.region.railway_registration.mark
-                ),
-            ),
-            labelled_value("Official EVN", "assigned on purchase"),
-            Line::from(""),
-            Line::styled("OWNERSHIP", theme::secondary()),
-            labelled_value("Owned", &ownership.owned.to_string()),
-            labelled_value("Ready", &ownership.ready.to_string()),
-            labelled_value("Travelling", &ownership.travelling.to_string()),
-            Line::from(""),
-            Line::styled("CAPACITY", theme::secondary()),
-            labelled_value(
-                "Seats",
-                &format!("{} passengers", train.passenger_capacity().passengers()),
-            ),
-            Line::from(""),
-            Line::styled("PERFORMANCE", theme::secondary()),
-            labelled_value("Top speed", &format_speed_kmh(train)),
-            labelled_value("Propulsion", train.propulsion_label()),
-            labelled_value(
-                "Fuel cost",
-                &format!(
-                    "{}/km",
-                    format_money_per_kilometre(
-                        train.fuel_cost_per_kilometre().cents_per_kilometre()
-                    )
-                ),
-            ),
             Line::from(""),
             Line::styled("ECONOMICS", theme::secondary()),
             labelled_value("Purchase price", &format_money(train.purchase_price())),
@@ -1158,6 +1181,47 @@ fn render_catalogue_inspector(
                 theme::secondary(),
             ));
         }
+
+        lines.extend([
+            Line::from(""),
+            Line::styled("CAPACITY", theme::secondary()),
+            labelled_value(
+                "Seats",
+                &format!("{} passengers", train.passenger_capacity().passengers()),
+            ),
+            Line::from(""),
+            Line::styled("PERFORMANCE", theme::secondary()),
+            labelled_value("Top speed", &format_speed_kmh(train)),
+            labelled_value("Propulsion", train.propulsion_label()),
+            labelled_value(
+                "Fuel cost",
+                &format!(
+                    "{}/km",
+                    format_money_per_kilometre(
+                        train.fuel_cost_per_kilometre().cents_per_kilometre()
+                    )
+                ),
+            ),
+            Line::from(""),
+            Line::styled("OWNERSHIP", theme::secondary()),
+            labelled_value("Owned", &ownership.owned.to_string()),
+            labelled_value("Ready", &ownership.ready.to_string()),
+            labelled_value("Travelling", &ownership.travelling.to_string()),
+            Line::from(""),
+            Line::styled("IDENTITY", theme::secondary()),
+            labelled_value("EVN type", &format!("{:02}", train.evn_type_code())),
+            labelled_value("Vehicle type", train.evn_type_label()),
+            labelled_value("EVN series", &format!("{:04}", train.evn_series_code())),
+            labelled_value(
+                "Registration",
+                &format!(
+                    "{:02} · {}",
+                    state.region.railway_registration.numeric_code,
+                    state.region.railway_registration.mark
+                ),
+            ),
+            labelled_value("Official EVN", "assigned on purchase"),
+        ]);
     } else {
         lines.extend([
             Line::from(""),
@@ -1452,22 +1516,6 @@ fn render_delivery_inspector(
     );
 }
 
-fn panel_block(title: &str, focused: bool) -> Block<'_> {
-    Block::default()
-        .borders(theme::THIN_BORDERS)
-        .border_style(if focused {
-            theme::focused_border()
-        } else {
-            theme::border()
-        })
-        .title(title)
-        .title_style(if focused {
-            theme::focused_title()
-        } else {
-            theme::title()
-        })
-        .style(theme::panel())
-}
 
 fn render_selected(state: &GameState, selected_catalogue_index: usize) -> String {
     let mut output = String::from("Market\n");

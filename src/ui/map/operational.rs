@@ -21,7 +21,7 @@ use super::geometry::{
     rail_glyph,
 };
 use super::network::{format_population, panel_block, ready_trains, station_name};
-use super::shared::format_distance;
+use super::shared::{format_distance, format_duration, remaining_seconds};
 use crate::{
     model::{GameState, Journey, RailStationId, SettlementId, UtcSeconds},
     sim::{
@@ -221,6 +221,22 @@ fn render_location_inspector(
     // route geometry stay on the map; keyboard actions stay in the footer.
     let lines = if let Some(station) = station {
         let ready_count = ready_trains(state, station.id).len();
+        let arriving = state
+            .active_journeys
+            .iter()
+            .filter(|journey| journey_next_stop_station_id(state, journey) == Some(station.id))
+            .collect::<Vec<_>>();
+        let arriving_summary = arriving
+            .iter()
+            .min_by_key(|journey| journey.arrives_at)
+            .map(|journey| {
+                format!(
+                    "{} · next {}",
+                    arriving.len(),
+                    format_duration(remaining_seconds(journey, state.last_processed_at))
+                )
+            })
+            .unwrap_or_else(|| "0".into());
         let service_count = state
             .player_company
             .passenger_services
@@ -264,6 +280,7 @@ fn render_location_inspector(
 
         if compact {
             lines.push(inspector_metric("Ready here", &ready_count.to_string()));
+            lines.push(inspector_metric("Arriving", &arriving_summary));
             lines.push(inspector_metric("Services", &service_count.to_string()));
             lines.push(inspector_metric(
                 "Rail adoption",
@@ -280,6 +297,7 @@ fn render_location_inspector(
             lines.push(Line::from(""));
             lines.push(inspector_section("OPERATIONS"));
             lines.push(inspector_metric("Ready here", &ready_count.to_string()));
+            lines.push(inspector_metric("Arriving", &arriving_summary));
             lines.push(inspector_metric("Services", &service_count.to_string()));
 
             lines.push(Line::from(""));
@@ -694,6 +712,7 @@ fn render_map_rows(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct JourneyRouteSegment {
+    rail_line_id: crate::model::RailLineId,
     pub(super) from_station_id: RailStationId,
     pub(super) to_station_id: RailStationId,
     distance_metres: u64,
@@ -762,14 +781,85 @@ fn journey_map_marker(
             } else {
                 ((travelled_metres - distance_before) / segment_distance).clamp(0.0, 1.0)
             };
-            let start = station_positions.get(&segment.from_station_id).copied()?;
-            let end = station_positions.get(&segment.to_station_id).copied()?;
-            return Some(point_along_orthogonal_rail(start, end, local_progress));
+            return journey_segment_map_marker(
+                state,
+                segment,
+                station_positions,
+                local_progress,
+            );
         }
         distance_before = distance_after;
     }
 
     None
+}
+
+fn journey_segment_map_marker(
+    state: &GameState,
+    segment: &JourneyRouteSegment,
+    station_positions: &BTreeMap<RailStationId, (i32, i32)>,
+    local_progress: f64,
+) -> Option<((i32, i32), char)> {
+    let line = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_lines
+        .iter()
+        .find(|line| line.id == segment.rail_line_id)?;
+    let canonical_start = station_positions.get(&line.first_station_id).copied()?;
+    let canonical_end = station_positions.get(&line.second_station_id).copied()?;
+
+    let travelling_forward = segment.from_station_id == line.first_station_id
+        && segment.to_station_id == line.second_station_id;
+    let travelling_reverse = segment.from_station_id == line.second_station_id
+        && segment.to_station_id == line.first_station_id;
+    if !travelling_forward && !travelling_reverse {
+        return None;
+    }
+
+    // Rail geometry is rendered from the Rail Line's persisted first endpoint
+    // to its second endpoint. Reversing the Journey must therefore reverse
+    // progress over that same L-shaped polyline rather than constructing a new
+    // L with the opposite corner. Otherwise a reverse-running Train appears to
+    // cut across empty map cells instead of following the visible Rail Line.
+    Some(point_along_rendered_rail(
+        canonical_start,
+        canonical_end,
+        travelling_forward,
+        local_progress,
+    ))
+}
+
+pub(super) fn point_along_rendered_rail(
+    canonical_start: (i32, i32),
+    canonical_end: (i32, i32),
+    travelling_forward: bool,
+    progress: f64,
+) -> ((i32, i32), char) {
+    let rendered_progress = if travelling_forward {
+        progress
+    } else {
+        1.0 - progress
+    };
+    let (position, glyph) =
+        point_along_orthogonal_rail(canonical_start, canonical_end, rendered_progress);
+    let glyph = if travelling_forward {
+        glyph
+    } else {
+        reverse_train_glyph(glyph)
+    };
+    (position, glyph)
+}
+
+fn reverse_train_glyph(glyph: char) -> char {
+    match glyph {
+        '▶' => '◀',
+        '◀' => '▶',
+        '▼' => '▲',
+        '▲' => '▼',
+        other => other,
+    }
 }
 
 pub(super) fn journey_route_segments(
@@ -807,6 +897,7 @@ pub(super) fn journey_route_segments(
             return None;
         };
         segments.push(JourneyRouteSegment {
+            rail_line_id: line.id,
             from_station_id: current_station_id,
             to_station_id: next_station_id,
             distance_metres: line.distance.metres(),

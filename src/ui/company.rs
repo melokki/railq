@@ -13,7 +13,7 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
     widgets::{
-        Block, Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
+        Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
         TableState, Wrap,
     },
 };
@@ -25,7 +25,7 @@ use crate::{
         FinancialEvaluation, FinancialStatus, RecoveryJourney, RecoveryOption,
         evaluate_financial_recovery,
     },
-    ui::{modal, theme},
+    ui::{components, modal, theme},
 };
 
 const MAXIMUM_RECOVERY_OPTIONS_SHOWN: usize = 3;
@@ -975,20 +975,25 @@ fn render_wide_dashboard(
     // Company is a dashboard rather than a collection of neighbouring windows.
     // One focused shell owns the workspace; section headings create hierarchy
     // without surrounding every group of values with another border.
-    let shell = panel_block("Company", true);
+    let shell = components::panel_block("Company", true);
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
-    let [overview_area, performance_area, history_area] = Layout::vertical([
-        Constraint::Length(8),
+    let [identity_area, performance_area, operations_area, history_area] = Layout::vertical([
+        Constraint::Length(3),
         Constraint::Length(5),
+        Constraint::Length(4),
         Constraint::Fill(1),
     ])
     .spacing(1)
     .areas(shell_inner);
 
-    render_company_overview(frame, overview_area, state, &evaluation);
+    // Financial health is the primary Company decision surface, so keep it
+    // directly below identity/status and ahead of the supporting operating
+    // footprint. The same information is retained; only its hierarchy changes.
+    render_company_identity(frame, identity_area, state, &evaluation);
     render_financial_performance(frame, performance_area, state);
+    render_operating_summary(frame, operations_area, state);
 
     let recovery_relevant = evaluation.as_ref().map_or(true, |evaluation| {
         evaluation.status != FinancialStatus::Operating
@@ -1005,23 +1010,18 @@ fn render_wide_dashboard(
     }
 }
 
-fn render_company_overview(
+fn render_company_identity(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
 ) {
-    // The Company overview is split into identity/status and a compact operating
-    // summary. Current cash plus READY/TRAVELLING counts already belong to the
-    // global shell header, so this dashboard concentrates on business health.
-    let [identity_band, operating_band] =
-        Layout::vertical([Constraint::Length(3), Constraint::Fill(1)])
-            .spacing(1)
-            .areas(area);
+    // Current cash plus READY/TRAVELLING counts already belong to the global
+    // shell header, so this band concentrates on Company status and identity.
     let [status_area, identity_area] =
         Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
             .spacing(2)
-            .areas(identity_band);
+            .areas(area);
 
     let status_lines = match evaluation {
         Ok(evaluation) => vec![
@@ -1067,14 +1067,16 @@ fn render_company_overview(
             ]),
         ],
     );
+}
 
+fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
     let [fleet_area, services_area, network_area] = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Fill(1),
         Constraint::Fill(1),
     ])
     .spacing(2)
-    .areas(operating_band);
+    .areas(area);
 
     let trains = &state.player_company.fleet.trains;
     let model_count = trains
@@ -1286,7 +1288,7 @@ fn render_compact_dashboard(
     selection: &mut ReceiptSelection,
 ) {
     let evaluation = evaluate_financial_recovery(state);
-    let shell = panel_block("Company", true);
+    let shell = components::panel_block("Company", true);
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
@@ -1300,7 +1302,7 @@ fn render_compact_dashboard(
 
 fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
     let evaluation = evaluate_financial_recovery(state);
-    let shell = panel_block("Company", true);
+    let shell = components::panel_block("Company", true);
     let inner = shell.inner(area);
     frame.render_widget(shell, area);
 
@@ -1654,23 +1656,6 @@ fn receipt_detail_lines(state: &GameState, receipt: Option<&JourneyReceipt>) -> 
             theme::secondary(),
         )],
     }
-}
-
-fn panel_block(title: &str, focused: bool) -> Block<'_> {
-    Block::default()
-        .borders(theme::THIN_BORDERS)
-        .border_style(if focused {
-            theme::focused_border()
-        } else {
-            theme::border()
-        })
-        .title(title)
-        .title_style(if focused {
-            theme::focused_title()
-        } else {
-            theme::title()
-        })
-        .style(theme::panel())
 }
 
 fn section_heading(title: &str) -> Line<'static> {
