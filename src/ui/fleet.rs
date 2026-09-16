@@ -898,13 +898,23 @@ fn render_wide_dashboard(
             Row::new([
                 Cell::from(train_picker_label(train, &fields.model)),
                 Cell::from(fields.status).style(train_status_style(train)),
+                Cell::from(fields.place),
+                Cell::from(fields.eta),
             ])
         })
         .collect::<Vec<_>>();
-    let header = Row::new(["Train", "State"])
+    let header = Row::new(["Train", "State", "Position", "ETA"])
         .style(theme::table_header())
         .bottom_margin(1);
-    let table = Table::new(rows, [Constraint::Min(24), Constraint::Length(11)])
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(16),
+            Constraint::Length(11),
+            Constraint::Min(10),
+            Constraint::Length(9),
+        ],
+    )
         .header(header)
         .style(theme::panel())
         .row_highlight_style(theme::selected_row())
