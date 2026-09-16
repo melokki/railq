@@ -150,7 +150,15 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     );
 
     let comparison = capture_rendered_buffer_mut(&mut shell, &state, 160, 40);
-    for expected in ["Seats", "Top speed", "Propulsion", "Fuel/km", "Owned"] {
+    for expected in [
+        "Seats",
+        "Top speed",
+        "Propulsion",
+        "Fuel/km",
+        "Owned",
+        "Status",
+        "AFFORDABLE",
+    ] {
         assert!(
             comparison.contains(expected),
             "wide catalogue should expose comparison column {expected}"

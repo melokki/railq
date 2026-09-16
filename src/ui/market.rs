@@ -927,7 +927,51 @@ pub fn render_dashboard(
     // Use the catalogue width for comparison data rather than stretching only
     // Model and Price across a large pane. The inspector still owns the full
     // details; the list surfaces only the fields useful when comparing models.
-    let (rows, widths, headers) = if catalogue_area.width >= 82 {
+    let (rows, widths, headers) = if catalogue_area.width >= 96 {
+        (
+            catalogue
+                .iter()
+                .map(|train| {
+                    let (status, status_style) = purchase_status(state, train);
+                    Row::new(vec![
+                        Cell::from(train.name().to_owned()),
+                        Cell::from(train.passenger_capacity().passengers().to_string()),
+                        Cell::from(format_speed_kmh(train)),
+                        Cell::from(train.propulsion_label()),
+                        Cell::from(format!(
+                            "{}/km",
+                            format_money_per_kilometre(
+                                train.fuel_cost_per_kilometre().cents_per_kilometre()
+                            )
+                        )),
+                        Cell::from(owned_count(train).to_string()),
+                        Cell::from(status).style(status_style),
+                        Cell::from(format_money(train.purchase_price())),
+                    ])
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                Constraint::Min(16),
+                Constraint::Length(7),
+                Constraint::Length(11),
+                Constraint::Length(11),
+                Constraint::Length(10),
+                Constraint::Length(7),
+                Constraint::Length(12),
+                Constraint::Length(13),
+            ],
+            vec![
+                "Model",
+                "Seats",
+                "Top speed",
+                "Propulsion",
+                "Fuel/km",
+                "Owned",
+                "Status",
+                "Price",
+            ],
+        )
+    } else if catalogue_area.width >= 82 {
         (
             catalogue
                 .iter()
