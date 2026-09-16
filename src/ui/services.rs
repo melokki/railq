@@ -301,27 +301,6 @@ impl ServiceWorkspace {
         }
     }
 
-    /// Legacy textual description of the current Service controls.
-    /// Kept for callers outside the shell; the in-game footer now renders
-    /// structured shortcuts with per-key styling.
-    pub fn controls(&self) -> &'static str {
-        if self.delete_confirmation.is_some() {
-            "Enter Delete  Esc Cancel"
-        } else if let Some(flow) = &self.create_flow {
-            if flow.review {
-                if flow.editing_service_id.is_some() {
-                    "Enter Save  ←/Backspace Edit  Esc Cancel"
-                } else {
-                    "Enter Create  ←/Backspace Edit  Esc Cancel"
-                }
-            } else {
-                "↑↓/jk Station  Enter Add stop  Backspace Remove  f Review  Esc Cancel"
-            }
-        } else {
-            "↑↓/jk Service  n New  e Edit  d Delete  Esc Map"
-        }
-    }
-
     /// Contextual actions for the shared RailQ footer.  The footer owns the
     /// visual treatment so Passenger Services can describe behaviour without
     /// embedding presentation markup in a string.
@@ -394,6 +373,33 @@ impl ServiceWorkspace {
             ("Esc", "Map", true),
         ]);
         actions
+    }
+
+    /// Contextual help for Passenger Services. Keeping this beside input and
+    /// footer shortcuts means the workspace owns the interaction vocabulary.
+    pub fn help_lines(&self, state: &GameState) -> Vec<String> {
+        let mut lines = vec!["Current · Passenger Services".into()];
+        if state.player_company.passenger_services.is_empty() {
+            lines.extend([
+                "n Create the first directional Passenger Service".into(),
+                "Esc Return to Map".into(),
+            ]);
+        } else {
+            lines.extend([
+                "↑↓ / jk Select Passenger Service".into(),
+                "PgUp / PgDn Move through longer Service lists".into(),
+                "n Create a new directional Passenger Service".into(),
+                "e Edit the selected Service when it has no active Journeys".into(),
+                "d Delete the selected Service when it has no active Journeys".into(),
+                "Esc Return to Map".into(),
+            ]);
+        }
+        lines.extend([
+            String::new(),
+            "During create/edit: Enter adds a stop, Backspace removes the last stop, f reviews."
+                .into(),
+        ]);
+        lines
     }
 
     fn selected_service_id(&self, state: &GameState) -> Option<ServiceId> {

@@ -1667,27 +1667,7 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     }
 
     if shell.active_view == View::Map && shell.service_workspace.is_open() {
-        lines.push("Current · Passenger Services".into());
-        if state.player_company.passenger_services.is_empty() {
-            lines.extend([
-                "n Create the first directional Passenger Service".into(),
-                "Esc Return to Map".into(),
-            ]);
-        } else {
-            lines.extend([
-                "↑↓ / jk Select Passenger Service".into(),
-                "PgUp / PgDn Move through longer Service lists".into(),
-                "n Create a new directional Passenger Service".into(),
-                "e Edit the selected Service when it has no active Journeys".into(),
-                "d Delete the selected Service when it has no active Journeys".into(),
-                "Esc Return to Map".into(),
-            ]);
-        }
-        lines.extend([
-            String::new(),
-            "During create/edit: Enter adds a stop, Backspace removes the last stop, f reviews."
-                .into(),
-        ]);
+        lines.extend(shell.service_workspace.help_lines(state));
         return lines;
     }
 
