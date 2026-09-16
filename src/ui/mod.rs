@@ -20,6 +20,7 @@ pub mod company;
 pub mod dispatch;
 pub mod fleet;
 pub mod format;
+pub mod layout;
 pub mod map;
 pub mod market;
 pub mod modal;

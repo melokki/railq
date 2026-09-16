@@ -21,7 +21,7 @@ use crate::{
         GameState, Journey, Money, RailStationId, Train, TrainId, TrainNickname, TrainStatus,
         UtcSeconds,
     },
-    ui::{modal, theme},
+    ui::{layout::UiSize, modal, theme},
 };
 
 const FLEET_SELECTION_MARKER: &str = "› ";
@@ -722,7 +722,7 @@ impl FleetWorkspace {
         state: &GameState,
         now: UtcSeconds,
     ) {
-        self.split_visible = area.width >= 96 && area.height >= 18;
+        self.split_visible = UiSize::from_rect(area).supports_split_view();
         if self.split_visible {
             self.details_open = false;
         }
@@ -855,7 +855,7 @@ pub fn render_dashboard(
         return;
     }
 
-    if area.width >= 96 && area.height >= 18 {
+    if UiSize::from_rect(area).supports_split_view() {
         render_wide_dashboard(frame, area, state, now, selection);
     } else if details_open {
         render_compact_details(frame, area, state, now, selection);
