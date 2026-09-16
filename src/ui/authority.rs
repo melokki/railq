@@ -701,7 +701,7 @@ fn render_project_inspector(
     let Some((index, project)) = selection.selected_project(state) else {
         frame.render_widget(
             Paragraph::new("No project selected.")
-                .block(panel_block("Project Details", false))
+                .block(panel_block("Selected Project", false))
                 .style(theme::panel()),
             area,
         );
@@ -725,6 +725,10 @@ fn render_project_inspector(
         Line::from(vec![
             Span::styled("Status  ", theme::secondary()),
             Span::styled(project_status(project.status), status_style(project.status)),
+        ]),
+        Line::from(vec![
+            Span::styled("Next  ", theme::secondary()),
+            Span::styled(project_next(project, now), theme::primary_value()),
         ]),
     ];
 
@@ -760,7 +764,7 @@ fn render_project_inspector(
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel_block("Project Details", false))
+            .block(panel_block("Selected Project", false))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         area,
