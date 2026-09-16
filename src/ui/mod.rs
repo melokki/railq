@@ -1389,32 +1389,15 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
         };
     }
 
-    let mut actions = if let Some(flow) = shell.dispatch_workspace.flow() {
-        if flow.is_selecting_train() {
-            vec![
-                FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Train"),
-                FooterShortcut::enabled("Enter", "Next"),
-                FooterShortcut::enabled("Esc", "Cancel"),
-            ]
-        } else if flow.is_selecting_service() {
-            let mut items = vec![FooterShortcut::enabled(
-                if compact { "↑↓" } else { "↑↓/JK" },
-                "Service",
-            )];
-            if wide {
-                items.push(FooterShortcut::enabled("PgUp/PgDn", "Scroll"));
-            }
-            items.push(FooterShortcut::enabled("Enter", "Review"));
-            items.push(FooterShortcut::enabled("←", "Back"));
-            items.push(FooterShortcut::enabled("Esc", "Cancel"));
-            items
-        } else {
-            vec![
-                FooterShortcut::enabled("Enter", "Confirm"),
-                FooterShortcut::enabled("←", "Back"),
-                FooterShortcut::enabled("Esc", "Cancel"),
-            ]
-        }
+    let mut actions = if let Some(shortcuts) = shell.dispatch_workspace.shortcuts(compact, wide) {
+        shortcuts
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect()
     } else if shell.active_view == View::Trains {
         shell
             .fleet_workspace
@@ -1619,31 +1602,8 @@ fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
         return lines;
     }
 
-    if let Some(flow) = shell.dispatch_workspace.flow() {
-        lines.push("Current · Manual Dispatch".into());
-        if flow.is_selecting_train() {
-            lines.extend([
-                "↑↓ / jk Select a READY Train".into(),
-                "Enter Continue to Service selection".into(),
-                "Esc Cancel dispatch".into(),
-            ]);
-        } else if flow.is_selecting_service() {
-            lines.extend([
-                "↑↓ / jk Select a Passenger Service from this station".into(),
-                "PgUp / PgDn Scroll longer route lists".into(),
-                "Enter Review Journey".into(),
-            ]);
-            lines.push("← / Backspace Previous step   Esc Cancel".into());
-        } else {
-            lines.extend([
-                "Enter Confirm dispatch".into(),
-                "← / Backspace Previous step   Esc Cancel".into(),
-            ]);
-        }
-        lines.extend([
-            String::new(),
-            "The footer always shows the actions available in the current step.".into(),
-        ]);
+    if let Some(dispatch_lines) = shell.dispatch_workspace.help_lines() {
+        lines.extend(dispatch_lines);
         return lines;
     }
 

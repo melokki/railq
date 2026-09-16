@@ -74,6 +74,24 @@ pub struct DispatchWorkspace {
     returns_to_fleet: bool,
 }
 
+/// One contextual footer action owned by the Manual Dispatch workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DispatchShortcut {
+    pub key: String,
+    pub action: String,
+    pub enabled: bool,
+}
+
+impl DispatchShortcut {
+    fn enabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: true,
+        }
+    }
+}
+
 impl DispatchWorkspace {
     pub fn has_flow(&self) -> bool {
         self.flow.is_some()
@@ -108,6 +126,68 @@ impl DispatchWorkspace {
     pub fn reset(&mut self) {
         self.flow = None;
         self.returns_to_fleet = false;
+    }
+
+    /// Returns contextual footer actions for the active dispatch step.
+    pub fn shortcuts(&self, compact: bool, wide: bool) -> Option<Vec<DispatchShortcut>> {
+        let flow = self.flow.as_ref()?;
+        if flow.is_selecting_train() {
+            return Some(vec![
+                DispatchShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Train"),
+                DispatchShortcut::enabled("Enter", "Next"),
+                DispatchShortcut::enabled("Esc", "Cancel"),
+            ]);
+        }
+
+        if flow.is_selecting_service() {
+            let mut items = vec![DispatchShortcut::enabled(
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Service",
+            )];
+            if wide {
+                items.push(DispatchShortcut::enabled("PgUp/PgDn", "Scroll"));
+            }
+            items.push(DispatchShortcut::enabled("Enter", "Review"));
+            items.push(DispatchShortcut::enabled("←", "Back"));
+            items.push(DispatchShortcut::enabled("Esc", "Cancel"));
+            return Some(items);
+        }
+
+        Some(vec![
+            DispatchShortcut::enabled("Enter", "Confirm"),
+            DispatchShortcut::enabled("←", "Back"),
+            DispatchShortcut::enabled("Esc", "Cancel"),
+        ])
+    }
+
+    /// Returns help content for the active dispatch step.
+    pub fn help_lines(&self) -> Option<Vec<String>> {
+        let flow = self.flow.as_ref()?;
+        let mut lines = vec!["Current · Manual Dispatch".into()];
+        if flow.is_selecting_train() {
+            lines.extend([
+                "↑↓ / jk Select a READY Train".into(),
+                "Enter Continue to Service selection".into(),
+                "Esc Cancel dispatch".into(),
+            ]);
+        } else if flow.is_selecting_service() {
+            lines.extend([
+                "↑↓ / jk Select a Passenger Service from this station".into(),
+                "PgUp / PgDn Scroll longer route lists".into(),
+                "Enter Review Journey".into(),
+                "← / Backspace Previous step   Esc Cancel".into(),
+            ]);
+        } else {
+            lines.extend([
+                "Enter Confirm dispatch".into(),
+                "← / Backspace Previous step   Esc Cancel".into(),
+            ]);
+        }
+        lines.extend([
+            String::new(),
+            "The footer always shows the actions available in the current step.".into(),
+        ]);
+        Some(lines)
     }
 }
 
