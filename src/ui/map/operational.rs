@@ -21,7 +21,7 @@ use super::geometry::{
     rail_glyph,
 };
 use super::network::{format_population, panel_block, ready_trains, station_name};
-use super::shared::format_distance;
+use super::shared::{format_distance, format_duration, remaining_seconds};
 use crate::{
     model::{GameState, Journey, RailStationId, SettlementId, UtcSeconds},
     sim::{
@@ -221,6 +221,22 @@ fn render_location_inspector(
     // route geometry stay on the map; keyboard actions stay in the footer.
     let lines = if let Some(station) = station {
         let ready_count = ready_trains(state, station.id).len();
+        let arriving = state
+            .active_journeys
+            .iter()
+            .filter(|journey| journey_next_stop_station_id(state, journey) == Some(station.id))
+            .collect::<Vec<_>>();
+        let arriving_summary = arriving
+            .iter()
+            .min_by_key(|journey| journey.arrives_at)
+            .map(|journey| {
+                format!(
+                    "{} · next {}",
+                    arriving.len(),
+                    format_duration(remaining_seconds(journey, state.last_processed_at))
+                )
+            })
+            .unwrap_or_else(|| "0".into());
         let service_count = state
             .player_company
             .passenger_services
@@ -264,6 +280,7 @@ fn render_location_inspector(
 
         if compact {
             lines.push(inspector_metric("Ready here", &ready_count.to_string()));
+            lines.push(inspector_metric("Arriving", &arriving_summary));
             lines.push(inspector_metric("Services", &service_count.to_string()));
             lines.push(inspector_metric(
                 "Rail adoption",
@@ -280,6 +297,7 @@ fn render_location_inspector(
             lines.push(Line::from(""));
             lines.push(inspector_section("OPERATIONS"));
             lines.push(inspector_metric("Ready here", &ready_count.to_string()));
+            lines.push(inspector_metric("Arriving", &arriving_summary));
             lines.push(inspector_metric("Services", &service_count.to_string()));
 
             lines.push(Line::from(""));

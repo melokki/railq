@@ -79,6 +79,7 @@ fn map_station_inspector_uses_operational_sections_without_embedded_shortcuts() 
 
     assert!(rendered.contains("OPERATIONS"));
     assert!(rendered.contains("Ready here"));
+    assert!(rendered.contains("Arriving"));
     assert!(rendered.contains("Services"));
     assert!(rendered.contains("PASSENGERS"));
     assert!(rendered.contains("Waiting"));
@@ -86,6 +87,22 @@ fn map_station_inspector_uses_operational_sections_without_embedded_shortcuts() 
     assert!(!rendered.contains("DIRECT LINKS"));
     assert!(!rendered.contains("Direct links"));
     assert!(!rendered.contains("d Dispatch · all READY Trains"));
+}
+
+#[test]
+fn map_station_inspector_surfaces_the_next_arrival() -> Result<(), Box<dyn Error>> {
+    let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    state.player_company.funds = Money::from_cents(1_000_000);
+    let train = purchase_train(&mut state, 0, RailStationId::new(2))?;
+    let service = find_or_create_service(&mut state, RailStationId::new(2), RailStationId::new(1))?;
+    dispatch_journey(&mut state, train, service, STARTED_AT)?;
+
+    let shell = Shell::new();
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+
+    assert!(rendered.contains("Arriving"));
+    assert!(rendered.contains("1 · next"));
+    Ok(())
 }
 
 #[test]
