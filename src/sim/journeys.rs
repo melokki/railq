@@ -248,13 +248,8 @@ pub fn dispatch_positioning_journey(
     destination_station_id: RailStationId,
     departed_at: UtcSeconds,
 ) -> Result<JourneyId, DispatchError> {
-    let quote = quote_positioning_journey(
-        state,
-        train_id,
-        service_id,
-        destination_station_id,
-    )
-    .map_err(DispatchError::Quote)?;
+    let quote = quote_positioning_journey(state, train_id, service_id, destination_station_id)
+        .map_err(DispatchError::Quote)?;
     if state.player_company.funds < quote.operating_cost {
         return Err(DispatchError::InsufficientCompanyFunds {
             available: state.player_company.funds,
@@ -306,7 +301,9 @@ pub fn dispatch_positioning_journey(
         .trains
         .iter()
         .position(|train| train.id == train_id)
-        .ok_or(DispatchError::Quote(EconomyError::TrainNotFound { train_id }))?;
+        .ok_or(DispatchError::Quote(EconomyError::TrainNotFound {
+            train_id,
+        }))?;
 
     state.player_company.funds = funds_after_departure;
     state.financials.infrastructure_access_fees = access_fees_after_departure;

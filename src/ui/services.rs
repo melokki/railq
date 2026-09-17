@@ -16,8 +16,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::{
     catalog::model_for_train,
     model::{
-        GameState, JourneyPurpose, PassengerService, RailStationId, ServiceDirectionMode, ServiceId,
-        TrainStatus,
+        GameState, JourneyPurpose, PassengerService, RailStationId, ServiceDirectionMode,
+        ServiceId, TrainStatus,
     },
     sim::demand::effective_arrival_rate_per_hour,
 };

@@ -648,14 +648,7 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
         (content_area, None, None)
     };
 
-    render_review_summary(
-        frame,
-        summary_area,
-        state,
-        flow,
-        distance,
-        !show_preview,
-    );
+    render_review_summary(frame, summary_area, state, flow, distance, !show_preview);
 
     if let (Some(divider_area), Some(preview_area)) = (divider_area, preview_area) {
         modal::render_vertical_separator(frame, divider_area);
@@ -668,9 +661,7 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
         ServiceDirectionMode::BothDirections => {
             "↔ Runs from either terminus; each direction has its own public train number."
         }
-        ServiceDirectionMode::ForwardOnly => {
-            "→ Runs only in the ordered first-to-last direction."
-        }
+        ServiceDirectionMode::ForwardOnly => "→ Runs only in the ordered first-to-last direction.",
     };
     if let Some(note_area) = note_area {
         frame.render_widget(
@@ -833,7 +824,10 @@ fn render_review_route_strip(
     }
     spans.push(Span::styled(suffix, theme::focused_title()));
 
-    frame.render_widget(Paragraph::new(Line::from(spans)).style(theme::panel()), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(theme::panel()),
+        area,
+    );
 }
 
 fn review_train_number_lines(state: &GameState, flow: &CreateServiceFlow) -> Vec<Line<'static>> {

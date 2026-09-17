@@ -353,17 +353,7 @@ impl Shell {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
-                    '1' | '2'
-                        | '3'
-                        | '4'
-                        | '5'
-                        | '6'
-                        | 't'
-                        | 'T'
-                        | 'b'
-                        | 'B'
-                        | 'c'
-                        | 'C'
+                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
                 )
             );
             if navigation_key {
@@ -726,8 +716,9 @@ impl Shell {
 
     fn reject_player_command(&mut self, command: &AppCommand, error: String) {
         match command {
-            AppCommand::ManualDispatch { .. }
-            | AppCommand::PositionTrainForService { .. } => self.reject_manual_dispatch(error),
+            AppCommand::ManualDispatch { .. } | AppCommand::PositionTrainForService { .. } => {
+                self.reject_manual_dispatch(error)
+            }
             AppCommand::PurchaseTrain { .. } => self.reject_purchase_train(error),
             AppCommand::SellTrain { .. } => self.reject_train_resale(error),
             AppCommand::CreatePassengerService { .. }

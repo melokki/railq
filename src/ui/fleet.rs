@@ -1306,8 +1306,7 @@ fn render_train_inspector(
 
     match (&train.status, journey) {
         (TrainStatus::Ready { at }, _) => {
-            let (availability, availability_style) =
-                ready_train_availability(state, train.id, *at);
+            let (availability, availability_style) = ready_train_availability(state, train.id, *at);
             lines.push(labelled_line_styled(
                 "Availability",
                 availability,

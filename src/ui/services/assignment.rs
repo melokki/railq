@@ -182,7 +182,11 @@ impl ServiceTrainAssignmentFlow {
                 "Train",
                 !state.player_company.fleet.trains.is_empty(),
             ),
-            ("Enter", enter_action, selected.is_some() && !travelling && !current),
+            (
+                "Enter",
+                enter_action,
+                selected.is_some() && !travelling && !current,
+            ),
             ("U", "Unassign", current && !travelling),
         ]
     }

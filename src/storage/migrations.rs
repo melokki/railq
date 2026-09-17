@@ -2623,11 +2623,7 @@ fn migrate_v32_to_v33(connection: &Connection, path: &Path) -> Result<(), SaveSl
                      CHECK (purpose IN ('revenue', 'positioning'));",
             )
             .map_err(|source| {
-                db_error(
-                    "add Journey purpose during v33 migration in",
-                    path,
-                    source,
-                )
+                db_error("add Journey purpose during v33 migration in", path, source)
             })?;
         connection
             .pragma_update(None, "user_version", 33_u32)

@@ -969,7 +969,12 @@ fn validate_journey(
         .expect("a validated Journey Passenger Service ID resolves in the Service Network");
 
     if journey.purpose == JourneyPurpose::Positioning {
-        if state.player_company.fleet.assigned_service_id(journey.train_id) != Some(journey.service_id) {
+        if state
+            .player_company
+            .fleet
+            .assigned_service_id(journey.train_id)
+            != Some(journey.service_id)
+        {
             return Err(SaveValidationError::ImpossibleState {
                 reason: "positioning Journey Train is not assigned to its Passenger Service",
             });
@@ -990,10 +995,8 @@ fn validate_journey(
         .map_err(|_| SaveValidationError::ImpossibleState {
             reason: "positioning Journey has no open Rail Line path",
         })?;
-        let distance = distance_for_rail_lines(
-            &state.region.rail_authority.rail_network,
-            &line_ids,
-        )?;
+        let distance =
+            distance_for_rail_lines(&state.region.rail_authority.rail_network, &line_ids)?;
         let gross_access_fee = state
             .rules
             .balance
@@ -1192,20 +1195,24 @@ fn distance_for_rail_lines(
     network: &RailNetwork,
     rail_line_ids: &[RailLineId],
 ) -> Result<DistanceMetres, SaveValidationError> {
-    let metres = rail_line_ids.iter().try_fold(0_u64, |total, rail_line_id| {
-        let line = network
-            .rail_lines
-            .iter()
-            .find(|line| line.id == *rail_line_id)
-            .ok_or(SaveValidationError::DanglingReference {
-                field: "Journey Rail Line",
-            })?;
-        total
-            .checked_add(line.distance.metres())
-            .ok_or(SaveValidationError::Calculation(CalculationError::Overflow {
-                operation: "Journey path distance",
-            }))
-    })?;
+    let metres = rail_line_ids
+        .iter()
+        .try_fold(0_u64, |total, rail_line_id| {
+            let line = network
+                .rail_lines
+                .iter()
+                .find(|line| line.id == *rail_line_id)
+                .ok_or(SaveValidationError::DanglingReference {
+                    field: "Journey Rail Line",
+                })?;
+            total
+                .checked_add(line.distance.metres())
+                .ok_or(SaveValidationError::Calculation(
+                    CalculationError::Overflow {
+                        operation: "Journey path distance",
+                    },
+                ))
+        })?;
     let metres = i64::try_from(metres).map_err(|_| {
         SaveValidationError::Calculation(CalculationError::Overflow {
             operation: "Journey path distance",

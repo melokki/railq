@@ -17,9 +17,7 @@ use ratatui::{
 use crate::{
     catalog::model_for_train,
     model::{GameState, Money, RailStationId, ServiceId, TrainId, TrainStatus},
-    sim::economy::{
-        JourneyQuote, PositioningQuote, quote_journey, quote_positioning_journey,
-    },
+    sim::economy::{JourneyQuote, PositioningQuote, quote_journey, quote_positioning_journey},
     ui::{modal, theme},
 };
 
@@ -635,7 +633,8 @@ impl DispatchFlow {
                 );
                 if matches!(key.code, KeyCode::Enter) {
                     let Some(destination_station_id) = *selected_destination_station_id else {
-                        self.rejection = Some("Choose a Service terminus before positioning.".into());
+                        self.rejection =
+                            Some("Choose a Service terminus before positioning.".into());
                         return DispatchFlowAction::Continue;
                     };
                     match quote_positioning_journey(
@@ -1688,11 +1687,7 @@ fn render_positioning_chooser(
         );
         return;
     }
-    synchronize_positioning_selection(
-        selected_destination_station_id,
-        table_state,
-        &options,
-    );
+    synchronize_positioning_selection(selected_destination_station_id, table_state, &options);
 
     let current_station = ready_train_station(state, train_id)
         .map(|station_id| station_label(state, station_id))
@@ -1710,7 +1705,10 @@ fn render_positioning_chooser(
         Paragraph::new(vec![
             Line::styled("POSITIONING REQUIRED", theme::warning()),
             Line::from(vec![
-                Span::styled(format!("Train {:02}", train_id.get()), theme::primary_value()),
+                Span::styled(
+                    format!("Train {:02}", train_id.get()),
+                    theme::primary_value(),
+                ),
                 Span::styled(" at ", theme::secondary()),
                 Span::styled(current_station.to_owned(), theme::primary_value()),
             ]),
@@ -2154,7 +2152,8 @@ fn synchronize_positioning_selection(
         table_state.select(Some(index));
         false
     } else {
-        *selected_destination_station_id = options.first().map(|option| option.destination_station_id);
+        *selected_destination_station_id =
+            options.first().map(|option| option.destination_station_id);
         table_state.select((!options.is_empty()).then_some(0));
         *table_state.offset_mut() = 0;
         true
@@ -2199,17 +2198,19 @@ fn service_step(
 ) -> Result<DispatchStep, String> {
     let services = service_options(state, train_id);
     if services.is_empty() {
-        return Err(if state
-            .player_company
-            .fleet
-            .assigned_service_id(train_id)
-            .is_none()
-        {
-            "Assign a Passenger Service to this Train before revenue dispatch.".into()
-        } else {
-            "This Train's assigned Passenger Service cannot be operated from its current Rail Station."
+        return Err(
+            if state
+                .player_company
+                .fleet
+                .assigned_service_id(train_id)
+                .is_none()
+            {
+                "Assign a Passenger Service to this Train before revenue dispatch.".into()
+            } else {
+                "This Train's assigned Passenger Service cannot be operated from its current Rail Station."
                 .into()
-        });
+            },
+        );
     }
     let selected = selected_service_id
         .and_then(|service_id| {
@@ -2484,7 +2485,6 @@ mod tests {
         assign_train_to_service(state, train_id, service_id).unwrap();
         service_id
     }
-
 
     #[test]
     fn selected_unassigned_train_cannot_start_revenue_dispatch() {

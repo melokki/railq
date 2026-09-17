@@ -494,19 +494,22 @@ fn process_positioning_arrival(
     state.player_company.fleet.trains[train_index].status = TrainStatus::Ready {
         at: journey.destination_station_id,
     };
-    state.financials.recent_journey_receipts.push(JourneyReceipt {
-        journey_id: journey.id,
-        revenue: Money::ZERO,
-        infrastructure_access_fee: journey.infrastructure_access_fee,
-        fuel_cost: journey.fuel_cost,
-        train_id: Some(journey.train_id),
-        train_model_name: Some(train_model.name().to_owned()),
-        origin_station_id: Some(journey.origin_station_id),
-        destination_station_id: Some(journey.destination_station_id),
-        passengers_carried: Some(0),
-        passenger_capacity: Some(train_model.passenger_capacity().passengers()),
-        completed_at: Some(journey.arrives_at),
-    });
+    state
+        .financials
+        .recent_journey_receipts
+        .push(JourneyReceipt {
+            journey_id: journey.id,
+            revenue: Money::ZERO,
+            infrastructure_access_fee: journey.infrastructure_access_fee,
+            fuel_cost: journey.fuel_cost,
+            train_id: Some(journey.train_id),
+            train_model_name: Some(train_model.name().to_owned()),
+            origin_station_id: Some(journey.origin_station_id),
+            destination_station_id: Some(journey.destination_station_id),
+            passengers_carried: Some(0),
+            passenger_capacity: Some(train_model.passenger_capacity().passengers()),
+            completed_at: Some(journey.arrives_at),
+        });
     state.active_journeys.remove(journey_index);
 
     Ok((

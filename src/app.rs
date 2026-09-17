@@ -500,7 +500,12 @@ impl<S: GameStore> App<S> {
     ) -> Result<crate::model::JourneyId, AppError<S::Error>> {
         self.transact(now, |state, effective_now| {
             let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
-            if state.player_company.fleet.assigned_service_id(train_id).is_none() {
+            if state
+                .player_company
+                .fleet
+                .assigned_service_id(train_id)
+                .is_none()
+            {
                 return Err(AppError::Dispatch(
                     DispatchError::TrainNotAssignedToService {
                         train_id,
@@ -1133,7 +1138,6 @@ mod tests {
             RailStationId::new(3)
         );
     }
-
 
     #[test]
     fn revenue_dispatch_rejects_an_unassigned_train_without_mutating_state() {
