@@ -111,13 +111,38 @@ impl ServiceTrainAssignmentFlow {
 
                 if state.player_company.fleet.assigned_service_id(train.id) == Some(self.service_id)
                 {
-                    ServiceTrainAssignmentAction::Unassign { train_id: train.id }
+                    self.rejection = Some(format!(
+                        "Train {:02} is already assigned to this Service; press U to unassign it.",
+                        train.id.get()
+                    ));
+                    ServiceTrainAssignmentAction::Continue
                 } else {
                     ServiceTrainAssignmentAction::Assign {
                         train_id: train.id,
                         service_id: self.service_id,
                     }
                 }
+            }
+            KeyCode::Char('u' | 'U') => {
+                let Some(train) = state.player_company.fleet.trains.get(self.selected_index) else {
+                    return ServiceTrainAssignmentAction::Continue;
+                };
+                if matches!(&train.status, TrainStatus::Travelling { .. }) {
+                    self.rejection = Some(format!(
+                        "Train {:02} is travelling; unassign it after arrival.",
+                        train.id.get()
+                    ));
+                    return ServiceTrainAssignmentAction::Continue;
+                }
+                if state.player_company.fleet.assigned_service_id(train.id) != Some(self.service_id)
+                {
+                    self.rejection = Some(format!(
+                        "Train {:02} is not assigned to this Service.",
+                        train.id.get()
+                    ));
+                    return ServiceTrainAssignmentAction::Continue;
+                }
+                ServiceTrainAssignmentAction::Unassign { train_id: train.id }
             }
             _ => ServiceTrainAssignmentAction::Continue,
         }
@@ -132,27 +157,23 @@ impl ServiceTrainAssignmentFlow {
         state: &GameState,
         compact: bool,
     ) -> Vec<(&'static str, &'static str, bool)> {
-        let action = self
-            .selected_train(state)
-            .map(|train| {
-                if matches!(&train.status, TrainStatus::Travelling { .. }) {
-                    "Locked"
-                } else if state.player_company.fleet.assigned_service_id(train.id)
-                    == Some(self.service_id)
-                {
-                    "Unassign"
-                } else if state
-                    .player_company
-                    .fleet
-                    .assigned_service_id(train.id)
-                    .is_some()
-                {
-                    "Reassign"
-                } else {
-                    "Assign"
-                }
-            })
-            .unwrap_or("Close");
+        let selected = self.selected_train(state);
+        let travelling =
+            selected.is_some_and(|train| matches!(&train.status, TrainStatus::Travelling { .. }));
+        let current = selected.is_some_and(|train| {
+            state.player_company.fleet.assigned_service_id(train.id) == Some(self.service_id)
+        });
+        let enter_action = if selected.is_some_and(|train| {
+            state
+                .player_company
+                .fleet
+                .assigned_service_id(train.id)
+                .is_some_and(|service_id| service_id != self.service_id)
+        }) {
+            "Reassign"
+        } else {
+            "Assign"
+        };
 
         vec![
             ("Esc", "Cancel", true),
@@ -161,12 +182,8 @@ impl ServiceTrainAssignmentFlow {
                 "Train",
                 !state.player_company.fleet.trains.is_empty(),
             ),
-            (
-                "Enter",
-                action,
-                self.selected_train(state)
-                    .is_some_and(|train| !matches!(&train.status, TrainStatus::Travelling { .. })),
-            ),
+            ("Enter", enter_action, selected.is_some() && !travelling && !current),
+            ("U", "Unassign", current && !travelling),
         ]
     }
 
@@ -189,27 +206,27 @@ pub(super) fn render(
     let title = service
         .map(|service| format!("Assign Trains · {}", service.display_name()))
         .unwrap_or_else(|| format!("Assign Trains · R{}", flow.service_id.get()));
-    let (enter_action, enter_enabled) = flow
+    let (enter_action, enter_enabled, unassign_enabled) = flow
         .selected_train(state)
         .map(|train| {
             if matches!(&train.status, TrainStatus::Travelling { .. }) {
-                (modal::ModalAction::Locked, false)
+                (modal::ModalAction::Locked, false, false)
             } else if state.player_company.fleet.assigned_service_id(train.id)
                 == Some(flow.service_id)
             {
-                (modal::ModalAction::Unassign, true)
+                (modal::ModalAction::Assign, false, true)
             } else if state
                 .player_company
                 .fleet
                 .assigned_service_id(train.id)
                 .is_some()
             {
-                (modal::ModalAction::Reassign, true)
+                (modal::ModalAction::Reassign, true, false)
             } else {
-                (modal::ModalAction::Assign, true)
+                (modal::ModalAction::Assign, true, false)
             }
         })
-        .unwrap_or((modal::ModalAction::Close, false));
+        .unwrap_or((modal::ModalAction::Close, false, false));
     let enter_shortcut = if enter_enabled {
         modal::ModalShortcut::enabled("Enter", enter_action)
     } else {
@@ -220,10 +237,16 @@ pub(super) fn render(
     } else {
         modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Train)
     };
+    let unassign_shortcut = if unassign_enabled {
+        modal::ModalShortcut::enabled("U", modal::ModalAction::Unassign)
+    } else {
+        modal::ModalShortcut::disabled("U", modal::ModalAction::Unassign)
+    };
     let footer = modal::shortcut_line(&[
         modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         train_navigation,
         enter_shortcut,
+        unassign_shortcut,
     ]);
     let modal_areas = modal::render_shell(frame, area, &title, footer);
     let [context_area, table_area] =
@@ -262,7 +285,7 @@ pub(super) fn render(
             Line::styled("Allocate fleet to this Passenger Service.", theme::title()),
             Line::styled(route, theme::primary_value()),
             Line::styled(
-                "Enter assigns, reassigns, or removes the selected Train allocation.",
+                "Enter assigns or reassigns. U removes the selected Train allocation.",
                 theme::secondary(),
             ),
         ]
@@ -393,7 +416,7 @@ mod tests {
         assign_train_to_service(&mut state, train_id, service_id).unwrap();
         let mut flow = ServiceTrainAssignmentFlow::start(&state, service_id).unwrap();
         assert_eq!(
-            flow.handle_key(KeyCode::Enter, &state),
+            flow.handle_key(KeyCode::Char('u'), &state),
             ServiceTrainAssignmentAction::Unassign { train_id }
         );
     }

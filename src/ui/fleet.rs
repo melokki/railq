@@ -22,8 +22,8 @@ use assignment::{ServiceAssignmentAction, ServiceAssignmentFlow};
 use crate::{
     catalog::{model_for_train, train_catalogue},
     model::{
-        GameState, Journey, Money, RailStationId, Train, TrainId, TrainNickname, TrainStatus,
-        UtcSeconds,
+        GameState, Journey, Money, RailStationId, ServiceDirectionMode, Train, TrainId,
+        TrainNickname, TrainStatus, UtcSeconds,
     },
     ui::{
         components::{labelled_line, labelled_line_styled, panel_block, section_heading},
@@ -590,8 +590,9 @@ impl FleetWorkspace {
             lines.extend([
                 "Esc Back to Fleet".into(),
                 "r Rename selected Train".into(),
-                "a Assign Passenger Service".into(),
-                "d Dispatch selected READY Train".into(),
+                "a Assign/change Passenger Service".into(),
+                "u Unassign Passenger Service".into(),
+                "d Dispatch or position selected READY Train".into(),
                 "s Review resale of selected READY Train".into(),
             ]);
         } else {
@@ -600,8 +601,9 @@ impl FleetWorkspace {
                 "PgUp / PgDn Scroll".into(),
                 "Enter Details".into(),
                 "r Rename selected Train".into(),
-                "a Assign Passenger Service".into(),
-                "d Dispatch selected READY Train".into(),
+                "a Assign/change Passenger Service".into(),
+                "u Unassign Passenger Service".into(),
+                "d Dispatch or position selected READY Train".into(),
                 "s Review resale of selected READY Train".into(),
             ]);
         }
@@ -635,7 +637,27 @@ impl FleetWorkspace {
             } else {
                 FleetShortcut::disabled("A", "Service")
             },
-            if is_ready {
+            if selected.is_some_and(|train| {
+                !matches!(&train.status, TrainStatus::Travelling { .. })
+                    && state
+                        .player_company
+                        .fleet
+                        .assigned_service_id(train.id)
+                        .is_some()
+            }) {
+                FleetShortcut::enabled("U", "Unassign")
+            } else {
+                FleetShortcut::disabled("U", "Unassign")
+            },
+            if is_ready
+                && selected.is_some_and(|train| {
+                    state
+                        .player_company
+                        .fleet
+                        .assigned_service_id(train.id)
+                        .is_some()
+                })
+            {
                 FleetShortcut::enabled("D", "Dispatch")
             } else {
                 FleetShortcut::disabled("D", "Dispatch")
@@ -743,6 +765,42 @@ impl FleetWorkspace {
                 },
                 None => FleetWorkspaceAction::Notice(
                     "Select a Train before assigning a Passenger Service.".into(),
+                ),
+            },
+            KeyCode::Char('u' | 'U') => match self.selection.selected_train_id(state) {
+                Some(train_id) => {
+                    let Some(train) = state
+                        .player_company
+                        .fleet
+                        .trains
+                        .iter()
+                        .find(|train| train.id == train_id)
+                    else {
+                        return FleetWorkspaceAction::Notice(
+                            "Selected Train is no longer in the Fleet.".into(),
+                        );
+                    };
+                    if matches!(&train.status, TrainStatus::Travelling { .. }) {
+                        FleetWorkspaceAction::Notice(format!(
+                            "Train {:02} is travelling; unassign it after arrival.",
+                            train_id.get()
+                        ))
+                    } else if state
+                        .player_company
+                        .fleet
+                        .assigned_service_id(train_id)
+                        .is_none()
+                    {
+                        FleetWorkspaceAction::Notice(format!(
+                            "Train {:02} is already unassigned.",
+                            train_id.get()
+                        ))
+                    } else {
+                        FleetWorkspaceAction::UnassignService { train_id }
+                    }
+                }
+                None => FleetWorkspaceAction::Notice(
+                    "Select a Train before removing its Passenger Service assignment.".into(),
                 ),
             },
             KeyCode::Char('s' | 'S') => match self.selection.selected_train_id(state) {
@@ -1248,7 +1306,13 @@ fn render_train_inspector(
 
     match (&train.status, journey) {
         (TrainStatus::Ready { at }, _) => {
-            lines.push(labelled_line("Availability", "Ready for dispatch"));
+            let (availability, availability_style) =
+                ready_train_availability(state, train.id, *at);
+            lines.push(labelled_line_styled(
+                "Availability",
+                availability,
+                availability_style,
+            ));
             inspector_section(&mut lines, "LOCATION", dense_detail);
             lines.push(labelled_line(
                 "Station",
@@ -1527,6 +1591,33 @@ fn compact_train_lines(
             row_style,
         ),
     ]
+}
+
+fn ready_train_availability(
+    state: &GameState,
+    train_id: TrainId,
+    station_id: RailStationId,
+) -> (&'static str, Style) {
+    let Some(service_id) = state.player_company.fleet.assigned_service_id(train_id) else {
+        return ("Assignment required", theme::warning());
+    };
+    let Some(service) = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+    else {
+        return ("Assigned Service unavailable", theme::error());
+    };
+
+    let can_depart = service.origin_station_id() == Some(station_id)
+        || (service.direction_mode == ServiceDirectionMode::BothDirections
+            && service.destination_station_id() == Some(station_id));
+    if can_depart {
+        ("Ready for assigned Service", theme::success())
+    } else {
+        ("Positioning required", theme::warning())
+    }
 }
 
 fn assigned_service_label(state: &GameState, train_id: TrainId) -> Option<String> {
@@ -1993,6 +2084,56 @@ mod tests {
             FleetWorkspaceAction::ClearNotice
         );
         assert!(workspace.has_assignment_flow());
+    }
+
+    #[test]
+    fn fleet_workspace_can_unassign_the_selected_ready_train_directly() {
+        let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let service_id = create_service(
+            &mut state,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+        )
+        .unwrap();
+        crate::sim::services::assign_train_to_service(&mut state, train_id, service_id).unwrap();
+        let mut workspace = FleetWorkspace::default();
+
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('u')), &state),
+            FleetWorkspaceAction::UnassignService { train_id }
+        );
+    }
+
+    #[test]
+    fn fleet_dispatch_shortcut_requires_an_assignment_but_allows_positioning() {
+        let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let service_id = create_service(
+            &mut state,
+            vec![RailStationId::new(2), RailStationId::new(3)],
+        )
+        .unwrap();
+        let mut workspace = FleetWorkspace::default();
+
+        let unassigned = workspace.shortcuts(&state, false, true);
+        assert!(
+            unassigned
+                .iter()
+                .any(|shortcut| shortcut.key == "D" && !shortcut.enabled)
+        );
+
+        crate::sim::services::assign_train_to_service(&mut state, train_id, service_id).unwrap();
+        let assigned = workspace.shortcuts(&state, false, true);
+        assert!(
+            assigned
+                .iter()
+                .any(|shortcut| shortcut.key == "D" && shortcut.enabled)
+        );
+        assert!(
+            assigned
+                .iter()
+                .any(|shortcut| shortcut.key == "U" && shortcut.enabled)
+        );
     }
 
     #[test]

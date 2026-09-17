@@ -23,9 +23,9 @@ pub struct Fleet {
     pub trains: Vec<Train>,
     /// Persistent allocation of owned Trains to Passenger Services.
     ///
-    /// Assignment is administrative state: it does not dispatch a Train, and
-    /// an unassigned Train may still be dispatched manually. One Train can be
-    /// allocated to at most one Service at a time.
+    /// Assignment is administrative state: it does not dispatch a Train.
+    /// Revenue operation requires an explicit Passenger Service assignment, and
+    /// one Train can be allocated to at most one Service at a time.
     #[serde(default)]
     pub service_assignments: BTreeMap<TrainId, ServiceId>,
     /// Next compact display number for an owned Train. This is not the Train
