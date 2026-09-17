@@ -348,8 +348,9 @@ pub(super) fn insert_state(
 
     let balance = &state.rules.balance;
     let authority = &state.rules.authority;
-    transaction.execute(
-        "INSERT INTO game_rules(
+    transaction
+        .execute(
+            "INSERT INTO game_rules(
              singleton, fare_cents_per_passenger_km, access_fee_cents_per_train_km,
              starting_company_funds_cents, demand_cap_seconds,
              authority_request_queue_seconds, authority_review_seconds, authority_proposal_seconds,
@@ -358,24 +359,66 @@ pub(super) fn insert_state(
              authority_low_difficulty_seconds_per_km, authority_moderate_difficulty_seconds_per_km,
              authority_high_difficulty_seconds_per_km, authority_max_active_expansion_projects
          ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-        params![
-            db(balance.fare_per_passenger_kilometre().cents_per_kilometre(), "fare rate")?,
-            db(balance.access_fee_per_train_kilometre().cents_per_kilometre(), "access fee rate")?,
-            balance.starting_company_funds().cents(),
-            db(state.rules.demand.cap_duration.seconds(), "demand cap duration")?,
-            db(authority.request_queue_delay().seconds(), "Authority request queue delay")?,
-            db(authority.review_duration().seconds(), "Authority review duration")?,
-            db(authority.proposal_duration().seconds(), "Authority proposal duration")?,
-            db(authority.council_request_cooldown().seconds(), "Authority request cooldown")?,
-            db(authority.deferred_reconsideration_delay().seconds(), "Authority deferred reconsideration delay")?,
-            db(authority.construction_mobilisation_delay().seconds(), "Authority mobilisation delay")?,
-            db(authority.new_line_base_construction_duration().seconds(), "Authority base construction duration")?,
-            db(authority.low_difficulty_seconds_per_kilometre(), "Authority low-difficulty construction rate")?,
-            db(authority.moderate_difficulty_seconds_per_kilometre(), "Authority moderate-difficulty construction rate")?,
-            db(authority.high_difficulty_seconds_per_kilometre(), "Authority high-difficulty construction rate")?,
-            i64::from(authority.max_active_expansion_projects()),
-        ],
-    ).map_err(|source| db_error("write game rules to", path, source))?;
+            params![
+                db(
+                    balance.fare_per_passenger_kilometre().cents_per_kilometre(),
+                    "fare rate"
+                )?,
+                db(
+                    balance
+                        .access_fee_per_train_kilometre()
+                        .cents_per_kilometre(),
+                    "access fee rate"
+                )?,
+                balance.starting_company_funds().cents(),
+                db(
+                    state.rules.demand.cap_duration.seconds(),
+                    "demand cap duration"
+                )?,
+                db(
+                    authority.request_queue_delay().seconds(),
+                    "Authority request queue delay"
+                )?,
+                db(
+                    authority.review_duration().seconds(),
+                    "Authority review duration"
+                )?,
+                db(
+                    authority.proposal_duration().seconds(),
+                    "Authority proposal duration"
+                )?,
+                db(
+                    authority.council_request_cooldown().seconds(),
+                    "Authority request cooldown"
+                )?,
+                db(
+                    authority.deferred_reconsideration_delay().seconds(),
+                    "Authority deferred reconsideration delay"
+                )?,
+                db(
+                    authority.construction_mobilisation_delay().seconds(),
+                    "Authority mobilisation delay"
+                )?,
+                db(
+                    authority.new_line_base_construction_duration().seconds(),
+                    "Authority base construction duration"
+                )?,
+                db(
+                    authority.low_difficulty_seconds_per_kilometre(),
+                    "Authority low-difficulty construction rate"
+                )?,
+                db(
+                    authority.moderate_difficulty_seconds_per_kilometre(),
+                    "Authority moderate-difficulty construction rate"
+                )?,
+                db(
+                    authority.high_difficulty_seconds_per_kilometre(),
+                    "Authority high-difficulty construction rate"
+                )?,
+                i64::from(authority.max_active_expansion_projects()),
+            ],
+        )
+        .map_err(|source| db_error("write game rules to", path, source))?;
     Ok(())
 }
 
@@ -1328,7 +1371,21 @@ pub(super) fn load_state(
         authority_high_difficulty_rate,
         authority_max_active_expansion_projects,
     ): (
-        i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
     ) = connection
         .query_row(
             "SELECT fare_cents_per_passenger_km, access_fee_cents_per_train_km,
@@ -1345,9 +1402,21 @@ pub(super) fn load_state(
             [],
             |row| {
                 Ok((
-                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?,
-                    row.get(10)?, row.get(11)?, row.get(12)?, row.get(13)?, row.get(14)?,
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
                 ))
             },
         )

@@ -1662,7 +1662,6 @@ fn v28_migration_upgrades_a_valid_standalone_service_to_bidirectional() {
     assert_eq!(service, ("both".into(), 100, Some(101)));
 }
 
-
 #[test]
 fn v33_migration_adds_the_slower_authority_pacing_target() {
     let directory = TestDirectory::new();
@@ -1723,7 +1722,9 @@ fn v33_migration_adds_the_slower_authority_pacing_target() {
     assert_eq!(version, SAVE_VERSION);
     assert_eq!(
         rules,
-        (3_600, 7_200, 3_600, 86_400, 86_400, 3_600, 18_000, 120, 180, 240, 2)
+        (
+            3_600, 7_200, 3_600, 86_400, 86_400, 3_600, 18_000, 120, 180, 240, 2
+        )
     );
 }
 
@@ -1745,7 +1746,9 @@ fn v34_migration_adds_rejected_infrastructure_project_status() {
             [],
         )
         .unwrap();
-    connection.pragma_update(None, "user_version", 34_u32).unwrap();
+    connection
+        .pragma_update(None, "user_version", 34_u32)
+        .unwrap();
 
     ensure_schema(&connection, &path).unwrap();
 

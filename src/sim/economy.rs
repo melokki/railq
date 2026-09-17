@@ -771,9 +771,9 @@ mod tests {
     use crate::{
         balance::BalanceConfig,
         model::{
-            AuthorityRules, DemandRules, Financials, Fleet, GameRules, MarketMaturity, OriginDestinationDemand,
-            PassengerArrivalRate, PassengerService, PlayerCompany, RailAuthority, RailLine,
-            RailNetwork, RailStation, Settlement, Train, UtcSeconds,
+            AuthorityRules, DemandRules, Financials, Fleet, GameRules, MarketMaturity,
+            OriginDestinationDemand, PassengerArrivalRate, PassengerService, PlayerCompany,
+            RailAuthority, RailLine, RailNetwork, RailStation, Settlement, Train, UtcSeconds,
         },
     };
 

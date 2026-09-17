@@ -120,17 +120,39 @@ impl AuthorityRules {
         )
     }
 
-    pub const fn request_queue_delay(&self) -> DurationSeconds { self.request_queue_delay }
-    pub const fn review_duration(&self) -> DurationSeconds { self.review_duration }
-    pub const fn proposal_duration(&self) -> DurationSeconds { self.proposal_duration }
-    pub const fn council_request_cooldown(&self) -> DurationSeconds { self.council_request_cooldown }
-    pub const fn deferred_reconsideration_delay(&self) -> DurationSeconds { self.deferred_reconsideration_delay }
-    pub const fn construction_mobilisation_delay(&self) -> DurationSeconds { self.construction_mobilisation_delay }
-    pub const fn new_line_base_construction_duration(&self) -> DurationSeconds { self.new_line_base_construction_duration }
-    pub const fn low_difficulty_seconds_per_kilometre(&self) -> u64 { self.low_difficulty_seconds_per_kilometre }
-    pub const fn moderate_difficulty_seconds_per_kilometre(&self) -> u64 { self.moderate_difficulty_seconds_per_kilometre }
-    pub const fn high_difficulty_seconds_per_kilometre(&self) -> u64 { self.high_difficulty_seconds_per_kilometre }
-    pub const fn max_active_expansion_projects(&self) -> u32 { self.max_active_expansion_projects }
+    pub const fn request_queue_delay(&self) -> DurationSeconds {
+        self.request_queue_delay
+    }
+    pub const fn review_duration(&self) -> DurationSeconds {
+        self.review_duration
+    }
+    pub const fn proposal_duration(&self) -> DurationSeconds {
+        self.proposal_duration
+    }
+    pub const fn council_request_cooldown(&self) -> DurationSeconds {
+        self.council_request_cooldown
+    }
+    pub const fn deferred_reconsideration_delay(&self) -> DurationSeconds {
+        self.deferred_reconsideration_delay
+    }
+    pub const fn construction_mobilisation_delay(&self) -> DurationSeconds {
+        self.construction_mobilisation_delay
+    }
+    pub const fn new_line_base_construction_duration(&self) -> DurationSeconds {
+        self.new_line_base_construction_duration
+    }
+    pub const fn low_difficulty_seconds_per_kilometre(&self) -> u64 {
+        self.low_difficulty_seconds_per_kilometre
+    }
+    pub const fn moderate_difficulty_seconds_per_kilometre(&self) -> u64 {
+        self.moderate_difficulty_seconds_per_kilometre
+    }
+    pub const fn high_difficulty_seconds_per_kilometre(&self) -> u64 {
+        self.high_difficulty_seconds_per_kilometre
+    }
+    pub const fn max_active_expansion_projects(&self) -> u32 {
+        self.max_active_expansion_projects
+    }
 }
 
 impl Default for AuthorityRules {

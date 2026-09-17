@@ -627,7 +627,10 @@ fn validate_rules(state: &GameState) -> Result<(), SaveValidationError> {
 
     let authority = &state.rules.authority;
     let authority_durations = [
-        ("Authority request queue delay", authority.request_queue_delay()),
+        (
+            "Authority request queue delay",
+            authority.request_queue_delay(),
+        ),
         ("Authority review duration", authority.review_duration()),
         ("Authority proposal duration", authority.proposal_duration()),
         (

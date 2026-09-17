@@ -12,11 +12,11 @@ use super::{SaveCodecError, catalogue_model_for_legacy_signature, validate_game_
 use crate::{
     balance::BalanceConfig,
     model::{
-        AuthorityRules, DemandRules, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState, Journey,
-        JourneyPassengerGroup, Money, MoneyPerKilometre, OriginDestinationDemand,
-        PassengerCapacity, PassengerService, PlayerCompany, RailLineId, RailStationId, Region,
-        ServiceDirectionMode, ServiceId, SpeedMetresPerSecond, Train, TrainId, TrainModelId,
-        TrainStatus, UtcSeconds, VehicleKeeperMark,
+        AuthorityRules, DemandRules, EuropeanVehicleNumber, Financials, Fleet, GameRules,
+        GameState, Journey, JourneyPassengerGroup, Money, MoneyPerKilometre,
+        OriginDestinationDemand, PassengerCapacity, PassengerService, PlayerCompany, RailLineId,
+        RailStationId, Region, ServiceDirectionMode, ServiceId, SpeedMetresPerSecond, Train,
+        TrainId, TrainModelId, TrainStatus, UtcSeconds, VehicleKeeperMark,
     },
     sim::world::railway_registration_for_existing_region,
 };

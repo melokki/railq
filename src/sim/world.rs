@@ -8,10 +8,11 @@ use rand_chacha::{
 use crate::{
     balance::BalanceConfig,
     model::{
-        AuthorityRules, ConstructionDifficulty, DemandRules, Electrification, Financials, Fleet, GameRules,
-        GameState, Money, PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork,
-        RailStation, RailStationId, RailwayRegistration, Region, Settlement, SettlementId,
-        SpeedKilometresPerHour, TrackCount, UtcSeconds, VehicleKeeperMark, WorldPosition,
+        AuthorityRules, ConstructionDifficulty, DemandRules, Electrification, Financials, Fleet,
+        GameRules, GameState, Money, PlayerCompany, RailAuthority, RailLine, RailLineId,
+        RailNetwork, RailStation, RailStationId, RailwayRegistration, Region, Settlement,
+        SettlementId, SpeedKilometresPerHour, TrackCount, UtcSeconds, VehicleKeeperMark,
+        WorldPosition,
     },
     sim::demand::seed_directional_demand,
 };

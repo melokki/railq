@@ -410,8 +410,7 @@ fn advance_infrastructure_planning_with_rules(
     {
         let target_name = project_target_settlement_name(region, index);
         let project = &region.rail_authority.infrastructure_projects[index];
-        let required =
-            deferred_reconsideration_threshold(project.timeline.reconsideration_count);
+        let required = deferred_reconsideration_threshold(project.timeline.reconsideration_count);
         let maturity = project_connection_station_id(project)
             .map(|station_id| local_rail_success_basis_points(demand, station_id))
             .unwrap_or(0);
@@ -1181,9 +1180,7 @@ fn project_review_decision(score: Option<i32>) -> ProjectReviewDecision {
         Some(score) if score >= AUTHORITY_APPROVAL_SCORE_THRESHOLD => {
             ProjectReviewDecision::Approve
         }
-        Some(score) if score >= AUTHORITY_REJECTION_SCORE_THRESHOLD => {
-            ProjectReviewDecision::Defer
-        }
+        Some(score) if score >= AUTHORITY_REJECTION_SCORE_THRESHOLD => ProjectReviewDecision::Defer,
         _ => ProjectReviewDecision::Reject,
     }
 }
@@ -1557,16 +1554,14 @@ mod tests {
     };
 
     use super::{
-        InfrastructureProjectActionError, advance_authority_fiscal_periods,
-        advance_infrastructure_planning_with_rules,
-        advance_project_construction_with_rules,
+        InfrastructureProjectActionError, ProjectReviewDecision, advance_authority_fiscal_periods,
+        advance_infrastructure_planning_with_rules, advance_project_construction_with_rules,
         advance_project_funding, advance_project_scheduling_with_rules,
         cancel_infrastructure_project, contribute_to_infrastructure_project,
         deferred_reconsideration_threshold, estimated_connection_cost,
         evaluate_connection_candidates, local_rail_success_basis_points,
-        new_line_construction_duration_with_rules,
-        open_completed_infrastructure_projects, project_from_candidate, project_review_decision,
-        project_review_score, ProjectReviewDecision,
+        new_line_construction_duration_with_rules, open_completed_infrastructure_projects,
+        project_from_candidate, project_review_decision, project_review_score,
     };
 
     const PROVISIONAL_AUTHORITY_RULES: AuthorityRules = AuthorityRules::provisional();
@@ -2501,12 +2496,8 @@ mod tests {
         project.timeline.funding_completed_at = Some(now);
         region.rail_authority.infrastructure_projects = vec![project];
 
-        advance_project_scheduling_with_rules(
-            &mut region,
-            &PROVISIONAL_AUTHORITY_RULES,
-            now,
-        )
-        .unwrap();
+        advance_project_scheduling_with_rules(&mut region, &PROVISIONAL_AUTHORITY_RULES, now)
+            .unwrap();
 
         let project = &region.rail_authority.infrastructure_projects[0];
         assert_eq!(project.status, InfrastructureProjectStatus::Scheduled);
@@ -2538,12 +2529,8 @@ mod tests {
         region.rail_authority.construction_capacity = 1;
         region.rail_authority.infrastructure_projects = vec![second, first];
 
-        advance_project_scheduling_with_rules(
-            &mut region,
-            &PROVISIONAL_AUTHORITY_RULES,
-            now,
-        )
-        .unwrap();
+        advance_project_scheduling_with_rules(&mut region, &PROVISIONAL_AUTHORITY_RULES, now)
+            .unwrap();
 
         let scheduled = region
             .rail_authority
@@ -2577,11 +2564,8 @@ mod tests {
         planned_lines[0].construction_difficulty = ConstructionDifficulty::Moderate;
 
         assert_eq!(
-            new_line_construction_duration_with_rules(
-                &project,
-                &PROVISIONAL_AUTHORITY_RULES,
-            )
-            .unwrap(),
+            new_line_construction_duration_with_rules(&project, &PROVISIONAL_AUTHORITY_RULES,)
+                .unwrap(),
             DurationSeconds::from_seconds(5 * 60 * 60 + 10 * 3 * 60)
         );
     }

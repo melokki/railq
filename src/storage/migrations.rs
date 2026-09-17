@@ -2644,7 +2644,6 @@ fn migrate_v32_to_v33(connection: &Connection, path: &Path) -> Result<(), SaveSl
     }
 }
 
-
 fn migrate_v33_to_v34(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
     connection
         .execute_batch("BEGIN IMMEDIATE;")
