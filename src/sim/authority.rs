@@ -373,6 +373,7 @@ pub(crate) fn advance_authority_fiscal_periods(
 /// Only one New Line project is actively moving through Requested/UnderReview/
 /// Proposed at a time. The persisted expansion-pipeline limit also prevents
 /// approved/funded work from letting the Authority queue the whole world at once.
+#[cfg(test)]
 pub(crate) fn advance_infrastructure_planning(
     region: &mut Region,
     world_seed: u64,
@@ -745,6 +746,7 @@ pub(crate) fn advance_project_funding(
 /// Reserves available construction capacity for fully funded projects in
 /// funding-completion order. Projects that cannot reserve a slot remain in
 /// `Funding`, even when their financial gap is already zero.
+#[cfg(test)]
 pub(crate) fn advance_project_scheduling(
     region: &mut Region,
     now: UtcSeconds,
@@ -811,6 +813,7 @@ fn advance_project_scheduling_with_rules(
 /// project that became due while RailQ was closed keeps the same construction
 /// duration it would have had while the game was open. Once written, the
 /// planned completion timestamp is never recomputed by funding changes.
+#[cfg(test)]
 pub(crate) fn advance_project_construction(
     region: &mut Region,
     now: UtcSeconds,
@@ -974,6 +977,7 @@ pub(crate) fn open_completed_infrastructure_projects(
     Ok(())
 }
 
+#[cfg(test)]
 fn new_line_construction_duration(
     project: &InfrastructureProject,
 ) -> Result<DurationSeconds, CalculationError> {
