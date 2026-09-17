@@ -166,6 +166,20 @@ pub fn dispatch_journey(
         .ok_or(DispatchError::Quote(EconomyError::TrainNotFound {
             train_id,
         }))?;
+    let current_stop_index = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+        .and_then(|service| {
+            service
+                .stop_station_ids
+                .iter()
+                .position(|station_id| *station_id == quote.origin_station_id)
+        })
+        .ok_or(DispatchError::Quote(EconomyError::InvalidServiceStops {
+            service_id,
+        }))?;
 
     state.player_company.funds = funds_after_departure;
     state.financials.infrastructure_access_fees = access_fees_after_departure;
@@ -192,7 +206,7 @@ pub fn dispatch_journey(
         credited_revenue: Money::ZERO,
         infrastructure_access_fee: quote.infrastructure_access_fee,
         fuel_cost: quote.fuel_cost,
-        current_stop_index: 0,
+        current_stop_index,
         passenger_groups: quote
             .boarding_groups
             .into_iter()
@@ -311,6 +325,38 @@ mod tests {
             Err(DispatchError::Quote(_))
         ));
         assert_eq!(state, before_second_dispatch);
+    }
+
+    #[test]
+    fn reverse_dispatch_starts_from_the_last_service_stop() {
+        let (mut state, train_id, service_id) = prepared_game();
+        let first_journey =
+            dispatch_journey(&mut state, train_id, service_id, DEPARTED_AT).unwrap();
+        let first_arrival = state
+            .active_journeys
+            .iter()
+            .find(|journey| journey.id == first_journey)
+            .unwrap()
+            .arrives_at;
+        advance_time(&mut state, first_arrival).unwrap();
+
+        let reverse_journey =
+            dispatch_journey(&mut state, train_id, service_id, first_arrival).unwrap();
+        let journey = state
+            .active_journeys
+            .iter()
+            .find(|journey| journey.id == reverse_journey)
+            .unwrap();
+        let service = state
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .unwrap();
+
+        assert_eq!(journey.origin_station_id, DESTINATION);
+        assert_eq!(journey.destination_station_id, ORIGIN);
+        assert_eq!(journey.current_stop_index, service.stop_station_ids.len() - 1);
     }
 
     #[test]
