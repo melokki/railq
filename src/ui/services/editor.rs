@@ -248,7 +248,7 @@ fn footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'static> {
 
     if width >= 76 {
         modal::shortcut_line(&[
-            ("↑/↓", "choose"),
+            ("↑↓/JK", "choose"),
             ("Space", "toggle"),
             ("M", "direction"),
             ("Enter", "review"),

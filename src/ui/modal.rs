@@ -117,9 +117,23 @@ pub fn render_shell(
 }
 
 /// Bastion-inspired keyboard shortcut line used inside focused modal windows.
+///
+/// Modal footers follow one interaction grammar everywhere in RailQ:
+/// Esc first, Enter second, movement/navigation next, then contextual actions.
+/// Destructive secondary actions are kept last. Call sites may provide shortcuts
+/// in whatever order is most convenient; this renderer owns the convention.
 pub fn shortcut_line(shortcuts: &[(&str, &str)]) -> Line<'static> {
+    let mut ordered = shortcuts
+        .iter()
+        .copied()
+        .enumerate()
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|(original_index, (key, action))| {
+        (shortcut_priority(key, action), *original_index)
+    });
+
     let mut spans = Vec::new();
-    for (index, (key, action)) in shortcuts.iter().enumerate() {
+    for (index, (_, (key, action))) in ordered.into_iter().enumerate() {
         if index > 0 {
             spans.push(Span::styled("   ", theme::shortcut_action()));
         }
@@ -127,6 +141,80 @@ pub fn shortcut_line(shortcuts: &[(&str, &str)]) -> Line<'static> {
         spans.push(Span::styled(format!(" {action}"), theme::shortcut_action()));
     }
     Line::from(spans)
+}
+
+fn shortcut_priority(key: &str, action: &str) -> u8 {
+    let normalized_key = key.to_ascii_lowercase();
+    let normalized_action = action.to_ascii_lowercase();
+
+    if normalized_key.contains("esc") {
+        return 0;
+    }
+    if normalized_key.contains("enter") {
+        return 1;
+    }
+    if is_movement_shortcut(&normalized_key) {
+        return 2;
+    }
+    if is_destructive_shortcut(&normalized_key, &normalized_action) {
+        return 4;
+    }
+    3
+}
+
+fn is_movement_shortcut(key: &str) -> bool {
+    key.contains('↑')
+        || key.contains('↓')
+        || key.contains("jk")
+        || key.contains("pgup")
+        || key.contains("pgdn")
+        || (key.contains('←') && key.contains('→'))
+}
+
+fn is_destructive_shortcut(key: &str, action: &str) -> bool {
+    key.contains("del")
+        || ["delete", "remove", "unassign", "reset", "resell"]
+            .iter()
+            .any(|verb| action.contains(*verb))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shortcut_line;
+
+    fn text(line: ratatui::text::Line<'static>) -> String {
+        line.spans
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn modal_shortcuts_follow_the_global_footer_order() {
+        let rendered = text(shortcut_line(&[
+            ("Space", "toggle"),
+            ("↑↓/JK", "choose"),
+            ("Enter", "review"),
+            ("Esc", "cancel"),
+            ("Del", "delete"),
+        ]));
+
+        assert_eq!(
+            rendered,
+            "[Esc] cancel   [Enter] review   [↑↓/JK] choose   [Space] toggle   [Del] delete"
+        );
+    }
+
+    #[test]
+    fn escape_aliases_still_sort_first() {
+        let rendered = text(shortcut_line(&[
+            ("PgUp/PgDn", "page"),
+            ("Q", "quit"),
+            ("Esc/?", "close"),
+        ]));
+
+        assert_eq!(rendered, "[Esc/?] close   [PgUp/PgDn] page   [Q] quit");
+    }
 }
 
 /// Draws a subtle vertical divider for picker/detail layouts.
