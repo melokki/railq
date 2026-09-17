@@ -3,7 +3,8 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use super::{
-    JourneyId, Money, MoneyPerKilometre, RailLineId, RailStationId, ServiceId, TrainId, UtcSeconds, ValidationError,
+    JourneyId, Money, MoneyPerKilometre, RailLineId, RailStationId, ServiceId, TrainId, UtcSeconds,
+    ValidationError,
 };
 
 /// Whether a Passenger Service may operate only in its canonical stop order
@@ -192,7 +193,6 @@ pub struct Journey {
     /// Arrival time of the next Service stop.
     pub arrives_at: UtcSeconds,
 }
-
 
 fn legacy_journey_fare_rate() -> MoneyPerKilometre {
     MoneyPerKilometre::new(20).expect("legacy Journey fare rate must remain valid")

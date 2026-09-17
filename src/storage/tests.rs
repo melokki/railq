@@ -1777,9 +1777,7 @@ fn v34_migration_adds_rejected_infrastructure_project_status() {
 
 #[test]
 fn v35_migration_rebalances_default_operating_rates_and_preserves_custom_rates() {
-    for (fare, access, expected_fare, expected_access) in
-        [(20, 12, 12, 35), (18, 9, 18, 9)]
-    {
+    for (fare, access, expected_fare, expected_access) in [(20, 12, 12, 35), (18, 9, 18, 9)] {
         let directory = TestDirectory::new();
         let path = directory.save_path();
         let connection = Connection::open(&path).unwrap();

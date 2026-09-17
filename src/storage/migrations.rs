@@ -2856,7 +2856,6 @@ fn migrate_v35_to_v36(connection: &Connection, path: &Path) -> Result<(), SaveSl
     }
 }
 
-
 fn migrate_v36_to_v37(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
     connection
         .execute_batch("BEGIN IMMEDIATE;")

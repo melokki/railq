@@ -808,10 +808,8 @@ fn advance_project_scheduling_with_rules(
             let target_name = project_target_settlement_name(region, index);
             let previous_connection_name =
                 rail_station_settlement_name(region, replan.previous_connection_station_id);
-            let connection_name = rail_station_settlement_name(
-                region,
-                replan.replacement.connection_station_id,
-            );
+            let connection_name =
+                rail_station_settlement_name(region, replan.replacement.connection_station_id);
             let bulletin_detail = route_replan_bulletin_detail(
                 &target_name,
                 &previous_connection_name,
@@ -1306,16 +1304,15 @@ fn apply_project_route_replan(
         planned_line.construction_difficulty = replan.replacement.construction_difficulty;
 
         project.funding.estimated_cost = replan.replacement.estimated_cost;
-        let minimum_authority_commitment = if project.funding.estimated_cost
-            > project.funding.operator_contributed
-        {
-            project
-                .funding
-                .estimated_cost
-                .checked_sub(project.funding.operator_contributed)?
-        } else {
-            Money::ZERO
-        };
+        let minimum_authority_commitment =
+            if project.funding.estimated_cost > project.funding.operator_contributed {
+                project
+                    .funding
+                    .estimated_cost
+                    .checked_sub(project.funding.operator_contributed)?
+            } else {
+                Money::ZERO
+            };
 
         let released = if project.funding.authority_committed > minimum_authority_commitment {
             let released = project
@@ -1774,18 +1771,17 @@ mod tests {
     };
 
     use super::{
-        InfrastructureProjectActionError, ProjectReviewDecision, advance_authority_fiscal_periods,
-        advance_infrastructure_planning_with_rules, advance_project_construction_with_rules,
-        advance_project_funding, advance_project_scheduling_with_rules,
+        ConnectionRouteReplan, InfrastructureProjectActionError, ProjectReviewDecision,
+        advance_authority_fiscal_periods, advance_infrastructure_planning_with_rules,
+        advance_project_construction_with_rules, advance_project_funding,
+        advance_project_scheduling_with_rules, apply_project_route_replan,
         cancel_infrastructure_project, contribute_to_infrastructure_project,
         deferred_reconsideration_threshold, estimated_connection_cost,
         evaluate_connection_candidate, evaluate_connection_candidates,
         local_rail_success_basis_points, new_line_construction_duration_with_rules,
         open_completed_infrastructure_projects, project_connection_station_id,
-        ConnectionRouteReplan, apply_project_route_replan, project_from_candidate,
-        project_review_decision, project_review_score, project_route_replan,
-        route_replan_bulletin_detail,
-        route_replan_savings_are_material,
+        project_from_candidate, project_review_decision, project_review_score,
+        project_route_replan, route_replan_bulletin_detail, route_replan_savings_are_material,
     };
 
     const PROVISIONAL_AUTHORITY_RULES: AuthorityRules = AuthorityRules::provisional();
@@ -1989,10 +1985,14 @@ mod tests {
         let closer_settlement_id = region.settlements[5].id;
         region.settlements[5].position = WorldPosition::new(95, 100);
         let closer_station_id = RailStationId::new(100);
-        region.rail_authority.rail_network.rail_stations.push(RailStation {
-            id: closer_station_id,
-            settlement_id: closer_settlement_id,
-        });
+        region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .push(RailStation {
+                id: closer_station_id,
+                settlement_id: closer_settlement_id,
+            });
 
         let after = evaluate_connection_candidate(&region, world_seed, target_settlement_id)
             .unwrap()
@@ -2016,10 +2016,14 @@ mod tests {
                 .is_some()
         );
 
-        region.rail_authority.rail_network.rail_stations.push(RailStation {
-            id: RailStationId::new(100),
-            settlement_id: target_settlement_id,
-        });
+        region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .push(RailStation {
+                id: RailStationId::new(100),
+                settlement_id: target_settlement_id,
+            });
 
         assert_eq!(
             evaluate_connection_candidate(&region, world_seed, target_settlement_id).unwrap(),
@@ -2045,24 +2049,29 @@ mod tests {
         let target_settlement_id = region.settlements[4].id;
         region.settlements[4].position = WorldPosition::new(100, 100);
 
-        let original_candidate = evaluate_connection_candidate(
-            &region,
-            world_seed,
-            target_settlement_id,
-        )
-        .unwrap()
-        .expect("target Settlement is initially unconnected");
-        let project = project_from_candidate(original_candidate.clone(), UtcSeconds::from_unix_seconds(1));
+        let original_candidate =
+            evaluate_connection_candidate(&region, world_seed, target_settlement_id)
+                .unwrap()
+                .expect("target Settlement is initially unconnected");
+        let project =
+            project_from_candidate(original_candidate.clone(), UtcSeconds::from_unix_seconds(1));
 
-        assert_eq!(project_route_replan(&region, world_seed, &project).unwrap(), None);
+        assert_eq!(
+            project_route_replan(&region, world_seed, &project).unwrap(),
+            None
+        );
 
         let closer_settlement_id = region.settlements[5].id;
         region.settlements[5].position = WorldPosition::new(95, 100);
         let closer_station_id = RailStationId::new(100);
-        region.rail_authority.rail_network.rail_stations.push(RailStation {
-            id: closer_station_id,
-            settlement_id: closer_settlement_id,
-        });
+        region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .push(RailStation {
+                id: closer_station_id,
+                settlement_id: closer_settlement_id,
+            });
 
         let replan = project_route_replan(&region, world_seed, &project)
             .unwrap()
@@ -2072,7 +2081,10 @@ mod tests {
             replan.previous_connection_station_id,
             original_candidate.connection_station_id
         );
-        assert_eq!(replan.previous_distance, original_candidate.estimated_distance);
+        assert_eq!(
+            replan.previous_distance,
+            original_candidate.estimated_distance
+        );
         assert_eq!(replan.replacement.connection_station_id, closer_station_id);
         assert_eq!(replan.replacement.estimated_distance.metres(), 5_000);
         assert_eq!(
@@ -2121,12 +2133,18 @@ mod tests {
         let project = &region.rail_authority.infrastructure_projects[0];
         assert_eq!(project.status, InfrastructureProjectStatus::Funding);
         assert_eq!(project.funding.operator_contributed, operator_contribution);
-        assert_eq!(project.funding.authority_committed, original_authority_commitment);
+        assert_eq!(
+            project.funding.authority_committed,
+            original_authority_commitment
+        );
         assert_eq!(
             region.rail_authority.finances.committed_investment,
             original_authority_commitment
         );
-        assert_eq!(project.funding.funding_gap().unwrap(), Money::from_cents(5_000));
+        assert_eq!(
+            project.funding.funding_gap().unwrap(),
+            Money::from_cents(5_000)
+        );
         assert_eq!(project.timeline.funding_completed_at, None);
     }
 
@@ -2916,13 +2934,10 @@ mod tests {
         let target_settlement_id = region.settlements[4].id;
         region.settlements[4].position = WorldPosition::new(100, 100);
 
-        let original_candidate = evaluate_connection_candidate(
-            &region,
-            world_seed,
-            target_settlement_id,
-        )
-        .unwrap()
-        .expect("target Settlement is initially unconnected");
+        let original_candidate =
+            evaluate_connection_candidate(&region, world_seed, target_settlement_id)
+                .unwrap()
+                .expect("target Settlement is initially unconnected");
         let now = UtcSeconds::from_unix_seconds(15_000);
         let operator_contribution = Money::from_cents(100);
         let mut project = project_from_candidate(original_candidate.clone(), now);
@@ -2941,10 +2956,14 @@ mod tests {
         let closer_settlement_id = region.settlements[5].id;
         region.settlements[5].position = WorldPosition::new(95, 100);
         let closer_station_id = RailStationId::new(100);
-        region.rail_authority.rail_network.rail_stations.push(RailStation {
-            id: closer_station_id,
-            settlement_id: closer_settlement_id,
-        });
+        region
+            .rail_authority
+            .rail_network
+            .rail_stations
+            .push(RailStation {
+                id: closer_station_id,
+                settlement_id: closer_settlement_id,
+            });
         let replacement = evaluate_connection_candidate(&region, world_seed, target_settlement_id)
             .unwrap()
             .expect("target Settlement should still be unconnected");

@@ -73,9 +73,7 @@ mod tests {
         let balance = BalanceConfig::provisional();
 
         assert_eq!(
-            balance
-                .fare_per_passenger_kilometre()
-                .cents_per_kilometre(),
+            balance.fare_per_passenger_kilometre().cents_per_kilometre(),
             12
         );
         assert_eq!(
