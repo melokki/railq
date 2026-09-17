@@ -932,6 +932,20 @@ fn render_map_rows_with_overlay(
             // Background station labels are useful context, but never at the
             // cost of overwriting rail geometry or an important route label.
             try_place_map_label(&mut grid, x, y, &label, ink, preferred_direction);
+        } else if overlay.is_some() {
+            // The compact Service preview must never let two important labels
+            // overwrite each other. Search a slightly wider ring around the
+            // station marker; the route strip below the map remains the exact
+            // ordered fallback if the map is genuinely too dense to label all
+            // route stations at once.
+            try_place_service_preview_label(
+                &mut grid,
+                x,
+                y,
+                &label,
+                ink,
+                preferred_direction,
+            );
         } else {
             place_map_label(&mut grid, x, y, &label, ink, preferred_direction);
         }
@@ -1454,6 +1468,54 @@ fn try_place_map_label(
     };
     put_text(grid, x, y, text, ink);
     true
+}
+
+fn try_place_service_preview_label(
+    grid: &mut [Vec<MapCell>],
+    marker_x: i32,
+    marker_y: i32,
+    text: &str,
+    ink: MapInk,
+    preferred_direction: Option<MapDirection>,
+) -> bool {
+    let label_width = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+    let centered_x = marker_x - label_width / 2;
+    let position_for = |direction, distance: i32| match direction {
+        MapDirection::Up => (centered_x, marker_y - distance),
+        MapDirection::Down => (centered_x, marker_y + distance),
+        MapDirection::Right => (marker_x + distance + 1, marker_y),
+        MapDirection::Left => (marker_x - label_width - distance - 1, marker_y),
+    };
+
+    let mut directions = Vec::with_capacity(4);
+    if let Some(direction) = preferred_direction {
+        directions.push(direction);
+    }
+    for direction in [
+        MapDirection::Up,
+        MapDirection::Down,
+        MapDirection::Right,
+        MapDirection::Left,
+    ] {
+        if !directions.contains(&direction) {
+            directions.push(direction);
+        }
+    }
+
+    // First keep labels close to their marker, then progressively fan them out
+    // by a few cells. This is enough to separate neighbouring names such as
+    // Oakridge/Fairford without turning the preview into floating annotations.
+    for distance in 1..=3 {
+        for direction in directions.iter().copied() {
+            let (x, y) = position_for(direction, distance);
+            if can_place_text(grid, x, y, text) {
+                put_text(grid, x, y, text, ink);
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn place_map_label(

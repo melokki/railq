@@ -6,6 +6,8 @@ use ratatui::{
     widgets::{HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
 };
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::{
     model::{GameState, RailStationId, ServiceDirectionMode, ServiceId},
     sim::services::service_path_for_stops,
@@ -264,10 +266,12 @@ fn footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'static> {
 
 fn render_picker(frame: &mut Frame, area: Rect, state: &GameState, flow: &CreateServiceFlow) {
     let status_rows = if flow.error.is_some() { 2 } else { 0 };
-    let [context_area, content_area, status_area] = Layout::vertical([
+    let route_strip_rows = if flow.stop_station_ids.is_empty() { 0 } else { 1 };
+    let [context_area, content_area, status_area, route_strip_area] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(5),
         Constraint::Length(status_rows),
+        Constraint::Length(route_strip_rows),
     ])
     .areas(area);
 
@@ -370,6 +374,105 @@ fn render_picker(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
             status_area,
         );
     }
+
+    if route_strip_rows > 0 {
+        render_route_strip(frame, route_strip_area, state, flow);
+    }
+}
+
+fn render_route_strip(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    flow: &CreateServiceFlow,
+) {
+    if area.width == 0 || flow.stop_station_ids.is_empty() {
+        return;
+    }
+
+    let selected_station_id = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .get(flow.selected_station_index)
+        .map(|station| station.id);
+    let selected_route_index = selected_station_id.and_then(|station_id| {
+        flow.stop_station_ids
+            .iter()
+            .position(|selected_id| *selected_id == station_id)
+    });
+    let focus_index = selected_route_index
+        .unwrap_or_else(|| flow.stop_station_ids.len().saturating_sub(1));
+
+    let labels = flow
+        .stop_station_ids
+        .iter()
+        .map(|station_id| truncate_display(&station_label(state, *station_id), 14))
+        .collect::<Vec<_>>();
+    let prefix = "ROUTE  ";
+    let available_width = usize::from(area.width).saturating_sub(UnicodeWidthStr::width(prefix));
+    let (start, end) = route_strip_window(&labels, focus_index, available_width);
+
+    let mut spans = vec![Span::styled(prefix, theme::table_header())];
+    if start > 0 {
+        spans.push(Span::styled("… ── ", theme::secondary()));
+    }
+    for index in start..end {
+        if index > start {
+            spans.push(Span::styled(" ── ", theme::secondary()));
+        }
+        let style = if selected_route_index == Some(index) {
+            theme::focused_title()
+        } else {
+            theme::primary_value()
+        };
+        spans.push(Span::styled(labels[index].clone(), style));
+    }
+    if end < labels.len() {
+        spans.push(Span::styled(" ── …", theme::secondary()));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(theme::panel()),
+        area,
+    );
+}
+
+fn route_strip_window(
+    labels: &[String],
+    focus_index: usize,
+    available_width: usize,
+) -> (usize, usize) {
+    if labels.is_empty() {
+        return (0, 0);
+    }
+
+    let focus_index = focus_index.min(labels.len().saturating_sub(1));
+    for window_len in (1..=labels.len().min(7)).rev() {
+        let half = window_len / 2;
+        let mut start = focus_index.saturating_sub(half);
+        if start + window_len > labels.len() {
+            start = labels.len().saturating_sub(window_len);
+        }
+        let end = start + window_len;
+        let mut width = labels[start..end]
+            .iter()
+            .map(|label| UnicodeWidthStr::width(label.as_str()))
+            .sum::<usize>();
+        width = width.saturating_add(4 * window_len.saturating_sub(1));
+        if start > 0 {
+            width = width.saturating_add(5);
+        }
+        if end < labels.len() {
+            width = width.saturating_add(5);
+        }
+        if width <= available_width {
+            return (start, end);
+        }
+    }
+
+    (focus_index, focus_index.saturating_add(1))
 }
 
 fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &CreateServiceFlow) {
