@@ -381,17 +381,25 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
         .get(flow.selected_station_index)
         .map(|station| station.id);
 
-    let map_height = area.height.saturating_sub(8).clamp(10, 17);
-    let [title_area, map_area, legend_area, details_area] = Layout::vertical([
+    // The left picker already communicates stop order. Give the geographic
+    // preview nearly all available height and keep only the current action
+    // underneath it; duplicating the whole stop list made the map unnecessarily
+    // cramped as Services became longer.
+    let details_height = if area.height >= 7 { 3 } else { 2 };
+    let [title_area, map_area, details_area] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(map_height),
-        Constraint::Length(1),
-        Constraint::Min(1),
+        Constraint::Min(4),
+        Constraint::Length(details_height),
     ])
     .areas(area);
 
+    let title = if flow.stop_station_ids.is_empty() {
+        "Route Preview".to_owned()
+    } else {
+        format!("Route Preview · {} stops", flow.stop_station_ids.len())
+    };
     frame.render_widget(
-        Paragraph::new(Line::styled("Route Preview", theme::title())).style(theme::panel()),
+        Paragraph::new(Line::styled(title, theme::title())).style(theme::panel()),
         title_area,
     );
     crate::ui::map::render_service_route_preview(
@@ -401,35 +409,8 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
         &flow.stop_station_ids,
         selected_station_id,
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("━", theme::focused_title()),
-            Span::styled(" route  ", theme::secondary()),
-            Span::styled("●", theme::focused_title()),
-            Span::styled(" stop  ", theme::secondary()),
-            Span::styled("◆", theme::warning()),
-            Span::styled(" cursor", theme::secondary()),
-        ]))
-        .style(theme::panel()),
-        legend_area,
-    );
 
     let mut lines = Vec::new();
-    if flow.stop_station_ids.is_empty() {
-        lines.push(Line::styled(
-            "The first stop becomes the Service origin.",
-            theme::secondary(),
-        ));
-    } else {
-        lines.push(Line::styled("ORDERED STOPS", theme::table_header()));
-        let max_stop_rows = details_area.height.saturating_sub(3).max(1) as usize;
-        lines.extend(preview_stop_lines(
-            state,
-            &flow.stop_station_ids,
-            max_stop_rows,
-        ));
-    }
-
     let Some(station_id) = selected_station_id else {
         lines.push(Line::styled(
             "No Rail Station available.",
@@ -444,9 +425,6 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
         return;
     };
 
-    if !flow.stop_station_ids.is_empty() {
-        lines.push(Line::from(""));
-    }
     lines.push(Line::from(vec![
         Span::styled("SELECTED  ", theme::table_header()),
         Span::styled(station_label(state, station_id), theme::focused_title()),
@@ -607,55 +585,6 @@ fn direction_mode_label(direction_mode: ServiceDirectionMode) -> &'static str {
         ServiceDirectionMode::BothDirections => "BOTH DIRECTIONS",
         ServiceDirectionMode::ForwardOnly => "ONE WAY",
     }
-}
-
-fn preview_stop_lines(
-    state: &GameState,
-    stop_station_ids: &[RailStationId],
-    max_rows: usize,
-) -> Vec<Line<'static>> {
-    if stop_station_ids.is_empty() || max_rows == 0 {
-        return Vec::new();
-    }
-    if stop_station_ids.len() <= max_rows {
-        return stop_station_ids
-            .iter()
-            .enumerate()
-            .map(|(index, station_id)| {
-                Line::from(vec![
-                    Span::styled(format!("{}  ", index + 1), theme::secondary()),
-                    Span::styled(station_label(state, *station_id), theme::primary_value()),
-                ])
-            })
-            .collect();
-    }
-
-    if max_rows == 1 {
-        return vec![Line::styled(
-            format!("… {} stops selected", stop_station_ids.len()),
-            theme::secondary(),
-        )];
-    }
-
-    let visible_tail = max_rows.saturating_sub(1);
-    let hidden = stop_station_ids.len().saturating_sub(visible_tail);
-    let mut lines = vec![Line::styled(
-        format!("… +{hidden} earlier stops"),
-        theme::secondary(),
-    )];
-    lines.extend(
-        stop_station_ids
-            .iter()
-            .enumerate()
-            .skip(hidden)
-            .map(|(index, station_id)| {
-                Line::from(vec![
-                    Span::styled(format!("{}  ", index + 1), theme::secondary()),
-                    Span::styled(station_label(state, *station_id), theme::primary_value()),
-                ])
-            }),
-    );
-    lines
 }
 
 fn review_stop_lines(

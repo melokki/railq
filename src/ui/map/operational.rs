@@ -527,6 +527,112 @@ struct ServiceRoutePreviewOverlay {
     highlighted_station_id: Option<RailStationId>,
 }
 
+const SERVICE_PREVIEW_CONTEXT_LIMIT: usize = 16;
+
+/// Build a route-focused slice of the operational map for the Service editor.
+///
+/// The full Map can eventually contain hundreds of stations, while the editor
+/// only needs enough surrounding infrastructure to keep the route oriented.
+/// Keep every station that belongs to the selected/candidate path, then add a
+/// bounded one-hop neighbourhood around it. This preserves the same persisted
+/// coordinates and rail geometry without shrinking the whole Region into a
+/// tiny rectangle.
+fn service_preview_layout(
+    layout: &OperationalLayout,
+    overlay: &ServiceRoutePreviewOverlay,
+) -> OperationalLayout {
+    let station_to_settlement = layout
+        .places
+        .iter()
+        .filter_map(|place| place.station_id.map(|station_id| (station_id, place.settlement_id)))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut focus = BTreeSet::new();
+    for station_id in overlay.stop_order.keys().copied() {
+        if let Some(settlement_id) = station_to_settlement.get(&station_id) {
+            focus.insert(*settlement_id);
+        }
+    }
+    if let Some(station_id) = overlay.highlighted_station_id {
+        if let Some(settlement_id) = station_to_settlement.get(&station_id) {
+            focus.insert(*settlement_id);
+        }
+    }
+    for line in layout
+        .lines
+        .iter()
+        .filter(|line| overlay.route_line_ids.contains(&line.rail_line_id))
+    {
+        focus.insert(line.first_settlement_id);
+        focus.insert(line.second_settlement_id);
+    }
+
+    if focus.is_empty() {
+        return layout.clone();
+    }
+
+    let highlighted_settlement_id = overlay
+        .highlighted_station_id
+        .and_then(|station_id| station_to_settlement.get(&station_id).copied());
+    let by_id = layout
+        .places
+        .iter()
+        .map(|place| (place.settlement_id, place))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut context_candidates = BTreeSet::new();
+    for line in &layout.lines {
+        if focus.contains(&line.first_settlement_id) && !focus.contains(&line.second_settlement_id) {
+            context_candidates.insert(line.second_settlement_id);
+        }
+        if focus.contains(&line.second_settlement_id) && !focus.contains(&line.first_settlement_id) {
+            context_candidates.insert(line.first_settlement_id);
+        }
+    }
+
+    // When a long route has many branches, keep context closest to the current
+    // cursor. Route stations themselves are never dropped.
+    let mut context_candidates = context_candidates.into_iter().collect::<Vec<_>>();
+    context_candidates.sort_by_key(|settlement_id| {
+        let Some(place) = by_id.get(settlement_id) else {
+            return (i64::MAX, *settlement_id);
+        };
+        let distance = highlighted_settlement_id
+            .and_then(|highlighted_id| by_id.get(&highlighted_id))
+            .map(|highlighted| {
+                i64::from((place.x - highlighted.x).abs())
+                    + i64::from((place.y - highlighted.y).abs())
+            })
+            .unwrap_or(0);
+        (distance, *settlement_id)
+    });
+
+    let mut visible = focus;
+    visible.extend(
+        context_candidates
+            .into_iter()
+            .take(SERVICE_PREVIEW_CONTEXT_LIMIT),
+    );
+
+    let places = layout
+        .places
+        .iter()
+        .filter(|place| visible.contains(&place.settlement_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let lines = layout
+        .lines
+        .iter()
+        .filter(|line| {
+            visible.contains(&line.first_settlement_id)
+                && visible.contains(&line.second_settlement_id)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+
+    OperationalLayout { places, lines }
+}
+
 /// Renders the Passenger Service editor preview with the same world-space
 /// topology, orthogonal rail geometry, station markers, and settlement labels
 /// as the main operational Map. The editor only changes emphasis: the selected
@@ -580,8 +686,9 @@ pub(crate) fn render_service_route_preview(
             .collect(),
         highlighted_station_id,
     };
+    let preview_layout = service_preview_layout(&layout, &overlay);
     let selected_settlement_id = highlighted_station_id.and_then(|station_id| {
-        layout
+        preview_layout
             .places
             .iter()
             .find(|place| place.station_id == Some(station_id))
@@ -589,7 +696,7 @@ pub(crate) fn render_service_route_preview(
     });
 
     let rows = render_map_rows_with_overlay(
-        &layout,
+        &preview_layout,
         selected_settlement_id,
         area.width,
         area.height,
@@ -807,10 +914,10 @@ fn render_map_rows_with_overlay(
             continue;
         }
 
-        let base_label = map_place_label(place, selected);
-        let label = stop_number
-            .map(|number| format!("{number} {base_label}"))
-            .unwrap_or(base_label);
+        // Stop order is already visible in the picker. Prefixing route labels
+        // with numbers wastes scarce horizontal space and makes close stations
+        // overwrite one another, so the mini-map keeps clean station names.
+        let label = map_place_label(place, selected);
         let preferred_direction =
             preferred_label_direction(place, &label, &layout.places, &place_positions, selected);
         let ink = if preview_cursor {
