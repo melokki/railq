@@ -151,6 +151,66 @@ fn active_service_inspector_surfaces_live_operating_context() {
 }
 
 #[test]
+fn reverse_service_inspector_shows_the_actual_next_leg() {
+    let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
+    let mut state = create_new_game(42, "Alden Passenger", started_at);
+    state.player_company.funds = Money::from_cents(10_000_000);
+    let service_id = create_service(
+        &mut state,
+        vec![
+            RailStationId::new(1),
+            RailStationId::new(2),
+            RailStationId::new(3),
+        ],
+    )
+    .unwrap();
+    let train_id = purchase_train(&mut state, 0, RailStationId::new(3)).unwrap();
+    dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
+
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('s'));
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+
+    assert!(rendered.contains("Juniper → Fairford"));
+    assert!(!rendered.contains("Juniper → Oakridge"));
+}
+
+#[test]
+fn bidirectional_service_waiting_summary_includes_reverse_demand() {
+    let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+    create_service(
+        &mut state,
+        vec![
+            RailStationId::new(1),
+            RailStationId::new(2),
+            RailStationId::new(3),
+        ],
+    )
+    .unwrap();
+
+    for pool in &mut state.origin_destination_demand {
+        pool.waiting_passengers = 0;
+    }
+    for (origin, destination, passengers) in [(2, 1, 31), (3, 1, 37), (3, 2, 41)] {
+        state
+            .origin_destination_demand
+            .iter_mut()
+            .find(|pool| {
+                pool.origin_station_id == RailStationId::new(origin)
+                    && pool.destination_station_id == RailStationId::new(destination)
+            })
+            .unwrap()
+            .waiting_passengers = passengers;
+    }
+
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('s'));
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+
+    assert!(rendered.contains("109 · +"));
+}
+
+#[test]
 fn compact_service_workspace_prioritizes_live_summary_without_clipping() {
     let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
     let mut state = create_new_game(42, "Alden Passenger", started_at);

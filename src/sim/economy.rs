@@ -375,20 +375,6 @@ fn quote_infrastructure_access_credits(
     Ok((total_credit, uses))
 }
 
-/// Calculates the passenger groups that can board at one Service stop without
-/// changing Passenger Demand.
-///
-/// `available_capacity` is the number of free seats after passengers for this
-/// stop have alighted.
-pub(crate) fn quote_boarding_at_stop(
-    state: &GameState,
-    service: &PassengerService,
-    stop_index: usize,
-    available_capacity: u32,
-) -> Result<Vec<PassengerBoardingQuote>, EconomyError> {
-    quote_boarding_at_stop_in_direction(state, service, stop_index, 1, available_capacity)
-}
-
 /// Calculates boardings from one stop in the requested Service direction.
 ///
 /// `direction` is `1` for the canonical first-to-last working and `-1` for

@@ -14,7 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     catalog::model_for_train,
-    model::{GameState, RailStationId, ServiceId},
+    model::{GameState, PassengerService, RailStationId, ServiceDirectionMode, ServiceId},
     sim::demand::effective_arrival_rate_per_hour,
 };
 
@@ -788,7 +788,7 @@ fn service_operating_snapshot(
     };
 
     let mut snapshot = ServiceOperatingSnapshot::default();
-    let (waiting, arrival_rate) = service_waiting_demand(state, &service.stop_station_ids);
+    let (waiting, arrival_rate) = service_waiting_demand(state, service);
     snapshot.waiting_passengers = waiting;
     snapshot.arrival_rate_per_hour = arrival_rate;
 
@@ -821,10 +821,9 @@ fn service_operating_snapshot(
             .get(journey.current_stop_index)
             .copied()
             .unwrap_or(journey.origin_station_id);
-        let next_station_id = service
-            .stop_station_ids
-            .get(journey.current_stop_index.saturating_add(1))
-            .copied()
+        let next_station_id = service_journey_direction(service, journey)
+            .and_then(|direction| next_service_stop_index(journey.current_stop_index, direction))
+            .and_then(|index| service.stop_station_ids.get(index).copied())
             .unwrap_or(journey.destination_station_id);
 
         let train = state
@@ -867,11 +866,21 @@ fn service_operating_snapshot(
     snapshot
 }
 
-fn service_waiting_demand(state: &GameState, stops: &[RailStationId]) -> (u32, u32) {
+fn service_waiting_demand(state: &GameState, service: &PassengerService) -> (u32, u32) {
     let mut waiting = 0_u32;
     let mut arrival_rate = 0_u32;
-    for (origin_index, origin_station_id) in stops.iter().enumerate() {
-        for destination_station_id in stops.iter().skip(origin_index.saturating_add(1)) {
+
+    for (origin_index, origin_station_id) in service.stop_station_ids.iter().enumerate() {
+        for (destination_index, destination_station_id) in
+            service.stop_station_ids.iter().enumerate()
+        {
+            let travels_forward = destination_index > origin_index;
+            let travels_reverse = service.direction_mode == ServiceDirectionMode::BothDirections
+                && destination_index < origin_index;
+            if !travels_forward && !travels_reverse {
+                continue;
+            }
+
             if let Some(demand) = state.origin_destination_demand.iter().find(|demand| {
                 demand.origin_station_id == *origin_station_id
                     && demand.destination_station_id == *destination_station_id
@@ -882,7 +891,31 @@ fn service_waiting_demand(state: &GameState, stops: &[RailStationId]) -> (u32, u
             }
         }
     }
+
     (waiting, arrival_rate)
+}
+
+fn service_journey_direction(
+    service: &PassengerService,
+    journey: &crate::model::Journey,
+) -> Option<i32> {
+    let first = service.stop_station_ids.first().copied()?;
+    let last = service.stop_station_ids.last().copied()?;
+    if journey.origin_station_id == first && journey.destination_station_id == last {
+        Some(1)
+    } else if journey.origin_station_id == last && journey.destination_station_id == first {
+        Some(-1)
+    } else {
+        None
+    }
+}
+
+fn next_service_stop_index(current_stop_index: usize, direction: i32) -> Option<usize> {
+    match direction {
+        1 => current_stop_index.checked_add(1),
+        -1 => current_stop_index.checked_sub(1),
+        _ => None,
+    }
 }
 
 fn remaining_journey_seconds(state: &GameState, arrives_at: crate::model::UtcSeconds) -> u64 {
