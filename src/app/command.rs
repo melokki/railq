@@ -4,8 +4,8 @@
 //! timestamp are supplied separately when the application executes them.
 
 use crate::model::{
-    InfrastructureProjectId, JourneyId, Money, RailStationId, ServiceId, TrainId, TrainNickname,
-    VehicleKeeperMark,
+    InfrastructureProjectId, JourneyId, Money, RailStationId, ServiceDirectionMode, ServiceId,
+    TrainId, TrainNickname, VehicleKeeperMark,
 };
 
 /// A player-requested state transition accepted by the application layer.
@@ -21,11 +21,13 @@ pub enum AppCommand {
     /// Create one persistent directional Passenger Service.
     CreatePassengerService {
         stop_station_ids: Vec<RailStationId>,
+        direction_mode: ServiceDirectionMode,
     },
     /// Update the stop pattern of one unused Passenger Service.
     UpdatePassengerService {
         service_id: ServiceId,
         stop_station_ids: Vec<RailStationId>,
+        direction_mode: ServiceDirectionMode,
     },
     /// Delete one unused Passenger Service.
     DeletePassengerService { service_id: ServiceId },

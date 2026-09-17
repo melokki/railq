@@ -36,10 +36,12 @@ pub enum ServiceWorkspaceAction {
     },
     Create {
         stop_station_ids: Vec<RailStationId>,
+        direction_mode: ServiceDirectionMode,
     },
     Update {
         service_id: ServiceId,
         stop_station_ids: Vec<RailStationId>,
+        direction_mode: ServiceDirectionMode,
     },
     Delete {
         service_id: ServiceId,
@@ -165,6 +167,7 @@ impl ServiceWorkspace {
                             self.create_flow = Some(CreateServiceFlow::editing(
                                 service.stop_station_ids.clone(),
                                 selected_station_index,
+                                service.direction_mode,
                                 service_id,
                             ));
                         }
@@ -340,7 +343,7 @@ impl ServiceWorkspace {
         }
         lines.extend([
             String::new(),
-            "During create/edit: Space toggles the highlighted stop; Enter reviews the route."
+            "During create/edit: Space toggles the highlighted stop; M toggles both-directions/one-way; Enter reviews."
                 .into(),
             "During review: Enter creates/saves; Backspace or Left returns to editing.".into(),
         ]);

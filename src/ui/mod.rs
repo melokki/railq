@@ -354,15 +354,21 @@ impl Shell {
                         }
                         ShellAction::Continue
                     }
-                    services::ServiceWorkspaceAction::Create { stop_station_ids } => {
-                        ShellAction::Player(AppCommand::CreatePassengerService { stop_station_ids })
-                    }
+                    services::ServiceWorkspaceAction::Create {
+                        stop_station_ids,
+                        direction_mode,
+                    } => ShellAction::Player(AppCommand::CreatePassengerService {
+                        stop_station_ids,
+                        direction_mode,
+                    }),
                     services::ServiceWorkspaceAction::Update {
                         service_id,
                         stop_station_ids,
+                        direction_mode,
                     } => ShellAction::Player(AppCommand::UpdatePassengerService {
                         service_id,
                         stop_station_ids,
+                        direction_mode,
                     }),
                     services::ServiceWorkspaceAction::Delete { service_id } => {
                         ShellAction::Player(AppCommand::DeletePassengerService { service_id })

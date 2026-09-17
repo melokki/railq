@@ -7,13 +7,11 @@ use ratatui::{
 };
 
 use crate::{
-    model::{GameState, RailStationId, ServiceId},
+    model::{GameState, RailStationId, ServiceDirectionMode, ServiceId},
     sim::services::service_path_for_stops,
 };
 
-use super::{
-    ServiceWorkspaceAction, route_label, station_label, stop_direction_label, truncate_display,
-};
+use super::{ServiceWorkspaceAction, station_label, truncate_display};
 use crate::ui::{format, modal, theme};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -22,6 +20,7 @@ pub(super) struct CreateServiceFlow {
     selected_station_index: usize,
     review: bool,
     error: Option<String>,
+    direction_mode: ServiceDirectionMode,
     editing_service_id: Option<ServiceId>,
 }
 
@@ -33,6 +32,7 @@ impl CreateServiceFlow {
     pub(super) fn editing(
         stop_station_ids: Vec<RailStationId>,
         selected_station_index: usize,
+        direction_mode: ServiceDirectionMode,
         service_id: ServiceId,
     ) -> Self {
         Self {
@@ -40,6 +40,7 @@ impl CreateServiceFlow {
             selected_station_index,
             review: false,
             error: None,
+            direction_mode,
             editing_service_id: Some(service_id),
         }
     }
@@ -55,9 +56,11 @@ impl CreateServiceFlow {
                     Some(service_id) => ServiceWorkspaceAction::Update {
                         service_id,
                         stop_station_ids: self.stop_station_ids.clone(),
+                        direction_mode: self.direction_mode,
                     },
                     None => ServiceWorkspaceAction::Create {
                         stop_station_ids: self.stop_station_ids.clone(),
+                        direction_mode: self.direction_mode,
                     },
                 },
                 KeyCode::Backspace | KeyCode::Left => {
@@ -122,6 +125,13 @@ impl CreateServiceFlow {
                     }
                 }
             }
+            KeyCode::Char('m' | 'M') => {
+                self.direction_mode = match self.direction_mode {
+                    ServiceDirectionMode::BothDirections => ServiceDirectionMode::ForwardOnly,
+                    ServiceDirectionMode::ForwardOnly => ServiceDirectionMode::BothDirections,
+                };
+                self.error = None;
+            }
             KeyCode::Enter => {
                 if self.stop_station_ids.len() < 2 {
                     self.error =
@@ -166,6 +176,7 @@ impl CreateServiceFlow {
             vec![
                 ("↑↓", "Station", true),
                 ("Space", "Toggle", true),
+                ("M", "Direction", true),
                 ("Enter", "Review", true),
                 ("Esc", "Cancel", true),
             ]
@@ -173,6 +184,7 @@ impl CreateServiceFlow {
             vec![
                 ("↑↓/JK", "Station", true),
                 ("Space", "Toggle stop", true),
+                ("M", "Direction", true),
                 ("Enter", "Review", true),
                 ("Esc", "Cancel", true),
             ]
@@ -236,12 +248,14 @@ fn footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'static> {
         modal::shortcut_line(&[
             ("↑/↓", "choose"),
             ("Space", "toggle"),
+            ("M", "direction"),
             ("Enter", "review"),
             ("Esc", "cancel"),
         ])
     } else {
         modal::shortcut_line(&[
             ("Space", "toggle"),
+            ("M", "direction"),
             ("Enter", "review"),
             ("Esc", "cancel"),
         ])
@@ -251,7 +265,7 @@ fn footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'static> {
 fn render_picker(frame: &mut Frame, area: Rect, state: &GameState, flow: &CreateServiceFlow) {
     let status_rows = if flow.error.is_some() { 2 } else { 0 };
     let [context_area, content_area, status_area] = Layout::vertical([
-        Constraint::Length(2),
+        Constraint::Length(3),
         Constraint::Min(5),
         Constraint::Length(status_rows),
     ])
@@ -260,7 +274,7 @@ fn render_picker(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
     let route_summary = if flow.stop_station_ids.is_empty() {
         "No stops selected yet".to_owned()
     } else {
-        route_label(state, &flow.stop_station_ids)
+        route_pattern_label(state, &flow.stop_station_ids, flow.direction_mode)
     };
     frame.render_widget(
         Paragraph::new(vec![
@@ -274,6 +288,11 @@ fn render_picker(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
                     ),
                     theme::primary_value(),
                 ),
+            ]),
+            Line::from(vec![
+                Span::styled("MODE   ", theme::secondary()),
+                Span::styled(direction_mode_label(flow.direction_mode), theme::primary_value()),
+                Span::styled(" · M to toggle", theme::secondary()),
             ]),
         ])
         .style(theme::panel())
@@ -441,7 +460,7 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
 
     let [context_area, summary_area, stops_area] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(4),
+        Constraint::Length(5),
         Constraint::Min(3),
     ])
     .areas(area);
@@ -465,14 +484,18 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
-                Span::styled("DIRECTION  ", theme::secondary()),
+                Span::styled("ROUTE      ", theme::secondary()),
                 Span::styled(
                     truncate_display(
-                        &stop_direction_label(state, &flow.stop_station_ids),
+                        &route_pattern_label(state, &flow.stop_station_ids, flow.direction_mode),
                         summary_area.width.saturating_sub(11) as usize,
                     ),
                     theme::focused_title(),
                 ),
+            ]),
+            Line::from(vec![
+                Span::styled("MODE       ", theme::secondary()),
+                Span::styled(direction_mode_label(flow.direction_mode), theme::primary_value()),
             ]),
             Line::from(vec![
                 Span::styled("DISTANCE   ", theme::secondary()),
@@ -487,9 +510,16 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
             ]),
             Line::styled(
                 if flow.editing_service_id.is_some() {
-                    "Service identity is preserved; the ordered stop pattern will be replaced."
+                    "Service identity and existing train numbers are preserved where possible."
                 } else {
-                    "Directional Service · dispatchable from its first stop."
+                    match flow.direction_mode {
+                        ServiceDirectionMode::BothDirections => {
+                            "Bidirectional Service · dispatchable from either terminus."
+                        }
+                        ServiceDirectionMode::ForwardOnly => {
+                            "One-way Service · dispatchable from its first stop only."
+                        }
+                    }
                 },
                 theme::secondary(),
             ),
@@ -506,6 +536,38 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
             .wrap(Wrap { trim: true }),
         stops_area,
     );
+}
+
+fn route_pattern_label(
+    state: &GameState,
+    stop_station_ids: &[RailStationId],
+    direction_mode: ServiceDirectionMode,
+) -> String {
+    let Some(origin_station_id) = stop_station_ids.first().copied() else {
+        return "No stops selected yet".into();
+    };
+    let Some(destination_station_id) = stop_station_ids.last().copied() else {
+        return station_label(state, origin_station_id);
+    };
+    if origin_station_id == destination_station_id {
+        return station_label(state, origin_station_id);
+    }
+    let arrow = match direction_mode {
+        ServiceDirectionMode::BothDirections => "↔",
+        ServiceDirectionMode::ForwardOnly => "→",
+    };
+    format!(
+        "{} {arrow} {}",
+        station_label(state, origin_station_id),
+        station_label(state, destination_station_id)
+    )
+}
+
+fn direction_mode_label(direction_mode: ServiceDirectionMode) -> &'static str {
+    match direction_mode {
+        ServiceDirectionMode::BothDirections => "BOTH DIRECTIONS",
+        ServiceDirectionMode::ForwardOnly => "ONE WAY",
+    }
 }
 
 fn preview_stop_lines(

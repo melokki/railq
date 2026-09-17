@@ -360,6 +360,19 @@ pub fn create_service(
     state: &mut GameState,
     stop_station_ids: Vec<RailStationId>,
 ) -> Result<ServiceId, ServiceError> {
+    create_service_with_mode(
+        state,
+        stop_station_ids,
+        ServiceDirectionMode::BothDirections,
+    )
+}
+
+/// Creates one Passenger Service using the requested operating direction mode.
+pub fn create_service_with_mode(
+    state: &mut GameState,
+    stop_station_ids: Vec<RailStationId>,
+    direction_mode: ServiceDirectionMode,
+) -> Result<ServiceId, ServiceError> {
     let rail_line_ids =
         service_path_for_stops(&state.region.rail_authority.rail_network, &stop_station_ids)?;
 
@@ -376,17 +389,15 @@ pub fn create_service(
 
     let service_id = ServiceId::new_v4();
     let service_name = next_service_name(&state.player_company.passenger_services);
-    let (forward_train_number, reverse_train_number) = allocate_train_numbers(
-        &state.player_company.passenger_services,
-        ServiceDirectionMode::BothDirections,
-    )?;
+    let (forward_train_number, reverse_train_number) =
+        allocate_train_numbers(&state.player_company.passenger_services, direction_mode)?;
     state
         .player_company
         .passenger_services
         .push(PassengerService {
             id: service_id,
             name: service_name,
-            direction_mode: ServiceDirectionMode::BothDirections,
+            direction_mode,
             forward_train_number,
             reverse_train_number,
             stop_station_ids,
@@ -411,23 +422,7 @@ fn allocate_train_numbers(
     services: &[PassengerService],
     direction_mode: ServiceDirectionMode,
 ) -> Result<(u32, Option<u32>), ServiceError> {
-    let highest = services
-        .iter()
-        .flat_map(|service| {
-            [
-                Some(service.forward_train_number),
-                service.reverse_train_number,
-            ]
-            .into_iter()
-            .flatten()
-        })
-        .max();
-    let forward = match highest {
-        Some(number) => number
-            .checked_add(1)
-            .ok_or(ServiceError::TrainNumberExhausted)?,
-        None => FIRST_PASSENGER_TRAIN_NUMBER,
-    };
+    let forward = next_available_train_number(services)?;
     let reverse = match direction_mode {
         ServiceDirectionMode::BothDirections => Some(
             forward
@@ -439,6 +434,26 @@ fn allocate_train_numbers(
     Ok((forward, reverse))
 }
 
+fn next_available_train_number(services: &[PassengerService]) -> Result<u32, ServiceError> {
+    let highest = services
+        .iter()
+        .flat_map(|service| {
+            [
+                Some(service.forward_train_number),
+                service.reverse_train_number,
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .max();
+    match highest {
+        Some(number) => number
+            .checked_add(1)
+            .ok_or(ServiceError::TrainNumberExhausted),
+        None => Ok(FIRST_PASSENGER_TRAIN_NUMBER),
+    }
+}
+
 /// Updates the ordered stop pattern of an unused Passenger Service while
 /// preserving its persistent identity and generated name.
 ///
@@ -448,6 +463,23 @@ pub fn update_service(
     state: &mut GameState,
     service_id: ServiceId,
     stop_station_ids: Vec<RailStationId>,
+) -> Result<(), ServiceError> {
+    let direction_mode = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+        .map(|service| service.direction_mode)
+        .ok_or(ServiceError::ServiceNotFound { service_id })?;
+    update_service_with_mode(state, service_id, stop_station_ids, direction_mode)
+}
+
+/// Updates the route and direction mode of an unused Passenger Service.
+pub fn update_service_with_mode(
+    state: &mut GameState,
+    service_id: ServiceId,
+    stop_station_ids: Vec<RailStationId>,
+    direction_mode: ServiceDirectionMode,
 ) -> Result<(), ServiceError> {
     let Some(index) = state
         .player_company
@@ -480,9 +512,25 @@ pub fn update_service(
         });
     }
 
+    let current_mode = state.player_company.passenger_services[index].direction_mode;
+    let reverse_train_number = match (current_mode, direction_mode) {
+        (ServiceDirectionMode::BothDirections, ServiceDirectionMode::ForwardOnly) => None,
+        (ServiceDirectionMode::ForwardOnly, ServiceDirectionMode::BothDirections) => {
+            Some(next_available_train_number(
+                &state.player_company.passenger_services,
+            )?)
+        }
+        (_, ServiceDirectionMode::BothDirections) => {
+            state.player_company.passenger_services[index].reverse_train_number
+        }
+        (_, ServiceDirectionMode::ForwardOnly) => None,
+    };
+
     let service = &mut state.player_company.passenger_services[index];
     service.stop_station_ids = stop_station_ids;
     service.rail_line_ids = rail_line_ids;
+    service.direction_mode = direction_mode;
+    service.reverse_train_number = reverse_train_number;
     Ok(())
 }
 
@@ -700,6 +748,58 @@ mod tests {
                 RailStationId::new(3)
             ]
         );
+    }
+
+    #[test]
+    fn one_way_service_uses_only_a_forward_train_number() {
+        let mut game = game();
+
+        let service_id = create_service_with_mode(
+            &mut game,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+            ServiceDirectionMode::ForwardOnly,
+        )
+        .unwrap();
+
+        let service = game
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .unwrap();
+        assert_eq!(service.direction_mode, ServiceDirectionMode::ForwardOnly);
+        assert_eq!(service.forward_train_number, 100);
+        assert_eq!(service.reverse_train_number, None);
+    }
+
+    #[test]
+    fn changing_direction_mode_preserves_identity_and_allocates_reverse_number_when_needed() {
+        let mut game = game();
+        let service_id = create_service_with_mode(
+            &mut game,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+            ServiceDirectionMode::ForwardOnly,
+        )
+        .unwrap();
+
+        update_service_with_mode(
+            &mut game,
+            service_id,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+            ServiceDirectionMode::BothDirections,
+        )
+        .unwrap();
+
+        let service = game
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .unwrap();
+        assert_eq!(service.name, "R1");
+        assert_eq!(service.direction_mode, ServiceDirectionMode::BothDirections);
+        assert_eq!(service.forward_train_number, 100);
+        assert_eq!(service.reverse_train_number, Some(101));
     }
 
     #[test]

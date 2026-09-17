@@ -12,8 +12,8 @@ use std::{error::Error, fmt, path::PathBuf};
 
 use crate::{
     model::{
-        GameState, InfrastructureProjectId, Money, RailStationId, ServiceId, TrainId, TrainNickname,
-        TrainStatus, UtcSeconds, VehicleKeeperMark,
+        GameState, InfrastructureProjectId, Money, RailStationId, ServiceDirectionMode, ServiceId,
+        TrainId, TrainNickname, TrainStatus, UtcSeconds, VehicleKeeperMark,
     },
     sim::{
         authority::{InfrastructureProjectActionError, contribute_to_infrastructure_project},
@@ -22,8 +22,9 @@ use crate::{
         fleet::{FleetError, purchase_train, sell_train},
         journeys::{DispatchError, dispatch_journey},
         services::{
-            ServiceAssignmentError, ServiceError, assign_train_to_service, create_service,
-            delete_service, find_or_create_service, unassign_train_from_service, update_service,
+            ServiceAssignmentError, ServiceError, assign_train_to_service,
+            create_service_with_mode, delete_service, find_or_create_service,
+            unassign_train_from_service, update_service_with_mode,
         },
         time::{AdvanceTimeError, SettledJourney, advance_time, advance_time_with_arrivals},
         world::create_new_game,
@@ -175,15 +176,25 @@ impl<S: GameStore> App<S> {
                 let proceeds = self.sell_train(train_id, now)?;
                 Ok(AppCommandResult::TrainSold { train_id, proceeds })
             }
-            AppCommand::CreatePassengerService { stop_station_ids } => {
-                let service_id = self.create_passenger_service(stop_station_ids, now)?;
+            AppCommand::CreatePassengerService {
+                stop_station_ids,
+                direction_mode,
+            } => {
+                let service_id =
+                    self.create_passenger_service_with_mode(stop_station_ids, direction_mode, now)?;
                 Ok(AppCommandResult::PassengerServiceCreated { service_id })
             }
             AppCommand::UpdatePassengerService {
                 service_id,
                 stop_station_ids,
+                direction_mode,
             } => {
-                self.update_passenger_service(service_id, stop_station_ids, now)?;
+                self.update_passenger_service_with_mode(
+                    service_id,
+                    stop_station_ids,
+                    direction_mode,
+                    now,
+                )?;
                 Ok(AppCommandResult::PassengerServiceUpdated { service_id })
             }
             AppCommand::DeletePassengerService { service_id } => {
@@ -322,15 +333,30 @@ impl<S: GameStore> App<S> {
         })
     }
 
-    /// Creates and persists one directional Passenger Service.
+    /// Creates and persists one bidirectional Passenger Service.
     pub fn create_passenger_service(
         &mut self,
         stop_station_ids: Vec<RailStationId>,
         now: UtcSeconds,
     ) -> Result<ServiceId, AppError<S::Error>> {
+        self.create_passenger_service_with_mode(
+            stop_station_ids,
+            ServiceDirectionMode::BothDirections,
+            now,
+        )
+    }
+
+    /// Creates and persists one Passenger Service using the requested direction mode.
+    pub fn create_passenger_service_with_mode(
+        &mut self,
+        stop_station_ids: Vec<RailStationId>,
+        direction_mode: ServiceDirectionMode,
+        now: UtcSeconds,
+    ) -> Result<ServiceId, AppError<S::Error>> {
         self.transact(now, |state, _| {
             let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
-            let service_id = create_service(state, stop_station_ids).map_err(AppError::Service)?;
+            let service_id = create_service_with_mode(state, stop_station_ids, direction_mode)
+                .map_err(AppError::Service)?;
             if bankruptcy_prevents_operation {
                 Err(AppError::Bankruptcy)
             } else {
@@ -339,16 +365,36 @@ impl<S: GameStore> App<S> {
         })
     }
 
-    /// Updates and persists one unused directional Passenger Service.
+    /// Updates and persists the route of one unused Passenger Service.
     pub fn update_passenger_service(
         &mut self,
         service_id: ServiceId,
         stop_station_ids: Vec<RailStationId>,
         now: UtcSeconds,
     ) -> Result<(), AppError<S::Error>> {
+        let direction_mode = self
+            .state
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .map(|service| service.direction_mode)
+            .ok_or(AppError::Service(ServiceError::ServiceNotFound { service_id }))?;
+        self.update_passenger_service_with_mode(service_id, stop_station_ids, direction_mode, now)
+    }
+
+    /// Updates and persists the route and direction mode of one unused Passenger Service.
+    pub fn update_passenger_service_with_mode(
+        &mut self,
+        service_id: ServiceId,
+        stop_station_ids: Vec<RailStationId>,
+        direction_mode: ServiceDirectionMode,
+        now: UtcSeconds,
+    ) -> Result<(), AppError<S::Error>> {
         self.transact(now, |state, _| {
             let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
-            update_service(state, service_id, stop_station_ids).map_err(AppError::Service)?;
+            update_service_with_mode(state, service_id, stop_station_ids, direction_mode)
+                .map_err(AppError::Service)?;
             if bankruptcy_prevents_operation {
                 Err(AppError::Bankruptcy)
             } else {
@@ -811,6 +857,7 @@ mod tests {
             .execute(
                 AppCommand::CreatePassengerService {
                     stop_station_ids: stops.clone(),
+                    direction_mode: ServiceDirectionMode::BothDirections,
                 },
                 STARTED_AT,
             )
@@ -824,6 +871,7 @@ mod tests {
                 AppCommand::UpdatePassengerService {
                     service_id,
                     stop_station_ids: stops,
+                    direction_mode: ServiceDirectionMode::BothDirections,
                 },
                 STARTED_AT,
             )
