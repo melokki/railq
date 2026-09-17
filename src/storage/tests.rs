@@ -207,6 +207,15 @@ fn sqlite_round_trips_all_infrastructure_project_kinds() {
             timeline: timeline(2_005),
             funding: InfrastructureProjectFunding::default(),
         },
+        InfrastructureProject {
+            id: InfrastructureProjectId::new(7),
+            kind: InfrastructureProjectKind::StationUpgrade {
+                rail_station_ids: vec![RailStationId::new(2)],
+            },
+            status: InfrastructureProjectStatus::Rejected,
+            timeline: timeline(2_006),
+            funding: InfrastructureProjectFunding::default(),
+        },
     ];
     slot.save(&state).unwrap();
 
@@ -1716,4 +1725,49 @@ fn v33_migration_adds_the_slower_authority_pacing_target() {
         rules,
         (3_600, 7_200, 3_600, 86_400, 86_400, 3_600, 18_000, 120, 180, 240, 2)
     );
+}
+
+#[test]
+fn v34_migration_adds_rejected_infrastructure_project_status() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    let v34_schema = SCHEMA.replace(
+        "'approved', 'deferred', 'rejected', 'funding'",
+        "'approved', 'deferred', 'funding'",
+    );
+    assert!(!v34_schema.contains("'rejected'"));
+    connection.execute_batch(&v34_schema).unwrap();
+    connection
+        .execute(
+            "INSERT INTO infrastructure_projects(id, sequence, kind, status, requested_at)
+             VALUES('00000004-0000-4000-8000-000000000001', 0, 'new_line', 'deferred', 1000)",
+            [],
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 34_u32).unwrap();
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    let status: String = connection
+        .query_row(
+            "SELECT status FROM infrastructure_projects WHERE sequence = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let table_sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'infrastructure_projects'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(version, SAVE_VERSION);
+    assert_eq!(status, "deferred");
+    assert!(table_sql.contains("'rejected'"));
 }

@@ -16,6 +16,7 @@ pub enum InfrastructureProjectStatus {
     Proposed,
     Approved,
     Deferred,
+    Rejected,
     Funding,
     Scheduled,
     Construction,

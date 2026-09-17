@@ -68,7 +68,9 @@ impl ProjectSelection {
                 projects.iter().position(|project| {
                     !matches!(
                         project.status,
-                        InfrastructureProjectStatus::Open | InfrastructureProjectStatus::Cancelled
+                        InfrastructureProjectStatus::Open
+                            | InfrastructureProjectStatus::Rejected
+                            | InfrastructureProjectStatus::Cancelled
                     )
                 })
             })
@@ -555,7 +557,9 @@ fn render_programme(frame: &mut Frame, area: Rect, state: &GameState) {
         .filter(|project| {
             !matches!(
                 project.status,
-                InfrastructureProjectStatus::Open | InfrastructureProjectStatus::Cancelled
+                InfrastructureProjectStatus::Open
+                    | InfrastructureProjectStatus::Rejected
+                    | InfrastructureProjectStatus::Cancelled
             )
         })
         .count();
@@ -1027,6 +1031,10 @@ fn append_timeline(
                 lines.push(value_line("Next", "No further automatic reconsideration"));
             }
         }
+        InfrastructureProjectStatus::Rejected => {
+            lines.push(Line::styled("REJECTED", theme::table_header()));
+            lines.push(value_line("Next", "No automatic reconsideration"));
+        }
         InfrastructureProjectStatus::Funding => {
             lines.push(Line::styled("FUNDING", theme::table_header()));
             let estimated = i128::from(project.funding.estimated_cost.cents()).max(0);
@@ -1263,6 +1271,7 @@ fn project_status(status: InfrastructureProjectStatus) -> &'static str {
         InfrastructureProjectStatus::Proposed => "PROPOSED",
         InfrastructureProjectStatus::Approved => "APPROVED",
         InfrastructureProjectStatus::Deferred => "DEFERRED",
+        InfrastructureProjectStatus::Rejected => "REJECTED",
         InfrastructureProjectStatus::Funding => "FUNDING",
         InfrastructureProjectStatus::Scheduled => "SCHEDULED",
         InfrastructureProjectStatus::Construction => "CONSTRUCTION",
@@ -1275,7 +1284,9 @@ fn status_style(status: InfrastructureProjectStatus) -> ratatui::style::Style {
     match status {
         InfrastructureProjectStatus::Open => theme::success(),
         InfrastructureProjectStatus::Deferred => theme::warning(),
-        InfrastructureProjectStatus::Cancelled => theme::error(),
+        InfrastructureProjectStatus::Rejected | InfrastructureProjectStatus::Cancelled => {
+            theme::error()
+        }
         InfrastructureProjectStatus::Funding
         | InfrastructureProjectStatus::Scheduled
         | InfrastructureProjectStatus::Construction => theme::warning(),
@@ -1315,6 +1326,7 @@ fn project_next(project: &InfrastructureProject, now: UtcSeconds) -> String {
                 "No further automatic review".into()
             }
         }
+        InfrastructureProjectStatus::Rejected => "Rejected".into(),
         InfrastructureProjectStatus::Funding => project
             .funding
             .funding_gap()

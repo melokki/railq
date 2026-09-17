@@ -428,7 +428,9 @@ fn validate_infrastructure_projects(
         }
         if !matches!(
             project.status,
-            InfrastructureProjectStatus::Open | InfrastructureProjectStatus::Cancelled
+            InfrastructureProjectStatus::Open
+                | InfrastructureProjectStatus::Rejected
+                | InfrastructureProjectStatus::Cancelled
         ) {
             total_project_commitments =
                 total_project_commitments.checked_add(project.funding.authority_committed)?;

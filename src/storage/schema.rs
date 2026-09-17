@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS infrastructure_projects (
     id TEXT PRIMARY KEY,
     sequence INTEGER NOT NULL UNIQUE,
     kind TEXT NOT NULL CHECK (kind IN ('new_line', 'speed_upgrade', 'double_tracking', 'electrification', 'renewal', 'station_upgrade')),
-    status TEXT NOT NULL CHECK (status IN ('requested', 'under_review', 'proposed', 'approved', 'deferred', 'funding', 'scheduled', 'construction', 'open', 'cancelled')),
+    status TEXT NOT NULL CHECK (status IN ('requested', 'under_review', 'proposed', 'approved', 'deferred', 'rejected', 'funding', 'scheduled', 'construction', 'open', 'cancelled')),
     estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0),
     authority_committed_cents INTEGER NOT NULL DEFAULT 0 CHECK (authority_committed_cents >= 0),
     operator_contributed_cents INTEGER NOT NULL DEFAULT 0 CHECK (operator_contributed_cents >= 0),

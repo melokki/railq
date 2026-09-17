@@ -60,6 +60,9 @@ const DEFERRED_RECONSIDERATION_STEP_BASIS_POINTS: u16 = 1_500;
 // demand, network usefulness, regional-development value, and construction
 // cost (which incorporates distance and difficulty).
 pub(crate) const AUTHORITY_APPROVAL_SCORE_THRESHOLD: i32 = 250;
+// Requests scoring below this floor are not merely delayed: their current
+// regional case is too weak relative to cost to justify automatic reconsideration.
+pub(crate) const AUTHORITY_REJECTION_SCORE_THRESHOLD: i32 = 100;
 // Construction mobilisation and physical-work cadence are persisted in
 // `AuthorityRules`, keeping progression deterministic for each save.
 /// Maximum number of missed daily fiscal periods applied when RailQ catches up
@@ -206,6 +209,7 @@ pub fn cancel_infrastructure_project(
         status,
         InfrastructureProjectStatus::Construction
             | InfrastructureProjectStatus::Open
+            | InfrastructureProjectStatus::Rejected
             | InfrastructureProjectStatus::Cancelled
     ) {
         return Err(InfrastructureProjectActionError::CannotCancel { project_id, status });
@@ -1057,39 +1061,50 @@ fn advance_existing_planning_projects(
                         break;
                     }
 
-                    let approval_score = project_review_score(
+                    let review_score = project_review_score(
                         region,
                         &region.rail_authority.infrastructure_projects[index],
                         world_seed,
                     );
+                    let decision = project_review_decision(review_score);
                     let target_name = project_target_settlement_name(region, index);
-                    let approved = approval_score
-                        .is_some_and(|score| score >= AUTHORITY_APPROVAL_SCORE_THRESHOLD);
                     let project = &mut region.rail_authority.infrastructure_projects[index];
                     project.timeline.proposed_at.get_or_insert(proposed_at);
-                    if approved {
-                        project.status = InfrastructureProjectStatus::Approved;
-                        project.timeline.approved_at = Some(due);
-                    } else {
-                        project.status = InfrastructureProjectStatus::Deferred;
-                        project.timeline.deferred_at = Some(due);
+                    match decision {
+                        ProjectReviewDecision::Approve => {
+                            project.status = InfrastructureProjectStatus::Approved;
+                            project.timeline.approved_at = Some(due);
+                        }
+                        ProjectReviewDecision::Defer => {
+                            project.status = InfrastructureProjectStatus::Deferred;
+                            project.timeline.deferred_at = Some(due);
+                        }
+                        ProjectReviewDecision::Reject => {
+                            project.status = InfrastructureProjectStatus::Rejected;
+                        }
                     }
-                    if approved {
-                        push_bulletin(
+                    match decision {
+                        ProjectReviewDecision::Approve => push_bulletin(
                             region,
                             due,
                             BulletinCategory::Authority,
                             format!("Rail Authority approves {target_name} connection"),
                             "The regional case has passed review and the project can enter the public funding pipeline.".into(),
-                        );
-                    } else {
-                        push_bulletin(
+                        ),
+                        ProjectReviewDecision::Defer => push_bulletin(
                             region,
                             due,
                             BulletinCategory::Authority,
                             format!("Rail Authority defers {target_name} connection"),
                             "The current regional case does not yet justify the project cost; stronger rail adoption can trigger reconsideration.".into(),
-                        );
+                        ),
+                        ProjectReviewDecision::Reject => push_bulletin(
+                            region,
+                            due,
+                            BulletinCategory::Authority,
+                            format!("Rail Authority rejects {target_name} connection"),
+                            "The review found too little regional value relative to the project cost to justify automatic reconsideration.".into(),
+                        ),
                     }
                 }
                 _ => break,
@@ -1142,6 +1157,25 @@ fn active_expansion_project_count(region: &Region) -> u32 {
             .count(),
     )
     .unwrap_or(u32::MAX)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectReviewDecision {
+    Approve,
+    Defer,
+    Reject,
+}
+
+fn project_review_decision(score: Option<i32>) -> ProjectReviewDecision {
+    match score {
+        Some(score) if score >= AUTHORITY_APPROVAL_SCORE_THRESHOLD => {
+            ProjectReviewDecision::Approve
+        }
+        Some(score) if score >= AUTHORITY_REJECTION_SCORE_THRESHOLD => {
+            ProjectReviewDecision::Defer
+        }
+        _ => ProjectReviewDecision::Reject,
+    }
 }
 
 pub(crate) fn project_review_score(
@@ -1502,7 +1536,8 @@ mod tests {
         deferred_reconsideration_threshold, estimated_connection_cost,
         evaluate_connection_candidates, local_rail_success_basis_points,
         new_line_construction_duration_with_rules,
-        open_completed_infrastructure_projects, project_from_candidate,
+        open_completed_infrastructure_projects, project_from_candidate, project_review_decision,
+        project_review_score, ProjectReviewDecision,
     };
 
     const PROVISIONAL_AUTHORITY_RULES: AuthorityRules = AuthorityRules::provisional();
@@ -1516,6 +1551,39 @@ mod tests {
             pool.market_maturity = MarketMaturity::full();
         }
         demand
+    }
+
+    fn force_project_review_score(
+        region: &mut crate::model::Region,
+        project_index: usize,
+        world_seed: u64,
+        target_score: i32,
+    ) {
+        region.rail_authority.infrastructure_projects[project_index]
+            .funding
+            .estimated_cost = Money::ZERO;
+        let baseline = project_review_score(
+            region,
+            &region.rail_authority.infrastructure_projects[project_index],
+            world_seed,
+        )
+        .expect("New Line project has a review score");
+        let penalty = baseline - target_score;
+        assert!(
+            (0..=250).contains(&penalty),
+            "cannot force review score {target_score} from baseline {baseline}"
+        );
+        region.rail_authority.infrastructure_projects[project_index]
+            .funding
+            .estimated_cost = Money::from_cents(i64::from(penalty) * 100_000);
+        assert_eq!(
+            project_review_score(
+                region,
+                &region.rail_authority.infrastructure_projects[project_index],
+                world_seed,
+            ),
+            Some(target_score)
+        );
     }
 
     #[test]
@@ -1892,10 +1960,8 @@ mod tests {
             .iter_mut()
             .find(|settlement| settlement.id == target_settlement_id)
             .unwrap()
-            .population = 0;
-        region.rail_authority.infrastructure_projects[0]
-            .funding
-            .estimated_cost = Money::from_cents(25_000_000);
+            .population = 100_000;
+        force_project_review_score(&mut region, 0, 17, 202);
 
         advance_infrastructure_planning_with_rules(
             &mut region,
@@ -1968,6 +2034,84 @@ mod tests {
         assert_eq!(reconsidered.status, InfrastructureProjectStatus::Requested);
         assert_eq!(reconsidered.timeline.reconsideration_count, 1);
         assert_eq!(region.rail_authority.infrastructure_projects.len(), 1);
+    }
+
+    #[test]
+    fn review_decision_separates_approval_deferral_and_rejection() {
+        assert_eq!(
+            project_review_decision(Some(250)),
+            ProjectReviewDecision::Approve
+        );
+        assert_eq!(
+            project_review_decision(Some(249)),
+            ProjectReviewDecision::Defer
+        );
+        assert_eq!(
+            project_review_decision(Some(100)),
+            ProjectReviewDecision::Defer
+        );
+        assert_eq!(
+            project_review_decision(Some(99)),
+            ProjectReviewDecision::Reject
+        );
+        assert_eq!(project_review_decision(None), ProjectReviewDecision::Reject);
+    }
+
+    #[test]
+    fn planning_rejects_a_structurally_weak_connection_without_reconsideration() {
+        let mut region = generate_region(41);
+        let mut demand = fully_mature_demand(&region, 41);
+        let started = UtcSeconds::from_unix_seconds(60_000);
+        advance_infrastructure_planning_with_rules(
+            &mut region,
+            41,
+            &demand,
+            &PROVISIONAL_AUTHORITY_RULES,
+            started,
+        )
+        .unwrap();
+        let target_settlement_id = match &region.rail_authority.infrastructure_projects[0].kind {
+            InfrastructureProjectKind::NewLine {
+                planned_stations, ..
+            } => planned_stations[0].settlement_id,
+            _ => panic!("expected a New Line project"),
+        };
+        region
+            .settlements
+            .iter_mut()
+            .find(|settlement| settlement.id == target_settlement_id)
+            .unwrap()
+            .population = 0;
+        force_project_review_score(&mut region, 0, 41, 99);
+
+        advance_infrastructure_planning_with_rules(
+            &mut region,
+            41,
+            &demand,
+            &PROVISIONAL_AUTHORITY_RULES,
+            UtcSeconds::from_unix_seconds(60_000 + 4 * 60 * 60),
+        )
+        .unwrap();
+        assert_eq!(
+            region.rail_authority.infrastructure_projects[0].status,
+            InfrastructureProjectStatus::Rejected
+        );
+
+        for pool in &mut demand {
+            pool.market_maturity = MarketMaturity::full();
+        }
+        advance_infrastructure_planning_with_rules(
+            &mut region,
+            41,
+            &demand,
+            &PROVISIONAL_AUTHORITY_RULES,
+            UtcSeconds::from_unix_seconds(60_000 + 52 * 60 * 60),
+        )
+        .unwrap();
+        assert_eq!(
+            region.rail_authority.infrastructure_projects[0].status,
+            InfrastructureProjectStatus::Rejected
+        );
     }
 
     #[test]
