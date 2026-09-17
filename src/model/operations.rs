@@ -79,6 +79,31 @@ impl PassengerService {
     pub fn destination_station_id(&self) -> Option<RailStationId> {
         self.stop_station_ids.last().copied()
     }
+
+    /// Returns whether a READY Train may begin revenue operation from this station.
+    ///
+    /// Forward-only Services accept only their canonical origin. Bidirectional
+    /// Services also accept their canonical destination for the reverse working.
+    pub fn accepts_departure_station(&self, station_id: RailStationId) -> bool {
+        self.origin_station_id() == Some(station_id)
+            || (self.direction_mode == ServiceDirectionMode::BothDirections
+                && self.destination_station_id() == Some(station_id))
+    }
+
+    /// Returns the termini at which a Train may begin revenue operation.
+    pub fn departure_station_ids(&self) -> Vec<RailStationId> {
+        let mut stations = Vec::with_capacity(2);
+        if let Some(origin) = self.origin_station_id() {
+            stations.push(origin);
+        }
+        if self.direction_mode == ServiceDirectionMode::BothDirections
+            && let Some(destination) = self.destination_station_id()
+            && !stations.contains(&destination)
+        {
+            stations.push(destination);
+        }
+        stations
+    }
 }
 
 /// Passengers currently aboard one active Journey, grouped by their final stop.

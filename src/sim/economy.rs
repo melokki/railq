@@ -447,10 +447,7 @@ pub fn quote_positioning_journey(
         TrainStatus::Ready { at } => at,
         TrainStatus::Travelling { .. } => return Err(EconomyError::TrainTravelling { train_id }),
     };
-    let valid_destination = service.origin_station_id() == Some(destination_station_id)
-        || (service.direction_mode == ServiceDirectionMode::BothDirections
-            && service.destination_station_id() == Some(destination_station_id));
-    if !valid_destination {
+    if !service.accepts_departure_station(destination_station_id) {
         return Err(EconomyError::InvalidPositioningDestination {
             service_id,
             station_id: destination_station_id,
@@ -1012,6 +1009,63 @@ mod tests {
                 train_id: TRAIN_ID,
                 station_id: DESTINATION,
                 service_id: SERVICE_ID,
+            })
+        );
+    }
+
+    #[test]
+    fn forward_only_positioning_accepts_only_the_canonical_origin() {
+        let mut state = fixture();
+        state.player_company.passenger_services[0].direction_mode =
+            ServiceDirectionMode::ForwardOnly;
+        state.player_company.passenger_services[0].reverse_train_number = None;
+        state
+            .player_company
+            .fleet
+            .service_assignments
+            .insert(TRAIN_ID, SERVICE_ID);
+        state.player_company.fleet.trains[0].status = TrainStatus::Ready {
+            at: RailStationId::new(2),
+        };
+
+        assert_eq!(
+            quote_positioning_journey(&state, TRAIN_ID, SERVICE_ID, DESTINATION),
+            Err(EconomyError::InvalidPositioningDestination {
+                service_id: SERVICE_ID,
+                station_id: DESTINATION,
+            })
+        );
+
+        let quote = quote_positioning_journey(&state, TRAIN_ID, SERVICE_ID, ORIGIN)
+            .expect("the canonical origin is a valid positioning destination");
+        assert_eq!(quote.origin_station_id, RailStationId::new(2));
+        assert_eq!(quote.destination_station_id, ORIGIN);
+        assert!(quote.operating_cost > Money::ZERO);
+    }
+
+    #[test]
+    fn positioning_rejects_a_terminus_without_a_constructed_path() {
+        let mut state = fixture();
+        state
+            .player_company
+            .fleet
+            .service_assignments
+            .insert(TRAIN_ID, SERVICE_ID);
+        state.player_company.fleet.trains[0].status = TrainStatus::Ready {
+            at: RailStationId::new(2),
+        };
+        state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_lines
+            .retain(|line| line.id != FIRST_LINE);
+
+        assert_eq!(
+            quote_positioning_journey(&state, TRAIN_ID, SERVICE_ID, ORIGIN),
+            Err(EconomyError::PositioningPathNotFound {
+                origin_station_id: RailStationId::new(2),
+                destination_station_id: ORIGIN,
             })
         );
     }
