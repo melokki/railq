@@ -806,9 +806,17 @@ fn advance_project_scheduling_with_rules(
             project_route_replan(region, world_seed, project)?
         } {
             let target_name = project_target_settlement_name(region, index);
+            let previous_connection_name =
+                rail_station_settlement_name(region, replan.previous_connection_station_id);
             let connection_name = rail_station_settlement_name(
                 region,
                 replan.replacement.connection_station_id,
+            );
+            let bulletin_detail = route_replan_bulletin_detail(
+                &target_name,
+                &previous_connection_name,
+                &connection_name,
+                &replan,
             );
             apply_project_route_replan(region, index, &replan)?;
             push_bulletin(
@@ -816,7 +824,7 @@ fn advance_project_scheduling_with_rules(
                 now,
                 BulletinCategory::Authority,
                 format!("{target_name} connection replanned via {connection_name}"),
-                "A newly opened station provides a materially shorter route, so the funded project has been updated before construction scheduling.".into(),
+                bulletin_detail,
             );
 
             if !region.rail_authority.infrastructure_projects[index]
@@ -1179,6 +1187,21 @@ struct ConnectionRouteReplan {
     previous_distance: DistanceMetres,
     replacement: ConnectionCandidate,
     distance_saving_metres: u64,
+}
+
+fn route_replan_bulletin_detail(
+    target_name: &str,
+    previous_connection_name: &str,
+    replacement_connection_name: &str,
+    replan: &ConnectionRouteReplan,
+) -> String {
+    let previous_km = replan.previous_distance.metres() as f64 / 1_000.0;
+    let replacement_km = replan.replacement.estimated_distance.metres() as f64 / 1_000.0;
+    let saving_km = replan.distance_saving_metres as f64 / 1_000.0;
+
+    format!(
+        "Route updated from {previous_connection_name} → {target_name} ({previous_km:.0} km) to {replacement_connection_name} → {target_name} ({replacement_km:.0} km), saving {saving_km:.0} km before construction."
+    )
 }
 
 pub(crate) fn project_connection_station_id(
@@ -1759,7 +1782,9 @@ mod tests {
         evaluate_connection_candidate, evaluate_connection_candidates,
         local_rail_success_basis_points, new_line_construction_duration_with_rules,
         open_completed_infrastructure_projects, project_connection_station_id,
-        project_from_candidate, project_review_decision, project_review_score, project_route_replan,
+        ConnectionRouteReplan, apply_project_route_replan, project_from_candidate,
+        project_review_decision, project_review_score, project_route_replan,
+        route_replan_bulletin_detail,
         route_replan_savings_are_material,
     };
 
@@ -2053,6 +2078,76 @@ mod tests {
         assert_eq!(
             replan.distance_saving_metres,
             original_candidate.estimated_distance.metres() - 5_000
+        );
+    }
+
+    #[test]
+    fn route_replan_cost_increase_preserves_contribution_and_reopens_funding_gap() {
+        let mut region = generate_region(42);
+        let original_candidate = evaluate_connection_candidates(&region, 42).unwrap()[0].clone();
+        let now = UtcSeconds::from_unix_seconds(2_000);
+        let operator_contribution = Money::from_cents(1_000);
+        let mut project = project_from_candidate(original_candidate.clone(), now);
+        project.status = InfrastructureProjectStatus::Funding;
+        project.funding.operator_contributed = operator_contribution;
+        project.funding.authority_committed = project
+            .funding
+            .estimated_cost
+            .checked_sub(operator_contribution)
+            .unwrap();
+        project.timeline.funding_completed_at = Some(now);
+        let original_authority_commitment = project.funding.authority_committed;
+        let original_cost = project.funding.estimated_cost;
+        region.rail_authority.finances.committed_investment = original_authority_commitment;
+        region.rail_authority.infrastructure_projects = vec![project];
+
+        let mut replacement = original_candidate.clone();
+        replacement.connection_station_id = region.rail_authority.rail_network.rail_stations[1].id;
+        replacement.estimated_distance = DistanceMetres::new(1_000).unwrap();
+        replacement.construction_difficulty = ConstructionDifficulty::High;
+        replacement.estimated_cost = original_cost.checked_add(Money::from_cents(5_000)).unwrap();
+        let replan = ConnectionRouteReplan {
+            previous_connection_station_id: original_candidate.connection_station_id,
+            previous_distance: original_candidate.estimated_distance,
+            distance_saving_metres: original_candidate
+                .estimated_distance
+                .metres()
+                .saturating_sub(replacement.estimated_distance.metres()),
+            replacement,
+        };
+
+        apply_project_route_replan(&mut region, 0, &replan).unwrap();
+
+        let project = &region.rail_authority.infrastructure_projects[0];
+        assert_eq!(project.status, InfrastructureProjectStatus::Funding);
+        assert_eq!(project.funding.operator_contributed, operator_contribution);
+        assert_eq!(project.funding.authority_committed, original_authority_commitment);
+        assert_eq!(
+            region.rail_authority.finances.committed_investment,
+            original_authority_commitment
+        );
+        assert_eq!(project.funding.funding_gap().unwrap(), Money::from_cents(5_000));
+        assert_eq!(project.timeline.funding_completed_at, None);
+    }
+
+    #[test]
+    fn route_replan_bulletin_detail_explains_old_and_new_route() {
+        let region = generate_region(42);
+        let mut candidate = evaluate_connection_candidates(&region, 42).unwrap()[0].clone();
+        candidate.connection_station_id = RailStationId::new(3);
+        candidate.estimated_distance = DistanceMetres::new(16_000).unwrap();
+        candidate.construction_difficulty = ConstructionDifficulty::Low;
+        candidate.estimated_cost = Money::from_cents(10_000);
+        let replan = ConnectionRouteReplan {
+            previous_connection_station_id: RailStationId::new(1),
+            previous_distance: DistanceMetres::new(43_000).unwrap(),
+            replacement: candidate,
+            distance_saving_metres: 27_000,
+        };
+
+        assert_eq!(
+            route_replan_bulletin_detail("Bellhaven", "Oakridge", "Cedarfall", &replan),
+            "Route updated from Oakridge → Bellhaven (43 km) to Cedarfall → Bellhaven (16 km), saving 27 km before construction."
         );
     }
 
@@ -2890,9 +2985,13 @@ mod tests {
             region.rail_authority.finances.committed_investment,
             expected_authority_commitment
         );
-        assert!(region.bulletin.iter().any(|entry| {
-            entry.headline.contains("connection replanned via")
-        }));
+        let replan_bulletin = region
+            .bulletin
+            .iter()
+            .find(|entry| entry.headline.contains("connection replanned via"))
+            .expect("route replan should be recorded in the bulletin");
+        assert!(replan_bulletin.detail.contains("Route updated from"));
+        assert!(replan_bulletin.detail.contains("saving"));
     }
 
     #[test]
