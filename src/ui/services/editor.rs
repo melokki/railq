@@ -300,15 +300,18 @@ fn render_picker(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
         context_area,
     );
 
-    let show_preview = content_area.width >= 68 && content_area.height >= 7;
+    let show_preview = content_area.width >= 76 && content_area.height >= 9;
     let (picker_area, divider_area, preview_area) = if show_preview {
+        // Give the geographic preview slightly more than half of the editor.
+        // Station labels need horizontal breathing room much more than the
+        // two-column stop picker does.
         let preview_width = content_area
             .width
-            .saturating_mul(45)
+            .saturating_mul(52)
             .saturating_div(100)
-            .clamp(34, 44);
+            .clamp(44, 60);
         let [picker_area, divider_area, preview_area] = Layout::horizontal([
-            Constraint::Min(28),
+            Constraint::Min(30),
             Constraint::Length(1),
             Constraint::Length(preview_width),
         ])
@@ -378,7 +381,7 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
         .get(flow.selected_station_index)
         .map(|station| station.id);
 
-    let map_height = area.height.saturating_sub(8).clamp(8, 14);
+    let map_height = area.height.saturating_sub(8).clamp(10, 17);
     let [title_area, map_area, legend_area, details_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(map_height),

@@ -506,7 +506,10 @@ impl ServiceWorkspace {
         } else if let Some(editor) = &self.name_editor {
             render_name_editor(frame, area, state, editor);
         } else if let Some(flow) = &self.create_flow {
-            editor::render(frame, modal::workflow_rect(area), state, flow);
+            // Route editing benefits from enough room to preserve the same
+            // geographic topology and labels as the operational Map. Keep the
+            // normal workflow size for the other focused modals.
+            editor::render(frame, modal::centered_rect(area, 118, 30), state, flow);
         } else if let Some(service_id) = self.delete_confirmation {
             render_delete_confirmation(frame, area, state, service_id);
         }
