@@ -411,6 +411,12 @@ fn advance_infrastructure_planning_with_rules(
         deferred_project_ready_for_reconsideration(region, demand, authority_rules, now)?
     {
         let target_name = project_target_settlement_name(region, index);
+        let project = &region.rail_authority.infrastructure_projects[index];
+        let required =
+            deferred_reconsideration_threshold(project.timeline.reconsideration_count);
+        let maturity = project_connection_station_id(project)
+            .map(|station_id| local_rail_success_basis_points(demand, station_id))
+            .unwrap_or(0);
         let project = &mut region.rail_authority.infrastructure_projects[index];
         project.status = InfrastructureProjectStatus::Requested;
         project.timeline.requested_at = now;
@@ -425,7 +431,11 @@ fn advance_infrastructure_planning_with_rules(
             now,
             BulletinCategory::Local,
             format!("{target_name} Council renews rail connection request"),
-            "Stronger nearby rail adoption has reopened the case for a connection.".into(),
+            format!(
+                "Nearby rail adoption reached {} against the {} reconsideration threshold, so the connection re-enters formal review.",
+                format_maturity_percent(maturity),
+                format_maturity_percent(required),
+            ),
         );
         return Ok(());
     }
@@ -1061,11 +1071,12 @@ fn advance_existing_planning_projects(
                         break;
                     }
 
-                    let review_score = project_review_score(
+                    let review_breakdown = project_review_score_breakdown(
                         region,
                         &region.rail_authority.infrastructure_projects[index],
                         world_seed,
                     );
+                    let review_score = review_breakdown.map(|score| score.total);
                     let decision = project_review_decision(review_score);
                     let target_name = project_target_settlement_name(region, index);
                     let project = &mut region.rail_authority.infrastructure_projects[index];
@@ -1083,27 +1094,28 @@ fn advance_existing_planning_projects(
                             project.status = InfrastructureProjectStatus::Rejected;
                         }
                     }
+                    let review_detail = project_review_bulletin_detail(decision, review_score);
                     match decision {
                         ProjectReviewDecision::Approve => push_bulletin(
                             region,
                             due,
                             BulletinCategory::Authority,
                             format!("Rail Authority approves {target_name} connection"),
-                            "The regional case has passed review and the project can enter the public funding pipeline.".into(),
+                            review_detail,
                         ),
                         ProjectReviewDecision::Defer => push_bulletin(
                             region,
                             due,
                             BulletinCategory::Authority,
                             format!("Rail Authority defers {target_name} connection"),
-                            "The current regional case does not yet justify the project cost; stronger rail adoption can trigger reconsideration.".into(),
+                            review_detail,
                         ),
                         ProjectReviewDecision::Reject => push_bulletin(
                             region,
                             due,
                             BulletinCategory::Authority,
                             format!("Rail Authority rejects {target_name} connection"),
-                            "The review found too little regional value relative to the project cost to justify automatic reconsideration.".into(),
+                            review_detail,
                         ),
                     }
                 }
@@ -1178,11 +1190,11 @@ fn project_review_decision(score: Option<i32>) -> ProjectReviewDecision {
     }
 }
 
-pub(crate) fn project_review_score(
+pub(crate) fn project_review_score_breakdown(
     region: &Region,
     project: &InfrastructureProject,
     world_seed: u64,
-) -> Option<i32> {
+) -> Option<ConnectionCandidateScore> {
     let InfrastructureProjectKind::NewLine {
         planned_stations, ..
     } = &project.kind
@@ -1192,16 +1204,43 @@ pub(crate) fn project_review_score(
     let planned_station = planned_stations.first()?;
     let connection_station_id = project_connection_station_id(project)?;
 
-    Some(
-        score_candidate(
-            region,
-            planned_station.settlement_id,
-            connection_station_id,
-            project.funding.estimated_cost,
-            world_seed,
-        )
-        .total,
-    )
+    Some(score_candidate(
+        region,
+        planned_station.settlement_id,
+        connection_station_id,
+        project.funding.estimated_cost,
+        world_seed,
+    ))
+}
+
+pub(crate) fn project_review_score(
+    region: &Region,
+    project: &InfrastructureProject,
+    world_seed: u64,
+) -> Option<i32> {
+    project_review_score_breakdown(region, project, world_seed).map(|score| score.total)
+}
+
+fn project_review_bulletin_detail(decision: ProjectReviewDecision, score: Option<i32>) -> String {
+    let Some(score) = score else {
+        return "The review could not establish enough regional value to keep the connection in the automatic planning pipeline.".into();
+    };
+
+    match decision {
+        ProjectReviewDecision::Approve => format!(
+            "Review score {score} cleared the {AUTHORITY_APPROVAL_SCORE_THRESHOLD} approval threshold. The project can enter the public funding pipeline."
+        ),
+        ProjectReviewDecision::Defer => format!(
+            "Review score {score} is below the {AUTHORITY_APPROVAL_SCORE_THRESHOLD} approval threshold but above the {AUTHORITY_REJECTION_SCORE_THRESHOLD} rejection floor. Stronger nearby rail adoption can trigger reconsideration."
+        ),
+        ProjectReviewDecision::Reject => format!(
+            "Review score {score} fell below the {AUTHORITY_REJECTION_SCORE_THRESHOLD} rejection floor, so the request will not be reconsidered automatically."
+        ),
+    }
+}
+
+fn format_maturity_percent(basis_points: u16) -> String {
+    format!("{}%", u32::from(basis_points).saturating_add(50) / 100)
 }
 
 fn is_active_planning_status(status: InfrastructureProjectStatus) -> bool {
@@ -1915,6 +1954,9 @@ mod tests {
             first.timeline.approved_at,
             Some(UtcSeconds::from_unix_seconds(10_000 + 4 * 60 * 60))
         );
+        let decision_bulletin = region.bulletin.last().expect("approval bulletin exists");
+        assert!(decision_bulletin.detail.contains("Review score"));
+        assert!(decision_bulletin.detail.contains("approval threshold"));
         // The council-request cooldown prevents a second request from appearing
         // immediately after the first review completes.
         assert_eq!(region.rail_authority.infrastructure_projects.len(), 1);
@@ -1984,6 +2026,9 @@ mod tests {
             Some(UtcSeconds::from_unix_seconds(30_000 + 4 * 60 * 60))
         );
         assert_eq!(first.timeline.approved_at, None);
+        let decision_bulletin = region.bulletin.last().expect("deferral bulletin exists");
+        assert!(decision_bulletin.detail.contains("approval threshold"));
+        assert!(decision_bulletin.detail.contains("rejection floor"));
 
         let duplicate_target_count = region
             .rail_authority
@@ -2034,6 +2079,9 @@ mod tests {
         assert_eq!(reconsidered.status, InfrastructureProjectStatus::Requested);
         assert_eq!(reconsidered.timeline.reconsideration_count, 1);
         assert_eq!(region.rail_authority.infrastructure_projects.len(), 1);
+        let renewal_bulletin = region.bulletin.last().expect("renewal bulletin exists");
+        assert!(renewal_bulletin.detail.contains("55%"));
+        assert!(renewal_bulletin.detail.contains("re-enters formal review"));
     }
 
     #[test]
@@ -2095,6 +2143,13 @@ mod tests {
         assert_eq!(
             region.rail_authority.infrastructure_projects[0].status,
             InfrastructureProjectStatus::Rejected
+        );
+        let rejection_bulletin = region.bulletin.last().expect("rejection bulletin exists");
+        assert!(rejection_bulletin.detail.contains("rejection floor"));
+        assert!(
+            rejection_bulletin
+                .detail
+                .contains("will not be reconsidered automatically")
         );
 
         for pool in &mut demand {
