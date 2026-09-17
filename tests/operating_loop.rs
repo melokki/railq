@@ -40,6 +40,15 @@ const ACCESS_FEE: Money = Money::from_cents(100);
 const FUEL_COST: Money = Money::from_cents(1_200);
 const OPERATING_COST: Money = Money::from_cents(1_300);
 
+// The provisional economy uses the same 10 km starter connection, but keeps
+// the production balance values instead of the custom 10/10 regression rates
+// above. One R70 Journey therefore costs 350 cents access + 1,200 cents fuel,
+// while each Passenger pays 120 cents.
+const PROVISIONAL_FARE_PER_PASSENGER: Money = Money::from_cents(120);
+const PROVISIONAL_ACCESS_FEE: Money = Money::from_cents(350);
+const PROVISIONAL_FUEL_COST: Money = Money::from_cents(1_200);
+const PROVISIONAL_OPERATING_COST: Money = Money::from_cents(1_550);
+
 fn operating_game(company_funds: Money) -> GameState {
     let fare_rate = MoneyPerKilometre::new(10).expect("fixture fare rate is positive");
     let access_rate = MoneyPerKilometre::new(10).expect("fixture access rate is positive");
@@ -94,6 +103,72 @@ fn waiting_passengers(
         })
         .expect("the connected directional pool exists")
         .waiting_passengers
+}
+
+fn provisional_r70_quote(passengers: u32) -> railq::sim::economy::JourneyQuote {
+    let mut state = new_game("Provisional Economy Passenger", DEPARTURE);
+    for pool in &mut state.origin_destination_demand {
+        pool.waiting_passengers = 0;
+    }
+    set_waiting_passengers(&mut state, ORIGIN, DESTINATION, passengers);
+
+    let train_id = purchase_train(&mut state, 0, ORIGIN).expect("starter R70 purchase succeeds");
+    let service_id =
+        find_or_create_service(&mut state, ORIGIN, DESTINATION).expect("starter Service is created");
+
+    quote_journey(&state, train_id, service_id).expect("starter Journey is quotable")
+}
+
+#[test]
+fn provisional_r70_load_cases_match_hand_calculated_economics() {
+    // Passenger count, revenue cents, Journey profit cents.
+    let cases = [
+        (0, 0, -1_550),
+        (7, 840, -710),
+        (35, 4_200, 2_650),
+        (70, 8_400, 6_850),
+    ];
+
+    for (passengers, revenue_cents, profit_cents) in cases {
+        let quote = provisional_r70_quote(passengers);
+
+        assert_eq!(quote.boarded_passengers, passengers);
+        assert_eq!(quote.fare, PROVISIONAL_FARE_PER_PASSENGER);
+        assert_eq!(quote.operating_revenue, Money::from_cents(revenue_cents));
+        assert_eq!(quote.infrastructure_access_fee, PROVISIONAL_ACCESS_FEE);
+        assert_eq!(quote.fuel_cost, PROVISIONAL_FUEL_COST);
+        assert_eq!(quote.operating_cost, PROVISIONAL_OPERATING_COST);
+        assert_eq!(
+            quote.journey_profitability,
+            Money::from_cents(profit_cents)
+        );
+    }
+}
+
+#[test]
+fn provisional_r70_break_even_requires_thirteen_passengers() {
+    let twelve_passengers = provisional_r70_quote(12);
+    let thirteen_passengers = provisional_r70_quote(13);
+
+    assert_eq!(twelve_passengers.operating_revenue, Money::from_cents(1_440));
+    assert_eq!(
+        twelve_passengers.journey_profitability,
+        Money::from_cents(-110)
+    );
+    assert_eq!(thirteen_passengers.operating_revenue, Money::from_cents(1_560));
+    assert_eq!(
+        thirteen_passengers.journey_profitability,
+        Money::from_cents(10)
+    );
+
+    // 13 / 70 seats = 18.57% occupancy, matching the intended ~18.5%
+    // operating break-even before future maintenance and wear costs.
+    assert_eq!(
+        train_catalogue().models()[0]
+            .passenger_capacity()
+            .passengers(),
+        70
+    );
 }
 
 #[test]
