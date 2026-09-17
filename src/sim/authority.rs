@@ -8,8 +8,8 @@
 use std::{collections::BTreeSet, error::Error, fmt};
 
 use crate::model::{
-    BulletinCategory, BulletinEntry, CalculationError, ConstructionDifficulty, DistanceMetres,
-    DurationSeconds, Electrification, GameState, InfrastructureProject,
+    AuthorityRules, BulletinCategory, BulletinEntry, CalculationError, ConstructionDifficulty,
+    DistanceMetres, DurationSeconds, Electrification, GameState, InfrastructureProject,
     InfrastructureProjectFunding, InfrastructureProjectId, InfrastructureProjectKind,
     InfrastructureProjectStatus, InfrastructureProjectTimeline, Money, MoneyPerKilometre,
     OriginDestinationDemand, PlannedRailLine, PlannedRailStation, RailLine, RailLineId,
@@ -43,24 +43,16 @@ pub struct ConnectionCandidateScore {
     pub total: i32,
 }
 
-// Provisional real-time planning cadence. These values are intentionally kept
-// local to the Authority simulation until the first progression playtest.
-const REQUEST_QUEUE_DELAY: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
-const REVIEW_DURATION: DurationSeconds = DurationSeconds::from_seconds(30 * 60);
-const PROPOSAL_DURATION: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
 // A local council considers a rail connection politically justified only after
 // a nearby existing corridor has become meaningfully established. Market
 // maturity can rise only through completed passenger trips, so this threshold
 // reacts to real railway use rather than Train ownership or elapsed time.
 pub(crate) const COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS: u16 = 4_000;
-// Councils do not submit connection requests back-to-back. This also makes
-// offline reconciliation safe: reopening RailQ can produce at most one new
-// request before this real-time cooldown must elapse.
-const COUNCIL_REQUEST_COOLDOWN: DurationSeconds = DurationSeconds::from_seconds(2 * 60 * 60);
+// Councils do not submit connection requests back-to-back. The persisted
+// Authority rules own this cooldown so progression pacing stays stable per save.
 // A Deferred request can be reopened later, but only after a meaningful delay
 // and stronger evidence that the surrounding railway is succeeding. Each
 // reconsideration requires another 15 percentage points of local maturity.
-const DEFERRED_RECONSIDERATION_DELAY: DurationSeconds = DurationSeconds::from_seconds(6 * 60 * 60);
 const DEFERRED_RECONSIDERATION_BASE_MATURITY_BASIS_POINTS: u16 = 5_500;
 const DEFERRED_RECONSIDERATION_STEP_BASIS_POINTS: u16 = 1_500;
 // Provisional minimum public-value score required for a council request to
@@ -323,10 +315,11 @@ pub fn advance_rail_authority(
     region: &mut Region,
     world_seed: u64,
     demand: &[OriginDestinationDemand],
+    authority_rules: &AuthorityRules,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
     advance_authority_fiscal_periods(region, now)?;
-    advance_infrastructure_planning(region, world_seed, demand, now)?;
+    advance_infrastructure_planning_with_rules(region, world_seed, demand, authority_rules, now)?;
     advance_project_funding(region, now)?;
     advance_project_scheduling(region, now)?;
     advance_project_construction(region, now)?;
@@ -387,15 +380,31 @@ pub(crate) fn advance_authority_fiscal_periods(
 /// connection request when the planning desk is free.
 ///
 /// Only one New Line project is actively moving through Requested/UnderReview/
-/// Proposed at a time. Approved projects may accumulate and later compete for
-/// the Authority's finite investment budget.
+/// Proposed at a time. The persisted expansion-pipeline limit also prevents
+/// approved/funded work from letting the Authority queue the whole world at once.
 pub(crate) fn advance_infrastructure_planning(
     region: &mut Region,
     world_seed: u64,
     demand: &[OriginDestinationDemand],
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
-    advance_existing_planning_projects(region, world_seed, now)?;
+    advance_infrastructure_planning_with_rules(
+        region,
+        world_seed,
+        demand,
+        &AuthorityRules::provisional(),
+        now,
+    )
+}
+
+fn advance_infrastructure_planning_with_rules(
+    region: &mut Region,
+    world_seed: u64,
+    demand: &[OriginDestinationDemand],
+    authority_rules: &AuthorityRules,
+    now: UtcSeconds,
+) -> Result<(), CalculationError> {
+    advance_existing_planning_projects(region, world_seed, authority_rules, now)?;
 
     if region
         .rail_authority
@@ -406,7 +415,11 @@ pub(crate) fn advance_infrastructure_planning(
         return Ok(());
     }
 
-    if connection_request_cooldown_active(region, now)? {
+    if active_expansion_project_count(region) >= authority_rules.max_active_expansion_projects() {
+        return Ok(());
+    }
+
+    if connection_request_cooldown_active(region, authority_rules, now)? {
         return Ok(());
     }
 
@@ -414,7 +427,9 @@ pub(crate) fn advance_infrastructure_planning(
     // brand-new one. Reconsideration uses the same project identity, requires
     // stronger local rail adoption each time, and resets only the review-stage
     // timestamps. Funding/construction history is never rewritten here.
-    if let Some(index) = deferred_project_ready_for_reconsideration(region, demand, now)? {
+    if let Some(index) =
+        deferred_project_ready_for_reconsideration(region, demand, authority_rules, now)?
+    {
         let target_name = project_target_settlement_name(region, index);
         let project = &mut region.rail_authority.infrastructure_projects[index];
         project.status = InfrastructureProjectStatus::Requested;
@@ -476,6 +491,7 @@ pub(crate) fn advance_infrastructure_planning(
 
 fn connection_request_cooldown_active(
     region: &Region,
+    authority_rules: &AuthorityRules,
     now: UtcSeconds,
 ) -> Result<bool, CalculationError> {
     let latest_request = region
@@ -489,12 +505,13 @@ fn connection_request_cooldown_active(
     let Some(latest_request) = latest_request else {
         return Ok(false);
     };
-    Ok(latest_request.checked_add(COUNCIL_REQUEST_COOLDOWN)? > now)
+    Ok(latest_request.checked_add(authority_rules.council_request_cooldown())? > now)
 }
 
 fn deferred_project_ready_for_reconsideration(
     region: &Region,
     demand: &[OriginDestinationDemand],
+    authority_rules: &AuthorityRules,
     now: UtcSeconds,
 ) -> Result<Option<usize>, CalculationError> {
     let mut candidates = region
@@ -519,7 +536,7 @@ fn deferred_project_ready_for_reconsideration(
     candidates.sort_by_key(|(index, deferred_at, _, _)| (*deferred_at, *index));
 
     for (index, deferred_at, connection_station_id, reconsideration_count) in candidates {
-        if deferred_at.checked_add(DEFERRED_RECONSIDERATION_DELAY)? > now {
+        if deferred_at.checked_add(authority_rules.deferred_reconsideration_delay())? > now {
             continue;
         }
         let required = deferred_reconsideration_threshold(reconsideration_count);
@@ -994,6 +1011,7 @@ fn new_line_construction_duration(
 fn advance_existing_planning_projects(
     region: &mut Region,
     world_seed: u64,
+    authority_rules: &AuthorityRules,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
     for index in 0..region.rail_authority.infrastructure_projects.len() {
@@ -1004,7 +1022,7 @@ fn advance_existing_planning_projects(
                     let due = region.rail_authority.infrastructure_projects[index]
                         .timeline
                         .requested_at
-                        .checked_add(REQUEST_QUEUE_DELAY)?;
+                        .checked_add(authority_rules.request_queue_delay())?;
                     if due > now {
                         break;
                     }
@@ -1027,7 +1045,7 @@ fn advance_existing_planning_projects(
                         .timeline
                         .review_started_at
                         .unwrap_or(project.timeline.requested_at);
-                    let due = started_at.checked_add(REVIEW_DURATION)?;
+                    let due = started_at.checked_add(authority_rules.review_duration())?;
                     if due > now {
                         break;
                     }
@@ -1051,7 +1069,7 @@ fn advance_existing_planning_projects(
                         .proposed_at
                         .or(project.timeline.review_started_at)
                         .unwrap_or(project.timeline.requested_at);
-                    let due = proposed_at.checked_add(PROPOSAL_DURATION)?;
+                    let due = proposed_at.checked_add(authority_rules.proposal_duration())?;
                     if due > now {
                         break;
                     }
@@ -1117,6 +1135,30 @@ pub(crate) fn project_connection_station_id(
     } else {
         planned_line.first_station_id
     })
+}
+
+fn active_expansion_project_count(region: &Region) -> u32 {
+    u32::try_from(
+        region
+            .rail_authority
+            .infrastructure_projects
+            .iter()
+            .filter(|project| {
+                matches!(&project.kind, InfrastructureProjectKind::NewLine { .. })
+                    && matches!(
+                        project.status,
+                        InfrastructureProjectStatus::Requested
+                            | InfrastructureProjectStatus::UnderReview
+                            | InfrastructureProjectStatus::Proposed
+                            | InfrastructureProjectStatus::Approved
+                            | InfrastructureProjectStatus::Funding
+                            | InfrastructureProjectStatus::Scheduled
+                            | InfrastructureProjectStatus::Construction
+                    )
+            })
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
 }
 
 pub(crate) fn project_review_score(
@@ -1456,9 +1498,9 @@ mod tests {
 
     use crate::{
         model::{
-            BulletinCategory, ConstructionDifficulty, DistanceMetres, DurationSeconds,
-            InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus,
-            MarketMaturity, Money, OriginDestinationDemand, UtcSeconds,
+            AuthorityRules, BulletinCategory, ConstructionDifficulty, DistanceMetres,
+            DurationSeconds, InfrastructureProjectId, InfrastructureProjectKind,
+            InfrastructureProjectStatus, MarketMaturity, Money, OriginDestinationDemand, UtcSeconds,
         },
         sim::{
             authority::MAX_OFFLINE_FISCAL_CATCHUP_PERIODS,
@@ -1469,7 +1511,8 @@ mod tests {
 
     use super::{
         InfrastructureProjectActionError, advance_authority_fiscal_periods,
-        advance_infrastructure_planning, advance_project_construction, advance_project_funding,
+        advance_infrastructure_planning, advance_infrastructure_planning_with_rules,
+        advance_project_construction, advance_project_funding,
         advance_project_scheduling, cancel_infrastructure_project,
         contribute_to_infrastructure_project, deferred_reconsideration_threshold,
         estimated_connection_cost, evaluate_connection_candidates, local_rail_success_basis_points,
@@ -1754,7 +1797,7 @@ mod tests {
             &mut region,
             7,
             &demand,
-            UtcSeconds::from_unix_seconds(10_000 + 15 * 60),
+            UtcSeconds::from_unix_seconds(10_000 + 60 * 60),
         )
         .unwrap();
         assert_eq!(
@@ -1766,7 +1809,7 @@ mod tests {
             &mut region,
             7,
             &demand,
-            UtcSeconds::from_unix_seconds(10_000 + 45 * 60),
+            UtcSeconds::from_unix_seconds(10_000 + 3 * 60 * 60),
         )
         .unwrap();
         assert_eq!(
@@ -1778,7 +1821,7 @@ mod tests {
             &mut region,
             7,
             &demand,
-            UtcSeconds::from_unix_seconds(10_000 + 60 * 60),
+            UtcSeconds::from_unix_seconds(10_000 + 4 * 60 * 60),
         )
         .unwrap();
 
@@ -1791,7 +1834,7 @@ mod tests {
         assert_eq!(first.status, InfrastructureProjectStatus::Approved);
         assert_eq!(
             first.timeline.approved_at,
-            Some(UtcSeconds::from_unix_seconds(10_000 + 60 * 60))
+            Some(UtcSeconds::from_unix_seconds(10_000 + 4 * 60 * 60))
         );
         // The council-request cooldown prevents a second request from appearing
         // immediately after the first review completes.
@@ -1801,7 +1844,7 @@ mod tests {
             &mut region,
             7,
             &demand,
-            UtcSeconds::from_unix_seconds(10_000 + 2 * 60 * 60),
+            UtcSeconds::from_unix_seconds(10_000 + 24 * 60 * 60),
         )
         .unwrap();
         assert_eq!(region.rail_authority.infrastructure_projects.len(), 2);
@@ -1839,7 +1882,7 @@ mod tests {
             &mut region,
             17,
             &demand,
-            UtcSeconds::from_unix_seconds(30_000 + 60 * 60),
+            UtcSeconds::from_unix_seconds(30_000 + 4 * 60 * 60),
         )
         .unwrap();
 
@@ -1852,7 +1895,7 @@ mod tests {
         assert_eq!(first.status, InfrastructureProjectStatus::Deferred);
         assert_eq!(
             first.timeline.deferred_at,
-            Some(UtcSeconds::from_unix_seconds(30_000 + 60 * 60))
+            Some(UtcSeconds::from_unix_seconds(30_000 + 4 * 60 * 60))
         );
         assert_eq!(first.timeline.approved_at, None);
 
@@ -1872,7 +1915,7 @@ mod tests {
         assert_eq!(duplicate_target_count, 1);
 
         // Deferred projects are not retried merely because time passed. The
-        // first reconsideration requires renewed adoption pressure and six hours.
+        // first reconsideration requires renewed adoption pressure and a full day.
         for pool in &mut demand {
             pool.market_maturity = MarketMaturity::from_basis_points(3_900).unwrap();
         }
@@ -1880,7 +1923,7 @@ mod tests {
             &mut region,
             17,
             &demand,
-            UtcSeconds::from_unix_seconds(30_000 + 7 * 60 * 60),
+            UtcSeconds::from_unix_seconds(30_000 + 28 * 60 * 60),
         )
         .unwrap();
         assert_eq!(
@@ -1895,7 +1938,7 @@ mod tests {
             &mut region,
             17,
             &demand,
-            UtcSeconds::from_unix_seconds(30_000 + 7 * 60 * 60),
+            UtcSeconds::from_unix_seconds(30_000 + 28 * 60 * 60),
         )
         .unwrap();
         let reconsidered = &region.rail_authority.infrastructure_projects[0];
@@ -1903,6 +1946,134 @@ mod tests {
         assert_eq!(reconsidered.status, InfrastructureProjectStatus::Requested);
         assert_eq!(reconsidered.timeline.reconsideration_count, 1);
         assert_eq!(region.rail_authority.infrastructure_projects.len(), 1);
+    }
+
+    #[test]
+    fn planning_uses_configured_authority_cadence() {
+        let mut region = generate_region(31);
+        let demand = fully_mature_demand(&region, 31);
+        let started = UtcSeconds::from_unix_seconds(50_000);
+        let rules = AuthorityRules::new(
+            DurationSeconds::from_seconds(10),
+            DurationSeconds::from_seconds(20),
+            DurationSeconds::from_seconds(30),
+            DurationSeconds::from_seconds(1_000),
+            DurationSeconds::from_seconds(1_000),
+            DurationSeconds::from_seconds(60 * 60),
+            DurationSeconds::from_seconds(5 * 60 * 60),
+            2 * 60,
+            3 * 60,
+            4 * 60,
+            2,
+        );
+
+        advance_infrastructure_planning_with_rules(
+            &mut region,
+            31,
+            &demand,
+            &rules,
+            started,
+        )
+        .unwrap();
+        let target_settlement_id = match &region.rail_authority.infrastructure_projects[0].kind {
+            InfrastructureProjectKind::NewLine { planned_stations, .. } => {
+                planned_stations[0].settlement_id
+            }
+            _ => panic!("expected a New Line project"),
+        };
+        region
+            .settlements
+            .iter_mut()
+            .find(|settlement| settlement.id == target_settlement_id)
+            .unwrap()
+            .population = 300_000;
+        region.rail_authority.infrastructure_projects[0]
+            .funding
+            .estimated_cost = Money::ZERO;
+
+        advance_infrastructure_planning_with_rules(
+            &mut region,
+            31,
+            &demand,
+            &rules,
+            UtcSeconds::from_unix_seconds(50_009),
+        )
+        .unwrap();
+        assert_eq!(
+            region.rail_authority.infrastructure_projects[0].status,
+            InfrastructureProjectStatus::Requested
+        );
+
+        advance_infrastructure_planning_with_rules(
+            &mut region,
+            31,
+            &demand,
+            &rules,
+            UtcSeconds::from_unix_seconds(50_060),
+        )
+        .unwrap();
+        let project = &region.rail_authority.infrastructure_projects[0];
+        assert_eq!(project.status, InfrastructureProjectStatus::Approved);
+        assert_eq!(
+            project.timeline.review_started_at,
+            Some(UtcSeconds::from_unix_seconds(50_010))
+        );
+        assert_eq!(
+            project.timeline.proposed_at,
+            Some(UtcSeconds::from_unix_seconds(50_030))
+        );
+        assert_eq!(
+            project.timeline.approved_at,
+            Some(UtcSeconds::from_unix_seconds(50_060))
+        );
+    }
+
+    #[test]
+    fn expansion_pipeline_limit_blocks_new_requests_until_a_slot_opens() {
+        let mut region = generate_region(37);
+        let demand = fully_mature_demand(&region, 37);
+        let candidates = evaluate_connection_candidates(&region, 37).unwrap();
+        let requested_at = UtcSeconds::from_unix_seconds(1_000);
+        let rules = AuthorityRules::provisional();
+
+        region.rail_authority.infrastructure_projects = candidates
+            .iter()
+            .take(2)
+            .cloned()
+            .map(|candidate| {
+                let mut project = project_from_candidate(candidate, requested_at);
+                project.status = InfrastructureProjectStatus::Funding;
+                project.timeline.approved_at = Some(requested_at);
+                project
+            })
+            .collect();
+
+        let now = UtcSeconds::from_unix_seconds(1_000 + 48 * 60 * 60);
+        advance_infrastructure_planning_with_rules(
+            &mut region,
+            37,
+            &demand,
+            &rules,
+            now,
+        )
+        .unwrap();
+        assert_eq!(region.rail_authority.infrastructure_projects.len(), 2);
+
+        region.rail_authority.infrastructure_projects[0].status =
+            InfrastructureProjectStatus::Open;
+        advance_infrastructure_planning_with_rules(
+            &mut region,
+            37,
+            &demand,
+            &rules,
+            now,
+        )
+        .unwrap();
+        assert_eq!(region.rail_authority.infrastructure_projects.len(), 3);
+        assert_eq!(
+            region.rail_authority.infrastructure_projects[2].status,
+            InfrastructureProjectStatus::Requested
+        );
     }
 
     #[test]

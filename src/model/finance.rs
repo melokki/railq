@@ -52,9 +52,9 @@ pub struct GameRules {
 
 /// Tunable Rail Authority progression cadence saved with a game.
 ///
-/// Batch 1 persists the intended slower progression values without changing
-/// lifecycle behaviour yet. The next batch can consume these rules without
-/// requiring another save migration just to introduce the new cadence.
+/// Planning consumes these values directly, keeping request cadence and
+/// review throughput deterministic for each save. Construction timing fields
+/// are consumed by the construction lifecycle in the following pacing batch.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AuthorityRules {
     request_queue_delay: DurationSeconds,
@@ -102,8 +102,8 @@ impl AuthorityRules {
 
     /// Initial slower Authority pacing derived from the first progression playtest.
     ///
-    /// The planning simulation starts consuming these values in the next batch;
-    /// persisting them now keeps migrated and newly created saves consistent.
+    /// These values are persisted with both migrated and newly created saves so
+    /// progression does not change just because a build ships new defaults.
     pub const fn provisional() -> Self {
         Self::new(
             DurationSeconds::from_seconds(60 * 60),
