@@ -316,12 +316,14 @@ pub fn quote_journey(
     let service_destination = service.stop_station_ids[destination_stop_index];
 
     let distance = distance_for_lines(state, &service.rail_line_ids)?;
+    let fare_rate = state.rules.balance.fare_per_passenger_kilometre();
     let boarding_groups = quote_boarding_at_stop_in_direction(
         state,
         service,
         origin_stop_index,
         direction,
         train_model.passenger_capacity().passengers(),
+        fare_rate,
     )?;
     let boarded_passengers = boarding_groups.iter().try_fold(0_u32, |total, group| {
         total
@@ -336,11 +338,7 @@ pub fn quote_journey(
         .try_fold(Money::ZERO, |total, group| {
             total.checked_add(group.revenue).map_err(EconomyError::from)
         })?;
-    let fare = state
-        .rules
-        .balance
-        .fare_per_passenger_kilometre()
-        .checked_charge(distance)?;
+    let fare = fare_rate.checked_charge(distance)?;
     let access_fee_rate = state.rules.balance.access_fee_per_train_kilometre();
     let infrastructure_access_fee_before_credit = access_fee_rate.checked_charge(distance)?;
     let (infrastructure_access_fee_credit, access_fee_credit_uses) =
@@ -586,6 +584,7 @@ pub(crate) fn quote_boarding_at_stop_in_direction(
     stop_index: usize,
     direction: i32,
     available_capacity: u32,
+    fare_rate: MoneyPerKilometre,
 ) -> Result<Vec<PassengerBoardingQuote>, EconomyError> {
     let destination_indices: Box<dyn Iterator<Item = usize>> = match direction {
         1 => Box::new((stop_index + 1)..service.stop_station_ids.len()),
@@ -626,11 +625,7 @@ pub(crate) fn quote_boarding_at_stop_in_direction(
         }
         let distance =
             distance_between_service_stops(state, service, stop_index, destination_index)?;
-        let fare = state
-            .rules
-            .balance
-            .fare_per_passenger_kilometre()
-            .checked_charge(distance)?;
+        let fare = fare_rate.checked_charge(distance)?;
         let revenue = fare.checked_mul(u64::from(passengers))?;
         groups.push(PassengerBoardingQuote {
             origin_station_id,

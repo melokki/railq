@@ -296,12 +296,16 @@ pub(super) fn insert_state(
 
     for (sequence, journey) in state.active_journeys.iter().enumerate() {
         transaction.execute(
-            "INSERT INTO active_journeys(id, sequence, purpose, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO active_journeys(id, sequence, purpose, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_rate_cents_per_passenger_km, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 journey.id.to_string(), i64::try_from(sequence).unwrap_or(i64::MAX), journey.purpose.as_str(),
                 journey.service_id.to_string(), journey.train_id.to_string(),
                 journey.origin_station_id.to_string(), journey.destination_station_id.to_string(), i64::from(journey.passengers_carried),
+                i64::try_from(journey.fare_rate.cents_per_kilometre()).map_err(|_| SaveSlotError::InvalidSave {
+                    path: path.to_path_buf(),
+                    source: Box::new(SaveCodecError::InvalidValue { field: "Journey fare rate" }),
+                })?,
                 journey.fare.cents(), journey.operating_revenue.cents(), journey.credited_revenue.cents(),
                 journey.infrastructure_access_fee.cents(), journey.fuel_cost.cents(),
                 i64::try_from(journey.current_stop_index).map_err(|_| SaveSlotError::InvalidSave {
@@ -1243,7 +1247,7 @@ pub(super) fn load_state(
 
     let mut active_journeys = query_all(
         connection,
-        "SELECT id, purpose, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at FROM active_journeys ORDER BY sequence",
+        "SELECT id, purpose, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_rate_cents_per_passenger_km, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at FROM active_journeys ORDER BY sequence",
         path,
         |row| {
             Ok(Journey {
@@ -1261,16 +1265,18 @@ pub(super) fn load_state(
                 )?,
                 passengers_carried: u32::try_from(row.get::<_, i64>(6)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                fare: Money::from_cents(row.get(7)?),
-                operating_revenue: Money::from_cents(row.get(8)?),
-                credited_revenue: Money::from_cents(row.get(9)?),
-                infrastructure_access_fee: Money::from_cents(row.get(10)?),
-                fuel_cost: Money::from_cents(row.get(11)?),
-                current_stop_index: usize::try_from(row.get::<_, i64>(12)?)
+                fare_rate: MoneyPerKilometre::new(row.get(7)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                fare: Money::from_cents(row.get(8)?),
+                operating_revenue: Money::from_cents(row.get(9)?),
+                credited_revenue: Money::from_cents(row.get(10)?),
+                infrastructure_access_fee: Money::from_cents(row.get(11)?),
+                fuel_cost: Money::from_cents(row.get(12)?),
+                current_stop_index: usize::try_from(row.get::<_, i64>(13)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 passenger_groups: Vec::new(),
-                departed_at: UtcSeconds::from_unix_seconds(row.get(13)?),
-                arrives_at: UtcSeconds::from_unix_seconds(row.get(14)?),
+                departed_at: UtcSeconds::from_unix_seconds(row.get(14)?),
+                arrives_at: UtcSeconds::from_unix_seconds(row.get(15)?),
             })
         },
     )?;

@@ -194,6 +194,7 @@ CREATE TABLE IF NOT EXISTS active_journeys (
     origin_station_id TEXT NOT NULL REFERENCES rail_stations(id),
     destination_station_id TEXT NOT NULL REFERENCES rail_stations(id),
     passengers_carried INTEGER NOT NULL,
+    fare_rate_cents_per_passenger_km INTEGER NOT NULL CHECK (fare_rate_cents_per_passenger_km > 0),
     fare_cents INTEGER NOT NULL,
     operating_revenue_cents INTEGER NOT NULL,
     credited_revenue_cents INTEGER NOT NULL,

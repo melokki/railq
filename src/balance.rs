@@ -37,9 +37,9 @@ impl BalanceConfig {
     /// deliberately tunable provisional default, rather than a design rule.
     pub fn provisional() -> Self {
         let fare_per_passenger_kilometre =
-            MoneyPerKilometre::new(20).expect("tunable fare rate must remain positive");
+            MoneyPerKilometre::new(12).expect("tunable fare rate must remain positive");
         let access_fee_per_train_kilometre =
-            MoneyPerKilometre::new(12).expect("tunable access rate must remain positive");
+            MoneyPerKilometre::new(35).expect("tunable access rate must remain positive");
         let starting_company_funds = Money::from_cents(500_000);
 
         Self::new(
@@ -67,6 +67,25 @@ mod tests {
     use crate::catalog::train_catalogue;
 
     use super::*;
+
+    #[test]
+    fn provisional_balance_uses_rebalanced_operating_rates() {
+        let balance = BalanceConfig::provisional();
+
+        assert_eq!(
+            balance
+                .fare_per_passenger_kilometre()
+                .cents_per_kilometre(),
+            12
+        );
+        assert_eq!(
+            balance
+                .access_fee_per_train_kilometre()
+                .cents_per_kilometre(),
+            35
+        );
+        assert_eq!(balance.starting_company_funds(), Money::from_cents(500_000));
+    }
 
     #[test]
     fn keeps_all_tunable_economic_values_in_the_saved_configuration() {

@@ -96,7 +96,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "70 passengers",
         "118.8 km/h",
         "Diesel",
-        "$0.38/km",
+        "$1.20/km",
         "Cash after",
     ] {
         assert!(
@@ -179,7 +179,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "$4,400.00",
         "70 passengers",
         "118.8 km/h",
-        "$0.38/km",
+        "$1.20/km",
         "EVN type",
     ] {
         assert!(

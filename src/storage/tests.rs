@@ -1774,3 +1774,130 @@ fn v34_migration_adds_rejected_infrastructure_project_status() {
     assert_eq!(status, "deferred");
     assert!(table_sql.contains("'rejected'"));
 }
+
+#[test]
+fn v35_migration_rebalances_default_operating_rates_and_preserves_custom_rates() {
+    for (fare, access, expected_fare, expected_access) in
+        [(20, 12, 12, 35), (18, 9, 18, 9)]
+    {
+        let directory = TestDirectory::new();
+        let path = directory.save_path();
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection
+            .execute(
+                "INSERT INTO game_rules(
+                     singleton, fare_cents_per_passenger_km, access_fee_cents_per_train_km,
+                     starting_company_funds_cents, demand_cap_seconds,
+                     authority_request_queue_seconds, authority_review_seconds,
+                     authority_proposal_seconds, authority_request_cooldown_seconds,
+                     authority_deferred_reconsideration_seconds, authority_mobilisation_seconds,
+                     authority_new_line_base_construction_seconds,
+                     authority_low_difficulty_seconds_per_km,
+                     authority_moderate_difficulty_seconds_per_km,
+                     authority_high_difficulty_seconds_per_km,
+                     authority_max_active_expansion_projects
+                 ) VALUES(1, ?1, ?2, 500000, 86400, 3600, 7200, 3600, 86400, 86400,
+                          3600, 18000, 120, 180, 240, 2)",
+                params![fare, access],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", 35_u32)
+            .unwrap();
+
+        ensure_schema(&connection, &path).unwrap();
+
+        let version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let rates: (i64, i64) = connection
+            .query_row(
+                "SELECT fare_cents_per_passenger_km, access_fee_cents_per_train_km
+                 FROM game_rules WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(version, SAVE_VERSION);
+        assert_eq!(rates, (expected_fare, expected_access));
+    }
+}
+
+#[test]
+fn v36_migration_preserves_in_flight_legacy_fare_snapshot() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    let v36_schema = SCHEMA.replace(
+        "    fare_rate_cents_per_passenger_km INTEGER NOT NULL CHECK (fare_rate_cents_per_passenger_km > 0),\n",
+        "",
+    );
+    connection.execute_batch(&v36_schema).unwrap();
+    connection
+        .execute_batch(
+            "INSERT INTO game_rules(
+                 singleton, fare_cents_per_passenger_km, access_fee_cents_per_train_km,
+                 starting_company_funds_cents, demand_cap_seconds,
+                 authority_request_queue_seconds, authority_review_seconds,
+                 authority_proposal_seconds, authority_request_cooldown_seconds,
+                 authority_deferred_reconsideration_seconds, authority_mobilisation_seconds,
+                 authority_new_line_base_construction_seconds,
+                 authority_low_difficulty_seconds_per_km,
+                 authority_moderate_difficulty_seconds_per_km,
+                 authority_high_difficulty_seconds_per_km,
+                 authority_max_active_expansion_projects
+             ) VALUES(1, 12, 35, 500000, 86400, 3600, 7200, 3600, 86400, 86400,
+                      3600, 18000, 120, 180, 240, 2);
+             INSERT INTO passenger_services(
+                 id, sequence, name, direction_mode, forward_train_number, reverse_train_number
+             ) VALUES('00000006-0000-4000-8000-000000000001', 0, 'R1', 'both', 100, 101);
+             INSERT INTO rail_lines(
+                 id, sequence, first_station_id, second_station_id, distance_metres,
+                 speed_limit_kmh, track_count, electrification, construction_difficulty
+             ) VALUES(
+                 '00000003-0000-4000-8000-000000000001', 0,
+                 '00000002-0000-4000-8000-000000000001',
+                 '00000002-0000-4000-8000-000000000002',
+                 98000, 70, 1, 'none', 'moderate'
+             );
+             INSERT INTO service_lines(service_id, sequence, rail_line_id)
+             VALUES(
+                 '00000006-0000-4000-8000-000000000001', 0,
+                 '00000003-0000-4000-8000-000000000001'
+             );
+             INSERT INTO active_journeys(
+                 id, sequence, purpose, service_id, train_id, origin_station_id,
+                 destination_station_id, passengers_carried, fare_cents,
+                 operating_revenue_cents, credited_revenue_cents,
+                 infrastructure_access_fee_cents, fuel_cost_cents,
+                 current_stop_index, departed_at, arrives_at
+             ) VALUES(
+                 '00000007-0000-4000-8000-000000000001', 0, 'revenue',
+                 '00000006-0000-4000-8000-000000000001',
+                 '00000005-0000-4000-8000-000000000001',
+                 '00000002-0000-4000-8000-000000000001',
+                 '00000002-0000-4000-8000-000000000002',
+                 10, 1960, 19600, 0, 1176, 3724, 0, 1000, 2000
+             );
+             PRAGMA user_version = 36;",
+        )
+        .unwrap();
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    let snapshot_rate: i64 = connection
+        .query_row(
+            "SELECT fare_rate_cents_per_passenger_km FROM active_journeys WHERE sequence = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(version, SAVE_VERSION);
+    assert_eq!(snapshot_rate, 20);
+}
