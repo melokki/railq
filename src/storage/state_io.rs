@@ -22,6 +22,7 @@ pub(super) fn clear_state(
          DELETE FROM origin_destination_demand;
          DELETE FROM service_lines;
          DELETE FROM service_stops;
+         DELETE FROM train_service_assignments;
          DELETE FROM passenger_services;
          DELETE FROM trains;
          DELETE FROM train_model_sequences;
@@ -265,6 +266,21 @@ pub(super) fn insert_state(
                 params![service.id.to_string(), i64::try_from(sequence).unwrap_or(i64::MAX), line_id.to_string()],
             ).map_err(|source| db_error("write Passenger Service paths to", path, source))?;
         }
+    }
+
+    for (train_id, service_id) in &state.player_company.fleet.service_assignments {
+        transaction
+            .execute(
+                "INSERT INTO train_service_assignments(train_id, service_id) VALUES(?1, ?2)",
+                params![train_id.to_string(), service_id.to_string()],
+            )
+            .map_err(|source| {
+                db_error(
+                    "write Train Passenger Service assignments to",
+                    path,
+                    source,
+                )
+            })?;
     }
 
     for (sequence, demand) in state.origin_destination_demand.iter().enumerate() {
@@ -1111,6 +1127,20 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
         }
     }
 
+    let service_assignments = query_all(
+        connection,
+        "SELECT train_id, service_id FROM train_service_assignments ORDER BY train_id",
+        path,
+        |row| {
+            Ok((
+                row_domain_id(row, 0, "Train assignment Train ID", TrainId::parse)?,
+                row_domain_id(row, 1, "Train assignment Passenger Service ID", ServiceId::parse)?,
+            ))
+        },
+    )?
+    .into_iter()
+    .collect();
+
     let demand = query_all(
         connection,
         "SELECT origin_station_id, destination_station_id, waiting_passengers, market_maturity_basis_points, passenger_arrival_rate_per_hour, fractional_passenger_seconds FROM origin_destination_demand ORDER BY sequence",
@@ -1285,6 +1315,7 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
             funds: Money::from_cents(company_funds),
             fleet: Fleet {
                 trains,
+                service_assignments,
                 next_train_display_number: from_db_u64(
                     next_train_display_number,
                     "next Train display number",

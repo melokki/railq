@@ -155,6 +155,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS passenger_services_forward_train_number_idx
 CREATE UNIQUE INDEX IF NOT EXISTS passenger_services_reverse_train_number_idx
     ON passenger_services(reverse_train_number)
     WHERE reverse_train_number IS NOT NULL;
+CREATE TABLE IF NOT EXISTS train_service_assignments (
+    train_id TEXT PRIMARY KEY REFERENCES trains(id) ON DELETE CASCADE,
+    service_id TEXT NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS train_service_assignments_service_idx
+    ON train_service_assignments(service_id);
 CREATE TABLE IF NOT EXISTS service_stops (
     service_id TEXT NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
     sequence INTEGER NOT NULL,

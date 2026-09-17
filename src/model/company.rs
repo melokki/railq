@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    EuropeanVehicleNumber, JourneyId, Money, PassengerService, RailStationId, TrainId,
+    EuropeanVehicleNumber, JourneyId, Money, PassengerService, RailStationId, ServiceId, TrainId,
     TrainModelId, TrainNickname, VehicleKeeperMark,
 };
 
@@ -21,6 +21,13 @@ pub struct PlayerCompany {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Fleet {
     pub trains: Vec<Train>,
+    /// Persistent allocation of owned Trains to Passenger Services.
+    ///
+    /// Assignment is administrative state: it does not dispatch a Train, and
+    /// an unassigned Train may still be dispatched manually. One Train can be
+    /// allocated to at most one Service at a time.
+    #[serde(default)]
+    pub service_assignments: BTreeMap<TrainId, ServiceId>,
     /// Next compact display number for an owned Train. This is not the Train
     /// identity; persisted Train IDs are UUID v4 values.
     #[serde(default = "default_next_train_display_number")]
@@ -41,9 +48,17 @@ impl Default for Fleet {
     fn default() -> Self {
         Self {
             trains: Vec::new(),
+            service_assignments: BTreeMap::new(),
             next_train_display_number: default_next_train_display_number(),
             next_evn_unit_by_model: BTreeMap::new(),
         }
+    }
+}
+
+impl Fleet {
+    /// Returns the Passenger Service currently allocated to this Train, if any.
+    pub fn assigned_service_id(&self, train_id: TrainId) -> Option<ServiceId> {
+        self.service_assignments.get(&train_id).copied()
     }
 }
 

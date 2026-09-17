@@ -80,6 +80,7 @@ fn migrate_one_version(
         27 => migrate_v27_to_v28(connection, path),
         28 => migrate_v28_to_v29(connection, path),
         29 => migrate_v29_to_v30(connection, path),
+        30 => migrate_v30_to_v31(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -2522,6 +2523,45 @@ fn migrate_v29_to_v30(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v29 to v30 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v30_to_v31(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v30 to v31 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "CREATE TABLE train_service_assignments (
+                     train_id TEXT PRIMARY KEY REFERENCES trains(id) ON DELETE CASCADE,
+                     service_id TEXT NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE
+                 );
+                 CREATE INDEX train_service_assignments_service_idx
+                     ON train_service_assignments(service_id);",
+            )
+            .map_err(|source| {
+                db_error(
+                    "create Train Passenger Service assignments during v31 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 31_u32)
+            .map_err(|source| db_error("write v31 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v30 to v31 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)

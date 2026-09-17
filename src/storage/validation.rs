@@ -301,6 +301,7 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
         return Err(SaveValidationError::InvalidId { kind: "Journey" });
     }
 
+    validate_service_assignments(state, &train_ids, &service_ids)?;
     validate_train_statuses(
         &state.player_company.fleet.trains,
         state.region.railway_registration.numeric_code,
@@ -798,6 +799,45 @@ fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
                     field: "Journey receipt operating context",
                 });
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_service_assignments(
+    state: &GameState,
+    train_ids: &HashSet<TrainId>,
+    service_ids: &HashSet<ServiceId>,
+) -> Result<(), SaveValidationError> {
+    for (train_id, service_id) in &state.player_company.fleet.service_assignments {
+        if !train_ids.contains(train_id) {
+            return Err(SaveValidationError::DanglingReference {
+                field: "Train Passenger Service assignment Train",
+            });
+        }
+        if !service_ids.contains(service_id) {
+            return Err(SaveValidationError::DanglingReference {
+                field: "Train Passenger Service assignment Service",
+            });
+        }
+
+        let train = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == *train_id)
+            .expect("validated Train assignment resolves in Fleet");
+        if let TrainStatus::Travelling { journey_id } = train.status
+            && let Some(journey) = state
+                .active_journeys
+                .iter()
+                .find(|journey| journey.id == journey_id)
+            && journey.service_id != *service_id
+        {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "a travelling Train is assigned to a different Passenger Service than its Journey",
+            });
         }
     }
     Ok(())

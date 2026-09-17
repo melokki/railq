@@ -7,7 +7,9 @@ use std::{
 use crate::{
     model::{RailStationId, UtcSeconds},
     sim::{
-        fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
+        fleet::purchase_train,
+        journeys::dispatch_journey,
+        services::{assign_train_to_service, find_or_create_service},
         world::create_new_game,
     },
 };
@@ -51,6 +53,7 @@ fn active_game() -> GameState {
     let service_id =
         find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))
             .unwrap();
+    assign_train_to_service(&mut state, train_id, service_id).unwrap();
     dispatch_journey(&mut state, train_id, service_id, departed_at).unwrap();
     state.origin_destination_demand[0].market_maturity =
         MarketMaturity::from_basis_points(4_321).unwrap();

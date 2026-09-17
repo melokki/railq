@@ -575,6 +575,7 @@ fn a_small_valid_game_state_fixture_builds() {
             ),
             funds: Money::from_cents(10_000),
             fleet: Fleet {
+                service_assignments: Default::default(),
                 next_train_display_number: 2,
                 trains: vec![Train {
                     id: train_id,

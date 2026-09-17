@@ -11,7 +11,7 @@ use std::{
 
 use crate::model::{
     GameState, PassengerService, RailLineId, RailNetwork, RailStationId, ServiceDirectionMode,
-    ServiceId, SettlementId,
+    ServiceId, SettlementId, TrainId, TrainStatus,
 };
 
 /// Why a Passenger Service path cannot be selected, created, or removed.
@@ -119,6 +119,119 @@ impl fmt::Display for ServiceError {
 }
 
 impl Error for ServiceError {}
+
+/// Why a Train allocation to a Passenger Service cannot be changed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceAssignmentError {
+    /// The selected Train is not owned by the Player Company.
+    TrainNotFound { train_id: TrainId },
+    /// The selected Passenger Service does not exist.
+    ServiceNotFound { service_id: ServiceId },
+    /// Allocation changes wait until an active Journey has finished.
+    TrainTravelling {
+        train_id: TrainId,
+        journey_id: crate::model::JourneyId,
+    },
+}
+
+impl fmt::Display for ServiceAssignmentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TrainNotFound { train_id } => {
+                write!(formatter, "Train {} is not in the Fleet", train_id.get())
+            }
+            Self::ServiceNotFound { service_id } => write!(
+                formatter,
+                "Passenger Service {} does not exist",
+                service_id.get()
+            ),
+            Self::TrainTravelling {
+                train_id,
+                journey_id,
+            } => write!(
+                formatter,
+                "Train {} is travelling on Journey {} and its Passenger Service assignment cannot change",
+                train_id.get(),
+                journey_id.get()
+            ),
+        }
+    }
+}
+
+impl Error for ServiceAssignmentError {}
+
+/// Allocates an owned READY Train to one Passenger Service.
+///
+/// Assignment is persistent administrative state and does not dispatch the
+/// Train. A READY Train may be assigned regardless of its current Rail Station;
+/// positioning remains an operational concern for dispatch. Re-applying the
+/// same assignment is an idempotent no-op, including while the Train is moving.
+pub fn assign_train_to_service(
+    state: &mut GameState,
+    train_id: TrainId,
+    service_id: ServiceId,
+) -> Result<(), ServiceAssignmentError> {
+    let train = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .ok_or(ServiceAssignmentError::TrainNotFound { train_id })?;
+    if !state
+        .player_company
+        .passenger_services
+        .iter()
+        .any(|service| service.id == service_id)
+    {
+        return Err(ServiceAssignmentError::ServiceNotFound { service_id });
+    }
+    if state.player_company.fleet.assigned_service_id(train_id) == Some(service_id) {
+        return Ok(());
+    }
+    if let TrainStatus::Travelling { journey_id } = train.status {
+        return Err(ServiceAssignmentError::TrainTravelling {
+            train_id,
+            journey_id,
+        });
+    }
+
+    state
+        .player_company
+        .fleet
+        .service_assignments
+        .insert(train_id, service_id);
+    Ok(())
+}
+
+/// Clears a Train's Passenger Service allocation without changing its location.
+///
+/// A travelling Train keeps its current assignment until its active Journey
+/// completes. Clearing an already-unassigned Train is an idempotent no-op.
+pub fn unassign_train_from_service(
+    state: &mut GameState,
+    train_id: TrainId,
+) -> Result<(), ServiceAssignmentError> {
+    let train = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .ok_or(ServiceAssignmentError::TrainNotFound { train_id })?;
+    if state.player_company.fleet.assigned_service_id(train_id).is_none() {
+        return Ok(());
+    }
+    if let TrainStatus::Travelling { journey_id } = train.status {
+        return Err(ServiceAssignmentError::TrainTravelling {
+            train_id,
+            journey_id,
+        });
+    }
+
+    state.player_company.fleet.service_assignments.remove(&train_id);
+    Ok(())
+}
 
 /// Returns the ordered Rail Line path between two Rail Stations.
 ///
@@ -413,6 +526,11 @@ pub fn delete_service(state: &mut GameState, service_id: ServiceId) -> Result<()
         return Err(ServiceError::ServiceNotFound { service_id });
     };
     state.player_company.passenger_services.remove(index);
+    state
+        .player_company
+        .fleet
+        .service_assignments
+        .retain(|_, assigned_service_id| *assigned_service_id != service_id);
     Ok(())
 }
 
@@ -466,14 +584,14 @@ pub fn find_or_create_service_between_settlements(
 #[cfg(test)]
 mod tests {
     use crate::{
-        model::{RailLineId, RailStationId, SettlementId, UtcSeconds},
-        sim::world::create_new_game,
+        model::{JourneyId, Money, RailLineId, RailStationId, SettlementId, TrainStatus, UtcSeconds},
+        sim::{fleet::purchase_train, world::create_new_game},
     };
 
     use super::{
-        ServiceError, create_service, delete_service, find_or_create_service,
-        find_or_create_service_between_settlements, path_between_stations, service_path_for_stops,
-        update_service,
+        ServiceAssignmentError, ServiceError, assign_train_to_service, create_service,
+        delete_service, find_or_create_service, find_or_create_service_between_settlements,
+        path_between_stations, service_path_for_stops, unassign_train_from_service, update_service,
     };
 
     fn game() -> crate::model::GameState {
@@ -673,14 +791,99 @@ mod tests {
     }
 
     #[test]
-    fn unused_service_can_be_deleted() {
+    fn ready_train_assignment_can_be_changed_without_dispatching() {
         let mut game = game();
+        game.player_company.funds = Money::from_cents(1_000_000);
+        let train_id = purchase_train(&mut game, 0, RailStationId::new(1)).unwrap();
+        let first_service_id = create_service(
+            &mut game,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+        )
+        .unwrap();
+        let second_service_id = create_service(
+            &mut game,
+            vec![RailStationId::new(2), RailStationId::new(3)],
+        )
+        .unwrap();
+
+        assign_train_to_service(&mut game, train_id, first_service_id).unwrap();
+        assert_eq!(
+            game.player_company.fleet.assigned_service_id(train_id),
+            Some(first_service_id)
+        );
+        assert_eq!(
+            game.player_company.fleet.trains[0].status,
+            TrainStatus::Ready {
+                at: RailStationId::new(1)
+            }
+        );
+
+        assign_train_to_service(&mut game, train_id, second_service_id).unwrap();
+        assert_eq!(
+            game.player_company.fleet.assigned_service_id(train_id),
+            Some(second_service_id)
+        );
+
+        unassign_train_from_service(&mut game, train_id).unwrap();
+        assert_eq!(game.player_company.fleet.assigned_service_id(train_id), None);
+    }
+
+    #[test]
+    fn travelling_train_assignment_cannot_change_until_arrival() {
+        let mut game = game();
+        game.player_company.funds = Money::from_cents(1_000_000);
+        let train_id = purchase_train(&mut game, 0, RailStationId::new(1)).unwrap();
+        let first_service_id = create_service(
+            &mut game,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+        )
+        .unwrap();
+        let second_service_id = create_service(
+            &mut game,
+            vec![RailStationId::new(2), RailStationId::new(3)],
+        )
+        .unwrap();
+        assign_train_to_service(&mut game, train_id, first_service_id).unwrap();
+        let journey_id = JourneyId::new(77);
+        game.player_company.fleet.trains[0].status = TrainStatus::Travelling { journey_id };
+
+        assert_eq!(
+            assign_train_to_service(&mut game, train_id, second_service_id),
+            Err(ServiceAssignmentError::TrainTravelling {
+                train_id,
+                journey_id
+            })
+        );
+        assert_eq!(
+            unassign_train_from_service(&mut game, train_id),
+            Err(ServiceAssignmentError::TrainTravelling {
+                train_id,
+                journey_id
+            })
+        );
+        assert_eq!(
+            assign_train_to_service(&mut game, train_id, first_service_id),
+            Ok(())
+        );
+        assert_eq!(
+            game.player_company.fleet.assigned_service_id(train_id),
+            Some(first_service_id)
+        );
+    }
+
+    #[test]
+    fn unused_service_can_be_deleted_and_releases_assigned_trains() {
+        let mut game = game();
+        game.player_company.funds = Money::from_cents(1_000_000);
+        let train_id = purchase_train(&mut game, 0, RailStationId::new(1)).unwrap();
         let service_id =
             find_or_create_service(&mut game, RailStationId::new(1), RailStationId::new(2))
                 .unwrap();
+        assign_train_to_service(&mut game, train_id, service_id).unwrap();
 
         delete_service(&mut game, service_id).unwrap();
 
         assert!(game.player_company.passenger_services.is_empty());
+        assert_eq!(game.player_company.fleet.assigned_service_id(train_id), None);
     }
 }

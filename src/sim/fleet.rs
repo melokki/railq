@@ -203,6 +203,7 @@ pub fn sell_train(state: &mut GameState, train_id: TrainId) -> Result<Money, Fle
 
     state.player_company.funds = funds_after_sale;
     state.player_company.fleet.trains.remove(train_index);
+    state.player_company.fleet.service_assignments.remove(&train_id);
     Ok(proceeds)
 }
 
@@ -263,7 +264,7 @@ fn resale_proceeds(train: &Train) -> Result<Money, FleetError> {
 mod tests {
     use crate::{
         catalog::train_catalogue,
-        model::{TrainModelId, TrainStatus, UtcSeconds},
+        model::{ServiceId, TrainModelId, TrainStatus, UtcSeconds},
         sim::world::create_new_game,
     };
 
@@ -396,6 +397,22 @@ mod tests {
         assert_eq!(sell_train(&mut state, train_id), Ok(Money::from_cents(70)));
         assert_eq!(state.player_company.funds, Money::from_cents(70));
         assert!(state.player_company.fleet.trains.is_empty());
+    }
+
+    #[test]
+    fn selling_a_ready_train_clears_its_service_assignment() {
+        let mut state = game();
+        state.player_company.funds = Money::from_cents(1_000_000);
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        state
+            .player_company
+            .fleet
+            .service_assignments
+            .insert(train_id, ServiceId::new(7));
+
+        sell_train(&mut state, train_id).unwrap();
+
+        assert_eq!(state.player_company.fleet.assigned_service_id(train_id), None);
     }
 
     #[test]

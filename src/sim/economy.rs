@@ -80,6 +80,11 @@ pub enum EconomyError {
     TrainTravelling {
         train_id: TrainId,
     },
+    TrainAssignedToOtherService {
+        train_id: TrainId,
+        assigned_service_id: ServiceId,
+        requested_service_id: ServiceId,
+    },
     TrainNotAtServiceOrigin {
         train_id: TrainId,
         station_id: RailStationId,
@@ -121,6 +126,17 @@ impl fmt::Display for EconomyError {
                 formatter,
                 "Train {} is already travelling and cannot be quoted",
                 train_id.get()
+            ),
+            Self::TrainAssignedToOtherService {
+                train_id,
+                assigned_service_id,
+                requested_service_id,
+            } => write!(
+                formatter,
+                "Train {} is assigned to Passenger Service {} and cannot operate Passenger Service {}",
+                train_id.get(),
+                assigned_service_id.get(),
+                requested_service_id.get()
             ),
             Self::TrainNotAtServiceOrigin {
                 train_id,
@@ -195,6 +211,15 @@ pub fn quote_journey(
         .iter()
         .find(|service| service.id == service_id)
         .ok_or(EconomyError::ServiceNotFound { service_id })?;
+    if let Some(assigned_service_id) = state.player_company.fleet.assigned_service_id(train_id)
+        && assigned_service_id != service_id
+    {
+        return Err(EconomyError::TrainAssignedToOtherService {
+            train_id,
+            assigned_service_id,
+            requested_service_id: service_id,
+        });
+    }
     let origin_station_id = match train.status {
         TrainStatus::Ready { at } => at,
         TrainStatus::Travelling { .. } => return Err(EconomyError::TrainTravelling { train_id }),
@@ -672,6 +697,7 @@ mod tests {
                 ),
                 funds: Money::from_cents(10_000),
                 fleet: Fleet {
+                    service_assignments: Default::default(),
                     next_train_display_number: 2,
                     trains: vec![Train {
                         id: TRAIN_ID,
@@ -806,6 +832,35 @@ mod tests {
                 train_id: TRAIN_ID,
                 station_id: DESTINATION,
                 service_id: SERVICE_ID,
+            })
+        );
+    }
+
+    #[test]
+    fn assigned_train_cannot_quote_a_different_service() {
+        let mut state = fixture();
+        let assigned_service_id = ServiceId::new(2);
+        state.player_company.passenger_services.push(PassengerService {
+            id: assigned_service_id,
+            name: "R2".into(),
+            direction_mode: ServiceDirectionMode::BothDirections,
+            forward_train_number: 102,
+            reverse_train_number: Some(103),
+            stop_station_ids: vec![ORIGIN, RailStationId::new(2)],
+            rail_line_ids: vec![FIRST_LINE],
+        });
+        state
+            .player_company
+            .fleet
+            .service_assignments
+            .insert(TRAIN_ID, assigned_service_id);
+
+        assert_eq!(
+            quote_journey(&state, TRAIN_ID, SERVICE_ID),
+            Err(EconomyError::TrainAssignedToOtherService {
+                train_id: TRAIN_ID,
+                assigned_service_id,
+                requested_service_id: SERVICE_ID,
             })
         );
     }

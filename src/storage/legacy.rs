@@ -235,6 +235,7 @@ pub(super) fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCo
             name: legacy.player_company.name,
             funds: legacy.player_company.funds,
             fleet: Fleet {
+                service_assignments: Default::default(),
                 next_train_display_number: trains
                     .iter()
                     .map(|train| train.id.get())
