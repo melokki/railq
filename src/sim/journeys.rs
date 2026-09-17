@@ -10,14 +10,20 @@ use std::{error::Error, fmt};
 use crate::{
     model::{
         CalculationError, GameState, InfrastructureProjectId, Journey, JourneyId,
-        JourneyPassengerGroup, Money, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
+        JourneyPassengerGroup, JourneyPurpose, Money, RailStationId, ServiceId, TrainId,
+        TrainStatus, UtcSeconds,
     },
-    sim::economy::{EconomyError, quote_journey},
+    sim::economy::{EconomyError, quote_journey, quote_positioning_journey},
 };
 
 /// Why a manual Journey cannot depart.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DispatchError {
+    /// Revenue service requires an explicit Passenger Service assignment.
+    TrainNotAssignedToService {
+        train_id: TrainId,
+        service_id: ServiceId,
+    },
     /// The current state cannot produce a valid Journey quote.
     Quote(EconomyError),
     /// Company Funds cannot cover the known departure operating costs.
@@ -38,6 +44,15 @@ pub enum DispatchError {
 impl fmt::Display for DispatchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TrainNotAssignedToService {
+                train_id,
+                service_id,
+            } => write!(
+                formatter,
+                "Train {} is not assigned to Passenger Service {}; assign it before revenue dispatch",
+                train_id.get(),
+                service_id.get()
+            ),
             Self::Quote(error) => error.fmt(formatter),
             Self::InsufficientCompanyFunds {
                 available,
@@ -196,6 +211,7 @@ pub fn dispatch_journey(
     state.player_company.fleet.trains[train_index].status = TrainStatus::Travelling { journey_id };
     state.active_journeys.push(Journey {
         id: journey_id,
+        purpose: JourneyPurpose::RevenueService,
         service_id: quote.service_id,
         train_id: quote.train_id,
         origin_station_id: quote.origin_station_id,
@@ -217,6 +233,103 @@ pub fn dispatch_journey(
                 fare: group.fare,
             })
             .collect(),
+        departed_at,
+        arrives_at,
+    });
+    Ok(journey_id)
+}
+
+/// Authorises one empty non-revenue movement to a valid departure terminus
+/// of the Train's assigned Passenger Service.
+pub fn dispatch_positioning_journey(
+    state: &mut GameState,
+    train_id: TrainId,
+    service_id: ServiceId,
+    destination_station_id: RailStationId,
+    departed_at: UtcSeconds,
+) -> Result<JourneyId, DispatchError> {
+    let quote = quote_positioning_journey(state, train_id, service_id, destination_station_id)
+        .map_err(DispatchError::Quote)?;
+    if state.player_company.funds < quote.operating_cost {
+        return Err(DispatchError::InsufficientCompanyFunds {
+            available: state.player_company.funds,
+            required: quote.operating_cost,
+        });
+    }
+
+    let journey_id = JourneyId::new_v4();
+    let arrives_at = departed_at.checked_add(quote.duration)?;
+    let funds_after_departure = state
+        .player_company
+        .funds
+        .checked_sub(quote.operating_cost)?;
+    let access_fees_after_departure = state
+        .financials
+        .infrastructure_access_fees
+        .checked_add(quote.infrastructure_access_fee)?;
+    let fuel_costs_after_departure = state.financials.fuel_costs.checked_add(quote.fuel_cost)?;
+
+    let mut credit_updates = Vec::new();
+    for usage in &quote.access_fee_credit_uses {
+        let project_index = state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .iter()
+            .position(|project| project.id == usage.project_id)
+            .ok_or(DispatchError::AccessCreditUnavailable {
+                project_id: usage.project_id,
+            })?;
+        let remaining = state.region.rail_authority.infrastructure_projects[project_index]
+            .funding
+            .access_fee_credit_remaining
+            .checked_sub(usage.amount)?;
+        if remaining < Money::ZERO {
+            return Err(DispatchError::AccessCreditUnavailable {
+                project_id: usage.project_id,
+            });
+        }
+        credit_updates.push((project_index, remaining));
+    }
+
+    let mut authority_finances_after_departure = state.region.rail_authority.finances.clone();
+    authority_finances_after_departure
+        .receive_infrastructure_access_fee(quote.infrastructure_access_fee)?;
+    let train_index = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .position(|train| train.id == train_id)
+        .ok_or(DispatchError::Quote(EconomyError::TrainNotFound {
+            train_id,
+        }))?;
+
+    state.player_company.funds = funds_after_departure;
+    state.financials.infrastructure_access_fees = access_fees_after_departure;
+    state.financials.fuel_costs = fuel_costs_after_departure;
+    state.region.rail_authority.finances = authority_finances_after_departure;
+    for (project_index, remaining) in credit_updates {
+        state.region.rail_authority.infrastructure_projects[project_index]
+            .funding
+            .access_fee_credit_remaining = remaining;
+    }
+    state.player_company.fleet.trains[train_index].status = TrainStatus::Travelling { journey_id };
+    state.active_journeys.push(Journey {
+        id: journey_id,
+        purpose: JourneyPurpose::Positioning,
+        service_id: quote.service_id,
+        train_id: quote.train_id,
+        origin_station_id: quote.origin_station_id,
+        destination_station_id: quote.destination_station_id,
+        passengers_carried: 0,
+        fare: Money::ZERO,
+        operating_revenue: Money::ZERO,
+        credited_revenue: Money::ZERO,
+        infrastructure_access_fee: quote.infrastructure_access_fee,
+        fuel_cost: quote.fuel_cost,
+        current_stop_index: 0,
+        passenger_groups: Vec::new(),
         departed_at,
         arrives_at,
     });

@@ -52,8 +52,8 @@ pub use company::{Fleet, PlayerCompany, Train, TrainStatus};
 mod operations;
 
 pub use operations::{
-    Journey, JourneyPassengerGroup, MarketMaturity, OriginDestinationDemand, PassengerArrivalRate,
-    PassengerService, ServiceDirectionMode,
+    Journey, JourneyPassengerGroup, JourneyPurpose, MarketMaturity, OriginDestinationDemand,
+    PassengerArrivalRate, PassengerService, ServiceDirectionMode,
 };
 
 mod finance;

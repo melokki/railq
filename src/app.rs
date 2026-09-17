@@ -20,7 +20,7 @@ use crate::{
         economy::EconomyError,
         finance::{FinanceError, FinancialStatus, evaluate_financial_recovery},
         fleet::{FleetError, purchase_train, sell_train},
-        journeys::{DispatchError, dispatch_journey},
+        journeys::{DispatchError, dispatch_journey, dispatch_positioning_journey},
         services::{
             ServiceAssignmentError, ServiceError, assign_train_to_service,
             create_service_with_mode, delete_service, find_or_create_service, rename_service,
@@ -228,6 +228,19 @@ impl<S: GameStore> App<S> {
             } => {
                 let journey_id = self.dispatch_journey(train_id, service_id, now)?;
                 Ok(AppCommandResult::JourneyDispatched { journey_id })
+            }
+            AppCommand::PositionTrainForService {
+                train_id,
+                service_id,
+                destination_station_id,
+            } => {
+                let journey_id = self.position_train_for_service(
+                    train_id,
+                    service_id,
+                    destination_station_id,
+                    now,
+                )?;
+                Ok(AppCommandResult::TrainPositioningStarted { journey_id })
             }
             AppCommand::ContributeInfrastructure { project_id, amount } => {
                 self.contribute_to_infrastructure_project(project_id, amount, now)?;
@@ -487,8 +500,48 @@ impl<S: GameStore> App<S> {
     ) -> Result<crate::model::JourneyId, AppError<S::Error>> {
         self.transact(now, |state, effective_now| {
             let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            if state
+                .player_company
+                .fleet
+                .assigned_service_id(train_id)
+                .is_none()
+            {
+                return Err(AppError::Dispatch(
+                    DispatchError::TrainNotAssignedToService {
+                        train_id,
+                        service_id,
+                    },
+                ));
+            }
             let journey_id = dispatch_journey(state, train_id, service_id, effective_now)
                 .map_err(AppError::Dispatch)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(journey_id)
+            }
+        })
+    }
+
+    /// Moves one assigned READY Train empty to a valid departure terminus of
+    /// its Passenger Service and persists the resulting positioning Journey.
+    pub fn position_train_for_service(
+        &mut self,
+        train_id: TrainId,
+        service_id: ServiceId,
+        destination_station_id: RailStationId,
+        now: UtcSeconds,
+    ) -> Result<crate::model::JourneyId, AppError<S::Error>> {
+        self.transact(now, |state, effective_now| {
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            let journey_id = dispatch_positioning_journey(
+                state,
+                train_id,
+                service_id,
+                destination_station_id,
+                effective_now,
+            )
+            .map_err(AppError::Dispatch)?;
             if bankruptcy_prevents_operation {
                 Err(AppError::Bankruptcy)
             } else {
@@ -529,6 +582,8 @@ impl<S: GameStore> App<S> {
             let service_id =
                 find_or_create_service(state, origin_station_id, destination_station_id)
                     .map_err(AppError::Service)?;
+            assign_train_to_service(state, train_id, service_id)
+                .map_err(AppError::ServiceAssignment)?;
             let journey_id = dispatch_journey(state, train_id, service_id, effective_now)
                 .map_err(AppError::Dispatch)?;
             if bankruptcy_prevents_operation {
@@ -634,8 +689,8 @@ mod tests {
         sim::{
             economy::quote_journey,
             fleet::{FleetError, purchase_train},
-            journeys::dispatch_journey,
-            services::find_or_create_service,
+            journeys::{DispatchError, dispatch_journey, dispatch_positioning_journey},
+            services::{assign_train_to_service, find_or_create_service},
             world::create_new_game,
         },
     };
@@ -1085,11 +1140,33 @@ mod tests {
     }
 
     #[test]
+    fn revenue_dispatch_rejects_an_unassigned_train_without_mutating_state() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        let mut app = App::start_new(store, state).unwrap();
+        let before = app.state().clone();
+
+        assert!(matches!(
+            app.dispatch_journey(train_id, service_id, DEPARTED_AT),
+            Err(AppError::Dispatch(
+                DispatchError::TrainNotAssignedToService {
+                    train_id: rejected_train_id,
+                    service_id: rejected_service_id,
+                }
+            )) if rejected_train_id == train_id && rejected_service_id == service_id
+        ));
+        assert_eq!(app.state(), &before);
+    }
+
+    #[test]
     fn dispatch_uses_the_effective_time_after_a_backward_clock_read() {
         let store = TestStore::default();
         let mut state = new_game();
         let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
         let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        assign_train_to_service(&mut state, train_id, service_id).unwrap();
         let mut app = App::start_new(store, state).unwrap();
         let later = UtcSeconds::from_unix_seconds(2_000);
 

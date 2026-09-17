@@ -53,6 +53,17 @@ pub fn labelled_line_styled(label: &str, value: &str, style: Style) -> Line<'sta
     ])
 }
 
+/// Compact key/value row for review and confirmation surfaces.
+///
+/// Review screens use a shorter label column than inspectors so the important
+/// value remains readable when a modal falls back to a single-column layout.
+pub fn summary_line(label: &str, value: &str, style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<12}"), theme::secondary()),
+        Span::styled(value.to_owned(), style),
+    ])
+}
+
 const EMPTY_STATE_MAX_WIDTH: u16 = 64;
 const EMPTY_STATE_HORIZONTAL_MARGIN: u16 = 2;
 
@@ -272,6 +283,26 @@ fn wrap_empty_state_text(text: &str, width: usize) -> Vec<String> {
     }
 
     lines
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::summary_line;
+    use crate::ui::theme;
+
+    #[test]
+    fn summary_rows_keep_a_compact_shared_label_column() {
+        let line = summary_line("Direction", "↔ BOTH DIRECTIONS", theme::primary_value());
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(rendered, "Direction   ↔ BOTH DIRECTIONS");
+        assert_eq!(line.spans[0].style, theme::secondary());
+        assert_eq!(line.spans[1].style, theme::primary_value());
+    }
 }
 
 #[cfg(test)]

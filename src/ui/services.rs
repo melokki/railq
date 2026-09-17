@@ -16,7 +16,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::{
     catalog::model_for_train,
     model::{
-        GameState, PassengerService, RailStationId, ServiceDirectionMode, ServiceId, TrainStatus,
+        GameState, JourneyPurpose, PassengerService, RailStationId, ServiceDirectionMode,
+        ServiceId, TrainStatus,
     },
     sim::demand::effective_arrival_rate_per_hour,
 };
@@ -1038,15 +1039,21 @@ fn service_assigned_fleet_lines(
                     ("POSITION", station_label(state, at), theme::warning())
                 }
                 TrainStatus::Travelling { journey_id } => {
-                    let destination = state
+                    let journey = state
                         .active_journeys
                         .iter()
-                        .find(|journey| journey.id == journey_id)
+                        .find(|journey| journey.id == journey_id);
+                    let destination = journey
                         .map(|journey| {
                             format!("→ {}", station_label(state, journey.destination_station_id))
                         })
                         .unwrap_or_else(|| "Journey in progress".into());
-                    ("RUNNING", destination, theme::primary_value())
+                    if journey.is_some_and(|journey| journey.purpose == JourneyPurpose::Positioning)
+                    {
+                        ("POSITIONING", destination, theme::warning())
+                    } else {
+                        ("RUNNING", destination, theme::primary_value())
+                    }
                 }
             };
             Line::from(vec![

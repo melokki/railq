@@ -320,6 +320,23 @@ impl Shell {
                         service_id,
                     })
                 }
+                dispatch::DispatchFlowAction::ConfirmPositioning {
+                    train_id,
+                    service_id,
+                    destination_station_id,
+                } => {
+                    self.pending_action = Some(feedback::pending_positioning(
+                        state,
+                        train_id,
+                        service_id,
+                        destination_station_id,
+                    ));
+                    ShellAction::Player(AppCommand::PositionTrainForService {
+                        train_id,
+                        service_id,
+                        destination_station_id,
+                    })
+                }
             };
         }
 
@@ -336,19 +353,7 @@ impl Shell {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
-                    '1' | '2'
-                        | '3'
-                        | '4'
-                        | '5'
-                        | '6'
-                        | 't'
-                        | 'T'
-                        | 'b'
-                        | 'B'
-                        | 'c'
-                        | 'C'
-                        | 'u'
-                        | 'U'
+                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
                 )
             );
             if navigation_key {
@@ -442,7 +447,7 @@ impl Shell {
                 self.active_view = View::Authority;
                 self.service_workspace.close();
             }
-            KeyCode::Char('6' | 'u' | 'U') => {
+            KeyCode::Char('6') => {
                 self.active_view = View::Bulletin;
                 self.service_workspace.close();
             }
@@ -458,7 +463,7 @@ impl Shell {
             }
             KeyCode::Enter
             | KeyCode::Esc
-            | KeyCode::Char('r' | 'R' | 'n' | 'N' | 's' | 'S' | 'd' | 'D')
+            | KeyCode::Char('r' | 'R' | 'n' | 'N' | 'u' | 'U' | 's' | 'S' | 'd' | 'D')
             | KeyCode::Up
             | KeyCode::Down
             | KeyCode::PageUp
@@ -673,7 +678,10 @@ impl Shell {
     /// Publishes UI feedback from the typed result of a durably saved player command.
     fn confirm_player_command_saved(&mut self, result: &AppCommandResult, state: &GameState) {
         match result {
-            AppCommandResult::JourneyDispatched { .. } => self.confirm_manual_dispatch_saved(state),
+            AppCommandResult::JourneyDispatched { .. }
+            | AppCommandResult::TrainPositioningStarted { .. } => {
+                self.confirm_manual_dispatch_saved(state)
+            }
             AppCommandResult::TrainPurchased { .. } => self.confirm_purchase_train_saved(state),
             AppCommandResult::TrainSold { .. } => self.confirm_train_resale_saved(state),
             AppCommandResult::PassengerServiceCreated { .. } => {
@@ -708,7 +716,9 @@ impl Shell {
 
     fn reject_player_command(&mut self, command: &AppCommand, error: String) {
         match command {
-            AppCommand::ManualDispatch { .. } => self.reject_manual_dispatch(error),
+            AppCommand::ManualDispatch { .. } | AppCommand::PositionTrainForService { .. } => {
+                self.reject_manual_dispatch(error)
+            }
             AppCommand::PurchaseTrain { .. } => self.reject_purchase_train(error),
             AppCommand::SellTrain { .. } => self.reject_train_resale(error),
             AppCommand::CreatePassengerService { .. }

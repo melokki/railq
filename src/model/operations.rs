@@ -94,7 +94,35 @@ pub struct JourneyPassengerGroup {
     pub fare: Money,
 }
 
-/// One Train run over a directional Passenger Service.
+/// Why a Train is currently travelling.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JourneyPurpose {
+    /// Passenger-carrying operation over an assigned Passenger Service.
+    #[default]
+    RevenueService,
+    /// Empty non-revenue movement to position a Train for its assigned Service.
+    Positioning,
+}
+
+impl JourneyPurpose {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RevenueService => "revenue",
+            Self::Positioning => "positioning",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "revenue" => Some(Self::RevenueService),
+            "positioning" => Some(Self::Positioning),
+            _ => None,
+        }
+    }
+}
+
+/// One Train run over a directional Passenger Service or an empty positioning move.
 ///
 /// `current_stop_index` identifies the Service stop from which the current leg
 /// departed. `arrives_at` is therefore the ETA of the next Service stop, not
@@ -103,6 +131,8 @@ pub struct JourneyPassengerGroup {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Journey {
     pub id: JourneyId,
+    #[serde(default)]
+    pub purpose: JourneyPurpose,
     pub service_id: ServiceId,
     pub train_id: TrainId,
     pub origin_station_id: RailStationId,

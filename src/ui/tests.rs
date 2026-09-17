@@ -32,7 +32,6 @@ fn routes_the_six_primary_views_by_number_and_keeps_non_map_letter_aliases() {
         ('c', View::Company),
         ('b', View::BuyTrains),
         ('a', View::Authority),
-        ('u', View::Bulletin),
     ] {
         assert_eq!(
             shell.handle_key(
@@ -53,6 +52,28 @@ fn routes_the_six_primary_views_by_number_and_keeps_non_map_letter_aliases() {
         &state,
     );
     assert_eq!(shell.active_view(), View::Trains);
+}
+
+#[test]
+fn bulletin_has_no_letter_alias_so_u_remains_available_for_contextual_actions() {
+    let mut shell = Shell::new();
+    let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+
+    assert_eq!(shell.active_view(), View::Map);
+    assert_eq!(
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
+            &state
+        ),
+        ShellAction::Continue
+    );
+    assert_eq!(shell.active_view(), View::Map);
+
+    shell.handle_key(
+        KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE),
+        &state,
+    );
+    assert_eq!(shell.active_view(), View::Bulletin);
 }
 
 #[test]

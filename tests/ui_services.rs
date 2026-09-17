@@ -108,15 +108,22 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("2 REVIEW"));
     assert!(review.contains("Review Passenger Service"));
-    assert!(review.contains("COMMERCIAL"));
-    assert!(review.contains("Optional · add after creation with R"));
-    assert!(review.contains("DIRECTION"));
+    assert!(review.contains("SERVICE"));
+    assert!(review.contains("Name"));
+    assert!(review.contains("—"));
+    assert!(review.contains("Direction"));
     assert!(review.contains("↔ BOTH DIRECTIONS"));
-    assert!(review.contains("TRAIN NOS."));
+    assert!(review.contains("PUBLIC TRAINS"));
     assert!(review.contains("100 Oakridge → Fairford"));
     assert!(review.contains("101 Fairford → Oakridge"));
-    assert!(review.contains("ORDERED STOPS"));
-    assert_shortcut_order(&review, &["[Esc] cancel", "[Enter] create", "[←] edit"]);
+    assert!(review.contains("Route Preview"));
+    assert!(review.contains("ROUTE"));
+    assert!(review.contains("Oakridge"));
+    assert!(review.contains("Fairford"));
+    assert_shortcut_order(
+        &review,
+        &["[Esc] cancel", "[Enter] create", "[Backspace] edit"],
+    );
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),
@@ -125,6 +132,42 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
             direction_mode: ServiceDirectionMode::BothDirections,
         })
     );
+}
+
+#[test]
+fn service_review_degrades_cleanly_on_a_narrow_terminal_and_can_return_to_editing() {
+    let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+    let mut shell = Shell::new();
+
+    press(&mut shell, &state, KeyCode::Char('s'));
+    press(&mut shell, &state, KeyCode::Char('n'));
+    press(&mut shell, &state, KeyCode::Char(' '));
+    press(&mut shell, &state, KeyCode::Down);
+    press(&mut shell, &state, KeyCode::Char(' '));
+    press(&mut shell, &state, KeyCode::Enter);
+
+    let review = capture_rendered_buffer_mut(&mut shell, &state, 72, 24);
+    assert!(review.contains("Review Passenger Service"));
+    assert!(review.contains("SERVICE"));
+    assert!(review.contains("Route"));
+    assert!(review.contains("Oakridge ↔ Fairford"));
+    assert!(review.contains("PUBLIC TRAINS"));
+    assert!(review.contains("100 Oakridge → Fairford"));
+    assert!(review.contains("101 Fairford → Oakridge"));
+    assert!(review.contains("ROUTE"));
+    assert!(!review.contains("Route Preview"));
+    assert_shortcut_order(
+        &review,
+        &["[Esc] cancel", "[Enter] create", "[Backspace] edit"],
+    );
+
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Backspace),
+        ShellAction::Continue
+    );
+    let editor = capture_rendered_buffer_mut(&mut shell, &state, 72, 24);
+    assert!(editor.contains("1 STOPS"));
+    assert!(editor.contains("Choose stops"));
 }
 
 #[test]
@@ -551,8 +594,9 @@ fn idle_service_uses_the_shared_editor_for_route_changes() {
     press(&mut shell, &state, KeyCode::Enter);
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("Review Service Changes"));
-    assert!(review.contains("COMMERCIAL"));
-    assert!(review.contains("(none)"));
+    assert!(review.contains("SERVICE"));
+    assert!(review.contains("Name"));
+    assert!(review.contains("—"));
     assert!(review.contains("100 Oakridge → Juniper"));
     assert!(review.contains("101 Juniper → Oakridge"));
     assert!(review.contains("[Enter] save"));

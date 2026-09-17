@@ -17,7 +17,7 @@ use ratatui::{
 use crate::{
     catalog::model_for_train,
     model::{GameState, Money, RailStationId, ServiceId, TrainId, TrainStatus},
-    sim::economy::{JourneyQuote, quote_journey},
+    sim::economy::{JourneyQuote, PositioningQuote, quote_journey, quote_positioning_journey},
     ui::{modal, theme},
 };
 
@@ -32,6 +32,12 @@ pub enum DispatchFlowAction {
     Confirm {
         train_id: TrainId,
         service_id: ServiceId,
+    },
+    /// The player confirmed an empty positioning move for an assigned Train.
+    ConfirmPositioning {
+        train_id: TrainId,
+        service_id: ServiceId,
+        destination_station_id: RailStationId,
     },
 }
 
@@ -52,6 +58,13 @@ enum DispatchStep {
         train_id: TrainId,
         service_id: ServiceId,
         quote: JourneyQuote,
+    },
+    Positioning {
+        train_id: TrainId,
+        service_id: ServiceId,
+        selected_destination_station_id: Option<RailStationId>,
+        table_state: TableState,
+        page_size: usize,
     },
 }
 
@@ -173,6 +186,14 @@ impl DispatchWorkspace {
             return Some(items);
         }
 
+        if flow.is_positioning() {
+            return Some(vec![
+                DispatchShortcut::enabled("Esc", "Cancel"),
+                DispatchShortcut::enabled("Enter", "Position"),
+                DispatchShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Terminus"),
+            ]);
+        }
+
         Some(vec![
             DispatchShortcut::enabled("Enter", "Confirm"),
             DispatchShortcut::enabled(
@@ -208,6 +229,12 @@ impl DispatchWorkspace {
                 "Enter Review Journey".into(),
                 "← / Backspace Previous step   Esc Cancel".into(),
             ]);
+        } else if flow.is_positioning() {
+            lines.extend([
+                "↑↓ / jk Choose the Service terminus for empty positioning".into(),
+                "Enter Authorise positioning move".into(),
+                "Esc Cancel without moving the Train".into(),
+            ]);
         } else {
             lines.extend([
                 "Enter Confirm dispatch".into(),
@@ -239,6 +266,11 @@ impl DispatchFlow {
         matches!(self.step, DispatchStep::Confirm { .. })
     }
 
+    /// Returns whether the flow is warning about and quoting an empty move.
+    pub fn is_positioning(&self) -> bool {
+        matches!(self.step, DispatchStep::Positioning { .. })
+    }
+
     /// Starts company-wide Manual Dispatch by listing every READY Train.
     ///
     /// The selected Train determines the Journey origin from its current
@@ -265,12 +297,23 @@ impl DispatchFlow {
         }
         let train_ids = dispatchable_train_ids_for_context(state, preferred_station_id, None);
         if train_ids.is_empty() {
-            return Err(match preferred_station_id {
-                Some(_) => {
-                    "No Passenger Service can be operated from this Rail Station by a READY Train. Open Services from the Map and create one first."
-                }
-                None => {
-                    "No Passenger Service can be operated from any READY Train's Rail Station. Open Services from the Map and create one first."
+            let any_assigned = ready_train_ids.iter().any(|train_id| {
+                state
+                    .player_company
+                    .fleet
+                    .assigned_service_id(*train_id)
+                    .is_some()
+            });
+            return Err(if !any_assigned {
+                "No READY Train is assigned to a Passenger Service. Assign one from Fleet or Services before revenue dispatch."
+            } else {
+                match preferred_station_id {
+                    Some(_) => {
+                        "No assigned Passenger Service can be operated from this Rail Station by a READY Train."
+                    }
+                    None => {
+                        "No assigned Passenger Service can be operated from any READY Train's current Rail Station."
+                    }
                 }
             });
         }
@@ -299,15 +342,20 @@ impl DispatchFlow {
                 train.id.get()
             ));
         }
-        if service_options(state, train_id).is_empty() {
-            return Err(
-                "No Passenger Service can be operated from this Train's current Rail Station. Create one from the Map Services workspace first."
-                    .into(),
-            );
-        }
+        let Some(service_id) = state.player_company.fleet.assigned_service_id(train_id) else {
+            return Err(format!(
+                "Train {} is UNASSIGNED. Assign a Passenger Service from Fleet or Services before revenue dispatch.",
+                train.id.get()
+            ));
+        };
+        let step = if service_options(state, train_id).is_empty() {
+            positioning_step(state, train_id, service_id, None)?
+        } else {
+            train_selection_step(state, Some(train_id), None, None)
+        };
 
         Ok(Self {
-            step: train_selection_step(state, Some(train_id), None, None),
+            step,
             preferred_station_id: None,
             preferred_service_id: None,
             rejection: None,
@@ -335,7 +383,7 @@ impl DispatchFlow {
         let train_ids = dispatchable_train_ids_for_context(state, None, Some(service_id));
         if train_ids.is_empty() {
             return Err(format!(
-                "No READY Train can run {} from a valid terminus.",
+                "No assigned READY Train can run {} from a valid terminus.",
                 service_name(state, service.id)
             ));
         }
@@ -368,7 +416,7 @@ impl DispatchFlow {
                 if trains.is_empty() {
                     self.rejection = Some(if let Some(service_id) = self.preferred_service_id {
                         format!(
-                            "No READY Train can currently run {} from a valid terminus.",
+                            "No assigned READY Train can currently run {} from a valid terminus.",
                             service_name(state, service_id)
                         )
                     } else {
@@ -551,6 +599,74 @@ impl DispatchFlow {
                     DispatchFlowAction::Continue
                 }
             }
+            DispatchStep::Positioning {
+                train_id,
+                service_id,
+                selected_destination_station_id,
+                table_state,
+                page_size,
+            } => {
+                let options = positioning_options(state, *train_id, *service_id);
+                if options.is_empty() {
+                    self.rejection = Some(
+                        "This Train can no longer reach a valid departure terminus for its assigned Passenger Service."
+                            .into(),
+                    );
+                    return DispatchFlowAction::Continue;
+                }
+                if synchronize_positioning_selection(
+                    selected_destination_station_id,
+                    table_state,
+                    &options,
+                ) {
+                    self.rejection = Some(
+                        "The previously selected terminus is no longer available; review the updated positioning options."
+                            .into(),
+                    );
+                }
+                move_positioning_selection(
+                    selected_destination_station_id,
+                    table_state,
+                    &options,
+                    *page_size,
+                    key.code,
+                );
+                if matches!(key.code, KeyCode::Enter) {
+                    let Some(destination_station_id) = *selected_destination_station_id else {
+                        self.rejection =
+                            Some("Choose a Service terminus before positioning.".into());
+                        return DispatchFlowAction::Continue;
+                    };
+                    match quote_positioning_journey(
+                        state,
+                        *train_id,
+                        *service_id,
+                        destination_station_id,
+                    ) {
+                        Ok(quote) if quote.cash_after_cost < Money::ZERO => {
+                            self.rejection = Some(format!(
+                                "Positioning costs {} but current Company Funds are {}.",
+                                format_money(quote.operating_cost),
+                                format_money(state.player_company.funds),
+                            ));
+                            DispatchFlowAction::Continue
+                        }
+                        Ok(_) => DispatchFlowAction::ConfirmPositioning {
+                            train_id: *train_id,
+                            service_id: *service_id,
+                            destination_station_id,
+                        },
+                        Err(error) => {
+                            self.rejection = Some(format!(
+                                "Positioning quote could not be revalidated: {error}."
+                            ));
+                            DispatchFlowAction::Continue
+                        }
+                    }
+                } else {
+                    DispatchFlowAction::Continue
+                }
+            }
         }
     }
 
@@ -687,6 +803,37 @@ impl DispatchFlow {
                 }
                 output.push_str("Enter confirms Manual Dispatch (revalidated); Esc cancels.\n");
             }
+            DispatchStep::Positioning {
+                train_id,
+                service_id,
+                selected_destination_station_id,
+                ..
+            } => {
+                output.push_str(&format!(
+                    "Train {} is assigned to {} but is not at a valid departure terminus.\n",
+                    train_id.get(),
+                    service_name(state, *service_id),
+                ));
+                for option in positioning_options(state, *train_id, *service_id) {
+                    let marker = if Some(option.destination_station_id)
+                        == *selected_destination_station_id
+                    {
+                        '>'
+                    } else {
+                        ' '
+                    };
+                    output.push_str(&format!(
+                        " {marker} {} — {} — {} — cost {}\n",
+                        station_label(state, option.destination_station_id),
+                        format_distance(option.quote.distance.metres()),
+                        format_duration(option.quote.duration.seconds()),
+                        format_money(option.quote.operating_cost),
+                    ));
+                }
+                output.push_str(
+                    "Positioning runs empty with no passenger revenue. Enter authorises the move; Esc cancels.\n",
+                );
+            }
         }
         if let Some(rejection) = &self.rejection {
             output.push_str(&format!("Departure rejected: {rejection}\n"));
@@ -710,7 +857,9 @@ impl DispatchFlow {
                     self.preferred_service_id,
                 ),
             ),
-            DispatchStep::SelectService { .. } | DispatchStep::Confirm { .. } => false,
+            DispatchStep::SelectService { .. }
+            | DispatchStep::Confirm { .. }
+            | DispatchStep::Positioning { .. } => false,
         };
         if selection_changed {
             self.rejection = Some(
@@ -719,10 +868,15 @@ impl DispatchFlow {
             );
         }
 
+        let modal_title = if matches!(self.step, DispatchStep::Positioning { .. }) {
+            "Position Train"
+        } else {
+            "Manual Dispatch"
+        };
         let modal_areas = modal::render_shell(
             frame,
             area,
-            "Manual Dispatch",
+            modal_title,
             dispatch_footer_line(&self.step, area.width, self.preferred_service_id.is_some()),
         );
 
@@ -778,6 +932,23 @@ impl DispatchFlow {
                     self.preferred_service_id.is_some(),
                 );
             }
+            DispatchStep::Positioning {
+                train_id,
+                service_id,
+                selected_destination_station_id,
+                table_state,
+                page_size,
+            } => render_positioning_chooser(
+                frame,
+                modal_areas.body,
+                state,
+                *train_id,
+                *service_id,
+                selected_destination_station_id,
+                table_state,
+                page_size,
+                self.rejection.as_deref(),
+            ),
         }
     }
 }
@@ -826,6 +997,11 @@ fn dispatch_footer_line(
         DispatchStep::Confirm { .. } => modal::shortcut_line(&[
             modal::ModalShortcut::enabled("Enter", modal::ModalAction::Dispatch),
             modal::ModalShortcut::enabled("←", confirm_back_action),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ]),
+        DispatchStep::Positioning { .. } => modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("↑/↓", modal::ModalAction::Choose),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Position),
             modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]),
     }
@@ -1320,6 +1496,12 @@ struct ServiceOption {
     quote: JourneyQuote,
 }
 
+#[derive(Clone, Debug)]
+struct PositioningOption {
+    destination_station_id: RailStationId,
+    quote: PositioningQuote,
+}
+
 struct ServiceChooserContext<'a> {
     state: &'a GameState,
     train_id: TrainId,
@@ -1485,6 +1667,143 @@ fn render_service_chooser(
     }
 }
 
+fn render_positioning_chooser(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    train_id: TrainId,
+    service_id: ServiceId,
+    selected_destination_station_id: &mut Option<RailStationId>,
+    table_state: &mut TableState,
+    page_size: &mut usize,
+    rejection: Option<&str>,
+) {
+    let options = positioning_options(state, train_id, service_id);
+    if options.is_empty() {
+        render_service_unavailable(
+            frame,
+            area,
+            "No valid positioning route is currently available for this Train.",
+        );
+        return;
+    }
+    synchronize_positioning_selection(selected_destination_station_id, table_state, &options);
+
+    let current_station = ready_train_station(state, train_id)
+        .map(|station_id| station_label(state, station_id))
+        .unwrap_or("Unknown");
+    let status_rows = u16::from(rejection.is_some());
+    let [context_area, table_area, detail_area, status_area] = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Min(4),
+        Constraint::Length(3),
+        Constraint::Length(status_rows),
+    ])
+    .areas(area);
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("POSITIONING REQUIRED", theme::warning()),
+            Line::from(vec![
+                Span::styled(
+                    format!("Train {:02}", train_id.get()),
+                    theme::primary_value(),
+                ),
+                Span::styled(" at ", theme::secondary()),
+                Span::styled(current_station.to_owned(), theme::primary_value()),
+            ]),
+            Line::from(vec![
+                Span::styled("Assigned  ", theme::secondary()),
+                Span::styled(service_name(state, service_id), theme::primary_value()),
+                Span::styled(" · ", theme::secondary()),
+                Span::styled(service_route_label(state, service_id), theme::secondary()),
+            ]),
+            Line::styled(
+                "Revenue service cannot start here. Choose a departure terminus for an empty move.",
+                theme::warning(),
+            ),
+            Line::styled(
+                "No passengers · no fare revenue · infrastructure and fuel costs are paid now.",
+                theme::secondary(),
+            ),
+        ])
+        .style(theme::panel())
+        .wrap(Wrap { trim: true }),
+        context_area,
+    );
+
+    *page_size = usize::from(table_area.height.saturating_sub(2)).max(1);
+    let rows = options
+        .iter()
+        .map(|option| {
+            Row::new([
+                Cell::from(station_label(state, option.destination_station_id).to_owned()),
+                Cell::from(format_distance(option.quote.distance.metres())),
+                Cell::from(format_duration(option.quote.duration.seconds())),
+                Cell::from(format_money(option.quote.operating_cost)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(42),
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(14),
+        ],
+    )
+    .header(
+        Row::new(["Position to", "Distance", "Time", "Total cost"])
+            .style(theme::table_header())
+            .bottom_margin(1),
+    )
+    .row_highlight_style(theme::selected_row())
+    .highlight_symbol("› ")
+    .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, table_area, table_state);
+
+    if let Some(selected_station_id) = *selected_destination_station_id
+        && let Some(option) = options
+            .iter()
+            .find(|option| option.destination_station_id == selected_station_id)
+    {
+        let funds_style = if option.quote.cash_after_cost < Money::ZERO {
+            theme::error()
+        } else {
+            theme::primary_value()
+        };
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(vec![
+                    Span::styled("Access  ", theme::secondary()),
+                    Span::styled(
+                        format_money(option.quote.infrastructure_access_fee),
+                        theme::primary_value(),
+                    ),
+                    Span::styled("   Fuel  ", theme::secondary()),
+                    Span::styled(format_money(option.quote.fuel_cost), theme::primary_value()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Funds after move  ", theme::secondary()),
+                    Span::styled(format_money(option.quote.cash_after_cost), funds_style),
+                ]),
+            ])
+            .style(theme::panel()),
+            detail_area,
+        );
+    }
+
+    if let Some(rejection) = rejection {
+        frame.render_widget(
+            Paragraph::new(Line::styled(rejection.to_owned(), theme::error()))
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            status_area,
+        );
+    }
+}
+
 fn render_service_unavailable(frame: &mut Frame, area: Rect, reason: &str) {
     frame.render_widget(
         Paragraph::new(vec![
@@ -1600,7 +1919,10 @@ fn dispatchable_train_ids_for_context(
     let mut train_ids = ready_train_ids_for_station(state, station_id)
         .into_iter()
         .filter(|train_id| match service_id {
-            Some(service_id) => preview_quote(state, *train_id, service_id).is_ok(),
+            Some(service_id) => {
+                state.player_company.fleet.assigned_service_id(*train_id) == Some(service_id)
+                    && preview_quote(state, *train_id, service_id).is_ok()
+            }
             None => !service_options(state, *train_id).is_empty(),
         })
         .collect::<Vec<_>>();
@@ -1745,6 +2067,130 @@ fn train_selection_step(
     }
 }
 
+fn positioning_step(
+    state: &GameState,
+    train_id: TrainId,
+    service_id: ServiceId,
+    selected_destination_station_id: Option<RailStationId>,
+) -> Result<DispatchStep, String> {
+    let options = positioning_options(state, train_id, service_id);
+    if options.is_empty() {
+        return Err(
+            "This Train cannot reach a valid departure terminus for its assigned Passenger Service."
+                .into(),
+        );
+    }
+    let selected = selected_destination_station_id
+        .and_then(|station_id| {
+            options
+                .iter()
+                .position(|option| option.destination_station_id == station_id)
+        })
+        .unwrap_or(0);
+    let mut table_state = TableState::default();
+    table_state.select(Some(selected));
+    Ok(DispatchStep::Positioning {
+        train_id,
+        service_id,
+        selected_destination_station_id: Some(options[selected].destination_station_id),
+        table_state,
+        page_size: 1,
+    })
+}
+
+fn positioning_options(
+    state: &GameState,
+    train_id: TrainId,
+    service_id: ServiceId,
+) -> Vec<PositioningOption> {
+    let Some(service) = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+    else {
+        return Vec::new();
+    };
+
+    let mut destinations = Vec::new();
+    if let Some(origin) = service.origin_station_id() {
+        destinations.push(origin);
+    }
+    if service.direction_mode == crate::model::ServiceDirectionMode::BothDirections
+        && let Some(destination) = service.destination_station_id()
+        && !destinations.contains(&destination)
+    {
+        destinations.push(destination);
+    }
+
+    destinations
+        .into_iter()
+        .filter_map(|destination_station_id| {
+            quote_positioning_journey(state, train_id, service_id, destination_station_id)
+                .ok()
+                .map(|quote| PositioningOption {
+                    destination_station_id,
+                    quote,
+                })
+        })
+        .collect()
+}
+
+fn synchronize_positioning_selection(
+    selected_destination_station_id: &mut Option<RailStationId>,
+    table_state: &mut TableState,
+    options: &[PositioningOption],
+) -> bool {
+    let Some(station_id) = *selected_destination_station_id else {
+        table_state.select(None);
+        return false;
+    };
+    if let Some(index) = options
+        .iter()
+        .position(|option| option.destination_station_id == station_id)
+    {
+        table_state.select(Some(index));
+        false
+    } else {
+        *selected_destination_station_id =
+            options.first().map(|option| option.destination_station_id);
+        table_state.select((!options.is_empty()).then_some(0));
+        *table_state.offset_mut() = 0;
+        true
+    }
+}
+
+fn move_positioning_selection(
+    selected_destination_station_id: &mut Option<RailStationId>,
+    table_state: &mut TableState,
+    options: &[PositioningOption],
+    page_size: usize,
+    key: KeyCode,
+) {
+    if options.is_empty() {
+        return;
+    }
+    let current = selected_destination_station_id.and_then(|station_id| {
+        options
+            .iter()
+            .position(|option| option.destination_station_id == station_id)
+    });
+    let last = options.len().saturating_sub(1);
+    let next = match key {
+        KeyCode::Up | KeyCode::Char('k') => current.map_or(0, |index| index.saturating_sub(1)),
+        KeyCode::Down | KeyCode::Char('j') => {
+            current.map_or(0, |index| index.saturating_add(1).min(last))
+        }
+        KeyCode::PageUp => current.map_or(0, |index| index.saturating_sub(page_size.max(1))),
+        KeyCode::PageDown => {
+            current.map_or(0, |index| index.saturating_add(page_size.max(1)).min(last))
+        }
+        _ => return,
+    };
+    *selected_destination_station_id = Some(options[next].destination_station_id);
+    table_state.select(Some(next));
+}
+
 fn service_step(
     state: &GameState,
     train_id: TrainId,
@@ -1753,8 +2199,17 @@ fn service_step(
     let services = service_options(state, train_id);
     if services.is_empty() {
         return Err(
-            "No Passenger Service can be operated from this Train's current Rail Station. Create one from the Map Services workspace first."
-                .into(),
+            if state
+                .player_company
+                .fleet
+                .assigned_service_id(train_id)
+                .is_none()
+            {
+                "Assign a Passenger Service to this Train before revenue dispatch.".into()
+            } else {
+                "This Train's assigned Passenger Service cannot be operated from its current Rail Station."
+                .into()
+            },
         );
     }
     let selected = selected_service_id
@@ -1778,10 +2233,14 @@ fn service_options(state: &GameState, train_id: TrainId) -> Vec<ServiceOption> {
     if ready_train_station(state, train_id).is_none() {
         return Vec::new();
     }
+    let Some(assigned_service_id) = state.player_company.fleet.assigned_service_id(train_id) else {
+        return Vec::new();
+    };
     state
         .player_company
         .passenger_services
         .iter()
+        .filter(|service| service.id == assigned_service_id)
         .filter_map(|service| {
             preview_quote(state, train_id, service.id)
                 .ok()
@@ -1994,7 +2453,11 @@ mod tests {
 
     use crate::{
         model::{RailStationId, TrainStatus, UtcSeconds},
-        sim::{fleet::purchase_train, services::create_service, world::create_new_game},
+        sim::{
+            fleet::purchase_train,
+            services::{assign_train_to_service, create_service},
+            world::create_new_game,
+        },
     };
 
     use super::{DispatchFlow, DispatchFlowAction};
@@ -2017,7 +2480,49 @@ mod tests {
         state: &mut crate::model::GameState,
         stops: Vec<RailStationId>,
     ) -> crate::model::ServiceId {
-        create_service(state, stops).unwrap()
+        let service_id = create_service(state, stops).unwrap();
+        let train_id = state.player_company.fleet.trains[0].id;
+        assign_train_to_service(state, train_id, service_id).unwrap();
+        service_id
+    }
+
+    #[test]
+    fn selected_unassigned_train_cannot_start_revenue_dispatch() {
+        let (mut state, train_id) = game_with_ready_train(RailStationId::new(1));
+        create_service(
+            &mut state,
+            vec![RailStationId::new(1), RailStationId::new(3)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            DispatchFlow::start_with_selected_train(&state, train_id),
+            Err(format!(
+                "Train {} is UNASSIGNED. Assign a Passenger Service from Fleet or Services before revenue dispatch.",
+                train_id.get()
+            ))
+        );
+        assert_eq!(
+            DispatchFlow::start(&state),
+            Err(
+                "No READY Train is assigned to a Passenger Service. Assign one from Fleet or Services before revenue dispatch."
+            )
+        );
+    }
+
+    #[test]
+    fn service_preselected_dispatch_requires_an_assigned_train() {
+        let (mut state, _) = game_with_ready_train(RailStationId::new(1));
+        let service_id = create_service(
+            &mut state,
+            vec![RailStationId::new(1), RailStationId::new(3)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            DispatchFlow::start_with_selected_service(&state, service_id),
+            Err("No assigned READY Train can run R1 from a valid terminus.".into())
+        );
     }
 
     #[test]
