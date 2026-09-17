@@ -61,6 +61,12 @@ pub(crate) const AUTHORITY_APPROVAL_SCORE_THRESHOLD: i32 = 250;
 // Requests scoring below this floor are not merely delayed: their current
 // regional case is too weak relative to cost to justify automatic reconsideration.
 pub(crate) const AUTHORITY_REJECTION_SCORE_THRESHOLD: i32 = 100;
+// A funded New Line is only worth replanning when the newly available route is
+// materially better. Requiring both an absolute and proportional saving avoids
+// churn for tiny geometry improvements while still catching cases such as a new
+// nearby Station opening beside an older long connection plan.
+const ROUTE_REPLAN_MIN_DISTANCE_SAVING_METRES: u64 = 5_000;
+const ROUTE_REPLAN_MIN_SAVING_BASIS_POINTS: u16 = 2_000;
 // Construction mobilisation and physical-work cadence are persisted in
 // `AuthorityRules`, keeping progression deterministic for each save.
 /// Maximum number of missed daily fiscal periods applied when RailQ catches up
@@ -1123,6 +1129,14 @@ fn advance_existing_planning_projects(
     Ok(())
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConnectionRouteReplan {
+    previous_connection_station_id: RailStationId,
+    previous_distance: DistanceMetres,
+    replacement: ConnectionCandidate,
+    distance_saving_metres: u64,
+}
+
 pub(crate) fn project_connection_station_id(
     project: &InfrastructureProject,
 ) -> Option<RailStationId> {
@@ -1142,6 +1156,73 @@ pub(crate) fn project_connection_station_id(
     } else {
         planned_line.first_station_id
     })
+}
+
+fn project_route_replan(
+    region: &Region,
+    world_seed: u64,
+    project: &InfrastructureProject,
+) -> Result<Option<ConnectionRouteReplan>, CalculationError> {
+    let InfrastructureProjectKind::NewLine {
+        planned_stations,
+        planned_lines,
+    } = &project.kind
+    else {
+        return Ok(None);
+    };
+    let Some(planned_station) = planned_stations.first() else {
+        return Ok(None);
+    };
+    let Some(planned_line) = planned_lines.iter().find(|line| {
+        line.first_station_id == planned_station.id || line.second_station_id == planned_station.id
+    }) else {
+        return Ok(None);
+    };
+    let Some(previous_connection_station_id) = project_connection_station_id(project) else {
+        return Ok(None);
+    };
+    let Some(replacement) =
+        evaluate_connection_candidate(region, world_seed, planned_station.settlement_id)?
+    else {
+        return Ok(None);
+    };
+
+    if replacement.connection_station_id == previous_connection_station_id
+        || !route_replan_savings_are_material(planned_line.distance, replacement.estimated_distance)
+    {
+        return Ok(None);
+    }
+
+    let distance_saving_metres = planned_line
+        .distance
+        .metres()
+        .saturating_sub(replacement.estimated_distance.metres());
+
+    Ok(Some(ConnectionRouteReplan {
+        previous_connection_station_id,
+        previous_distance: planned_line.distance,
+        replacement,
+        distance_saving_metres,
+    }))
+}
+
+fn route_replan_savings_are_material(
+    previous_distance: DistanceMetres,
+    replacement_distance: DistanceMetres,
+) -> bool {
+    let previous_metres = previous_distance.metres();
+    let replacement_metres = replacement_distance.metres();
+    if replacement_metres >= previous_metres {
+        return false;
+    }
+
+    let saving_metres = previous_metres - replacement_metres;
+    if saving_metres < ROUTE_REPLAN_MIN_DISTANCE_SAVING_METRES {
+        return false;
+    }
+
+    u128::from(saving_metres) * 10_000
+        >= u128::from(previous_metres) * u128::from(ROUTE_REPLAN_MIN_SAVING_BASIS_POINTS)
 }
 
 fn active_expansion_project_count(region: &Region) -> u32 {
@@ -1561,7 +1642,7 @@ mod tests {
         evaluate_connection_candidate, evaluate_connection_candidates,
         local_rail_success_basis_points, new_line_construction_duration_with_rules,
         open_completed_infrastructure_projects, project_from_candidate, project_review_decision,
-        project_review_score,
+        project_review_score, project_route_replan, route_replan_savings_are_material,
     };
 
     const PROVISIONAL_AUTHORITY_RULES: AuthorityRules = AuthorityRules::provisional();
@@ -1800,6 +1881,60 @@ mod tests {
         assert_eq!(
             evaluate_connection_candidate(&region, world_seed, target_settlement_id).unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn route_replan_requires_both_absolute_and_proportional_savings() {
+        let km = |kilometres: i64| DistanceMetres::new(kilometres * 1_000).unwrap();
+
+        assert!(route_replan_savings_are_material(km(25), km(20)));
+        assert!(route_replan_savings_are_material(km(50), km(40)));
+        assert!(!route_replan_savings_are_material(km(50), km(41)));
+        assert!(!route_replan_savings_are_material(km(30), km(26)));
+        assert!(!route_replan_savings_are_material(km(25), km(25)));
+    }
+
+    #[test]
+    fn project_route_replan_detects_materially_better_new_station() {
+        let world_seed = 42;
+        let mut region = generate_region(world_seed);
+        let target_settlement_id = region.settlements[4].id;
+        region.settlements[4].position = WorldPosition::new(100, 100);
+
+        let original_candidate = evaluate_connection_candidate(
+            &region,
+            world_seed,
+            target_settlement_id,
+        )
+        .unwrap()
+        .expect("target Settlement is initially unconnected");
+        let project = project_from_candidate(original_candidate.clone(), UtcSeconds::from_unix_seconds(1));
+
+        assert_eq!(project_route_replan(&region, world_seed, &project).unwrap(), None);
+
+        let closer_settlement_id = region.settlements[5].id;
+        region.settlements[5].position = WorldPosition::new(95, 100);
+        let closer_station_id = RailStationId::new(100);
+        region.rail_authority.rail_network.rail_stations.push(RailStation {
+            id: closer_station_id,
+            settlement_id: closer_settlement_id,
+        });
+
+        let replan = project_route_replan(&region, world_seed, &project)
+            .unwrap()
+            .expect("new nearby Station should materially improve the route");
+
+        assert_eq!(
+            replan.previous_connection_station_id,
+            original_candidate.connection_station_id
+        );
+        assert_eq!(replan.previous_distance, original_candidate.estimated_distance);
+        assert_eq!(replan.replacement.connection_station_id, closer_station_id);
+        assert_eq!(replan.replacement.estimated_distance.metres(), 5_000);
+        assert_eq!(
+            replan.distance_saving_metres,
+            original_candidate.estimated_distance.metres() - 5_000
         );
     }
 
