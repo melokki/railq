@@ -620,8 +620,11 @@ fn render_purchase_review(
     delivery_station_id: RailStationId,
     rejection: Option<&str>,
 ) {
-    let footer =
-        modal::shortcut_line(&[("Enter", "confirm"), ("←", "delivery"), ("Esc", "cancel")]);
+    let footer = modal::shortcut_line(&[
+        modal::ModalShortcut::enabled("Enter", modal::ModalAction::Confirm),
+        modal::ModalShortcut::enabled("←", modal::ModalAction::Delivery),
+        modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+    ]);
     let modal_areas = modal::render_shell(frame, area, "Confirm Train Purchase", footer);
 
     let Some(train) = train_catalogue().models().get(catalogue_index) else {
@@ -1098,7 +1101,10 @@ pub fn render_dashboard(
 
 fn catalogue_header_row(headers: Vec<&str>) -> Row<'static> {
     Row::new(headers.into_iter().map(|header| {
-        if matches!(header, "Seats" | "Top speed" | "Fuel/km" | "Owned" | "Price") {
+        if matches!(
+            header,
+            "Seats" | "Top speed" | "Fuel/km" | "Owned" | "Price"
+        ) {
             Cell::from(Text::from(header.to_owned()).right_aligned())
         } else {
             Cell::from(header.to_owned())
@@ -1515,7 +1521,6 @@ fn render_delivery_inspector(
         area,
     );
 }
-
 
 fn render_selected(state: &GameState, selected_catalogue_index: usize) -> String {
     let mut output = String::from("Market\n");

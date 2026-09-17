@@ -45,9 +45,9 @@ use crate::{
         MarketMaturity, Money, MoneyPerKilometre, OriginDestinationDemand, PassengerArrivalRate,
         PassengerService, PlannedRailLine, PlannedRailStation, PlayerCompany, RailAuthority,
         RailAuthorityFinances, RailLine, RailLineId, RailNetwork, RailStation, RailStationId,
-        RailwayRegistration, Region, ServiceId, Settlement, SettlementId, SpeedKilometresPerHour,
-        TrackCount, Train, TrainId, TrainModelId, TrainNickname, TrainStatus, UtcSeconds,
-        VehicleKeeperMark, WorldPosition,
+        RailwayRegistration, Region, ServiceDirectionMode, ServiceId, Settlement, SettlementId,
+        SpeedKilometresPerHour, TrackCount, Train, TrainId, TrainModelId, TrainNickname,
+        TrainStatus, UtcSeconds, VehicleKeeperMark, WorldPosition,
     },
     sim::{
         demand::waiting_passenger_cap,
@@ -59,7 +59,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 27;
+pub const SAVE_VERSION: u32 = 32;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";
@@ -67,7 +67,6 @@ pub const DEFAULT_SAVE_PATH: &str = "railq.db";
 /// Previous default RON save. `open_default` imports it once when no database
 /// exists yet, leaving the source file untouched as a player-visible backup.
 pub const LEGACY_SAVE_PATH: &str = "railq.ron";
-
 
 use self::support::*;
 

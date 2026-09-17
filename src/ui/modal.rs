@@ -116,17 +116,271 @@ pub fn render_shell(
     }
 }
 
+/// Shared action vocabulary for focused modal footers.
+///
+/// Keeping these labels typed prevents individual workflows from slowly
+/// drifting between synonyms such as "pick", "select", and "choose".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModalAction {
+    Assign,
+    Cancel,
+    Choose,
+    Close,
+    Confirm,
+    Contribute,
+    Create,
+    Delete,
+    Delivery,
+    Direction,
+    Dispatch,
+    Edit,
+    Erase,
+    KeepSave,
+    Locked,
+    Page,
+    Quit,
+    Reassign,
+    Resell,
+    Restart,
+    Review,
+    Route,
+    Save,
+    Scroll,
+    Service,
+    Station,
+    Toggle,
+    ToggleStop,
+    Train,
+    Unassign,
+}
+
+impl ModalAction {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Assign => "assign",
+            Self::Cancel => "cancel",
+            Self::Choose => "choose",
+            Self::Close => "close",
+            Self::Confirm => "confirm",
+            Self::Contribute => "contribute",
+            Self::Create => "create",
+            Self::Delete => "delete",
+            Self::Delivery => "delivery",
+            Self::Direction => "direction",
+            Self::Dispatch => "dispatch",
+            Self::Edit => "edit",
+            Self::Erase => "erase",
+            Self::KeepSave => "keep save",
+            Self::Locked => "locked",
+            Self::Page => "page",
+            Self::Quit => "quit",
+            Self::Reassign => "reassign",
+            Self::Resell => "resell",
+            Self::Restart => "restart",
+            Self::Review => "review",
+            Self::Route => "route",
+            Self::Save => "save",
+            Self::Scroll => "scroll",
+            Self::Service => "service",
+            Self::Station => "station",
+            Self::Toggle => "toggle",
+            Self::ToggleStop => "toggle stop",
+            Self::Train => "train",
+            Self::Unassign => "unassign",
+        }
+    }
+
+    const fn is_destructive(self) -> bool {
+        matches!(self, Self::Delete | Self::Resell | Self::Unassign)
+    }
+}
+
+/// One shortcut rendered in a focused modal footer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModalShortcut {
+    pub key: &'static str,
+    pub action: ModalAction,
+    pub enabled: bool,
+}
+
+impl ModalShortcut {
+    pub const fn enabled(key: &'static str, action: ModalAction) -> Self {
+        Self {
+            key,
+            action,
+            enabled: true,
+        }
+    }
+
+    pub const fn disabled(key: &'static str, action: ModalAction) -> Self {
+        Self {
+            key,
+            action,
+            enabled: false,
+        }
+    }
+}
+
 /// Bastion-inspired keyboard shortcut line used inside focused modal windows.
-pub fn shortcut_line(shortcuts: &[(&str, &str)]) -> Line<'static> {
+///
+/// Modal footers follow one interaction grammar everywhere in RailQ:
+/// Esc first, Enter second, movement/navigation next, then contextual actions.
+/// Destructive secondary actions are kept last. Call sites may provide shortcuts
+/// in whatever order is most convenient; this renderer owns the convention.
+pub fn shortcut_line(shortcuts: &[ModalShortcut]) -> Line<'static> {
+    let mut ordered = shortcuts.iter().copied().enumerate().collect::<Vec<_>>();
+    ordered
+        .sort_by_key(|(original_index, shortcut)| (shortcut_priority(shortcut), *original_index));
+
     let mut spans = Vec::new();
-    for (index, (key, action)) in shortcuts.iter().enumerate() {
+    for (index, (_, shortcut)) in ordered.into_iter().enumerate() {
         if index > 0 {
             spans.push(Span::styled("   ", theme::shortcut_action()));
         }
-        spans.push(Span::styled(format!("[{key}]"), theme::shortcut_key()));
-        spans.push(Span::styled(format!(" {action}"), theme::shortcut_action()));
+        let key_style = if shortcut.enabled {
+            theme::shortcut_key()
+        } else {
+            theme::shortcut_disabled()
+        };
+        let action_style = if shortcut.enabled {
+            theme::shortcut_action()
+        } else {
+            theme::shortcut_disabled()
+        };
+        spans.push(Span::styled(format!("[{}]", shortcut.key), key_style));
+        spans.push(Span::styled(
+            format!(" {}", shortcut.action.label()),
+            action_style,
+        ));
     }
     Line::from(spans)
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ShortcutPriority {
+    Escape,
+    Primary,
+    Navigation,
+    Contextual,
+    Destructive,
+}
+
+fn shortcut_priority(shortcut: &ModalShortcut) -> ShortcutPriority {
+    let normalized_key = shortcut.key.to_ascii_lowercase();
+
+    if normalized_key.contains("esc") {
+        return ShortcutPriority::Escape;
+    }
+    if normalized_key.contains("enter") {
+        return ShortcutPriority::Primary;
+    }
+    if is_movement_shortcut(&normalized_key) {
+        return ShortcutPriority::Navigation;
+    }
+    if normalized_key.contains("del") || shortcut.action.is_destructive() {
+        return ShortcutPriority::Destructive;
+    }
+    ShortcutPriority::Contextual
+}
+
+fn is_movement_shortcut(key: &str) -> bool {
+    key.contains('↑')
+        || key.contains('↓')
+        || key.contains("jk")
+        || key.contains("pgup")
+        || key.contains("pgdn")
+        || (key.contains('←') && key.contains('→'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ModalAction, ModalShortcut, shortcut_line};
+
+    fn text(line: ratatui::text::Line<'static>) -> String {
+        line.spans
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn modal_shortcuts_follow_the_global_footer_order() {
+        let rendered = text(shortcut_line(&[
+            ModalShortcut::enabled("Space", ModalAction::Toggle),
+            ModalShortcut::enabled("↑↓/JK", ModalAction::Choose),
+            ModalShortcut::enabled("Enter", ModalAction::Review),
+            ModalShortcut::enabled("Esc", ModalAction::Cancel),
+            ModalShortcut::enabled("Del", ModalAction::Delete),
+        ]));
+
+        assert_eq!(
+            rendered,
+            "[Esc] cancel   [Enter] review   [↑↓/JK] choose   [Space] toggle   [Del] delete"
+        );
+    }
+
+    #[test]
+    fn escape_aliases_still_sort_first() {
+        let rendered = text(shortcut_line(&[
+            ModalShortcut::enabled("PgUp/PgDn", ModalAction::Page),
+            ModalShortcut::enabled("Q", ModalAction::Quit),
+            ModalShortcut::enabled("Esc/?", ModalAction::Close),
+        ]));
+
+        assert_eq!(rendered, "[Esc/?] close   [PgUp/PgDn] page   [Q] quit");
+    }
+
+    #[test]
+    fn disabled_shortcuts_keep_the_same_order_and_copy() {
+        let rendered = text(shortcut_line(&[
+            ModalShortcut::disabled("Enter", ModalAction::Review),
+            ModalShortcut::enabled("Esc", ModalAction::Cancel),
+            ModalShortcut::enabled("↑↓/JK", ModalAction::Choose),
+        ]));
+
+        assert_eq!(rendered, "[Esc] cancel   [Enter] review   [↑↓/JK] choose");
+    }
+
+    #[test]
+    fn destructive_actions_sort_last_even_without_a_delete_key() {
+        let rendered = text(shortcut_line(&[
+            ModalShortcut::enabled("U", ModalAction::Unassign),
+            ModalShortcut::enabled("Space", ModalAction::Toggle),
+            ModalShortcut::enabled("↑↓/JK", ModalAction::Choose),
+            ModalShortcut::enabled("Enter", ModalAction::Assign),
+            ModalShortcut::enabled("Esc", ModalAction::Cancel),
+        ]));
+
+        assert_eq!(
+            rendered,
+            "[Esc] cancel   [Enter] assign   [↑↓/JK] choose   [Space] toggle   [U] unassign"
+        );
+    }
+
+    #[test]
+    fn contextual_actions_keep_their_declared_order_after_navigation() {
+        let rendered = text(shortcut_line(&[
+            ModalShortcut::enabled("M", ModalAction::Direction),
+            ModalShortcut::enabled("Space", ModalAction::ToggleStop),
+            ModalShortcut::enabled("←", ModalAction::Edit),
+            ModalShortcut::enabled("↑↓/JK", ModalAction::Choose),
+            ModalShortcut::enabled("Esc", ModalAction::Cancel),
+        ]));
+
+        assert_eq!(
+            rendered,
+            "[Esc] cancel   [↑↓/JK] choose   [M] direction   [Space] toggle stop   [←] edit"
+        );
+    }
+
+    #[test]
+    fn disabled_shortcuts_use_the_disabled_style_for_key_and_action() {
+        let line = shortcut_line(&[ModalShortcut::disabled("Enter", ModalAction::Review)]);
+
+        assert_eq!(line.spans.len(), 2);
+        assert_eq!(line.spans[0].style, theme::shortcut_disabled());
+        assert_eq!(line.spans[1].style, theme::shortcut_disabled());
+    }
 }
 
 /// Draws a subtle vertical divider for picker/detail layouts.

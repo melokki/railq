@@ -22,6 +22,7 @@ pub(super) fn clear_state(
          DELETE FROM origin_destination_demand;
          DELETE FROM service_lines;
          DELETE FROM service_stops;
+         DELETE FROM train_service_assignments;
          DELETE FROM passenger_services;
          DELETE FROM trains;
          DELETE FROM train_model_sequences;
@@ -242,11 +243,15 @@ pub(super) fn insert_state(
     for (sequence, service) in state.player_company.passenger_services.iter().enumerate() {
         transaction
             .execute(
-                "INSERT INTO passenger_services(id, sequence, name) VALUES(?1, ?2, ?3)",
+                "INSERT INTO passenger_services(id, sequence, name, custom_name, direction_mode, forward_train_number, reverse_train_number) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     service.id.to_string(),
                     i64::try_from(sequence).unwrap_or(i64::MAX),
-                    &service.name
+                    &service.name,
+                    service.custom_name.as_deref(),
+                    service.direction_mode.as_str(),
+                    i64::from(service.forward_train_number),
+                    service.reverse_train_number.map(i64::from),
                 ],
             )
             .map_err(|source| db_error("write Passenger Services to", path, source))?;
@@ -262,6 +267,17 @@ pub(super) fn insert_state(
                 params![service.id.to_string(), i64::try_from(sequence).unwrap_or(i64::MAX), line_id.to_string()],
             ).map_err(|source| db_error("write Passenger Service paths to", path, source))?;
         }
+    }
+
+    for (train_id, service_id) in &state.player_company.fleet.service_assignments {
+        transaction
+            .execute(
+                "INSERT INTO train_service_assignments(train_id, service_id) VALUES(?1, ?2)",
+                params![train_id.to_string(), service_id.to_string()],
+            )
+            .map_err(|source| {
+                db_error("write Train Passenger Service assignments to", path, source)
+            })?;
     }
 
     for (sequence, demand) in state.origin_destination_demand.iter().enumerate() {
@@ -823,7 +839,10 @@ fn load_infrastructure_projects(
     Ok(projects)
 }
 
-pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>, SaveSlotError> {
+pub(super) fn load_state(
+    connection: &Connection,
+    path: &Path,
+) -> Result<Option<GameState>, SaveSlotError> {
     let meta = connection
         .query_row(
             "SELECT world_seed, last_processed_at FROM game_meta WHERE singleton = 1",
@@ -1049,12 +1068,24 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
 
     let mut services = query_all(
         connection,
-        "SELECT id, name FROM passenger_services ORDER BY sequence",
+        "SELECT id, name, custom_name, direction_mode, forward_train_number, reverse_train_number FROM passenger_services ORDER BY sequence",
         path,
         |row| {
+            let direction_mode_value = row.get::<_, String>(3)?;
+            let direction_mode = ServiceDirectionMode::parse(&direction_mode_value)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
             Ok(PassengerService {
                 id: row_domain_id(row, 0, "Passenger Service ID", ServiceId::parse)?,
                 name: row.get(1)?,
+                custom_name: row.get(2)?,
+                direction_mode,
+                forward_train_number: u32::try_from(row.get::<_, i64>(4)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                reverse_train_number: row
+                    .get::<_, Option<i64>>(5)?
+                    .map(u32::try_from)
+                    .transpose()
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 stop_station_ids: Vec::new(),
                 rail_line_ids: Vec::new(),
             })
@@ -1096,6 +1127,25 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
                 .push(RailLineId::parse(&line).map_err(|_| invalid_value(path, "Rail Line ID"))?);
         }
     }
+
+    let service_assignments = query_all(
+        connection,
+        "SELECT train_id, service_id FROM train_service_assignments ORDER BY train_id",
+        path,
+        |row| {
+            Ok((
+                row_domain_id(row, 0, "Train assignment Train ID", TrainId::parse)?,
+                row_domain_id(
+                    row,
+                    1,
+                    "Train assignment Passenger Service ID",
+                    ServiceId::parse,
+                )?,
+            ))
+        },
+    )?
+    .into_iter()
+    .collect();
 
     let demand = query_all(
         connection,
@@ -1271,6 +1321,7 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
             funds: Money::from_cents(company_funds),
             fleet: Fleet {
                 trains,
+                service_assignments,
                 next_train_display_number: from_db_u64(
                     next_train_display_number,
                     "next Train display number",
@@ -1306,4 +1357,3 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
     };
     Ok(Some(state))
 }
-

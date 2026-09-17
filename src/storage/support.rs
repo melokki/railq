@@ -230,7 +230,11 @@ pub(super) fn query_all<T>(
         .collect()
 }
 
-pub(super) fn to_db_u64(value: u64, field: &'static str, path: &Path) -> Result<i64, SaveSlotError> {
+pub(super) fn to_db_u64(
+    value: u64,
+    field: &'static str,
+    path: &Path,
+) -> Result<i64, SaveSlotError> {
     i64::try_from(value).map_err(|_| invalid_value(path, field))
 }
 
@@ -275,7 +279,11 @@ pub(super) fn optional_row_domain_id<T>(
         .transpose()
 }
 
-pub(super) fn row_u64(row: &rusqlite::Row<'_>, index: usize, field: &'static str) -> rusqlite::Result<u64> {
+pub(super) fn row_u64(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+    field: &'static str,
+) -> rusqlite::Result<u64> {
     let value: i64 = row.get(index)?;
     u64::try_from(value).map_err(|_| conversion_error(index, field))
 }
@@ -302,7 +310,11 @@ pub(super) fn from_db_u64(value: i64, field: &'static str) -> Result<u64, &'stat
     u64::try_from(value).map_err(|_| field)
 }
 
-pub(super) fn db_error(action: &'static str, path: &Path, source: rusqlite::Error) -> SaveSlotError {
+pub(super) fn db_error(
+    action: &'static str,
+    path: &Path,
+    source: rusqlite::Error,
+) -> SaveSlotError {
     SaveSlotError::Database {
         action,
         path: path.to_path_buf(),

@@ -15,8 +15,8 @@ use crate::{
         DemandRules, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState, Journey,
         JourneyPassengerGroup, Money, MoneyPerKilometre, OriginDestinationDemand,
         PassengerCapacity, PassengerService, PlayerCompany, RailLineId, RailStationId, Region,
-        ServiceId, SpeedMetresPerSecond, Train, TrainId, TrainModelId, TrainStatus, UtcSeconds,
-        VehicleKeeperMark,
+        ServiceDirectionMode, ServiceId, SpeedMetresPerSecond, Train, TrainId, TrainModelId,
+        TrainStatus, UtcSeconds, VehicleKeeperMark,
     },
     sim::world::railway_registration_for_existing_region,
 };
@@ -169,13 +169,35 @@ pub(super) fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCo
         .player_company
         .passenger_services
         .into_iter()
-        .map(|service| PassengerService {
-            id: service.id,
-            name: format!("R{}", service.id.get()),
-            stop_station_ids: vec![service.first_station_id, service.second_station_id],
-            rail_line_ids: service.rail_line_ids,
+        .enumerate()
+        .map(|(index, service)| {
+            let index = u32::try_from(index).map_err(|_| SaveCodecError::InvalidValue {
+                field: "Passenger Service train number",
+            })?;
+            let forward_train_number = index
+                .checked_mul(2)
+                .and_then(|offset| 100_u32.checked_add(offset))
+                .ok_or(SaveCodecError::InvalidValue {
+                    field: "Passenger Service train number",
+                })?;
+            let reverse_train_number =
+                forward_train_number
+                    .checked_add(1)
+                    .ok_or(SaveCodecError::InvalidValue {
+                        field: "Passenger Service train number",
+                    })?;
+            Ok(PassengerService {
+                id: service.id,
+                name: format!("R{}", service.id.get()),
+                custom_name: None,
+                direction_mode: ServiceDirectionMode::BothDirections,
+                forward_train_number,
+                reverse_train_number: Some(reverse_train_number),
+                stop_station_ids: vec![service.first_station_id, service.second_station_id],
+                rail_line_ids: service.rail_line_ids,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, SaveCodecError>>()?;
     let mut active_journeys = legacy.active_journeys;
     for journey in &mut active_journeys {
         if let Some(service) = passenger_services
@@ -214,6 +236,7 @@ pub(super) fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCo
             name: legacy.player_company.name,
             funds: legacy.player_company.funds,
             fleet: Fleet {
+                service_assignments: Default::default(),
                 next_train_display_number: trains
                     .iter()
                     .map(|train| train.id.get())

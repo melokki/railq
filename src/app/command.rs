@@ -4,8 +4,8 @@
 //! timestamp are supplied separately when the application executes them.
 
 use crate::model::{
-    InfrastructureProjectId, JourneyId, Money, RailStationId, ServiceId, TrainId, TrainNickname,
-    VehicleKeeperMark,
+    InfrastructureProjectId, JourneyId, Money, RailStationId, ServiceDirectionMode, ServiceId,
+    TrainId, TrainNickname, VehicleKeeperMark,
 };
 
 /// A player-requested state transition accepted by the application layer.
@@ -18,17 +18,31 @@ pub enum AppCommand {
     },
     /// Sell one READY owned Train.
     SellTrain { train_id: TrainId },
-    /// Create one persistent directional Passenger Service.
+    /// Create one persistent Passenger Service route pattern.
     CreatePassengerService {
         stop_station_ids: Vec<RailStationId>,
+        direction_mode: ServiceDirectionMode,
     },
     /// Update the stop pattern of one unused Passenger Service.
     UpdatePassengerService {
         service_id: ServiceId,
         stop_station_ids: Vec<RailStationId>,
+        direction_mode: ServiceDirectionMode,
+    },
+    /// Change or clear the optional commercial name of one Passenger Service.
+    UpdatePassengerServiceName {
+        service_id: ServiceId,
+        custom_name: Option<String>,
     },
     /// Delete one unused Passenger Service.
     DeletePassengerService { service_id: ServiceId },
+    /// Persistently allocate one owned Train to a Passenger Service.
+    AssignTrainToService {
+        train_id: TrainId,
+        service_id: ServiceId,
+    },
+    /// Clear one owned Train's persistent Passenger Service allocation.
+    UnassignTrainFromService { train_id: TrainId },
     /// Authorise one Manual Dispatch over an existing Passenger Service.
     ManualDispatch {
         train_id: TrainId,
@@ -61,8 +75,17 @@ pub enum AppCommandResult {
     PassengerServiceCreated { service_id: ServiceId },
     /// One Passenger Service update was durably committed.
     PassengerServiceUpdated { service_id: ServiceId },
+    /// One Passenger Service naming change was durably committed.
+    PassengerServiceRenamed { service_id: ServiceId },
     /// One Passenger Service deletion was durably committed.
     PassengerServiceDeleted { service_id: ServiceId },
+    /// One Train-to-Service assignment was durably committed.
+    TrainServiceAssigned {
+        train_id: TrainId,
+        service_id: ServiceId,
+    },
+    /// One Train-to-Service assignment was durably cleared.
+    TrainServiceUnassigned { train_id: TrainId },
     /// One Manual Dispatch was durably committed.
     JourneyDispatched { journey_id: JourneyId },
     /// One infrastructure contribution was durably committed.

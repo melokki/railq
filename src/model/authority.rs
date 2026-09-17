@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CalculationError, ConstructionDifficulty, DistanceMetres, Electrification, InfrastructureProjectId,
-    Money, MoneyPerKilometre, RailLineId, RailStationId, SettlementId, SpeedKilometresPerHour,
-    TrackCount, UtcSeconds,
+    CalculationError, ConstructionDifficulty, DistanceMetres, Electrification,
+    InfrastructureProjectId, Money, MoneyPerKilometre, RailLineId, RailStationId, SettlementId,
+    SpeedKilometresPerHour, TrackCount, UtcSeconds,
 };
 
 /// Current lifecycle stage of a Rail Authority infrastructure project.
@@ -72,7 +72,8 @@ pub struct InfrastructureProjectFunding {
 
 impl InfrastructureProjectFunding {
     pub fn total_funded(&self) -> Result<Money, CalculationError> {
-        self.authority_committed.checked_add(self.operator_contributed)
+        self.authority_committed
+            .checked_add(self.operator_contributed)
     }
 
     pub fn funding_gap(&self) -> Result<Money, CalculationError> {
@@ -97,12 +98,17 @@ impl InfrastructureProjectFunding {
             .checked_sub(self.operator_contributed)
     }
 
-    pub fn suggested_operator_contribution(&self, company_funds: Money) -> Result<Money, CalculationError> {
+    pub fn suggested_operator_contribution(
+        &self,
+        company_funds: Money,
+    ) -> Result<Money, CalculationError> {
         if company_funds <= Money::ZERO {
             return Ok(Money::ZERO);
         }
         let cents = i128::from(self.estimated_cost.cents())
-            .checked_mul(i128::from(PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT))
+            .checked_mul(i128::from(
+                PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT,
+            ))
             .ok_or(CalculationError::Overflow {
                 operation: "operator infrastructure contribution tranche",
             })?
@@ -141,7 +147,8 @@ impl InfrastructureProjectFunding {
     }
 
     pub fn is_fully_funded(&self) -> bool {
-        self.total_funded().is_ok_and(|funded| funded >= self.estimated_cost)
+        self.total_funded()
+            .is_ok_and(|funded| funded >= self.estimated_cost)
     }
 }
 
@@ -452,11 +459,8 @@ impl Default for RailAuthorityFinances {
     }
 }
 
-
 /// Returns the first UTC midnight strictly after `timestamp`.
-pub fn next_utc_midnight_after(
-    timestamp: UtcSeconds,
-) -> Result<UtcSeconds, CalculationError> {
+pub fn next_utc_midnight_after(timestamp: UtcSeconds) -> Result<UtcSeconds, CalculationError> {
     let day = timestamp.unix_seconds().div_euclid(SECONDS_PER_UTC_DAY);
     let next_day = day.checked_add(1).ok_or(CalculationError::Overflow {
         operation: "Authority fiscal day increment",

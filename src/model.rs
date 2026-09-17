@@ -37,11 +37,12 @@ mod authority;
 
 pub use authority::{
     InfrastructureProject, InfrastructureProjectFunding, InfrastructureProjectKind,
-    InfrastructureProjectStatus, InfrastructureProjectTimeline, PlannedRailLine, PlannedRailStation,
-    PROVISIONAL_CONSTRUCTION_CAPACITY, PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE,
+    InfrastructureProjectStatus, InfrastructureProjectTimeline, PROVISIONAL_CONSTRUCTION_CAPACITY,
+    PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE,
     PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT, PROVISIONAL_OPERATOR_CONTRIBUTION_CAP_PERCENT,
     PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT, PROVISIONAL_REGIONAL_PUBLIC_ALLOCATION,
-    RailAuthority, RailAuthorityFinances, RailLine, RailNetwork, RailStation, next_utc_midnight_after,
+    PlannedRailLine, PlannedRailStation, RailAuthority, RailAuthorityFinances, RailLine,
+    RailNetwork, RailStation, next_utc_midnight_after,
 };
 
 mod company;
@@ -52,7 +53,7 @@ mod operations;
 
 pub use operations::{
     Journey, JourneyPassengerGroup, MarketMaturity, OriginDestinationDemand, PassengerArrivalRate,
-    PassengerService,
+    PassengerService, ServiceDirectionMode,
 };
 
 mod finance;

@@ -186,11 +186,41 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
             kind: "Passenger Service",
         });
     }
+    let mut service_train_numbers = HashSet::new();
     for service in &state.player_company.passenger_services {
+        if service.forward_train_number < 100
+            || !service_train_numbers.insert(service.forward_train_number)
+        {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Passenger Service train number",
+            });
+        }
+        match (service.direction_mode, service.reverse_train_number) {
+            (ServiceDirectionMode::BothDirections, Some(reverse_train_number))
+                if reverse_train_number >= 100
+                    && service_train_numbers.insert(reverse_train_number) => {}
+            (ServiceDirectionMode::ForwardOnly, None) => {}
+            _ => {
+                return Err(SaveValidationError::InvalidValue {
+                    field: "Passenger Service reverse train number",
+                });
+            }
+        }
         if service.name.trim().is_empty() {
             return Err(SaveValidationError::InvalidValue {
                 field: "Passenger Service name",
             });
+        }
+        if let Some(custom_name) = service.custom_name.as_deref() {
+            if custom_name.trim().is_empty()
+                || custom_name != custom_name.trim()
+                || custom_name.chars().count() > PassengerService::MAX_CUSTOM_NAME_CHARACTERS
+                || custom_name.chars().any(char::is_control)
+            {
+                return Err(SaveValidationError::InvalidValue {
+                    field: "Passenger Service commercial name",
+                });
+            }
         }
         if service
             .stop_station_ids
@@ -282,6 +312,7 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
         return Err(SaveValidationError::InvalidId { kind: "Journey" });
     }
 
+    validate_service_assignments(state, &train_ids, &service_ids)?;
     validate_train_statuses(
         &state.player_company.fleet.trains,
         state.region.railway_registration.numeric_code,
@@ -779,6 +810,45 @@ fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
                     field: "Journey receipt operating context",
                 });
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_service_assignments(
+    state: &GameState,
+    train_ids: &HashSet<TrainId>,
+    service_ids: &HashSet<ServiceId>,
+) -> Result<(), SaveValidationError> {
+    for (train_id, service_id) in &state.player_company.fleet.service_assignments {
+        if !train_ids.contains(train_id) {
+            return Err(SaveValidationError::DanglingReference {
+                field: "Train Passenger Service assignment Train",
+            });
+        }
+        if !service_ids.contains(service_id) {
+            return Err(SaveValidationError::DanglingReference {
+                field: "Train Passenger Service assignment Service",
+            });
+        }
+
+        let train = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == *train_id)
+            .expect("validated Train assignment resolves in Fleet");
+        if let TrainStatus::Travelling { journey_id } = train.status
+            && let Some(journey) = state
+                .active_journeys
+                .iter()
+                .find(|journey| journey.id == journey_id)
+            && journey.service_id != *service_id
+        {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "a travelling Train is assigned to a different Passenger Service than its Journey",
+            });
         }
     }
     Ok(())

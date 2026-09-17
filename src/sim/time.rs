@@ -19,7 +19,9 @@ use crate::{
             record_served_passengers, replenish_directional_demand,
             synchronize_directional_demand_with_network,
         },
-        economy::{EconomyError, duration_between_service_stops, quote_boarding_at_stop},
+        economy::{
+            EconomyError, duration_between_service_stops, quote_boarding_at_stop_in_direction,
+        },
     },
 };
 
@@ -338,14 +340,13 @@ fn process_stop_arrival(
     }
 
     let free_capacity = capacity.saturating_sub(onboard_after_alighting);
-    let boarding_quotes = if direction > 0 {
-        quote_boarding_at_stop(state, &service, arrival_stop_index, free_capacity)?
-    } else {
-        // Reverse active Journeys can only exist as compatibility snapshots
-        // from the old bidirectional Service model. They are allowed to finish
-        // safely, but new directional Services never dispatch in reverse.
-        Vec::new()
-    };
+    let boarding_quotes = quote_boarding_at_stop_in_direction(
+        state,
+        &service,
+        arrival_stop_index,
+        direction,
+        free_capacity,
+    )?;
 
     let mut demand_deductions = Vec::new();
     for boarding in &boarding_quotes {
@@ -691,7 +692,10 @@ mod tests {
 
         for pool in &mut state.origin_destination_demand {
             if matches!(
-                (pool.origin_station_id.get(), pool.destination_station_id.get()),
+                (
+                    pool.origin_station_id.get(),
+                    pool.destination_station_id.get()
+                ),
                 (1, 2) | (1, 3) | (2, 3)
             ) {
                 pool.market_maturity = MarketMaturity::from_basis_points(2_500).unwrap();
@@ -747,6 +751,85 @@ mod tests {
         );
         assert!(maturity(&state, 1, 3) > 2_500);
         assert!(maturity(&state, 2, 3) > 2_500);
+        let receipt = state.financials.recent_journey_receipts.last().unwrap();
+        assert_eq!(receipt.journey_id, journey_id);
+        assert_eq!(receipt.passengers_carried, Some(45));
+        assert!(receipt.revenue > Money::ZERO);
+    }
+
+    #[test]
+    fn reverse_multi_stop_service_alights_boards_and_continues_under_one_journey() {
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        state.player_company.funds = Money::from_cents(1_000_000);
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(3)).unwrap();
+        let service_id = create_service(
+            &mut state,
+            vec![
+                RailStationId::new(1),
+                RailStationId::new(2),
+                RailStationId::new(3),
+            ],
+        )
+        .unwrap();
+
+        for pool in &mut state.origin_destination_demand {
+            pool.waiting_passengers = 0;
+            pool.fractional_passenger_seconds = 0;
+        }
+        for (origin, destination, passengers) in [
+            (RailStationId::new(3), RailStationId::new(2), 10),
+            (RailStationId::new(3), RailStationId::new(1), 20),
+            (RailStationId::new(2), RailStationId::new(1), 15),
+        ] {
+            state
+                .origin_destination_demand
+                .iter_mut()
+                .find(|pool| {
+                    pool.origin_station_id == origin && pool.destination_station_id == destination
+                })
+                .unwrap()
+                .waiting_passengers = passengers;
+        }
+
+        let journey_id = dispatch_journey(&mut state, train_id, service_id, DEPARTED_AT).unwrap();
+        assert_eq!(state.active_journeys[0].current_stop_index, 2);
+        assert_eq!(state.active_journeys[0].onboard_passengers(), 30);
+        assert_eq!(state.active_journeys[0].passengers_carried, 30);
+
+        let first_arrival = state.active_journeys[0].arrives_at;
+        state.last_processed_at = first_arrival;
+        advance_time(&mut state, first_arrival).unwrap();
+
+        assert_eq!(state.active_journeys.len(), 1);
+        let journey = &state.active_journeys[0];
+        assert_eq!(journey.id, journey_id);
+        assert_eq!(journey.current_stop_index, 1);
+        assert_eq!(journey.passengers_carried, 45);
+        assert_eq!(journey.onboard_passengers(), 35);
+        assert_eq!(
+            state
+                .origin_destination_demand
+                .iter()
+                .find(|pool| {
+                    pool.origin_station_id == RailStationId::new(2)
+                        && pool.destination_station_id == RailStationId::new(1)
+                })
+                .unwrap()
+                .waiting_passengers,
+            0
+        );
+
+        let terminus_arrival = journey.arrives_at;
+        state.last_processed_at = terminus_arrival;
+        advance_time(&mut state, terminus_arrival).unwrap();
+
+        assert!(state.active_journeys.is_empty());
+        assert_eq!(
+            state.player_company.fleet.trains[0].status,
+            TrainStatus::Ready {
+                at: RailStationId::new(1)
+            }
+        );
         let receipt = state.financials.recent_journey_receipts.last().unwrap();
         assert_eq!(receipt.journey_id, journey_id);
         assert_eq!(receipt.passengers_carried, Some(45));

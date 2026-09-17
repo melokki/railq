@@ -242,16 +242,13 @@ impl AuthorityWorkspace {
             "PgUp / PgDn Scroll project pipeline".into(),
             "f Contribute to selected project while it is in Funding".into(),
             String::new(),
-            "The Authority controls public infrastructure; operator contributions are optional.".into(),
+            "The Authority controls public infrastructure; operator contributions are optional."
+                .into(),
         ]
     }
 
     /// Routes one Authority-owned keyboard event. Global view navigation remains a Shell concern.
-    pub fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        state: &GameState,
-    ) -> AuthorityWorkspaceAction {
+    pub fn handle_key(&mut self, key: KeyEvent, state: &GameState) -> AuthorityWorkspaceAction {
         if let Some(review) = self.contribution_review {
             return match key.code {
                 KeyCode::Esc => {
@@ -333,7 +330,10 @@ impl AuthorityWorkspace {
 }
 
 impl ContributionReview {
-    pub fn start(state: &GameState, project_id: InfrastructureProjectId) -> Result<Self, &'static str> {
+    pub fn start(
+        state: &GameState,
+        project_id: InfrastructureProjectId,
+    ) -> Result<Self, &'static str> {
         let project = state
             .region
             .rail_authority
@@ -349,7 +349,9 @@ impl ContributionReview {
             .suggested_operator_contribution(state.player_company.funds)
             .map_err(|_| "The contribution amount could not be calculated.")?;
         if amount <= Money::ZERO {
-            return Err("No contribution can be made from the current Company Funds and project funding gap.");
+            return Err(
+                "No contribution can be made from the current Company Funds and project funding gap.",
+            );
         }
         Ok(Self { project_id, amount })
     }
@@ -375,7 +377,10 @@ pub fn render_contribution_review(
         frame,
         card,
         "Infrastructure Contribution",
-        modal::shortcut_line(&[("Enter", "contribute"), ("Esc", "cancel")]),
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Contribute),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ]),
     );
     let remaining_cap = project
         .funding
@@ -412,10 +417,14 @@ pub fn render_contribution_review(
         Line::from("This is a 10% project-cost tranche, capped by the remaining funding gap,"),
         Line::from("the 20% operator cap, and current Company Funds."),
         Line::from("Contributing can close funding sooner but never shortens construction time."),
-        Line::from("After opening, 115% of contributed funds become finite access-fee credit on the project infrastructure."),
+        Line::from(
+            "After opening, 115% of contributed funds become finite access-fee credit on the project infrastructure.",
+        ),
     ];
     frame.render_widget(
-        Paragraph::new(lines).style(theme::panel()).wrap(Wrap { trim: true }),
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
         modal_areas.body,
     );
 }
@@ -511,7 +520,10 @@ fn render_finances(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSec
         ]),
         money_line("Maintenance reserve", finances.maintenance_reserve),
         money_line("Committed projects", finances.committed_investment),
-        money_line("Daily public allocation", finances.regional_public_allocation),
+        money_line(
+            "Daily public allocation",
+            finances.regional_public_allocation,
+        ),
         money_line(
             "Access-fee revenue",
             finances.infrastructure_access_fee_revenue,
@@ -746,7 +758,10 @@ fn render_project_inspector(
     lines.extend([
         money_line("Estimated cost", project.funding.estimated_cost),
         money_line("Authority committed", project.funding.authority_committed),
-        money_line("Operator contribution", project.funding.operator_contributed),
+        money_line(
+            "Operator contribution",
+            project.funding.operator_contributed,
+        ),
         Line::from(vec![
             Span::styled("Funding gap  ", theme::secondary()),
             Span::styled(gap, theme::primary_value()),
@@ -785,7 +800,10 @@ fn append_project_development_context(
     state: &GameState,
     project: &InfrastructureProject,
 ) {
-    let InfrastructureProjectKind::NewLine { planned_stations, .. } = &project.kind else {
+    let InfrastructureProjectKind::NewLine {
+        planned_stations, ..
+    } = &project.kind
+    else {
         return;
     };
     let Some(planned_station) = planned_stations.first() else {
@@ -954,7 +972,11 @@ fn append_timeline(
     } else {
         "Requested"
     };
-    lines.push(timestamp_line(request_label, project.timeline.requested_at, now));
+    lines.push(timestamp_line(
+        request_label,
+        project.timeline.requested_at,
+        now,
+    ));
     if let Some(value) = project.timeline.approved_at {
         lines.push(timestamp_line("Approved", value, now));
     }
@@ -991,9 +1013,8 @@ fn append_timeline(
             if let Some(value) = project.timeline.deferred_at {
                 lines.push(timestamp_line("Deferred", value, now));
             }
-            let required = deferred_reconsideration_threshold(
-                project.timeline.reconsideration_count,
-            );
+            let required =
+                deferred_reconsideration_threshold(project.timeline.reconsideration_count);
             if required <= 10_000 {
                 lines.push(value_line(
                     "Next",
@@ -1010,10 +1031,10 @@ fn append_timeline(
             lines.push(Line::styled("FUNDING", theme::table_header()));
             let estimated = i128::from(project.funding.estimated_cost.cents()).max(0);
             let committed = project
-        .funding
-        .total_funded()
-        .map(|money| i128::from(money.cents()).max(0))
-        .unwrap_or(0);
+                .funding
+                .total_funded()
+                .map(|money| i128::from(money.cents()).max(0))
+                .unwrap_or(0);
             let percent = if estimated == 0 {
                 0
             } else {
@@ -1071,7 +1092,10 @@ fn append_timeline(
                     ]));
                     lines.push(Line::from(vec![
                         Span::styled("Remaining  ", theme::secondary()),
-                        Span::styled(construction_remaining_duration(remaining), theme::primary_value()),
+                        Span::styled(
+                            construction_remaining_duration(remaining),
+                            theme::primary_value(),
+                        ),
                     ]));
                     lines.push(progress_line("Progress", progress));
                 }
@@ -1283,15 +1307,14 @@ fn project_next(project: &InfrastructureProject, now: UtcSeconds) -> String {
         InfrastructureProjectStatus::Proposed => "Authority decision pending".into(),
         InfrastructureProjectStatus::Approved => "Awaiting funding slot".into(),
         InfrastructureProjectStatus::Deferred => {
-            let required = deferred_reconsideration_threshold(
-                project.timeline.reconsideration_count,
-            );
+            let required =
+                deferred_reconsideration_threshold(project.timeline.reconsideration_count);
             if required <= 10_000 {
                 format!("Needs {} adoption", maturity_percent(required))
             } else {
                 "No further automatic review".into()
             }
-        },
+        }
         InfrastructureProjectStatus::Funding => project
             .funding
             .funding_gap()
@@ -1428,7 +1451,6 @@ fn relative_time(timestamp: UtcSeconds, now: UtcSeconds) -> String {
         format!("{} ago", compact_duration(seconds))
     }
 }
-
 
 fn construction_remaining_duration(seconds: u64) -> String {
     if seconds <= 30 * 60 {
@@ -1629,9 +1651,7 @@ mod tests {
         );
         assert_eq!(
             workspace.handle_key(key(KeyCode::Char('f')), &state),
-            AuthorityWorkspaceAction::Notice(
-                "Select an infrastructure project first.".into()
-            )
+            AuthorityWorkspaceAction::Notice("Select an infrastructure project first.".into())
         );
         assert!(!workspace.has_modal());
     }
@@ -1693,5 +1713,4 @@ mod tests {
         assert!(amount > crate::model::Money::ZERO);
         assert!(!workspace.has_modal());
     }
-
 }

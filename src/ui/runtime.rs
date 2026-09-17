@@ -76,7 +76,6 @@ impl TerminalCommandOutcome {
     }
 }
 
-
 /// How frequently the terminal checks for elapsed arrivals while no key is pressed.
 const ARRIVAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 

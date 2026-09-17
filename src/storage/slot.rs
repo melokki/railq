@@ -36,8 +36,12 @@ pub struct SaveSlot {
 
 #[derive(Debug)]
 pub enum SaveSlotError {
-    InvalidPath { path: PathBuf },
-    AlreadyOwned { path: PathBuf },
+    InvalidPath {
+        path: PathBuf,
+    },
+    AlreadyOwned {
+        path: PathBuf,
+    },
     Io {
         action: &'static str,
         path: PathBuf,
@@ -63,10 +67,18 @@ impl fmt::Display for SaveSlotError {
             Self::AlreadyOwned { path } => {
                 write!(formatter, "save slot {} is already owned", path.display())
             }
-            Self::Io { action, path, source } => {
+            Self::Io {
+                action,
+                path,
+                source,
+            } => {
                 write!(formatter, "could not {action} {}: {source}", path.display())
             }
-            Self::Database { action, path, source } => write!(
+            Self::Database {
+                action,
+                path,
+                source,
+            } => write!(
                 formatter,
                 "could not {action} SQLite save {}: {source}",
                 path.display()
@@ -126,15 +138,17 @@ impl SaveSlot {
         let database_existed = Path::new(DEFAULT_SAVE_PATH).exists();
         let slot = Self::open(DEFAULT_SAVE_PATH)?;
         if !database_existed && Path::new(LEGACY_SAVE_PATH).exists() {
-            let source = fs::read_to_string(LEGACY_SAVE_PATH).map_err(|source| SaveSlotError::Io {
-                action: "read legacy RON save",
-                path: PathBuf::from(LEGACY_SAVE_PATH),
-                source,
-            })?;
-            let state = decode_legacy_game_state(&source).map_err(|source| SaveSlotError::InvalidSave {
-                path: PathBuf::from(LEGACY_SAVE_PATH),
-                source: Box::new(source),
-            })?;
+            let source =
+                fs::read_to_string(LEGACY_SAVE_PATH).map_err(|source| SaveSlotError::Io {
+                    action: "read legacy RON save",
+                    path: PathBuf::from(LEGACY_SAVE_PATH),
+                    source,
+                })?;
+            let state =
+                decode_legacy_game_state(&source).map_err(|source| SaveSlotError::InvalidSave {
+                    path: PathBuf::from(LEGACY_SAVE_PATH),
+                    source: Box::new(source),
+                })?;
             slot.save(&state)?;
         }
         Ok(slot)
@@ -155,7 +169,10 @@ impl SaveSlot {
                 source,
             })?;
         match FileExt::try_lock(&lock_file) {
-            Ok(()) => Ok(Self { path, _lock_file: lock_file }),
+            Ok(()) => Ok(Self {
+                path,
+                _lock_file: lock_file,
+            }),
             Err(TryLockError::WouldBlock) => Err(SaveSlotError::AlreadyOwned { path }),
             Err(TryLockError::Error(source)) => Err(SaveSlotError::Io {
                 action: "lock save slot",
@@ -228,32 +245,39 @@ impl SaveSlot {
             })?;
         let current_world_seed = state.world_seed.to_string();
         let preserve_history = existing_world_seed.as_deref() == Some(current_world_seed.as_str());
-        let transaction = connection.transaction().map_err(|source| SaveSlotError::Database {
-            action: "begin transaction for",
-            path: self.path.clone(),
-            source,
-        })?;
+        let transaction = connection
+            .transaction()
+            .map_err(|source| SaveSlotError::Database {
+                action: "begin transaction for",
+                path: self.path.clone(),
+                source,
+            })?;
         clear_state(&transaction, &self.path, preserve_history)?;
         insert_state(&transaction, state, &self.path)?;
-        transaction.commit().map_err(|source| SaveSlotError::Database {
-            action: "commit transaction for",
-            path: self.path.clone(),
-            source,
-        })?;
-        connection.execute_batch("PRAGMA optimize;").map_err(|source| SaveSlotError::Database {
-            action: "optimize",
-            path: self.path.clone(),
-            source,
-        })?;
+        transaction
+            .commit()
+            .map_err(|source| SaveSlotError::Database {
+                action: "commit transaction for",
+                path: self.path.clone(),
+                source,
+            })?;
+        connection
+            .execute_batch("PRAGMA optimize;")
+            .map_err(|source| SaveSlotError::Database {
+                action: "optimize",
+                path: self.path.clone(),
+                source,
+            })?;
         Ok(())
     }
 
     fn open_connection(&self, action: &'static str) -> Result<Connection, SaveSlotError> {
-        let connection = Connection::open(&self.path).map_err(|source| SaveSlotError::Database {
-            action,
-            path: self.path.clone(),
-            source,
-        })?;
+        let connection =
+            Connection::open(&self.path).map_err(|source| SaveSlotError::Database {
+                action,
+                path: self.path.clone(),
+                source,
+            })?;
         connection
             .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(|source| SaveSlotError::Database {
@@ -267,7 +291,9 @@ impl SaveSlot {
 
 fn sidecar_lock_path(path: &Path) -> Result<PathBuf, SaveSlotError> {
     let Some(file_name) = path.file_name() else {
-        return Err(SaveSlotError::InvalidPath { path: path.to_path_buf() });
+        return Err(SaveSlotError::InvalidPath {
+            path: path.to_path_buf(),
+        });
     };
     let mut lock_name = file_name.to_os_string();
     lock_name.push(".lock");
@@ -287,7 +313,11 @@ fn archive_save(path: &Path) -> io::Result<PathBuf> {
             std::process::id(),
             sequence
         ));
-        match OpenOptions::new().write(true).create_new(true).open(&archive_path) {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&archive_path)
+        {
             Ok(_) => {
                 fs::copy(path, &archive_path)?;
                 return Ok(archive_path);

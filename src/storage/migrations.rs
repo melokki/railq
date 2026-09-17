@@ -77,6 +77,11 @@ fn migrate_one_version(
         24 => migrate_v24_to_v25(connection, path),
         25 => migrate_v25_to_v26(connection, path),
         26 => migrate_v26_to_v27(connection, path),
+        27 => migrate_v27_to_v28(connection, path),
+        28 => migrate_v28_to_v29(connection, path),
+        29 => migrate_v29_to_v30(connection, path),
+        30 => migrate_v30_to_v31(connection, path),
+        31 => migrate_v31_to_v32(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -2049,6 +2054,555 @@ fn migrate_v26_to_v27(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v26 to v27 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v27_to_v28(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v27 to v28 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE passenger_services
+                 ADD COLUMN direction_mode TEXT NOT NULL DEFAULT 'both'
+                 CHECK (direction_mode IN ('both', 'forward'));",
+            )
+            .map_err(|source| {
+                db_error(
+                    "add Passenger Service direction mode during v28 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 28_u32)
+            .map_err(|source| db_error("write v28 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v27 to v28 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct V28PassengerServiceRoute {
+    id: String,
+    sequence: i64,
+    stop_station_ids: Vec<String>,
+    rail_line_ids: Vec<String>,
+    has_active_journey: bool,
+    reversible: bool,
+}
+
+fn migrate_v28_to_v29(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v28 to v29 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute(
+                "UPDATE passenger_services SET direction_mode = 'forward'",
+                [],
+            )
+            .map_err(|source| {
+                db_error(
+                    "reset Passenger Service direction modes during v29 migration in",
+                    path,
+                    source,
+                )
+            })?;
+
+        let required_tables = ["service_stops", "service_lines", "rail_lines"];
+        let can_inspect_routes = required_tables
+            .iter()
+            .map(|table| migration_table_exists(connection, path, table))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .all(|exists| exists);
+
+        if can_inspect_routes {
+            migrate_v28_passenger_services(connection, path)?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 29_u32)
+            .map_err(|source| db_error("write v29 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v28 to v29 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v28_passenger_services(
+    connection: &Connection,
+    path: &Path,
+) -> Result<(), SaveSlotError> {
+    let line_endpoints = query_all(
+        connection,
+        "SELECT id, first_station_id, second_station_id FROM rail_lines",
+        path,
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    )?
+    .into_iter()
+    .map(|(line_id, first_station_id, second_station_id)| {
+        (line_id, (first_station_id, second_station_id))
+    })
+    .collect::<HashMap<_, _>>();
+
+    let active_service_ids = if migration_table_exists(connection, path, "active_journeys")? {
+        query_all(
+            connection,
+            "SELECT DISTINCT service_id FROM active_journeys",
+            path,
+            |row| row.get::<_, String>(0),
+        )?
+        .into_iter()
+        .collect::<HashSet<_>>()
+    } else {
+        HashSet::new()
+    };
+
+    let service_rows = query_all(
+        connection,
+        "SELECT id, sequence FROM passenger_services ORDER BY sequence",
+        path,
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+    )?;
+
+    let mut services = Vec::with_capacity(service_rows.len());
+    for (service_id, sequence) in service_rows {
+        let stop_station_ids = ordered_service_ids(
+            connection,
+            path,
+            "SELECT station_id FROM service_stops WHERE service_id = ?1 ORDER BY sequence",
+            &service_id,
+        )?;
+        let rail_line_ids = ordered_service_ids(
+            connection,
+            path,
+            "SELECT rail_line_id FROM service_lines WHERE service_id = ?1 ORDER BY sequence",
+            &service_id,
+        )?;
+        let reversible =
+            stored_service_route_is_reversible(&stop_station_ids, &rail_line_ids, &line_endpoints);
+        services.push(V28PassengerServiceRoute {
+            has_active_journey: active_service_ids.contains(&service_id),
+            id: service_id,
+            sequence,
+            stop_station_ids,
+            rail_line_ids,
+            reversible,
+        });
+    }
+
+    let mut handled = HashSet::<String>::new();
+    for index in 0..services.len() {
+        let service = &services[index];
+        if handled.contains(&service.id) {
+            continue;
+        }
+        handled.insert(service.id.clone());
+
+        if !service.reversible {
+            continue;
+        }
+
+        let reciprocal_index = services
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .find(|(_, candidate)| {
+                !handled.contains(&candidate.id)
+                    && candidate.reversible
+                    && routes_are_exact_reciprocals(service, candidate)
+            })
+            .map(|(candidate_index, _)| candidate_index);
+
+        let Some(reciprocal_index) = reciprocal_index else {
+            set_service_direction_mode(connection, path, &service.id, "both")?;
+            continue;
+        };
+
+        let reciprocal = &services[reciprocal_index];
+        handled.insert(reciprocal.id.clone());
+
+        if service.has_active_journey && reciprocal.has_active_journey {
+            continue;
+        }
+
+        let (survivor, retired) = if service.has_active_journey {
+            (service, reciprocal)
+        } else if reciprocal.has_active_journey {
+            (reciprocal, service)
+        } else if service.sequence <= reciprocal.sequence {
+            (service, reciprocal)
+        } else {
+            (reciprocal, service)
+        };
+
+        set_service_direction_mode(connection, path, &survivor.id, "both")?;
+        connection
+            .execute(
+                "DELETE FROM service_stops WHERE service_id = ?1",
+                params![&retired.id],
+            )
+            .map_err(|source| {
+                db_error(
+                    "remove reciprocal Passenger Service stops during v29 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .execute(
+                "DELETE FROM service_lines WHERE service_id = ?1",
+                params![&retired.id],
+            )
+            .map_err(|source| {
+                db_error(
+                    "remove reciprocal Passenger Service lines during v29 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .execute(
+                "DELETE FROM passenger_services WHERE id = ?1",
+                params![&retired.id],
+            )
+            .map_err(|source| {
+                db_error(
+                    "merge reciprocal Passenger Services during v29 migration in",
+                    path,
+                    source,
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
+fn migration_table_exists(
+    connection: &Connection,
+    path: &Path,
+    table_name: &str,
+) -> Result<bool, SaveSlotError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            params![table_name],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|exists| exists != 0)
+        .map_err(|source| db_error("inspect migration schema in", path, source))
+}
+
+fn ordered_service_ids(
+    connection: &Connection,
+    path: &Path,
+    sql: &str,
+    service_id: &str,
+) -> Result<Vec<String>, SaveSlotError> {
+    let mut statement = connection.prepare(sql).map_err(|source| {
+        db_error(
+            "prepare Passenger Service migration query for",
+            path,
+            source,
+        )
+    })?;
+    let rows = statement
+        .query_map(params![service_id], |row| row.get::<_, String>(0))
+        .map_err(|source| db_error("query Passenger Service migration data from", path, source))?;
+    rows.map(|row| {
+        row.map_err(|source| db_error("decode Passenger Service migration row from", path, source))
+    })
+    .collect()
+}
+
+fn stored_service_route_is_reversible(
+    stop_station_ids: &[String],
+    rail_line_ids: &[String],
+    line_endpoints: &HashMap<String, (String, String)>,
+) -> bool {
+    if stop_station_ids.len() < 2 || rail_line_ids.is_empty() {
+        return false;
+    }
+    if stop_station_ids.iter().collect::<HashSet<_>>().len() != stop_station_ids.len()
+        || rail_line_ids.iter().collect::<HashSet<_>>().len() != rail_line_ids.len()
+    {
+        return false;
+    }
+
+    let mut current_station_id = stop_station_ids[0].as_str();
+    let mut traversed_station_ids = vec![current_station_id];
+    for rail_line_id in rail_line_ids {
+        let Some((first_station_id, second_station_id)) = line_endpoints.get(rail_line_id) else {
+            return false;
+        };
+        current_station_id = if current_station_id == first_station_id.as_str() {
+            second_station_id.as_str()
+        } else if current_station_id == second_station_id.as_str() {
+            first_station_id.as_str()
+        } else {
+            return false;
+        };
+        traversed_station_ids.push(current_station_id);
+    }
+
+    if current_station_id
+        != stop_station_ids
+            .last()
+            .expect("at least two stops")
+            .as_str()
+    {
+        return false;
+    }
+
+    let mut path_index = 0_usize;
+    for stop_station_id in stop_station_ids.iter().skip(1) {
+        let Some(relative_index) = traversed_station_ids[path_index + 1..]
+            .iter()
+            .position(|station_id| *station_id == stop_station_id.as_str())
+        else {
+            return false;
+        };
+        path_index += relative_index + 1;
+    }
+
+    path_index == traversed_station_ids.len() - 1
+}
+
+fn routes_are_exact_reciprocals(
+    first: &V28PassengerServiceRoute,
+    second: &V28PassengerServiceRoute,
+) -> bool {
+    first.stop_station_ids.len() == second.stop_station_ids.len()
+        && first.rail_line_ids.len() == second.rail_line_ids.len()
+        && first
+            .stop_station_ids
+            .iter()
+            .eq(second.stop_station_ids.iter().rev())
+        && first
+            .rail_line_ids
+            .iter()
+            .eq(second.rail_line_ids.iter().rev())
+}
+
+fn set_service_direction_mode(
+    connection: &Connection,
+    path: &Path,
+    service_id: &str,
+    direction_mode: &str,
+) -> Result<(), SaveSlotError> {
+    connection
+        .execute(
+            "UPDATE passenger_services SET direction_mode = ?1 WHERE id = ?2",
+            params![direction_mode, service_id],
+        )
+        .map_err(|source| {
+            db_error(
+                "set Passenger Service direction mode during v29 migration in",
+                path,
+                source,
+            )
+        })?;
+    Ok(())
+}
+
+fn migrate_v29_to_v30(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v29 to v30 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE passenger_services ADD COLUMN forward_train_number INTEGER;
+                 ALTER TABLE passenger_services ADD COLUMN reverse_train_number INTEGER;",
+            )
+            .map_err(|source| {
+                db_error(
+                    "add Passenger Service train numbers during v30 migration in",
+                    path,
+                    source,
+                )
+            })?;
+
+        let services = query_all(
+            connection,
+            "SELECT id, direction_mode FROM passenger_services ORDER BY sequence",
+            path,
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        let mut next_train_number = 100_i64;
+        for (service_id, direction_mode) in services {
+            let reverse_train_number = if direction_mode == "both" {
+                let reverse =
+                    next_train_number
+                        .checked_add(1)
+                        .ok_or_else(|| SaveSlotError::InvalidSave {
+                            path: path.to_path_buf(),
+                            source: Box::new(SaveCodecError::InvalidValue {
+                                field: "Passenger Service train number",
+                            }),
+                        })?;
+                Some(reverse)
+            } else {
+                None
+            };
+            connection
+                .execute(
+                    "UPDATE passenger_services
+                     SET forward_train_number = ?1, reverse_train_number = ?2
+                     WHERE id = ?3",
+                    params![next_train_number, reverse_train_number, service_id],
+                )
+                .map_err(|source| {
+                    db_error(
+                        "assign Passenger Service train numbers during v30 migration in",
+                        path,
+                        source,
+                    )
+                })?;
+            next_train_number = match reverse_train_number {
+                Some(reverse) => reverse.checked_add(1),
+                None => next_train_number.checked_add(1),
+            }
+            .ok_or_else(|| SaveSlotError::InvalidSave {
+                path: path.to_path_buf(),
+                source: Box::new(SaveCodecError::InvalidValue {
+                    field: "Passenger Service train number",
+                }),
+            })?;
+        }
+
+        connection
+            .execute_batch(
+                "CREATE UNIQUE INDEX passenger_services_forward_train_number_idx
+                     ON passenger_services(forward_train_number);
+                 CREATE UNIQUE INDEX passenger_services_reverse_train_number_idx
+                     ON passenger_services(reverse_train_number)
+                     WHERE reverse_train_number IS NOT NULL;",
+            )
+            .map_err(|source| {
+                db_error(
+                    "index Passenger Service train numbers during v30 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 30_u32)
+            .map_err(|source| db_error("write v30 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v29 to v30 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v30_to_v31(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v30 to v31 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "CREATE TABLE train_service_assignments (
+                     train_id TEXT PRIMARY KEY REFERENCES trains(id) ON DELETE CASCADE,
+                     service_id TEXT NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE
+                 );
+                 CREATE INDEX train_service_assignments_service_idx
+                     ON train_service_assignments(service_id);",
+            )
+            .map_err(|source| {
+                db_error(
+                    "create Train Passenger Service assignments during v31 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 31_u32)
+            .map_err(|source| db_error("write v31 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v30 to v31 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v31_to_v32(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v31 to v32 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE passenger_services ADD COLUMN custom_name TEXT
+                     CHECK (custom_name IS NULL OR length(trim(custom_name)) BETWEEN 1 AND 32);",
+            )
+            .map_err(|source| {
+                db_error(
+                    "add Passenger Service commercial names during v32 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 32_u32)
+            .map_err(|source| db_error("write v32 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v31 to v32 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)

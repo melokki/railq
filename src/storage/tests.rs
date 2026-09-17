@@ -7,9 +7,12 @@ use std::{
 use crate::{
     model::{RailStationId, UtcSeconds},
     sim::{
-        fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
+        fleet::purchase_train,
+        journeys::dispatch_journey,
+        services::{assign_train_to_service, find_or_create_service},
         world::create_new_game,
     },
+    storage::{legacy::decode_legacy_game_state, migrations::ensure_schema},
 };
 
 use super::*;
@@ -49,8 +52,8 @@ fn active_game() -> GameState {
     state.player_company.fleet.trains[0].nickname =
         Some(TrainNickname::parse("Morning Star").unwrap());
     let service_id =
-        find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))
-            .unwrap();
+        find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2)).unwrap();
+    assign_train_to_service(&mut state, train_id, service_id).unwrap();
     dispatch_journey(&mut state, train_id, service_id, departed_at).unwrap();
     state.origin_destination_demand[0].market_maturity =
         MarketMaturity::from_basis_points(4_321).unwrap();
@@ -88,6 +91,9 @@ fn sqlite_round_trips_all_current_operating_state() {
     let directory = TestDirectory::new();
     let slot = SaveSlot::open(directory.save_path()).unwrap();
     let mut state = active_game();
+    state.player_company.passenger_services[0].custom_name = Some("Capital Link".into());
+    state.player_company.passenger_services[0].direction_mode = ServiceDirectionMode::ForwardOnly;
+    state.player_company.passenger_services[0].reverse_train_number = None;
     state.region.rail_authority.construction_capacity = 2;
     state.region.bulletin.push(BulletinEntry {
         occurred_at: UtcSeconds::from_unix_seconds(12_345),
@@ -469,8 +475,7 @@ fn v9_catalogue_ids_migrate_to_replacement_models() {
     let path = directory.save_path();
     {
         let slot = SaveSlot::open(&path).unwrap();
-        let mut state =
-            create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
         state.player_company.funds = Money::from_cents(1_000_000);
         purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
         purchase_train(&mut state, 1, RailStationId::new(1)).unwrap();
@@ -1415,4 +1420,235 @@ fn legacy_ron_decoder_accepts_the_previous_versioned_envelope() {
     let source = legacy::encode_v1_for_test(&state);
 
     assert_eq!(decode_legacy_game_state(&source).unwrap(), state);
+}
+
+fn create_v28_passenger_service_migration_schema(connection: &Connection) {
+    connection
+        .execute_batch(
+            "CREATE TABLE passenger_services (
+                 id TEXT PRIMARY KEY,
+                 sequence INTEGER NOT NULL UNIQUE,
+                 name TEXT NOT NULL,
+                 direction_mode TEXT NOT NULL DEFAULT 'both'
+                     CHECK (direction_mode IN ('both', 'forward'))
+             );
+             CREATE TABLE service_stops (
+                 service_id TEXT NOT NULL,
+                 sequence INTEGER NOT NULL,
+                 station_id TEXT NOT NULL,
+                 PRIMARY KEY (service_id, sequence)
+             );
+             CREATE TABLE service_lines (
+                 service_id TEXT NOT NULL,
+                 sequence INTEGER NOT NULL,
+                 rail_line_id TEXT NOT NULL,
+                 PRIMARY KEY (service_id, sequence)
+             );
+             CREATE TABLE rail_lines (
+                 id TEXT PRIMARY KEY,
+                 first_station_id TEXT NOT NULL,
+                 second_station_id TEXT NOT NULL
+             );
+             CREATE TABLE active_journeys (
+                 id TEXT PRIMARY KEY,
+                 service_id TEXT NOT NULL
+             );
+             PRAGMA user_version = 28;",
+        )
+        .unwrap();
+}
+
+fn insert_v28_reciprocal_service_pair(connection: &Connection) {
+    connection
+        .execute_batch(
+            "INSERT INTO passenger_services(id, sequence, name) VALUES
+                 ('service-a', 0, 'R10'),
+                 ('service-b', 1, 'R11');
+             INSERT INTO rail_lines(id, first_station_id, second_station_id) VALUES
+                 ('line-ab', 'station-a', 'station-b'),
+                 ('line-bc', 'station-b', 'station-c');
+             INSERT INTO service_stops(service_id, sequence, station_id) VALUES
+                 ('service-a', 0, 'station-a'),
+                 ('service-a', 1, 'station-b'),
+                 ('service-a', 2, 'station-c'),
+                 ('service-b', 0, 'station-c'),
+                 ('service-b', 1, 'station-b'),
+                 ('service-b', 2, 'station-a');
+             INSERT INTO service_lines(service_id, sequence, rail_line_id) VALUES
+                 ('service-a', 0, 'line-ab'),
+                 ('service-a', 1, 'line-bc'),
+                 ('service-b', 0, 'line-bc'),
+                 ('service-b', 1, 'line-ab');",
+        )
+        .unwrap();
+}
+
+#[test]
+fn v27_schema_falls_back_to_one_way_when_route_cannot_be_verified() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE passenger_services (
+                 id TEXT PRIMARY KEY,
+                 sequence INTEGER NOT NULL UNIQUE,
+                 name TEXT NOT NULL
+             );
+             INSERT INTO passenger_services(id, sequence, name)
+             VALUES('00000004-0000-4000-8000-000000000001', 0, 'R1');
+             PRAGMA user_version = 27;",
+        )
+        .unwrap();
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    let direction_mode: String = connection
+        .query_row(
+            "SELECT direction_mode FROM passenger_services WHERE sequence = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(version, SAVE_VERSION);
+    assert_eq!(direction_mode, "forward");
+}
+
+#[test]
+fn v28_migration_merges_idle_reciprocal_services_into_the_older_service() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    create_v28_passenger_service_migration_schema(&connection);
+    insert_v28_reciprocal_service_pair(&connection);
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let remaining: (String, String) = connection
+        .query_row(
+            "SELECT id, direction_mode FROM passenger_services",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let service_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM passenger_services", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let retired_stop_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM service_stops WHERE service_id = 'service-b'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(service_count, 1);
+    assert_eq!(remaining, ("service-a".into(), "both".into()));
+    assert_eq!(retired_stop_count, 0);
+}
+
+#[test]
+fn v28_migration_preserves_the_active_direction_when_merging_a_pair() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    create_v28_passenger_service_migration_schema(&connection);
+    insert_v28_reciprocal_service_pair(&connection);
+    connection
+        .execute(
+            "INSERT INTO active_journeys(id, service_id) VALUES('journey-1', 'service-b')",
+            [],
+        )
+        .unwrap();
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let remaining: (String, String) = connection
+        .query_row(
+            "SELECT id, direction_mode FROM passenger_services",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let active_service_id: String = connection
+        .query_row("SELECT service_id FROM active_journeys", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert_eq!(remaining, ("service-b".into(), "both".into()));
+    assert_eq!(active_service_id, "service-b");
+}
+
+#[test]
+fn v28_migration_keeps_both_reciprocal_services_one_way_when_both_are_active() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    create_v28_passenger_service_migration_schema(&connection);
+    insert_v28_reciprocal_service_pair(&connection);
+    connection
+        .execute_batch(
+            "INSERT INTO active_journeys(id, service_id) VALUES
+                 ('journey-1', 'service-a'),
+                 ('journey-2', 'service-b');",
+        )
+        .unwrap();
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let service_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM passenger_services", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let bidirectional_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM passenger_services WHERE direction_mode = 'both'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(service_count, 2);
+    assert_eq!(bidirectional_count, 0);
+}
+
+#[test]
+fn v28_migration_upgrades_a_valid_standalone_service_to_bidirectional() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    create_v28_passenger_service_migration_schema(&connection);
+    connection
+        .execute_batch(
+            "INSERT INTO passenger_services(id, sequence, name) VALUES('service-a', 0, 'R10');
+             INSERT INTO rail_lines(id, first_station_id, second_station_id)
+             VALUES('line-ab', 'station-a', 'station-b');
+             INSERT INTO service_stops(service_id, sequence, station_id) VALUES
+                 ('service-a', 0, 'station-a'),
+                 ('service-a', 1, 'station-b');
+             INSERT INTO service_lines(service_id, sequence, rail_line_id)
+             VALUES('service-a', 0, 'line-ab');",
+        )
+        .unwrap();
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let service: (String, i64, Option<i64>) = connection
+        .query_row(
+            "SELECT direction_mode, forward_train_number, reverse_train_number
+             FROM passenger_services WHERE id = 'service-a'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+
+    assert_eq!(service, ("both".into(), 100, Some(101)));
 }

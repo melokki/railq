@@ -17,9 +17,7 @@ use crate::{
 };
 
 use super::{
-    MapWorkspace,
-    network::station_name,
-    operational::journey_next_stop_station_id,
+    MapWorkspace, network::station_name, operational::journey_next_stop_station_id,
     shared::remaining_seconds,
 };
 
@@ -79,7 +77,10 @@ pub(crate) fn render_movements_overlay(
         .saturating_sub(hidden_movements)
         .min(hidden_ready);
 
-    let footer = modal::shortcut_line(&[("Esc", "close"), ("↑↓/JK", "scroll")]);
+    let footer = modal::shortcut_line(&[
+        modal::ModalShortcut::enabled("Esc", modal::ModalAction::Close),
+        modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Scroll),
+    ]);
     let modal_areas = modal::render_shell(frame, card, "Movements", footer);
     let [movements_area, separator_area, ready_area] = Layout::vertical([
         Constraint::Min(6),
@@ -180,16 +181,13 @@ fn render_ready_trains(
                 Cell::from(station_name(state, station_id)),
             ])
         });
-    let table = Table::new(
-        rows,
-        [Constraint::Length(10), Constraint::Min(1)],
-    )
-    .header(
-        Row::new(["TRAIN", "LOCATION"])
-            .style(theme::table_header())
-            .bottom_margin(1),
-    )
-    .style(theme::panel());
+    let table = Table::new(rows, [Constraint::Length(10), Constraint::Min(1)])
+        .header(
+            Row::new(["TRAIN", "LOCATION"])
+                .style(theme::table_header())
+                .bottom_margin(1),
+        )
+        .style(theme::panel());
     frame.render_widget(table, table_area);
 }
 

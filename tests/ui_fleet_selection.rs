@@ -8,7 +8,7 @@ use railq::{
     sim::{
         fleet::{purchase_train, sell_train},
         journeys::dispatch_journey,
-        services::find_or_create_service,
+        services::{assign_train_to_service, find_or_create_service},
         time::advance_time,
         world::create_new_game,
     },
@@ -39,6 +39,7 @@ fn operating_fleet() -> railq::model::GameState {
     }
     let service =
         find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2)).unwrap();
+    assign_train_to_service(&mut state, travelling_train, service).unwrap();
     dispatch_journey(&mut state, travelling_train, service, STARTED_AT).unwrap();
     state
 }
@@ -63,11 +64,16 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     assert!(wide.contains("PERFORMANCE"));
     assert!(wide.contains("TRAVELLING"));
     assert!(wide.contains("Remaining"));
+    let travelling_row = wide
+        .lines()
+        .find(|line| line.contains("Train 01"))
+        .expect("travelling Train is visible in the Fleet table");
+    assert!(travelling_row.contains("R1"));
     assert!(!wide.contains("ACTIONS"));
     assert!(wide.contains("[R] Rename"));
 
     let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(compact.contains("› Train 01  TRAVELLING"));
+    assert!(compact.contains("› Train 01  TRAVELLING · R1"));
 
     press(&mut shell, &state, KeyCode::Down);
     let down = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);

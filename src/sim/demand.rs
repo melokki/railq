@@ -48,10 +48,9 @@ pub fn seed_directional_demand(region: &Region, world_seed: u64) -> Vec<OriginDe
                 .map(move |destination_station_id| {
                     let passenger_arrival_rate_per_hour =
                         seeded_arrival_rate(world_seed, origin_station_id, destination_station_id);
-                    let market_maturity = MarketMaturity::from_basis_points(
-                        INITIAL_MARKET_MATURITY_BASIS_POINTS,
-                    )
-                    .expect("initial market maturity is valid");
+                    let market_maturity =
+                        MarketMaturity::from_basis_points(INITIAL_MARKET_MATURITY_BASIS_POINTS)
+                            .expect("initial market maturity is valid");
                     OriginDestinationDemand {
                         origin_station_id,
                         destination_station_id,
@@ -288,10 +287,7 @@ pub fn record_served_passengers(
 /// `passenger_arrival_rate_per_hour` remains the market's seeded potential. The
 /// effective rate is scaled by persistent market maturity and infrastructure
 /// attractiveness without permanently rewriting that potential.
-pub fn effective_arrival_rate_per_hour(
-    state: &GameState,
-    pool: &OriginDestinationDemand,
-) -> u32 {
+pub fn effective_arrival_rate_per_hour(state: &GameState, pool: &OriginDestinationDemand) -> u32 {
     effective_arrival_rate_for_pair(
         state,
         pool.origin_station_id,
@@ -337,11 +333,8 @@ fn effective_arrival_rate_for_region(
         return 0;
     }
 
-    let attractiveness = infrastructure_attractiveness_percent(
-        region,
-        origin_station_id,
-        destination_station_id,
-    );
+    let attractiveness =
+        infrastructure_attractiveness_percent(region, origin_station_id, destination_station_id);
     let denominator = 100_u128 * u128::from(MarketMaturity::FULL_BASIS_POINTS);
     let adjusted = u128::from(base_rate_per_hour)
         .saturating_mul(u128::from(attractiveness))
@@ -371,7 +364,11 @@ fn infrastructure_attractiveness_percent(
     let mut actual_seconds = 0_u128;
     let mut reference_seconds = 0_u128;
     for rail_line_id in path {
-        let Some(line) = network.rail_lines.iter().find(|line| line.id == rail_line_id) else {
+        let Some(line) = network
+            .rail_lines
+            .iter()
+            .find(|line| line.id == rail_line_id)
+        else {
             return 100;
         };
         actual_seconds = actual_seconds.saturating_add(duration_at_kmh(
@@ -412,9 +409,7 @@ fn infrastructure_attractiveness_percent(
 fn duration_at_kmh(distance_metres: u64, speed_kmh: u64) -> u128 {
     let numerator = u128::from(distance_metres).saturating_mul(3_600);
     let denominator = u128::from(speed_kmh).saturating_mul(1_000);
-    numerator
-        .saturating_add(denominator.saturating_sub(1))
-        / denominator
+    numerator.saturating_add(denominator.saturating_sub(1)) / denominator
 }
 
 fn replenish_pool(
@@ -478,8 +473,8 @@ mod tests {
     };
 
     use super::{
-        effective_arrival_rate_per_hour, record_served_passengers,
-        replenish_directional_demand, synchronize_directional_demand_with_network,
+        effective_arrival_rate_per_hour, record_served_passengers, replenish_directional_demand,
+        synchronize_directional_demand_with_network,
     };
 
     fn game() -> crate::model::GameState {
@@ -540,12 +535,22 @@ mod tests {
         let destination = game.origin_destination_demand[0].destination_station_id;
 
         record_served_passengers(&mut game, origin, destination, 100);
-        assert_eq!(game.origin_destination_demand[0].market_maturity.basis_points(), 3_250);
+        assert_eq!(
+            game.origin_destination_demand[0]
+                .market_maturity
+                .basis_points(),
+            3_250
+        );
 
         game.origin_destination_demand[0].market_maturity =
             MarketMaturity::from_basis_points(9_000).unwrap();
         record_served_passengers(&mut game, origin, destination, 100);
-        assert_eq!(game.origin_destination_demand[0].market_maturity.basis_points(), 9_100);
+        assert_eq!(
+            game.origin_destination_demand[0]
+                .market_maturity
+                .basis_points(),
+            9_100
+        );
     }
 
     #[test]
@@ -560,7 +565,10 @@ mod tests {
 
         game.origin_destination_demand[0].market_maturity = MarketMaturity::full();
         record_served_passengers(&mut game, origin, destination, u32::MAX);
-        assert_eq!(game.origin_destination_demand[0].market_maturity, MarketMaturity::full());
+        assert_eq!(
+            game.origin_destination_demand[0].market_maturity,
+            MarketMaturity::full()
+        );
     }
 
     #[test]
@@ -865,8 +873,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(pool.market_maturity.basis_points(), 2_500);
-        let effective_two_hour_arrivals = effective_arrival_rate_per_hour(&game, pool)
-            .saturating_mul(2);
+        let effective_two_hour_arrivals =
+            effective_arrival_rate_per_hour(&game, pool).saturating_mul(2);
         assert_eq!(pool.waiting_passengers, effective_two_hour_arrivals);
     }
 }

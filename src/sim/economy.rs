@@ -11,7 +11,7 @@ use crate::{
     model::{
         CalculationError, DistanceMetres, DurationSeconds, GameState, InfrastructureProjectId,
         InfrastructureProjectStatus, Money, MoneyPerKilometre, PassengerService, RailLineId,
-        RailStationId, ServiceId, SpeedMetresPerSecond, TrainId, TrainStatus,
+        RailStationId, ServiceDirectionMode, ServiceId, SpeedMetresPerSecond, TrainId, TrainStatus,
     },
     sim::services::path_between_stations,
 };
@@ -80,6 +80,11 @@ pub enum EconomyError {
     TrainTravelling {
         train_id: TrainId,
     },
+    TrainAssignedToOtherService {
+        train_id: TrainId,
+        assigned_service_id: ServiceId,
+        requested_service_id: ServiceId,
+    },
     TrainNotAtServiceOrigin {
         train_id: TrainId,
         station_id: RailStationId,
@@ -121,6 +126,17 @@ impl fmt::Display for EconomyError {
                 formatter,
                 "Train {} is already travelling and cannot be quoted",
                 train_id.get()
+            ),
+            Self::TrainAssignedToOtherService {
+                train_id,
+                assigned_service_id,
+                requested_service_id,
+            } => write!(
+                formatter,
+                "Train {} is assigned to Passenger Service {} and cannot operate Passenger Service {}",
+                train_id.get(),
+                assigned_service_id.get(),
+                requested_service_id.get()
             ),
             Self::TrainNotAtServiceOrigin {
                 train_id,
@@ -195,32 +211,45 @@ pub fn quote_journey(
         .iter()
         .find(|service| service.id == service_id)
         .ok_or(EconomyError::ServiceNotFound { service_id })?;
+    if let Some(assigned_service_id) = state.player_company.fleet.assigned_service_id(train_id)
+        && assigned_service_id != service_id
+    {
+        return Err(EconomyError::TrainAssignedToOtherService {
+            train_id,
+            assigned_service_id,
+            requested_service_id: service_id,
+        });
+    }
     let origin_station_id = match train.status {
         TrainStatus::Ready { at } => at,
         TrainStatus::Travelling { .. } => return Err(EconomyError::TrainTravelling { train_id }),
     };
-    let service_origin = service
-        .origin_station_id()
-        .ok_or(EconomyError::EmptyServicePath { service_id })?;
-    let service_destination = service
-        .destination_station_id()
-        .ok_or(EconomyError::EmptyServicePath { service_id })?;
-    if origin_station_id != service_origin {
-        return Err(EconomyError::TrainNotAtServiceOrigin {
-            train_id,
-            station_id: origin_station_id,
-            service_id,
-        });
-    }
     if service.stop_station_ids.len() < 2 || service.rail_line_ids.is_empty() {
         return Err(EconomyError::EmptyServicePath { service_id });
     }
+    let last_stop_index = service.stop_station_ids.len() - 1;
+    let (origin_stop_index, destination_stop_index, direction) =
+        if origin_station_id == service.stop_station_ids[0] {
+            (0, last_stop_index, 1)
+        } else if origin_station_id == service.stop_station_ids[last_stop_index]
+            && service.direction_mode == ServiceDirectionMode::BothDirections
+        {
+            (last_stop_index, 0, -1)
+        } else {
+            return Err(EconomyError::TrainNotAtServiceOrigin {
+                train_id,
+                station_id: origin_station_id,
+                service_id,
+            });
+        };
+    let service_destination = service.stop_station_ids[destination_stop_index];
 
     let distance = distance_for_lines(state, &service.rail_line_ids)?;
-    let boarding_groups = quote_boarding_at_stop(
+    let boarding_groups = quote_boarding_at_stop_in_direction(
         state,
         service,
-        0,
+        origin_stop_index,
+        direction,
         train_model.passenger_capacity().passengers(),
     )?;
     let boarded_passengers = boarding_groups.iter().try_fold(0_u32, |total, group| {
@@ -250,24 +279,39 @@ pub fn quote_journey(
             access_fee_rate,
             infrastructure_access_fee_before_credit,
         )?;
-    let infrastructure_access_fee = infrastructure_access_fee_before_credit
-        .checked_sub(infrastructure_access_fee_credit)?;
+    let infrastructure_access_fee =
+        infrastructure_access_fee_before_credit.checked_sub(infrastructure_access_fee_credit)?;
     let fuel_cost = train_model
         .fuel_cost_per_kilometre()
         .checked_charge(distance)?;
     let operating_cost = infrastructure_access_fee.checked_add(fuel_cost)?;
     let journey_profitability = operating_revenue.checked_sub(operating_cost)?;
     let duration = service_duration(state, service, train_model.speed())?;
-    let first_leg_duration =
-        duration_between_service_stops(state, service, 0, 1, train_model.speed())?;
+    let first_leg_stop_index = if direction > 0 {
+        origin_stop_index + 1
+    } else {
+        origin_stop_index - 1
+    };
+    let first_leg_duration = duration_between_service_stops(
+        state,
+        service,
+        origin_stop_index,
+        first_leg_stop_index,
+        train_model.speed(),
+    )?;
     let cash_after_cost = state.player_company.funds.checked_sub(operating_cost)?;
+    let rail_line_path = if direction > 0 {
+        service.rail_line_ids.clone()
+    } else {
+        service.rail_line_ids.iter().rev().copied().collect()
+    };
 
     Ok(JourneyQuote {
         service_id,
         train_id,
         origin_station_id,
         destination_station_id: service_destination,
-        rail_line_path: service.rail_line_ids.clone(),
+        rail_line_path,
         distance,
         boarded_passengers,
         fare,
@@ -356,25 +400,35 @@ fn quote_infrastructure_access_credits(
     Ok((total_credit, uses))
 }
 
-/// Calculates the passenger groups that can board at one Service stop without
-/// changing Passenger Demand.
+/// Calculates boardings from one stop in the requested Service direction.
 ///
-/// `available_capacity` is the number of free seats after passengers for this
-/// stop have alighted.
-pub(crate) fn quote_boarding_at_stop(
+/// `direction` is `1` for the canonical first-to-last working and `-1` for
+/// the reverse working of a bidirectional Service.
+pub(crate) fn quote_boarding_at_stop_in_direction(
     state: &GameState,
     service: &PassengerService,
     stop_index: usize,
+    direction: i32,
     available_capacity: u32,
 ) -> Result<Vec<PassengerBoardingQuote>, EconomyError> {
-    if stop_index + 1 >= service.stop_station_ids.len() {
-        return Ok(Vec::new());
-    }
-    let origin_station_id = service.stop_station_ids[stop_index];
+    let destination_indices: Box<dyn Iterator<Item = usize>> = match direction {
+        1 => Box::new((stop_index + 1)..service.stop_station_ids.len()),
+        -1 => Box::new((0..stop_index).rev()),
+        _ => {
+            return Err(EconomyError::InvalidServiceStops {
+                service_id: service.id,
+            });
+        }
+    };
+    let Some(&origin_station_id) = service.stop_station_ids.get(stop_index) else {
+        return Err(EconomyError::InvalidServiceStops {
+            service_id: service.id,
+        });
+    };
     let mut remaining_capacity = available_capacity;
     let mut groups = Vec::new();
 
-    for destination_index in (stop_index + 1)..service.stop_station_ids.len() {
+    for destination_index in destination_indices {
         if remaining_capacity == 0 {
             break;
         }
@@ -542,8 +596,8 @@ mod tests {
         balance::BalanceConfig,
         model::{
             DemandRules, Financials, Fleet, GameRules, MarketMaturity, OriginDestinationDemand,
-            PassengerArrivalRate, PassengerService, PlayerCompany, RailAuthority,
-            RailLine, RailNetwork, RailStation, Settlement, Train, UtcSeconds,
+            PassengerArrivalRate, PassengerService, PlayerCompany, RailAuthority, RailLine,
+            RailNetwork, RailStation, Settlement, Train, UtcSeconds,
         },
     };
 
@@ -643,6 +697,7 @@ mod tests {
                 ),
                 funds: Money::from_cents(10_000),
                 fleet: Fleet {
+                    service_assignments: Default::default(),
                     next_train_display_number: 2,
                     trains: vec![Train {
                         id: TRAIN_ID,
@@ -659,6 +714,10 @@ mod tests {
                 passenger_services: vec![PassengerService {
                     id: SERVICE_ID,
                     name: "R1".into(),
+                    custom_name: None,
+                    direction_mode: crate::model::ServiceDirectionMode::BothDirections,
+                    forward_train_number: 100,
+                    reverse_train_number: Some(101),
                     stop_station_ids: vec![ORIGIN, DESTINATION],
                     rail_line_ids: vec![FIRST_LINE, SECOND_LINE],
                 }],
@@ -746,8 +805,26 @@ mod tests {
     }
 
     #[test]
-    fn directional_service_rejects_a_train_waiting_at_its_destination() {
+    fn bidirectional_service_quotes_a_reverse_working_from_its_second_terminus() {
         let mut state = fixture();
+        state.player_company.fleet.trains[0].status = TrainStatus::Ready { at: DESTINATION };
+
+        let quote = quote_journey(&state, TRAIN_ID, SERVICE_ID).unwrap();
+
+        assert_eq!(quote.origin_station_id, DESTINATION);
+        assert_eq!(quote.destination_station_id, ORIGIN);
+        assert_eq!(quote.rail_line_path, [SECOND_LINE, FIRST_LINE]);
+        assert_eq!(quote.boarded_passengers, 1);
+        assert_eq!(quote.operating_revenue, Money::from_cents(17));
+        assert_eq!(quote.first_leg_duration, DurationSeconds::from_seconds(78));
+    }
+
+    #[test]
+    fn forward_only_service_rejects_a_train_waiting_at_its_destination() {
+        let mut state = fixture();
+        state.player_company.passenger_services[0].direction_mode =
+            ServiceDirectionMode::ForwardOnly;
+        state.player_company.passenger_services[0].reverse_train_number = None;
         state.player_company.fleet.trains[0].status = TrainStatus::Ready { at: DESTINATION };
 
         assert_eq!(
@@ -756,6 +833,39 @@ mod tests {
                 train_id: TRAIN_ID,
                 station_id: DESTINATION,
                 service_id: SERVICE_ID,
+            })
+        );
+    }
+
+    #[test]
+    fn assigned_train_cannot_quote_a_different_service() {
+        let mut state = fixture();
+        let assigned_service_id = ServiceId::new(2);
+        state
+            .player_company
+            .passenger_services
+            .push(PassengerService {
+                id: assigned_service_id,
+                name: "R2".into(),
+                custom_name: None,
+                direction_mode: ServiceDirectionMode::BothDirections,
+                forward_train_number: 102,
+                reverse_train_number: Some(103),
+                stop_station_ids: vec![ORIGIN, RailStationId::new(2)],
+                rail_line_ids: vec![FIRST_LINE],
+            });
+        state
+            .player_company
+            .fleet
+            .service_assignments
+            .insert(TRAIN_ID, assigned_service_id);
+
+        assert_eq!(
+            quote_journey(&state, TRAIN_ID, SERVICE_ID),
+            Err(EconomyError::TrainAssignedToOtherService {
+                train_id: TRAIN_ID,
+                assigned_service_id,
+                requested_service_id: SERVICE_ID,
             })
         );
     }
@@ -806,9 +916,11 @@ mod tests {
 
         let quote = quote_journey(&state, TRAIN_ID, SERVICE_ID).unwrap();
 
-        assert_eq!(quote.infrastructure_access_fee_before_credit, Money::from_cents(8));
+        assert_eq!(
+            quote.infrastructure_access_fee_before_credit,
+            Money::from_cents(8)
+        );
         assert_eq!(quote.infrastructure_access_fee_credit, Money::from_cents(5));
         assert_eq!(quote.infrastructure_access_fee, Money::from_cents(3));
     }
-
 }

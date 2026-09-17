@@ -115,6 +115,26 @@ pub fn shortcut_disabled() -> Style {
     Style::default().fg(SECONDARY).bg(PANEL)
 }
 
+/// Small visual anchor used by shared workspace empty states.
+pub fn empty_state_motif() -> Style {
+    Style::default().fg(ACCENT).bg(PANEL).bold()
+}
+
+/// Primary heading used by shared workspace empty states.
+pub fn empty_state_title() -> Style {
+    Style::default().fg(PRIMARY).bg(PANEL).bold()
+}
+
+/// Supporting copy used by shared workspace empty states.
+pub fn empty_state_description() -> Style {
+    Style::default().fg(SECONDARY).bg(PANEL)
+}
+
+/// Secondary guidance shown below an empty state's primary action.
+pub fn empty_state_hint() -> Style {
+    Style::default().fg(SECONDARY).bg(PANEL)
+}
+
 /// The footer is a first-class control surface, so its frame uses the accent.
 pub fn footer_border() -> Style {
     Style::default().fg(ACCENT).bg(PANEL)

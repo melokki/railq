@@ -13,8 +13,7 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
     widgets::{
-        Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
-        TableState, Wrap,
+        Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
     },
 };
 
@@ -100,9 +99,9 @@ pub fn render_vkm_editor(frame: &mut Frame, area: Rect, editor: &VkmEditor, stat
         card,
         "Edit Vehicle Keeper Mark",
         modal::shortcut_line(&[
-            ("Enter", "save"),
-            ("Backspace", "delete"),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Save),
+            modal::ModalShortcut::enabled("Backspace", modal::ModalAction::Erase),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]),
     );
 
@@ -438,12 +437,13 @@ impl CompanyWorkspace {
         }
         items.push(CompanyShortcut::enabled("V", "Edit VKM"));
 
-        let recovery_available = evaluate_financial_recovery(state)
-            .ok()
-            .is_some_and(|evaluation| {
-                evaluation.status == FinancialStatus::Insolvent
-                    && !evaluation.recovery_options.is_empty()
-            });
+        let recovery_available =
+            evaluate_financial_recovery(state)
+                .ok()
+                .is_some_and(|evaluation| {
+                    evaluation.status == FinancialStatus::Insolvent
+                        && !evaluation.recovery_options.is_empty()
+                });
         items.push(if recovery_available {
             CompanyShortcut::enabled("R", "Recovery")
         } else {
@@ -480,10 +480,7 @@ impl CompanyWorkspace {
             ];
         }
 
-        let mut lines = vec![
-            "Current · Company".into(),
-            "v Edit Company VKM".into(),
-        ];
+        let mut lines = vec!["Current · Company".into(), "v Edit Company VKM".into()];
         if state.financials.recent_journey_receipts.is_empty() {
             lines.extend([
                 "No settled Journey receipts yet".into(),
@@ -573,7 +570,11 @@ impl CompanyWorkspace {
                 CompanyWorkspaceAction::ClearNotice
             }
             KeyCode::Char('r' | 'R') if !self.receipt_details_open => {
-                if self.recovery_selection.selected_destination(state).is_some() {
+                if self
+                    .recovery_selection
+                    .selected_destination(state)
+                    .is_some()
+                {
                     self.recovery_review_open = true;
                     self.receipt_details_open = false;
                     CompanyWorkspaceAction::ClearNotice
@@ -672,13 +673,17 @@ pub fn render_recovery_review(
     let card = modal::workflow_rect(area);
     let compact = card.width < 76;
     let footer = if compact {
-        modal::shortcut_line(&[("↑↓", "route"), ("Enter", "review"), ("Esc", "cancel")])
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("↑↓", modal::ModalAction::Route),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Review),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ])
     } else {
         modal::shortcut_line(&[
-            ("↑↓/JK", "route"),
-            ("PgUp/PgDn", "page"),
-            ("Enter", "review"),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Route),
+            modal::ModalShortcut::enabled("PgUp/PgDn", modal::ModalAction::Page),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Review),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ])
     };
     let modal_areas = modal::render_shell(frame, card, "Financial Recovery", footer);
@@ -742,7 +747,10 @@ pub fn render_receipt_modal(
         frame,
         card,
         &title,
-        modal::shortcut_line(&[("Esc", "close")]),
+        modal::shortcut_line(&[modal::ModalShortcut::enabled(
+            "Esc",
+            modal::ModalAction::Close,
+        )]),
     );
     let lines = receipt_detail_lines(state, receipt);
     frame.render_widget(
@@ -979,7 +987,12 @@ fn render_wide_dashboard(
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
-    let [identity_area, performance_area, operations_area, history_area] = Layout::vertical([
+    let [
+        identity_area,
+        performance_area,
+        operations_area,
+        history_area,
+    ] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(5),
         Constraint::Length(4),

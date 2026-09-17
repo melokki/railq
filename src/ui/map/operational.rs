@@ -23,14 +23,14 @@ use super::geometry::{
 use super::network::{format_population, panel_block, ready_trains, station_name};
 use super::shared::{format_distance, format_duration, remaining_seconds};
 use crate::{
-    model::{GameState, Journey, RailStationId, SettlementId, TrainStatus, UtcSeconds},
+    model::{GameState, Journey, RailLineId, RailStationId, SettlementId, TrainStatus, UtcSeconds},
     sim::{
         authority::{
             COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS, local_rail_success_basis_points,
             nearest_connection_station_id,
         },
         demand::effective_arrival_rate_per_hour,
-        services::path_between_stations,
+        services::{path_between_stations, service_path_for_stops},
     },
     ui::theme,
 };
@@ -65,6 +65,7 @@ pub(super) struct OperationalPlace {
 
 #[derive(Clone, Copy, Debug)]
 struct OperationalLine {
+    rail_line_id: RailLineId,
     first_settlement_id: SettlementId,
     second_settlement_id: SettlementId,
     distance_metres: u64,
@@ -507,6 +508,7 @@ pub(super) fn operational_layout(state: &GameState) -> Option<OperationalLayout>
             let first = station_by_id.get(&line.first_station_id)?;
             let second = station_by_id.get(&line.second_station_id)?;
             Some(OperationalLine {
+                rail_line_id: line.id,
                 first_settlement_id: first.settlement_id,
                 second_settlement_id: second.settlement_id,
                 distance_metres: line.distance.metres(),
@@ -518,12 +520,220 @@ pub(super) fn operational_layout(state: &GameState) -> Option<OperationalLayout>
     Some(OperationalLayout { places, lines })
 }
 
+#[derive(Clone, Debug, Default)]
+struct ServiceRoutePreviewOverlay {
+    route_line_ids: BTreeSet<RailLineId>,
+    stop_order: BTreeMap<RailStationId, usize>,
+    highlighted_station_id: Option<RailStationId>,
+}
+
+const SERVICE_PREVIEW_CONTEXT_LIMIT: usize = 16;
+
+/// Build a route-focused slice of the operational map for the Service editor.
+///
+/// The full Map can eventually contain hundreds of stations, while the editor
+/// only needs enough surrounding infrastructure to keep the route oriented.
+/// Keep every station that belongs to the selected/candidate path, then add a
+/// bounded one-hop neighbourhood around it. This preserves the same persisted
+/// coordinates and rail geometry without shrinking the whole Region into a
+/// tiny rectangle.
+fn service_preview_layout(
+    layout: &OperationalLayout,
+    overlay: &ServiceRoutePreviewOverlay,
+) -> OperationalLayout {
+    let station_to_settlement = layout
+        .places
+        .iter()
+        .filter_map(|place| {
+            place
+                .station_id
+                .map(|station_id| (station_id, place.settlement_id))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut focus = BTreeSet::new();
+    for station_id in overlay.stop_order.keys().copied() {
+        if let Some(settlement_id) = station_to_settlement.get(&station_id) {
+            focus.insert(*settlement_id);
+        }
+    }
+    if let Some(station_id) = overlay.highlighted_station_id {
+        if let Some(settlement_id) = station_to_settlement.get(&station_id) {
+            focus.insert(*settlement_id);
+        }
+    }
+    for line in layout
+        .lines
+        .iter()
+        .filter(|line| overlay.route_line_ids.contains(&line.rail_line_id))
+    {
+        focus.insert(line.first_settlement_id);
+        focus.insert(line.second_settlement_id);
+    }
+
+    if focus.is_empty() {
+        return layout.clone();
+    }
+
+    let highlighted_settlement_id = overlay
+        .highlighted_station_id
+        .and_then(|station_id| station_to_settlement.get(&station_id).copied());
+    let by_id = layout
+        .places
+        .iter()
+        .map(|place| (place.settlement_id, place))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut context_candidates = BTreeSet::new();
+    for line in &layout.lines {
+        if focus.contains(&line.first_settlement_id) && !focus.contains(&line.second_settlement_id)
+        {
+            context_candidates.insert(line.second_settlement_id);
+        }
+        if focus.contains(&line.second_settlement_id) && !focus.contains(&line.first_settlement_id)
+        {
+            context_candidates.insert(line.first_settlement_id);
+        }
+    }
+
+    // When a long route has many branches, keep context closest to the current
+    // cursor. Route stations themselves are never dropped.
+    let mut context_candidates = context_candidates.into_iter().collect::<Vec<_>>();
+    context_candidates.sort_by_key(|settlement_id| {
+        let Some(place) = by_id.get(settlement_id) else {
+            return (i64::MAX, *settlement_id);
+        };
+        let distance = highlighted_settlement_id
+            .and_then(|highlighted_id| by_id.get(&highlighted_id))
+            .map(|highlighted| {
+                i64::from((place.x - highlighted.x).abs())
+                    + i64::from((place.y - highlighted.y).abs())
+            })
+            .unwrap_or(0);
+        (distance, *settlement_id)
+    });
+
+    let mut visible = focus;
+    visible.extend(
+        context_candidates
+            .into_iter()
+            .take(SERVICE_PREVIEW_CONTEXT_LIMIT),
+    );
+
+    let places = layout
+        .places
+        .iter()
+        .filter(|place| visible.contains(&place.settlement_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let lines = layout
+        .lines
+        .iter()
+        .filter(|line| {
+            visible.contains(&line.first_settlement_id)
+                && visible.contains(&line.second_settlement_id)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+
+    OperationalLayout { places, lines }
+}
+
+/// Renders the Passenger Service editor preview with the same world-space
+/// topology, orthogonal rail geometry, station markers, and settlement labels
+/// as the main operational Map. The editor only changes emphasis: the selected
+/// route is accented and the list cursor becomes the active map marker.
+pub(crate) fn render_service_route_preview(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    stop_station_ids: &[RailStationId],
+    highlighted_station_id: Option<RailStationId>,
+) {
+    if area.width < 8 || area.height < 4 {
+        return;
+    }
+
+    let Some(layout) = operational_layout(state) else {
+        frame.render_widget(
+            Paragraph::new("No Settlements are available.")
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    };
+
+    let network = &state.region.rail_authority.rail_network;
+    let mut route_stops = stop_station_ids.to_vec();
+    if let Some(station_id) = highlighted_station_id.filter(|id| !route_stops.contains(id)) {
+        let mut candidate = route_stops.clone();
+        candidate.push(station_id);
+        if candidate.len() >= 2 && service_path_for_stops(network, &candidate).is_ok() {
+            route_stops = candidate;
+        }
+    }
+
+    let route_line_ids = if route_stops.len() >= 2 {
+        service_path_for_stops(network, &route_stops)
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    let overlay = ServiceRoutePreviewOverlay {
+        route_line_ids,
+        stop_order: stop_station_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, station_id)| (station_id, index + 1))
+            .collect(),
+        highlighted_station_id,
+    };
+    let preview_layout = service_preview_layout(&layout, &overlay);
+    let selected_settlement_id = highlighted_station_id.and_then(|station_id| {
+        preview_layout
+            .places
+            .iter()
+            .find(|place| place.station_id == Some(station_id))
+            .map(|place| place.settlement_id)
+    });
+
+    let rows = render_map_rows_with_overlay(
+        &preview_layout,
+        selected_settlement_id,
+        area.width,
+        area.height,
+        state,
+        Some(&overlay),
+    );
+    frame.render_widget(
+        Paragraph::new(rows)
+            .style(theme::panel())
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 fn render_map_rows(
     layout: &OperationalLayout,
     selected: Option<SettlementId>,
     width: u16,
     height: u16,
     state: &GameState,
+) -> Vec<Line<'static>> {
+    render_map_rows_with_overlay(layout, selected, width, height, state, None)
+}
+
+fn render_map_rows_with_overlay(
+    layout: &OperationalLayout,
+    selected: Option<SettlementId>,
+    width: u16,
+    height: u16,
+    state: &GameState,
+    overlay: Option<&ServiceRoutePreviewOverlay>,
 ) -> Vec<Line<'static>> {
     let width = usize::from(width);
     let height = usize::from(height);
@@ -580,9 +790,15 @@ fn render_map_rows(
         };
         let start = screen_position(first);
         let end = screen_position(second);
-        let accent = selected.is_some_and(|selected_id| {
-            selected_id == line.first_settlement_id || selected_id == line.second_settlement_id
-        });
+        let accent = overlay.map_or_else(
+            || {
+                selected.is_some_and(|selected_id| {
+                    selected_id == line.first_settlement_id
+                        || selected_id == line.second_settlement_id
+                })
+            },
+            |overlay| overlay.route_line_ids.contains(&line.rail_line_id),
+        );
         draw_orthogonal_rail(
             &mut rail_mask,
             &mut rail_accent,
@@ -619,10 +835,35 @@ fn render_map_rows(
         let is_ready_station = place
             .station_id
             .is_some_and(|station_id| ready_station_ids.contains(&station_id));
-        let (marker, ink) = if selected == Some(place.settlement_id) {
+        let preview_stop = overlay.is_some_and(|overlay| {
+            place
+                .station_id
+                .is_some_and(|station_id| overlay.stop_order.contains_key(&station_id))
+        });
+        let preview_cursor =
+            overlay.is_some_and(|overlay| place.station_id == overlay.highlighted_station_id);
+        let preview_stop_order = overlay.and_then(|overlay| {
+            place
+                .station_id
+                .and_then(|station_id| overlay.stop_order.get(&station_id).copied())
+        });
+        let preview_last_stop = overlay
+            .and_then(|overlay| overlay.stop_order.values().copied().max())
+            .is_some_and(|last_stop| preview_stop_order == Some(last_stop));
+        let (marker, ink) = if preview_cursor {
+            ('◆', MapInk::Cursor)
+        } else if preview_stop_order == Some(1) {
+            ('◉', MapInk::Selected)
+        } else if preview_last_stop {
             ('◆', MapInk::Selected)
-        } else if is_ready_station {
+        } else if preview_stop {
+            ('●', MapInk::Selected)
+        } else if selected == Some(place.settlement_id) {
+            ('◆', MapInk::Selected)
+        } else if overlay.is_none() && is_ready_station {
             ('◉', MapInk::Ready)
+        } else if overlay.is_some() && place.station_id.is_some() {
+            ('●', MapInk::Unconnected)
         } else if place.station_id.is_some() {
             ('●', place_ink(place, selected, &adjacent))
         } else {
@@ -645,12 +886,14 @@ fn render_map_rows(
                 .map(|station_id| (station_id, screen_position(place)))
         })
         .collect::<BTreeMap<_, _>>();
-    draw_active_train_markers(
-        &mut grid,
-        state,
-        &station_positions,
-        state.last_processed_at,
-    );
+    if overlay.is_none() {
+        draw_active_train_markers(
+            &mut grid,
+            state,
+            &station_positions,
+            state.last_processed_at,
+        );
+    }
 
     // Labels follow the same focus hierarchy as the markers. Place the current
     // focus first, then its direct neighbours, so background labels cannot steal
@@ -658,42 +901,91 @@ fn render_map_rows(
     // Operational counts live in the inspector instead of being repeated beside
     // every station name.
     let mut label_places = layout.places.iter().collect::<Vec<_>>();
-    label_places.sort_by_key(|place| focus_rank(place, selected, &adjacent));
+    label_places.sort_by_key(|place| {
+        if overlay.is_some_and(|overlay| place.station_id == overlay.highlighted_station_id) {
+            0
+        } else if overlay.is_some_and(|overlay| {
+            place
+                .station_id
+                .is_some_and(|station_id| overlay.stop_order.contains_key(&station_id))
+        }) {
+            1
+        } else {
+            focus_rank(place, selected, &adjacent).saturating_add(2)
+        }
+    });
     for place in label_places {
         let (x, y) = screen_position(place);
+        let stop_number = overlay.and_then(|overlay| {
+            place
+                .station_id
+                .and_then(|station_id| overlay.stop_order.get(&station_id).copied())
+        });
+        let preview_cursor =
+            overlay.is_some_and(|overlay| place.station_id == overlay.highlighted_station_id);
+
+        // The service editor is smaller than the full Map. Keep the exact same
+        // topology, but reserve scarce label space for Rail Stations and the
+        // route being assembled. Unconnected settlements remain visible as
+        // markers, preserving geographic context without crowding the route.
+        if overlay.is_some() && place.station_id.is_none() {
+            continue;
+        }
+
+        // Stop order is already visible in the picker. Prefixing route labels
+        // with numbers wastes scarce horizontal space and makes close stations
+        // overwrite one another, so the mini-map keeps clean station names.
         let label = map_place_label(place, selected);
         let preferred_direction =
             preferred_label_direction(place, &label, &layout.places, &place_positions, selected);
-        place_map_label(
-            &mut grid,
-            x,
-            y,
-            &label,
-            place_ink(place, selected, &adjacent),
-            preferred_direction,
-        );
+        let ink = if preview_cursor {
+            MapInk::Cursor
+        } else if stop_number.is_some() {
+            MapInk::Selected
+        } else if overlay.is_some() {
+            MapInk::Unconnected
+        } else {
+            place_ink(place, selected, &adjacent)
+        };
+
+        if overlay.is_some() && !preview_cursor && stop_number.is_none() {
+            // Background station labels are useful context, but never at the
+            // cost of overwriting rail geometry or an important route label.
+            try_place_map_label(&mut grid, x, y, &label, ink, preferred_direction);
+        } else if overlay.is_some() {
+            // The compact Service preview must never let two important labels
+            // overwrite each other. Search a slightly wider ring around the
+            // station marker; the route strip below the map remains the exact
+            // ordered fallback if the map is genuinely too dense to label all
+            // route stations at once.
+            try_place_service_preview_label(&mut grid, x, y, &label, ink, preferred_direction);
+        } else {
+            place_map_label(&mut grid, x, y, &label, ink, preferred_direction);
+        }
     }
 
     // Exact distances appear only for Rail Links incident to the current
     // selection. If every candidate would collide with a place label, Train,
     // or rail geometry, omit the map annotation; the inspector still carries
     // the exact distance.
-    if let Some(selected_id) = selected {
-        for line in layout.lines.iter().filter(|line| {
-            line.first_settlement_id == selected_id || line.second_settlement_id == selected_id
-        }) {
-            let (Some(first), Some(second)) = (
-                by_id.get(&line.first_settlement_id),
-                by_id.get(&line.second_settlement_id),
-            ) else {
-                continue;
-            };
-            place_link_distance_label(
-                &mut grid,
-                screen_position(first),
-                screen_position(second),
-                line.distance_metres,
-            );
+    if overlay.is_none() {
+        if let Some(selected_id) = selected {
+            for line in layout.lines.iter().filter(|line| {
+                line.first_settlement_id == selected_id || line.second_settlement_id == selected_id
+            }) {
+                let (Some(first), Some(second)) = (
+                    by_id.get(&line.first_settlement_id),
+                    by_id.get(&line.second_settlement_id),
+                ) else {
+                    continue;
+                };
+                place_link_distance_label(
+                    &mut grid,
+                    screen_position(first),
+                    screen_position(second),
+                    line.distance_metres,
+                );
+            }
         }
     }
 
@@ -789,12 +1081,7 @@ fn journey_map_marker(
             } else {
                 ((travelled_metres - distance_before) / segment_distance).clamp(0.0, 1.0)
             };
-            return journey_segment_map_marker(
-                state,
-                segment,
-                station_positions,
-                local_progress,
-            );
+            return journey_segment_map_marker(state, segment, station_positions, local_progress);
         }
         distance_before = distance_after;
     }
@@ -1139,14 +1426,12 @@ fn preferred_label_direction(
         })
 }
 
-fn place_map_label(
-    grid: &mut [Vec<MapCell>],
+fn label_candidates(
     marker_x: i32,
     marker_y: i32,
     text: &str,
-    ink: MapInk,
     preferred_direction: Option<MapDirection>,
-) {
+) -> Vec<(i32, i32)> {
     let label_width = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
     let centered_x = marker_x - label_width / 2;
     let position_for = |direction| match direction {
@@ -1171,16 +1456,90 @@ fn place_map_label(
             candidates.push(candidate);
         }
     }
+    candidates
+}
 
-    if let Some((x, y)) = candidates
+fn try_place_map_label(
+    grid: &mut [Vec<MapCell>],
+    marker_x: i32,
+    marker_y: i32,
+    text: &str,
+    ink: MapInk,
+    preferred_direction: Option<MapDirection>,
+) -> bool {
+    let Some((x, y)) = label_candidates(marker_x, marker_y, text, preferred_direction)
         .into_iter()
         .find(|(x, y)| can_place_text(grid, *x, *y, text))
-    {
-        put_text(grid, x, y, text, ink);
+    else {
+        return false;
+    };
+    put_text(grid, x, y, text, ink);
+    true
+}
+
+fn try_place_service_preview_label(
+    grid: &mut [Vec<MapCell>],
+    marker_x: i32,
+    marker_y: i32,
+    text: &str,
+    ink: MapInk,
+    preferred_direction: Option<MapDirection>,
+) -> bool {
+    let label_width = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+    let centered_x = marker_x - label_width / 2;
+    let position_for = |direction, distance: i32| match direction {
+        MapDirection::Up => (centered_x, marker_y - distance),
+        MapDirection::Down => (centered_x, marker_y + distance),
+        MapDirection::Right => (marker_x + distance + 1, marker_y),
+        MapDirection::Left => (marker_x - label_width - distance - 1, marker_y),
+    };
+
+    let mut directions = Vec::with_capacity(4);
+    if let Some(direction) = preferred_direction {
+        directions.push(direction);
+    }
+    for direction in [
+        MapDirection::Up,
+        MapDirection::Down,
+        MapDirection::Right,
+        MapDirection::Left,
+    ] {
+        if !directions.contains(&direction) {
+            directions.push(direction);
+        }
+    }
+
+    // First keep labels close to their marker, then progressively fan them out
+    // by a few cells. This is enough to separate neighbouring names such as
+    // Oakridge/Fairford without turning the preview into floating annotations.
+    for distance in 1..=3 {
+        for direction in directions.iter().copied() {
+            let (x, y) = position_for(direction, distance);
+            if can_place_text(grid, x, y, text) {
+                put_text(grid, x, y, text, ink);
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn place_map_label(
+    grid: &mut [Vec<MapCell>],
+    marker_x: i32,
+    marker_y: i32,
+    text: &str,
+    ink: MapInk,
+    preferred_direction: Option<MapDirection>,
+) {
+    if try_place_map_label(grid, marker_x, marker_y, text, ink, preferred_direction) {
         return;
     }
 
-    // Very small terminals may leave no collision-free row. In that case,
-    // prefer the normal centred-above placement and let put_text clip safely.
-    put_text(grid, centered_x, marker_y - 1, text, ink);
+    // Very small terminals may leave no collision-free row. Important labels
+    // still get a deterministic fallback; lower-priority mini-map context uses
+    // try_place_map_label directly and is simply omitted instead.
+    let label_width = i32::try_from(text.chars().count()).unwrap_or(i32::MAX);
+    put_text(grid, marker_x - label_width / 2, marker_y - 1, text, ink);
 }
