@@ -265,12 +265,23 @@ impl DispatchFlow {
         }
         let train_ids = dispatchable_train_ids_for_context(state, preferred_station_id, None);
         if train_ids.is_empty() {
-            return Err(match preferred_station_id {
-                Some(_) => {
-                    "No Passenger Service can be operated from this Rail Station by a READY Train. Open Services from the Map and create one first."
-                }
-                None => {
-                    "No Passenger Service can be operated from any READY Train's Rail Station. Open Services from the Map and create one first."
+            let any_assigned = ready_train_ids.iter().any(|train_id| {
+                state
+                    .player_company
+                    .fleet
+                    .assigned_service_id(*train_id)
+                    .is_some()
+            });
+            return Err(if !any_assigned {
+                "No READY Train is assigned to a Passenger Service. Assign one from Fleet or Services before revenue dispatch."
+            } else {
+                match preferred_station_id {
+                    Some(_) => {
+                        "No assigned Passenger Service can be operated from this Rail Station by a READY Train."
+                    }
+                    None => {
+                        "No assigned Passenger Service can be operated from any READY Train's current Rail Station."
+                    }
                 }
             });
         }
@@ -299,9 +310,20 @@ impl DispatchFlow {
                 train.id.get()
             ));
         }
+        if state
+            .player_company
+            .fleet
+            .assigned_service_id(train_id)
+            .is_none()
+        {
+            return Err(format!(
+                "Train {} is UNASSIGNED. Assign a Passenger Service from Fleet or Services before revenue dispatch.",
+                train.id.get()
+            ));
+        }
         if service_options(state, train_id).is_empty() {
             return Err(
-                "No Passenger Service can be operated from this Train's current Rail Station. Create one from the Map Services workspace first."
+                "This Train's assigned Passenger Service cannot be operated from its current Rail Station."
                     .into(),
             );
         }
@@ -335,7 +357,7 @@ impl DispatchFlow {
         let train_ids = dispatchable_train_ids_for_context(state, None, Some(service_id));
         if train_ids.is_empty() {
             return Err(format!(
-                "No READY Train can run {} from a valid terminus.",
+                "No assigned READY Train can run {} from a valid terminus.",
                 service_name(state, service.id)
             ));
         }
@@ -368,7 +390,7 @@ impl DispatchFlow {
                 if trains.is_empty() {
                     self.rejection = Some(if let Some(service_id) = self.preferred_service_id {
                         format!(
-                            "No READY Train can currently run {} from a valid terminus.",
+                            "No assigned READY Train can currently run {} from a valid terminus.",
                             service_name(state, service_id)
                         )
                     } else {
@@ -1600,7 +1622,10 @@ fn dispatchable_train_ids_for_context(
     let mut train_ids = ready_train_ids_for_station(state, station_id)
         .into_iter()
         .filter(|train_id| match service_id {
-            Some(service_id) => preview_quote(state, *train_id, service_id).is_ok(),
+            Some(service_id) => {
+                state.player_company.fleet.assigned_service_id(*train_id) == Some(service_id)
+                    && preview_quote(state, *train_id, service_id).is_ok()
+            }
             None => !service_options(state, *train_id).is_empty(),
         })
         .collect::<Vec<_>>();
@@ -1752,10 +1777,17 @@ fn service_step(
 ) -> Result<DispatchStep, String> {
     let services = service_options(state, train_id);
     if services.is_empty() {
-        return Err(
-            "No Passenger Service can be operated from this Train's current Rail Station. Create one from the Map Services workspace first."
-                .into(),
-        );
+        return Err(if state
+            .player_company
+            .fleet
+            .assigned_service_id(train_id)
+            .is_none()
+        {
+            "Assign a Passenger Service to this Train before revenue dispatch.".into()
+        } else {
+            "This Train's assigned Passenger Service cannot be operated from its current Rail Station."
+                .into()
+        });
     }
     let selected = selected_service_id
         .and_then(|service_id| {
@@ -1778,10 +1810,14 @@ fn service_options(state: &GameState, train_id: TrainId) -> Vec<ServiceOption> {
     if ready_train_station(state, train_id).is_none() {
         return Vec::new();
     }
+    let Some(assigned_service_id) = state.player_company.fleet.assigned_service_id(train_id) else {
+        return Vec::new();
+    };
     state
         .player_company
         .passenger_services
         .iter()
+        .filter(|service| service.id == assigned_service_id)
         .filter_map(|service| {
             preview_quote(state, train_id, service.id)
                 .ok()
@@ -1994,7 +2030,11 @@ mod tests {
 
     use crate::{
         model::{RailStationId, TrainStatus, UtcSeconds},
-        sim::{fleet::purchase_train, services::create_service, world::create_new_game},
+        sim::{
+            fleet::purchase_train,
+            services::{assign_train_to_service, create_service},
+            world::create_new_game,
+        },
     };
 
     use super::{DispatchFlow, DispatchFlowAction};
@@ -2017,7 +2057,50 @@ mod tests {
         state: &mut crate::model::GameState,
         stops: Vec<RailStationId>,
     ) -> crate::model::ServiceId {
-        create_service(state, stops).unwrap()
+        let service_id = create_service(state, stops).unwrap();
+        let train_id = state.player_company.fleet.trains[0].id;
+        assign_train_to_service(state, train_id, service_id).unwrap();
+        service_id
+    }
+
+
+    #[test]
+    fn selected_unassigned_train_cannot_start_revenue_dispatch() {
+        let (mut state, train_id) = game_with_ready_train(RailStationId::new(1));
+        create_service(
+            &mut state,
+            vec![RailStationId::new(1), RailStationId::new(3)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            DispatchFlow::start_with_selected_train(&state, train_id),
+            Err(format!(
+                "Train {} is UNASSIGNED. Assign a Passenger Service from Fleet or Services before revenue dispatch.",
+                train_id.get()
+            ))
+        );
+        assert_eq!(
+            DispatchFlow::start(&state),
+            Err(
+                "No READY Train is assigned to a Passenger Service. Assign one from Fleet or Services before revenue dispatch."
+            )
+        );
+    }
+
+    #[test]
+    fn service_preselected_dispatch_requires_an_assigned_train() {
+        let (mut state, _) = game_with_ready_train(RailStationId::new(1));
+        let service_id = create_service(
+            &mut state,
+            vec![RailStationId::new(1), RailStationId::new(3)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            DispatchFlow::start_with_selected_service(&state, service_id),
+            Err("No assigned READY Train can run R1 from a valid terminus.".into())
+        );
     }
 
     #[test]

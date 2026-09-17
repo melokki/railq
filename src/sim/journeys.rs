@@ -18,6 +18,11 @@ use crate::{
 /// Why a manual Journey cannot depart.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DispatchError {
+    /// Revenue service requires an explicit Passenger Service assignment.
+    TrainNotAssignedToService {
+        train_id: TrainId,
+        service_id: ServiceId,
+    },
     /// The current state cannot produce a valid Journey quote.
     Quote(EconomyError),
     /// Company Funds cannot cover the known departure operating costs.
@@ -38,6 +43,15 @@ pub enum DispatchError {
 impl fmt::Display for DispatchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TrainNotAssignedToService {
+                train_id,
+                service_id,
+            } => write!(
+                formatter,
+                "Train {} is not assigned to Passenger Service {}; assign it before revenue dispatch",
+                train_id.get(),
+                service_id.get()
+            ),
             Self::Quote(error) => error.fmt(formatter),
             Self::InsufficientCompanyFunds {
                 available,

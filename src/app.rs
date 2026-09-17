@@ -487,6 +487,14 @@ impl<S: GameStore> App<S> {
     ) -> Result<crate::model::JourneyId, AppError<S::Error>> {
         self.transact(now, |state, effective_now| {
             let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            if state.player_company.fleet.assigned_service_id(train_id).is_none() {
+                return Err(AppError::Dispatch(
+                    DispatchError::TrainNotAssignedToService {
+                        train_id,
+                        service_id,
+                    },
+                ));
+            }
             let journey_id = dispatch_journey(state, train_id, service_id, effective_now)
                 .map_err(AppError::Dispatch)?;
             if bankruptcy_prevents_operation {
@@ -529,6 +537,8 @@ impl<S: GameStore> App<S> {
             let service_id =
                 find_or_create_service(state, origin_station_id, destination_station_id)
                     .map_err(AppError::Service)?;
+            assign_train_to_service(state, train_id, service_id)
+                .map_err(AppError::ServiceAssignment)?;
             let journey_id = dispatch_journey(state, train_id, service_id, effective_now)
                 .map_err(AppError::Dispatch)?;
             if bankruptcy_prevents_operation {
@@ -634,8 +644,8 @@ mod tests {
         sim::{
             economy::quote_journey,
             fleet::{FleetError, purchase_train},
-            journeys::dispatch_journey,
-            services::find_or_create_service,
+            journeys::{DispatchError, dispatch_journey},
+            services::{assign_train_to_service, find_or_create_service},
             world::create_new_game,
         },
     };
@@ -1084,12 +1094,35 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn revenue_dispatch_rejects_an_unassigned_train_without_mutating_state() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        let mut app = App::start_new(store, state).unwrap();
+        let before = app.state().clone();
+
+        assert!(matches!(
+            app.dispatch_journey(train_id, service_id, DEPARTED_AT),
+            Err(AppError::Dispatch(
+                DispatchError::TrainNotAssignedToService {
+                    train_id: rejected_train_id,
+                    service_id: rejected_service_id,
+                }
+            )) if rejected_train_id == train_id && rejected_service_id == service_id
+        ));
+        assert_eq!(app.state(), &before);
+    }
+
     #[test]
     fn dispatch_uses_the_effective_time_after_a_backward_clock_read() {
         let store = TestStore::default();
         let mut state = new_game();
         let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
         let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        assign_train_to_service(&mut state, train_id, service_id).unwrap();
         let mut app = App::start_new(store, state).unwrap();
         let later = UtcSeconds::from_unix_seconds(2_000);
 
