@@ -340,6 +340,16 @@ fn affordable_journeys(
                 Err(ServiceError::NoPath { .. }) => continue,
                 Err(error) => return Err(error.into()),
             };
+        // Recovery planning may consider a different Service than the Train's
+        // current administrative allocation. Reassignment is free for a READY
+        // Train, so model that step in the candidate before quoting revenue
+        // operation instead of letting assignment validation abort the entire
+        // financial evaluation.
+        candidate
+            .player_company
+            .fleet
+            .service_assignments
+            .insert(train_id, service_id);
         let quote = quote_journey(&candidate, train_id, service_id)?;
         if candidate.player_company.funds >= quote.operating_cost {
             journeys.push(RecoveryJourney {
@@ -359,7 +369,9 @@ mod tests {
         catalog::train_catalogue,
         model::UtcSeconds,
         sim::{
-            fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
+            fleet::purchase_train,
+            journeys::dispatch_journey,
+            services::{assign_train_to_service, find_or_create_service},
             world::create_new_game,
         },
     };
@@ -479,6 +491,19 @@ mod tests {
                     && journey.origin_station_id == ORIGIN
                     && journey.destination_station_id == DESTINATION)
         }));
+    }
+
+    #[test]
+    fn recovery_search_can_reassign_a_ready_train_without_failing_evaluation() {
+        let cost = starter_operating_cost();
+        let mut state = configured_game(model_price(0).checked_add(cost).unwrap());
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        assign_train_to_service(&mut state, train_id, service_id).unwrap();
+
+        let journeys = affordable_journeys(state, train_id).unwrap();
+
+        assert!(!journeys.is_empty());
     }
 
     #[test]

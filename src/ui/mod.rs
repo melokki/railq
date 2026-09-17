@@ -364,8 +364,6 @@ impl Shell {
                         | 'B'
                         | 'c'
                         | 'C'
-                        | 'u'
-                        | 'U'
                 )
             );
             if navigation_key {
@@ -459,7 +457,7 @@ impl Shell {
                 self.active_view = View::Authority;
                 self.service_workspace.close();
             }
-            KeyCode::Char('6' | 'u' | 'U') => {
+            KeyCode::Char('6') => {
                 self.active_view = View::Bulletin;
                 self.service_workspace.close();
             }
@@ -475,7 +473,7 @@ impl Shell {
             }
             KeyCode::Enter
             | KeyCode::Esc
-            | KeyCode::Char('r' | 'R' | 'n' | 'N' | 's' | 'S' | 'd' | 'D')
+            | KeyCode::Char('r' | 'R' | 'n' | 'N' | 'u' | 'U' | 's' | 'S' | 'd' | 'D')
             | KeyCode::Up
             | KeyCode::Down
             | KeyCode::PageUp
