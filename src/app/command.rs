@@ -29,6 +29,13 @@ pub enum AppCommand {
     },
     /// Delete one unused Passenger Service.
     DeletePassengerService { service_id: ServiceId },
+    /// Persistently allocate one owned Train to a Passenger Service.
+    AssignTrainToService {
+        train_id: TrainId,
+        service_id: ServiceId,
+    },
+    /// Clear one owned Train's persistent Passenger Service allocation.
+    UnassignTrainFromService { train_id: TrainId },
     /// Authorise one Manual Dispatch over an existing Passenger Service.
     ManualDispatch {
         train_id: TrainId,
@@ -63,6 +70,13 @@ pub enum AppCommandResult {
     PassengerServiceUpdated { service_id: ServiceId },
     /// One Passenger Service deletion was durably committed.
     PassengerServiceDeleted { service_id: ServiceId },
+    /// One Train-to-Service assignment was durably committed.
+    TrainServiceAssigned {
+        train_id: TrainId,
+        service_id: ServiceId,
+    },
+    /// One Train-to-Service assignment was durably cleared.
+    TrainServiceUnassigned { train_id: TrainId },
     /// One Manual Dispatch was durably committed.
     JourneyDispatched { journey_id: JourneyId },
     /// One infrastructure contribution was durably committed.

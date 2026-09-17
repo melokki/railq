@@ -22,7 +22,8 @@ use crate::{
         fleet::{FleetError, purchase_train, sell_train},
         journeys::{DispatchError, dispatch_journey},
         services::{
-            ServiceError, create_service, delete_service, find_or_create_service, update_service,
+            ServiceAssignmentError, ServiceError, assign_train_to_service, create_service,
+            delete_service, find_or_create_service, unassign_train_from_service, update_service,
         },
         time::{AdvanceTimeError, SettledJourney, advance_time, advance_time_with_arrivals},
         world::create_new_game,
@@ -76,6 +77,8 @@ pub enum AppError<E> {
     Dispatch(DispatchError),
     /// A Passenger Service could not be created or reused for a Manual Dispatch.
     Service(ServiceError),
+    /// A Train-to-Service allocation could not be changed.
+    ServiceAssignment(ServiceAssignmentError),
     /// The financial recovery evaluator could not determine whether operations remain allowed.
     Finance(FinanceError),
     /// A Player Company infrastructure contribution was rejected.
@@ -97,6 +100,7 @@ impl<E: fmt::Display> fmt::Display for AppError<E> {
             Self::Rename(error) => error.fmt(formatter),
             Self::Dispatch(error) => error.fmt(formatter),
             Self::Service(error) => error.fmt(formatter),
+            Self::ServiceAssignment(error) => error.fmt(formatter),
             Self::Finance(error) => error.fmt(formatter),
             Self::Authority(error) => error.fmt(formatter),
             Self::Bankruptcy => write!(
@@ -117,6 +121,7 @@ impl<E: Error + 'static> Error for AppError<E> {
             Self::Load(error) | Self::Save(error) => Some(error),
             Self::Advance(error) => Some(error),
             Self::Service(error) => Some(error),
+            Self::ServiceAssignment(error) => Some(error),
             Self::Finance(error) => Some(error),
             Self::Authority(error) => Some(error),
             Self::Purchase(error) | Self::Resale(error) | Self::Rename(error) => Some(error),
@@ -184,6 +189,20 @@ impl<S: GameStore> App<S> {
             AppCommand::DeletePassengerService { service_id } => {
                 self.delete_passenger_service(service_id, now)?;
                 Ok(AppCommandResult::PassengerServiceDeleted { service_id })
+            }
+            AppCommand::AssignTrainToService {
+                train_id,
+                service_id,
+            } => {
+                self.assign_train_to_passenger_service(train_id, service_id, now)?;
+                Ok(AppCommandResult::TrainServiceAssigned {
+                    train_id,
+                    service_id,
+                })
+            }
+            AppCommand::UnassignTrainFromService { train_id } => {
+                self.unassign_train_from_passenger_service(train_id, now)?;
+                Ok(AppCommandResult::TrainServiceUnassigned { train_id })
             }
             AppCommand::ManualDispatch {
                 train_id,
@@ -347,6 +366,42 @@ impl<S: GameStore> App<S> {
         self.transact(now, |state, _| {
             let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
             delete_service(state, service_id).map_err(AppError::Service)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    /// Assigns one owned Train to a Passenger Service and persists the allocation.
+    pub fn assign_train_to_passenger_service(
+        &mut self,
+        train_id: TrainId,
+        service_id: ServiceId,
+        now: UtcSeconds,
+    ) -> Result<(), AppError<S::Error>> {
+        self.transact(now, |state, _| {
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            assign_train_to_service(state, train_id, service_id)
+                .map_err(AppError::ServiceAssignment)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    /// Clears one Train's Passenger Service allocation and persists the change.
+    pub fn unassign_train_from_passenger_service(
+        &mut self,
+        train_id: TrainId,
+        now: UtcSeconds,
+    ) -> Result<(), AppError<S::Error>> {
+        self.transact(now, |state, _| {
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            unassign_train_from_service(state, train_id).map_err(AppError::ServiceAssignment)?;
             if bankruptcy_prevents_operation {
                 Err(AppError::Bankruptcy)
             } else {
@@ -784,6 +839,55 @@ mod tests {
             AppCommandResult::PassengerServiceDeleted { service_id }
         );
         assert!(app.state().player_company.passenger_services.is_empty());
+        assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
+    }
+
+    #[test]
+    fn execute_persists_train_service_assignment_changes() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        let mut app = App::start_new(store.clone(), state).unwrap();
+
+        assert_eq!(
+            app.execute(
+                AppCommand::AssignTrainToService {
+                    train_id,
+                    service_id,
+                },
+                STARTED_AT,
+            )
+            .unwrap(),
+            AppCommandResult::TrainServiceAssigned {
+                train_id,
+                service_id,
+            }
+        );
+        assert_eq!(
+            app.state()
+                .player_company
+                .fleet
+                .assigned_service_id(train_id),
+            Some(service_id)
+        );
+        assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
+
+        assert_eq!(
+            app.execute(
+                AppCommand::UnassignTrainFromService { train_id },
+                STARTED_AT,
+            )
+            .unwrap(),
+            AppCommandResult::TrainServiceUnassigned { train_id }
+        );
+        assert_eq!(
+            app.state()
+                .player_company
+                .fleet
+                .assigned_service_id(train_id),
+            None
+        );
         assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
     }
 

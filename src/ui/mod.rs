@@ -164,6 +164,11 @@ impl Shell {
             return self.handle_fleet_workspace_action(action, state);
         }
 
+        if self.fleet_workspace.has_assignment_flow() {
+            let action = self.fleet_workspace.handle_assignment_key(key.code, state);
+            return self.handle_fleet_workspace_action(action, state);
+        }
+
         if self.company_workspace.has_vkm_editor() {
             return self.handle_company_key(key, state);
         }
@@ -378,6 +383,10 @@ impl Shell {
                 self.service_workspace.close();
                 self.company_workspace.activate();
             }
+            KeyCode::Char('a' | 'A') if self.active_view == View::Trains => {
+                let action = self.fleet_workspace.handle_key(key, state);
+                return self.handle_fleet_workspace_action(action, state);
+            }
             KeyCode::Char('3' | 'b' | 'B') => {
                 self.active_view = View::BuyTrains;
                 self.service_workspace.close();
@@ -576,6 +585,12 @@ impl Shell {
                 }
                 ShellAction::Continue
             }
+            fleet::FleetWorkspaceAction::AssignService { train_id, service_id } => {
+                ShellAction::Player(AppCommand::AssignTrainToService { train_id, service_id })
+            }
+            fleet::FleetWorkspaceAction::UnassignService { train_id } => {
+                ShellAction::Player(AppCommand::UnassignTrainFromService { train_id })
+            }
         }
     }
 
@@ -620,6 +635,13 @@ impl Shell {
             AppCommandResult::PassengerServiceDeleted { .. } => {
                 self.confirm_passenger_service_deleted(state)
             }
+            AppCommandResult::TrainServiceAssigned {
+                train_id,
+                service_id,
+            } => self.confirm_train_service_assignment_saved(*train_id, Some(*service_id)),
+            AppCommandResult::TrainServiceUnassigned { train_id } => {
+                self.confirm_train_service_assignment_saved(*train_id, None)
+            }
             AppCommandResult::CompanyVkmUpdated => self.confirm_company_vkm_saved(state),
             AppCommandResult::InfrastructureContributionRecorded { .. } => {
                 self.confirm_infrastructure_contribution_saved(state)
@@ -639,6 +661,14 @@ impl Shell {
             | AppCommand::UpdatePassengerService { .. }
             | AppCommand::DeletePassengerService { .. } => {
                 self.reject_passenger_service_action(error)
+            }
+            AppCommand::AssignTrainToService { .. }
+            | AppCommand::UnassignTrainFromService { .. } => {
+                if let Some(message) = self.fleet_workspace.reject_assignment(error.clone()) {
+                    self.notice = Some(message);
+                } else {
+                    self.notice = Some(error);
+                }
             }
             AppCommand::UpdateCompanyVkm { .. } => self.reject_company_vkm_update(error),
             AppCommand::ContributeInfrastructure { .. } => {
@@ -817,6 +847,23 @@ impl Shell {
     pub fn confirm_passenger_service_deleted(&mut self, state: &GameState) {
         self.service_workspace.confirm_deleted(state);
         self.notice = Some("Passenger Service deleted and saved.".into());
+    }
+
+    /// Closes a saved Train-to-Service assignment change.
+    pub fn confirm_train_service_assignment_saved(
+        &mut self,
+        train_id: crate::model::TrainId,
+        service_id: Option<crate::model::ServiceId>,
+    ) {
+        self.fleet_workspace.confirm_assignment_saved();
+        self.notice = Some(match service_id {
+            Some(service_id) => format!(
+                "Train {:02} assigned to R{} and saved.",
+                train_id.get(),
+                service_id.get()
+            ),
+            None => format!("Train {:02} unassigned and saved.", train_id.get()),
+        });
     }
 
     /// Closes the Company VKM editor after a persisted update.

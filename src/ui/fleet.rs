@@ -15,6 +15,10 @@ use ratatui::{
     widgets::{Block, Borders, Cell, LineGauge, Paragraph, Row, Table, TableState, Wrap},
 };
 
+mod assignment;
+
+use assignment::{ServiceAssignmentAction, ServiceAssignmentFlow};
+
 use crate::{
     catalog::{model_for_train, train_catalogue},
     model::{
@@ -416,6 +420,8 @@ pub enum FleetWorkspaceAction {
         nickname: Option<TrainNickname>,
     },
     Dispatch { train_id: TrainId },
+    AssignService { train_id: TrainId, service_id: crate::model::ServiceId },
+    UnassignService { train_id: TrainId },
 }
 
 /// One contextual footer action owned by the Fleet workspace.
@@ -452,6 +458,7 @@ pub struct FleetWorkspace {
     details_open: bool,
     split_visible: bool,
     nickname_editor: Option<TrainNicknameEditor>,
+    assignment_flow: Option<ServiceAssignmentFlow>,
 }
 
 impl FleetWorkspace {
@@ -468,8 +475,12 @@ impl FleetWorkspace {
         self.nickname_editor.is_some()
     }
 
+    pub fn has_assignment_flow(&self) -> bool {
+        self.assignment_flow.is_some()
+    }
+
     pub fn has_modal(&self) -> bool {
-        self.has_resale_flow() || self.has_nickname_editor()
+        self.has_resale_flow() || self.has_nickname_editor() || self.has_assignment_flow()
     }
 
     /// Returns contextual footer actions for the currently focused Fleet state.
@@ -479,6 +490,18 @@ impl FleetWorkspace {
         compact: bool,
         wide: bool,
     ) -> Vec<FleetShortcut> {
+        if let Some(flow) = &self.assignment_flow {
+            return flow
+                .footer_shortcuts(state, compact)
+                .into_iter()
+                .map(|(key, action, enabled)| if enabled {
+                    FleetShortcut::enabled(key, action)
+                } else {
+                    FleetShortcut::disabled(key, action)
+                })
+                .collect();
+        }
+
         if self.nickname_editor.is_some() {
             return vec![
                 FleetShortcut::enabled("Enter", "Save"),
@@ -517,6 +540,14 @@ impl FleetWorkspace {
 
     /// Returns help content for the currently focused Fleet state.
     pub fn help_lines(&self, state: &GameState) -> Vec<String> {
+        if self.assignment_flow.is_some() {
+            return vec![
+                "Current · Service Assignment".into(),
+                "↑↓ / jk Select Passenger Service".into(),
+                "Enter Assign or unassign   Esc Cancel".into(),
+            ];
+        }
+
         if self.nickname_editor.is_some() {
             return vec![
                 "Current · Train Name".into(),
@@ -546,6 +577,7 @@ impl FleetWorkspace {
             lines.extend([
                 "Esc Back to Fleet".into(),
                 "r Rename selected Train".into(),
+                "a Assign Passenger Service".into(),
                 "d Dispatch selected READY Train".into(),
                 "s Review resale of selected READY Train".into(),
             ]);
@@ -555,6 +587,7 @@ impl FleetWorkspace {
                 "PgUp / PgDn Scroll".into(),
                 "Enter Details".into(),
                 "r Rename selected Train".into(),
+                "a Assign Passenger Service".into(),
                 "d Dispatch selected READY Train".into(),
                 "s Review resale of selected READY Train".into(),
             ]);
@@ -580,6 +613,11 @@ impl FleetWorkspace {
                 FleetShortcut::enabled("R", "Rename")
             } else {
                 FleetShortcut::disabled("R", "Rename")
+            },
+            if has_selection && !selected.is_some_and(|train| matches!(&train.status, TrainStatus::Travelling { .. })) {
+                FleetShortcut::enabled("A", "Service")
+            } else {
+                FleetShortcut::disabled("A", "Service")
             },
             if is_ready {
                 FleetShortcut::enabled("D", "Dispatch")
@@ -636,6 +674,29 @@ impl FleetWorkspace {
         }
     }
 
+    pub fn handle_assignment_key(
+        &mut self,
+        key: KeyCode,
+        state: &GameState,
+    ) -> FleetWorkspaceAction {
+        let Some(flow) = &mut self.assignment_flow else {
+            return FleetWorkspaceAction::Continue;
+        };
+        match flow.handle_key(key, state) {
+            ServiceAssignmentAction::Continue => FleetWorkspaceAction::Continue,
+            ServiceAssignmentAction::Cancel => {
+                self.assignment_flow = None;
+                FleetWorkspaceAction::Continue
+            }
+            ServiceAssignmentAction::Assign { train_id, service_id } => {
+                FleetWorkspaceAction::AssignService { train_id, service_id }
+            }
+            ServiceAssignmentAction::Unassign { train_id } => {
+                FleetWorkspaceAction::UnassignService { train_id }
+            }
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent, state: &GameState) -> FleetWorkspaceAction {
         match key.code {
             KeyCode::Enter if !self.split_visible => {
@@ -664,6 +725,18 @@ impl FleetWorkspace {
                     ),
                 }
             }
+            KeyCode::Char('a' | 'A') => match self.selection.selected_train_id(state) {
+                Some(train_id) => match ServiceAssignmentFlow::start(state, train_id) {
+                    Ok(flow) => {
+                        self.assignment_flow = Some(flow);
+                        FleetWorkspaceAction::ClearNotice
+                    }
+                    Err(message) => FleetWorkspaceAction::Notice(message),
+                },
+                None => FleetWorkspaceAction::Notice(
+                    "Select a Train before assigning a Passenger Service.".into(),
+                ),
+            },
             KeyCode::Char('s' | 'S') => match self.selection.selected_train_id(state) {
                 Some(train_id) => match FleetFlow::start(state, train_id) {
                     Ok(flow) => {
@@ -715,6 +788,20 @@ impl FleetWorkspace {
         train_id
     }
 
+    pub fn reject_assignment(&mut self, error: impl Into<String>) -> Option<String> {
+        let error = error.into();
+        if let Some(flow) = &mut self.assignment_flow {
+            flow.reject(error);
+            None
+        } else {
+            Some(error)
+        }
+    }
+
+    pub fn confirm_assignment_saved(&mut self) {
+        self.assignment_flow = None;
+    }
+
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -741,7 +828,9 @@ impl FleetWorkspace {
     }
 
     pub fn render_modal(&self, frame: &mut Frame, area: Rect, state: &GameState) {
-        if let Some(editor) = &self.nickname_editor {
+        if let Some(flow) = &self.assignment_flow {
+            assignment::render(frame, modal::workflow_rect(area), state, flow);
+        } else if let Some(editor) = &self.nickname_editor {
             render_nickname_editor(frame, area, editor, state);
         } else if let Some(flow) = &self.flow {
             flow.render_review(frame, area, state);
@@ -1126,6 +1215,20 @@ fn render_train_inspector(
                 "Station",
                 &station_label_or_missing(state, *at),
             ));
+
+            inspector_section(&mut lines, "SERVICE", dense_detail);
+            if let Some(service_id) = state.player_company.fleet.assigned_service_id(train.id) {
+                let service_label = state
+                    .player_company
+                    .passenger_services
+                    .iter()
+                    .find(|service| service.id == service_id)
+                    .map(|service| format!("R{} · {}", service.id.get(), service.name))
+                    .unwrap_or_else(|| format!("R{} · Missing service", service_id.get()));
+                lines.push(labelled_line("Assigned", &service_label));
+            } else {
+                lines.push(labelled_line("Assigned", "Unassigned"));
+            }
 
             inspector_section(&mut lines, "CAPACITY", dense_detail);
             lines.push(labelled_line("Seats", &format_capacity(train)));
@@ -1760,7 +1863,7 @@ mod tests {
         sim::{
             fleet::{purchase_train, sell_train},
             journeys::dispatch_journey,
-            services::find_or_create_service,
+            services::{create_service, find_or_create_service},
             world::create_new_game,
         },
     };
@@ -1823,6 +1926,24 @@ mod tests {
             workspace.handle_resale_key(key(KeyCode::Enter), &state),
             FleetWorkspaceAction::SellTrain { train_id }
         );
+    }
+
+    #[test]
+    fn fleet_workspace_can_open_service_assignment_for_the_selected_train() {
+        let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        create_service(
+            &mut state,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+        )
+        .unwrap();
+        let mut workspace = FleetWorkspace::default();
+
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('a')), &state),
+            FleetWorkspaceAction::ClearNotice
+        );
+        assert!(workspace.has_assignment_flow());
     }
 
     #[test]
