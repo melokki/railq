@@ -83,6 +83,7 @@ fn migrate_one_version(
         30 => migrate_v30_to_v31(connection, path),
         31 => migrate_v31_to_v32(connection, path),
         32 => migrate_v32_to_v33(connection, path),
+        33 => migrate_v33_to_v34(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -2635,6 +2636,87 @@ fn migrate_v32_to_v33(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v32 to v33 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+
+fn migrate_v33_to_v34(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v33 to v34 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let game_rules_exists = connection
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'game_rules'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|source| db_error("inspect v33 game rules in", path, source))?
+            .is_some();
+
+        if game_rules_exists {
+            connection
+                .execute_batch(
+                    "ALTER TABLE game_rules ADD COLUMN authority_request_queue_seconds INTEGER NOT NULL DEFAULT 3600;
+                     ALTER TABLE game_rules ADD COLUMN authority_review_seconds INTEGER NOT NULL DEFAULT 7200;
+                     ALTER TABLE game_rules ADD COLUMN authority_proposal_seconds INTEGER NOT NULL DEFAULT 3600;
+                     ALTER TABLE game_rules ADD COLUMN authority_request_cooldown_seconds INTEGER NOT NULL DEFAULT 86400;
+                     ALTER TABLE game_rules ADD COLUMN authority_deferred_reconsideration_seconds INTEGER NOT NULL DEFAULT 86400;
+                     ALTER TABLE game_rules ADD COLUMN authority_mobilisation_seconds INTEGER NOT NULL DEFAULT 3600;
+                     ALTER TABLE game_rules ADD COLUMN authority_new_line_base_construction_seconds INTEGER NOT NULL DEFAULT 18000;
+                     ALTER TABLE game_rules ADD COLUMN authority_low_difficulty_seconds_per_km INTEGER NOT NULL DEFAULT 120;
+                     ALTER TABLE game_rules ADD COLUMN authority_moderate_difficulty_seconds_per_km INTEGER NOT NULL DEFAULT 180;
+                     ALTER TABLE game_rules ADD COLUMN authority_high_difficulty_seconds_per_km INTEGER NOT NULL DEFAULT 240;
+                     ALTER TABLE game_rules ADD COLUMN authority_max_active_expansion_projects INTEGER NOT NULL DEFAULT 2;",
+                )
+                .map_err(|source| {
+                    db_error(
+                        "add Authority pacing rules during v34 migration in",
+                        path,
+                        source,
+                    )
+                })?;
+        } else {
+            connection
+                .execute_batch(
+                    "CREATE TABLE game_rules (
+                         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                         fare_cents_per_passenger_km INTEGER NOT NULL,
+                         access_fee_cents_per_train_km INTEGER NOT NULL,
+                         starting_company_funds_cents INTEGER NOT NULL,
+                         demand_cap_seconds INTEGER NOT NULL,
+                         authority_request_queue_seconds INTEGER NOT NULL,
+                         authority_review_seconds INTEGER NOT NULL,
+                         authority_proposal_seconds INTEGER NOT NULL,
+                         authority_request_cooldown_seconds INTEGER NOT NULL,
+                         authority_deferred_reconsideration_seconds INTEGER NOT NULL,
+                         authority_mobilisation_seconds INTEGER NOT NULL,
+                         authority_new_line_base_construction_seconds INTEGER NOT NULL,
+                         authority_low_difficulty_seconds_per_km INTEGER NOT NULL,
+                         authority_moderate_difficulty_seconds_per_km INTEGER NOT NULL,
+                         authority_high_difficulty_seconds_per_km INTEGER NOT NULL,
+                         authority_max_active_expansion_projects INTEGER NOT NULL
+                     );",
+                )
+                .map_err(|source| db_error("create missing v34 game rules in", path, source))?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 34_u32)
+            .map_err(|source| db_error("write v34 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v33 to v34 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)

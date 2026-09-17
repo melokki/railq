@@ -8,7 +8,7 @@ use rand_chacha::{
 use crate::{
     balance::BalanceConfig,
     model::{
-        ConstructionDifficulty, DemandRules, Electrification, Financials, Fleet, GameRules,
+        AuthorityRules, ConstructionDifficulty, DemandRules, Electrification, Financials, Fleet, GameRules,
         GameState, Money, PlayerCompany, RailAuthority, RailLine, RailLineId, RailNetwork,
         RailStation, RailStationId, RailwayRegistration, Region, Settlement, SettlementId,
         SpeedKilometresPerHour, TrackCount, UtcSeconds, VehicleKeeperMark, WorldPosition,
@@ -234,6 +234,7 @@ pub fn create_new_game(
         rules: GameRules {
             balance,
             demand: DemandRules::provisional(),
+            authority: AuthorityRules::provisional(),
         },
         last_processed_at: started_at,
     }

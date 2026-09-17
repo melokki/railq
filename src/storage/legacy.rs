@@ -12,7 +12,7 @@ use super::{SaveCodecError, catalogue_model_for_legacy_signature, validate_game_
 use crate::{
     balance::BalanceConfig,
     model::{
-        DemandRules, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState, Journey,
+        AuthorityRules, DemandRules, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState, Journey,
         JourneyPassengerGroup, Money, MoneyPerKilometre, OriginDestinationDemand,
         PassengerCapacity, PassengerService, PlayerCompany, RailLineId, RailStationId, Region,
         ServiceDirectionMode, ServiceId, SpeedMetresPerSecond, Train, TrainId, TrainModelId,
@@ -259,6 +259,7 @@ pub(super) fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCo
                 legacy.rules.balance.starting_company_funds,
             ),
             demand: legacy.rules.demand,
+            authority: AuthorityRules::provisional(),
         },
         last_processed_at: legacy.last_processed_at,
     };

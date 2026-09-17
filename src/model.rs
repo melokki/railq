@@ -58,7 +58,7 @@ pub use operations::{
 
 mod finance;
 
-pub use finance::{DemandRules, Financials, GameRules, JourneyReceipt};
+pub use finance::{AuthorityRules, DemandRules, Financials, GameRules, JourneyReceipt};
 
 mod game;
 

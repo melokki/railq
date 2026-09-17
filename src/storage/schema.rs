@@ -236,7 +236,18 @@ CREATE TABLE IF NOT EXISTS game_rules (
     fare_cents_per_passenger_km INTEGER NOT NULL,
     access_fee_cents_per_train_km INTEGER NOT NULL,
     starting_company_funds_cents INTEGER NOT NULL,
-    demand_cap_seconds INTEGER NOT NULL
+    demand_cap_seconds INTEGER NOT NULL,
+    authority_request_queue_seconds INTEGER NOT NULL,
+    authority_review_seconds INTEGER NOT NULL,
+    authority_proposal_seconds INTEGER NOT NULL,
+    authority_request_cooldown_seconds INTEGER NOT NULL,
+    authority_deferred_reconsideration_seconds INTEGER NOT NULL,
+    authority_mobilisation_seconds INTEGER NOT NULL,
+    authority_new_line_base_construction_seconds INTEGER NOT NULL,
+    authority_low_difficulty_seconds_per_km INTEGER NOT NULL,
+    authority_moderate_difficulty_seconds_per_km INTEGER NOT NULL,
+    authority_high_difficulty_seconds_per_km INTEGER NOT NULL,
+    authority_max_active_expansion_projects INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_active_journeys_arrival ON active_journeys(arrives_at);
 CREATE INDEX IF NOT EXISTS idx_receipts_completed_at ON journey_receipts(completed_at);

@@ -771,7 +771,7 @@ mod tests {
     use crate::{
         balance::BalanceConfig,
         model::{
-            DemandRules, Financials, Fleet, GameRules, MarketMaturity, OriginDestinationDemand,
+            AuthorityRules, DemandRules, Financials, Fleet, GameRules, MarketMaturity, OriginDestinationDemand,
             PassengerArrivalRate, PassengerService, PlayerCompany, RailAuthority, RailLine,
             RailNetwork, RailStation, Settlement, Train, UtcSeconds,
         },
@@ -926,6 +926,7 @@ mod tests {
             rules: GameRules {
                 balance: BalanceConfig::new(fare_rate, access_rate, Money::from_cents(10_000)),
                 demand: DemandRules::provisional(),
+                authority: AuthorityRules::provisional(),
             },
             last_processed_at: UtcSeconds::from_unix_seconds(0),
         }
