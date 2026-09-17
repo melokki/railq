@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CalculationError, ConstructionDifficulty, DistanceMetres, Electrification,
+    CalculationError, ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
     InfrastructureProjectId, Money, MoneyPerKilometre, RailLineId, RailStationId, SettlementId,
     SpeedKilometresPerHour, TrackCount, UtcSeconds,
 };
@@ -55,9 +55,29 @@ pub struct InfrastructureProjectTimeline {
 /// can reserve part or all of the estimated cost from its investment budget.
 pub const PROVISIONAL_OPERATOR_CONTRIBUTION_CAP_PERCENT: u64 = 20;
 pub const PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT: u64 = 10;
-/// Provisional access-fee credit granted when an operator-funded project opens.
-/// 115% gives the contribution a modest commercial return without creating ownership.
+/// Legacy access-fee credit granted when an operator-funded project opens.
+/// Kept temporarily so v37 saves and the existing journey-charging path remain
+/// compatible while the contribution benefit moves to a time-limited discount.
 pub const PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT: u64 = 115;
+/// Access-fee reduction granted on infrastructure helped by the operator.
+pub const PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS: u16 = 5_000;
+/// Number of Authority fiscal days for which the contribution discount applies.
+pub const PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS: u64 = 7;
+
+/// Time-limited infrastructure access-fee benefit earned by operator funding.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InfrastructureAccessDiscount {
+    /// Discount in basis points; 5_000 means 50%.
+    pub basis_points: u16,
+    /// First instant at which the discount no longer applies.
+    pub expires_at: UtcSeconds,
+}
+
+impl InfrastructureAccessDiscount {
+    pub fn is_active_at(self, now: UtcSeconds) -> bool {
+        self.basis_points > 0 && now < self.expires_at
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InfrastructureProjectFunding {
@@ -69,6 +89,8 @@ pub struct InfrastructureProjectFunding {
     pub access_fee_credit_awarded: Money,
     #[serde(default)]
     pub access_fee_credit_remaining: Money,
+    #[serde(default)]
+    pub access_fee_discount: Option<InfrastructureAccessDiscount>,
 }
 
 impl InfrastructureProjectFunding {
@@ -145,6 +167,37 @@ impl InfrastructureProjectFunding {
         self.access_fee_credit_awarded = credit;
         self.access_fee_credit_remaining = credit;
         Ok(credit)
+    }
+
+    /// Activates the replacement contribution benefit when the project opens.
+    ///
+    /// Expiry follows the Authority's current UTC fiscal-day calendar: a project
+    /// opening part-way through a day receives the remainder of that fiscal day
+    /// plus six further complete fiscal days.
+    pub fn activate_operator_access_discount(
+        &mut self,
+        opened_at: UtcSeconds,
+    ) -> Result<Option<InfrastructureAccessDiscount>, CalculationError> {
+        if self.operator_contributed <= Money::ZERO {
+            self.access_fee_discount = None;
+            return Ok(None);
+        }
+        if let Some(discount) = self.access_fee_discount {
+            return Ok(Some(discount));
+        }
+
+        let first_midnight = next_utc_midnight_after(opened_at)?;
+        let remaining_full_days = PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS
+            .saturating_sub(1);
+        let expires_at = first_midnight.checked_add(DurationSeconds::from_seconds(
+            remaining_full_days.saturating_mul(24 * 60 * 60),
+        ))?;
+        let discount = InfrastructureAccessDiscount {
+            basis_points: PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS,
+            expires_at,
+        };
+        self.access_fee_discount = Some(discount);
+        Ok(Some(discount))
     }
 
     pub fn is_fully_funded(&self) -> bool {

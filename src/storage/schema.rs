@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS infrastructure_projects (
     operator_contributed_cents INTEGER NOT NULL DEFAULT 0 CHECK (operator_contributed_cents >= 0),
     access_fee_credit_awarded_cents INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_credit_awarded_cents >= 0),
     access_fee_credit_remaining_cents INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_credit_remaining_cents >= 0),
+    access_fee_discount_basis_points INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_discount_basis_points BETWEEN 0 AND 10000),
+    access_fee_discount_expires_at INTEGER,
     requested_at INTEGER NOT NULL,
     review_started_at INTEGER,
     proposed_at INTEGER,

@@ -87,6 +87,7 @@ fn migrate_one_version(
         34 => migrate_v34_to_v35(connection, path),
         35 => migrate_v35_to_v36(connection, path),
         36 => migrate_v36_to_v37(connection, path),
+        37 => migrate_v37_to_v38(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -2901,6 +2902,58 @@ fn migrate_v36_to_v37(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v36 to v37 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+
+fn migrate_v37_to_v38(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v37 to v38 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE infrastructure_projects
+                     ADD COLUMN access_fee_discount_basis_points INTEGER NOT NULL DEFAULT 0
+                     CHECK (access_fee_discount_basis_points BETWEEN 0 AND 10000);
+                 ALTER TABLE infrastructure_projects
+                     ADD COLUMN access_fee_discount_expires_at INTEGER;
+
+                 UPDATE infrastructure_projects
+                 SET access_fee_discount_basis_points = 5000,
+                     access_fee_discount_expires_at = (
+                         (COALESCE(
+                             (SELECT last_processed_at FROM game_meta WHERE singleton = 1),
+                             completed_at,
+                             requested_at
+                         ) / 86400 + 7) * 86400
+                     )
+                 WHERE status = 'open'
+                   AND operator_contributed_cents > 0
+                   AND access_fee_credit_remaining_cents > 0;",
+            )
+            .map_err(|source| {
+                db_error(
+                    "add operator access discounts during v38 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 38_u32)
+            .map_err(|source| db_error("write v38 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v37 to v38 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)

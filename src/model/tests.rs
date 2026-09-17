@@ -654,3 +654,40 @@ fn rejects_non_positive_passenger_arrival_rates() {
         assert!(PassengerArrivalRate::new(rate).is_err());
     }
 }
+
+#[test]
+fn operator_contribution_activates_half_price_access_for_seven_fiscal_days() {
+    let opened_at = UtcSeconds::from_unix_seconds(90_000);
+    let mut funding = InfrastructureProjectFunding {
+        estimated_cost: Money::from_cents(1_000),
+        authority_committed: Money::from_cents(900),
+        operator_contributed: Money::from_cents(100),
+        ..InfrastructureProjectFunding::default()
+    };
+
+    let discount = funding
+        .activate_operator_access_discount(opened_at)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        discount.basis_points,
+        PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS
+    );
+    assert_eq!(discount.expires_at.unix_seconds(), 8 * 86_400);
+    assert!(discount.is_active_at(UtcSeconds::from_unix_seconds(8 * 86_400 - 1)));
+    assert!(!discount.is_active_at(UtcSeconds::from_unix_seconds(8 * 86_400)));
+    assert_eq!(funding.access_fee_discount, Some(discount));
+}
+
+#[test]
+fn project_without_operator_contribution_does_not_receive_access_discount() {
+    let mut funding = InfrastructureProjectFunding::default();
+
+    let discount = funding
+        .activate_operator_access_discount(UtcSeconds::from_unix_seconds(90_000))
+        .unwrap();
+
+    assert_eq!(discount, None);
+    assert_eq!(funding.access_fee_discount, None);
+}

@@ -39,7 +39,7 @@ use crate::{
     model::{
         AuthorityRules, BulletinCategory, BulletinEntry, CalculationError, ConstructionDifficulty,
         DemandRules, DistanceMetres, DurationSeconds, Electrification, EuropeanVehicleNumber,
-        Financials, Fleet, GameRules, GameState, InfrastructureProject,
+        Financials, Fleet, GameRules, GameState, InfrastructureAccessDiscount, InfrastructureProject,
         InfrastructureProjectFunding, InfrastructureProjectId, InfrastructureProjectKind,
         InfrastructureProjectStatus, InfrastructureProjectTimeline, Journey, JourneyId,
         JourneyPassengerGroup, JourneyPurpose, JourneyReceipt, MarketMaturity, Money,
@@ -60,7 +60,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 37;
+pub const SAVE_VERSION: u32 = 38;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";

@@ -426,6 +426,18 @@ fn validate_infrastructure_projects(
                 reason: "Infrastructure Project access credit remaining exceeds awarded credit",
             });
         }
+        if let Some(discount) = project.funding.access_fee_discount {
+            if discount.basis_points == 0 || discount.basis_points > 10_000 {
+                return Err(SaveValidationError::InvalidValue {
+                    field: "Infrastructure Project access discount basis points",
+                });
+            }
+            if project.funding.operator_contributed <= Money::ZERO {
+                return Err(SaveValidationError::ImpossibleState {
+                    reason: "Infrastructure Project access discount requires operator contribution",
+                });
+            }
+        }
         if !matches!(
             project.status,
             InfrastructureProjectStatus::Open

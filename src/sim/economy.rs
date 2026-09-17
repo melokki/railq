@@ -1139,6 +1139,7 @@ mod tests {
                     operator_contributed: Money::from_cents(100),
                     access_fee_credit_awarded: Money::from_cents(115),
                     access_fee_credit_remaining: Money::from_cents(115),
+                    access_fee_discount: None,
                 },
             },
         );

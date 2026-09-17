@@ -997,6 +997,7 @@ pub(crate) fn open_completed_infrastructure_projects(
         let target_name = project_target_settlement_name(region, index);
         let project = &mut region.rail_authority.infrastructure_projects[index];
         project.funding.award_operator_access_credit()?;
+        project.funding.activate_operator_access_discount(completion)?;
         project.status = InfrastructureProjectStatus::Open;
         project.timeline.completed_at = Some(completion);
         push_bulletin(
@@ -1522,6 +1523,7 @@ fn project_from_candidate(
             operator_contributed: Money::ZERO,
             access_fee_credit_awarded: Money::ZERO,
             access_fee_credit_remaining: Money::ZERO,
+            access_fee_discount: None,
         },
     }
 }
@@ -3311,6 +3313,40 @@ mod tests {
             line_count + 1
         );
         assert_eq!(region.rail_authority.finances.treasury, treasury_after_open);
+    }
+
+    #[test]
+    fn completed_operator_funded_project_activates_temporary_access_discount() {
+        let mut region = generate_region(43);
+        let candidate = evaluate_connection_candidates(&region, 43).unwrap()[0].clone();
+        let completion = UtcSeconds::from_unix_seconds(90_000);
+        let mut project = project_from_candidate(candidate, UtcSeconds::from_unix_seconds(80_000));
+        project.status = InfrastructureProjectStatus::Construction;
+        project.timeline.construction_started_at = Some(UtcSeconds::from_unix_seconds(85_000));
+        project.timeline.planned_completion_at = Some(completion);
+        let contribution = Money::from_cents(project.funding.estimated_cost.cents() / 10);
+        project.funding.operator_contributed = contribution;
+        project.funding.authority_committed = project
+            .funding
+            .estimated_cost
+            .checked_sub(contribution)
+            .unwrap();
+        let authority_commitment = project.funding.authority_committed;
+        region.rail_authority.finances.treasury = authority_commitment
+            .checked_add(Money::from_cents(50_000_000))
+            .unwrap();
+        region.rail_authority.finances.committed_investment = authority_commitment;
+        region.rail_authority.infrastructure_projects = vec![project];
+
+        open_completed_infrastructure_projects(&mut region, completion).unwrap();
+
+        let project = &region.rail_authority.infrastructure_projects[0];
+        let discount = project.funding.access_fee_discount.unwrap();
+        assert_eq!(
+            discount.basis_points,
+            crate::model::PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS
+        );
+        assert_eq!(discount.expires_at.unix_seconds(), 8 * 86_400);
     }
 
     #[test]

@@ -788,6 +788,7 @@ mod tests {
                     operator_contributed: Money::ZERO,
                     access_fee_credit_awarded: Money::ZERO,
                     access_fee_credit_remaining: Money::ZERO,
+                    access_fee_discount: None,
                 },
             });
 
@@ -857,6 +858,7 @@ mod tests {
                     operator_contributed: Money::ZERO,
                     access_fee_credit_awarded: Money::ZERO,
                     access_fee_credit_remaining: Money::ZERO,
+                    access_fee_discount: None,
                 },
             });
 
