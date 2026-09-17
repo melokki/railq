@@ -61,7 +61,7 @@ pub(super) fn pending_dispatch(
         .iter()
         .find(|service| service.id == service_id);
     let service_name = service
-        .map(|service| service.name.clone())
+        .map(|service| service.display_name())
         .unwrap_or_else(|| format!("Service {}", service_id.get()));
     let route = service
         .map(|service| {

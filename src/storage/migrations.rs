@@ -81,6 +81,7 @@ fn migrate_one_version(
         28 => migrate_v28_to_v29(connection, path),
         29 => migrate_v29_to_v30(connection, path),
         30 => migrate_v30_to_v31(connection, path),
+        31 => migrate_v31_to_v32(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -2562,6 +2563,42 @@ fn migrate_v30_to_v31(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v30 to v31 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+
+fn migrate_v31_to_v32(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v31 to v32 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE passenger_services ADD COLUMN custom_name TEXT
+                     CHECK (custom_name IS NULL OR length(trim(custom_name)) BETWEEN 1 AND 32);",
+            )
+            .map_err(|source| {
+                db_error(
+                    "add Passenger Service commercial names during v32 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 32_u32)
+            .map_err(|source| db_error("write v32 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v31 to v32 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)

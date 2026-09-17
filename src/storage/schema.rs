@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS passenger_services (
     id TEXT PRIMARY KEY,
     sequence INTEGER NOT NULL UNIQUE,
     name TEXT NOT NULL,
+    custom_name TEXT CHECK (custom_name IS NULL OR length(trim(custom_name)) BETWEEN 1 AND 32),
     direction_mode TEXT NOT NULL DEFAULT 'both'
         CHECK (direction_mode IN ('both', 'forward')),
     forward_train_number INTEGER NOT NULL CHECK (forward_train_number >= 100),

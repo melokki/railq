@@ -187,7 +187,7 @@ pub(super) fn render(
         .iter()
         .find(|service| service.id == flow.service_id);
     let title = service
-        .map(|service| format!("Assign Trains · R{} · {}", service.id.get(), service.name))
+        .map(|service| format!("Assign Trains · {}", service.display_name()))
         .unwrap_or_else(|| format!("Assign Trains · R{}", flow.service_id.get()));
     let enter_action = flow
         .selected_train(state)

@@ -29,6 +29,11 @@ pub enum AppCommand {
         stop_station_ids: Vec<RailStationId>,
         direction_mode: ServiceDirectionMode,
     },
+    /// Change or clear the optional commercial name of one Passenger Service.
+    UpdatePassengerServiceName {
+        service_id: ServiceId,
+        custom_name: Option<String>,
+    },
     /// Delete one unused Passenger Service.
     DeletePassengerService { service_id: ServiceId },
     /// Persistently allocate one owned Train to a Passenger Service.
@@ -70,6 +75,8 @@ pub enum AppCommandResult {
     PassengerServiceCreated { service_id: ServiceId },
     /// One Passenger Service update was durably committed.
     PassengerServiceUpdated { service_id: ServiceId },
+    /// One Passenger Service naming change was durably committed.
+    PassengerServiceRenamed { service_id: ServiceId },
     /// One Passenger Service deletion was durably committed.
     PassengerServiceDeleted { service_id: ServiceId },
     /// One Train-to-Service assignment was durably committed.

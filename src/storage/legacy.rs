@@ -189,6 +189,7 @@ pub(super) fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCo
             Ok(PassengerService {
                 id: service.id,
                 name: format!("R{}", service.id.get()),
+                custom_name: None,
                 direction_mode: ServiceDirectionMode::BothDirections,
                 forward_train_number,
                 reverse_train_number: Some(reverse_train_number),

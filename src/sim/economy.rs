@@ -714,6 +714,7 @@ mod tests {
                 passenger_services: vec![PassengerService {
                     id: SERVICE_ID,
                     name: "R1".into(),
+                    custom_name: None,
                     direction_mode: crate::model::ServiceDirectionMode::BothDirections,
                     forward_train_number: 100,
                     reverse_train_number: Some(101),
@@ -843,6 +844,7 @@ mod tests {
         state.player_company.passenger_services.push(PassengerService {
             id: assigned_service_id,
             name: "R2".into(),
+            custom_name: None,
             direction_mode: ServiceDirectionMode::BothDirections,
             forward_train_number: 102,
             reverse_train_number: Some(103),

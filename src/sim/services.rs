@@ -46,6 +46,10 @@ pub enum ServiceError {
     ServiceIdExhausted,
     /// No further public train number can be allocated.
     TrainNumberExhausted,
+    /// A commercial Service name is longer than the supported UI limit.
+    ServiceNameTooLong,
+    /// A commercial Service name contains a control character.
+    InvalidServiceName,
 }
 
 impl fmt::Display for ServiceError {
@@ -113,6 +117,14 @@ impl fmt::Display for ServiceError {
             Self::ServiceIdExhausted => write!(formatter, "Passenger Service IDs are exhausted"),
             Self::TrainNumberExhausted => {
                 write!(formatter, "Passenger Service train numbers are exhausted")
+            }
+            Self::ServiceNameTooLong => write!(
+                formatter,
+                "Passenger Service name accepts up to {} visible characters",
+                PassengerService::MAX_CUSTOM_NAME_CHARACTERS
+            ),
+            Self::InvalidServiceName => {
+                write!(formatter, "Passenger Service name contains an invalid character")
             }
         }
     }
@@ -397,6 +409,7 @@ pub fn create_service_with_mode(
         .push(PassengerService {
             id: service_id,
             name: service_name,
+            custom_name: None,
             direction_mode,
             forward_train_number,
             reverse_train_number,
@@ -553,6 +566,43 @@ pub fn find_or_create_service(
         return Ok(service.id);
     }
     create_service(state, stops)
+}
+
+/// Changes or clears the optional commercial name of one Passenger Service.
+///
+/// Naming is metadata only, so it is allowed while Trains are operating the
+/// Service and never changes the generated `R` code or directional train numbers.
+pub fn rename_service(
+    state: &mut GameState,
+    service_id: ServiceId,
+    custom_name: Option<String>,
+) -> Result<(), ServiceError> {
+    let service = state
+        .player_company
+        .passenger_services
+        .iter_mut()
+        .find(|service| service.id == service_id)
+        .ok_or(ServiceError::ServiceNotFound { service_id })?;
+
+    let custom_name = match custom_name {
+        Some(value) => {
+            let normalized = value.trim();
+            if normalized.is_empty() {
+                None
+            } else {
+                if normalized.chars().count() > PassengerService::MAX_CUSTOM_NAME_CHARACTERS {
+                    return Err(ServiceError::ServiceNameTooLong);
+                }
+                if normalized.chars().any(char::is_control) {
+                    return Err(ServiceError::InvalidServiceName);
+                }
+                Some(normalized.to_owned())
+            }
+        }
+        None => None,
+    };
+    service.custom_name = custom_name;
+    Ok(())
 }
 
 /// Removes an unused Passenger Service.

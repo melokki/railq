@@ -211,6 +211,17 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
                 field: "Passenger Service name",
             });
         }
+        if let Some(custom_name) = service.custom_name.as_deref() {
+            if custom_name.trim().is_empty()
+                || custom_name != custom_name.trim()
+                || custom_name.chars().count() > PassengerService::MAX_CUSTOM_NAME_CHARACTERS
+                || custom_name.chars().any(char::is_control)
+            {
+                return Err(SaveValidationError::InvalidValue {
+                    field: "Passenger Service commercial name",
+                });
+            }
+        }
         if service
             .stop_station_ids
             .iter()

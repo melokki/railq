@@ -43,7 +43,11 @@ impl ServiceDirectionMode {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PassengerService {
     pub id: ServiceId,
+    /// Stable player-facing Service code such as `R1`.
     pub name: String,
+    /// Optional commercial name shared by both directional workings.
+    #[serde(default)]
+    pub custom_name: Option<String>,
     #[serde(default)]
     pub direction_mode: ServiceDirectionMode,
     /// Public train number used for the canonical first-to-last working.
@@ -56,6 +60,16 @@ pub struct PassengerService {
 }
 
 impl PassengerService {
+    pub const MAX_CUSTOM_NAME_CHARACTERS: usize = 32;
+
+    /// Returns the Service code plus its optional commercial name.
+    pub fn display_name(&self) -> String {
+        match self.custom_name.as_deref() {
+            Some(custom_name) => format!("{} · {}", self.name, custom_name),
+            None => self.name.clone(),
+        }
+    }
+
     /// Returns the directional origin of this Service.
     pub fn origin_station_id(&self) -> Option<RailStationId> {
         self.stop_station_ids.first().copied()

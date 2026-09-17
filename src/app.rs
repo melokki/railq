@@ -23,7 +23,7 @@ use crate::{
         journeys::{DispatchError, dispatch_journey},
         services::{
             ServiceAssignmentError, ServiceError, assign_train_to_service,
-            create_service_with_mode, delete_service, find_or_create_service,
+            create_service_with_mode, delete_service, find_or_create_service, rename_service,
             unassign_train_from_service, update_service_with_mode,
         },
         time::{AdvanceTimeError, SettledJourney, advance_time, advance_time_with_arrivals},
@@ -196,6 +196,13 @@ impl<S: GameStore> App<S> {
                     now,
                 )?;
                 Ok(AppCommandResult::PassengerServiceUpdated { service_id })
+            }
+            AppCommand::UpdatePassengerServiceName {
+                service_id,
+                custom_name,
+            } => {
+                self.update_passenger_service_name(service_id, custom_name, now)?;
+                Ok(AppCommandResult::PassengerServiceRenamed { service_id })
             }
             AppCommand::DeletePassengerService { service_id } => {
                 self.delete_passenger_service(service_id, now)?;
@@ -400,6 +407,18 @@ impl<S: GameStore> App<S> {
             } else {
                 Ok(())
             }
+        })
+    }
+
+    /// Changes or clears the optional commercial name of one Passenger Service.
+    pub fn update_passenger_service_name(
+        &mut self,
+        service_id: ServiceId,
+        custom_name: Option<String>,
+        now: UtcSeconds,
+    ) -> Result<(), AppError<S::Error>> {
+        self.transact(now, |state, _| {
+            rename_service(state, service_id, custom_name).map_err(AppError::Service)
         })
     }
 

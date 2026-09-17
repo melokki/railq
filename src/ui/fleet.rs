@@ -1223,7 +1223,7 @@ fn render_train_inspector(
                     .passenger_services
                     .iter()
                     .find(|service| service.id == service_id)
-                    .map(|service| format!("R{} · {}", service.id.get(), service.name))
+                    .map(|service| service.display_name())
                     .unwrap_or_else(|| format!("R{} · Missing service", service_id.get()));
                 lines.push(labelled_line("Assigned", &service_label));
             } else {
@@ -1296,7 +1296,7 @@ fn render_train_inspector(
                 .iter()
                 .find(|service| service.id == journey.service_id)
             {
-                lines.push(labelled_line("Service", &service.name));
+                lines.push(labelled_line("Service", &service.display_name()));
                 if !dense_detail {
                     lines.push(labelled_line(
                         "Route",

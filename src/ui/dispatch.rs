@@ -1842,7 +1842,7 @@ fn service_name(state: &GameState, service_id: ServiceId) -> String {
         .passenger_services
         .iter()
         .find(|service| service.id == service_id)
-        .map(|service| service.name.clone())
+        .map(|service| service.display_name())
         .unwrap_or_else(|| format!("Service {}", service_id.get()))
 }
 

@@ -211,7 +211,7 @@ pub(super) fn render(
                 .passenger_services
                 .iter()
                 .find(|service| service.id == service_id)
-                .map(|service| format!("Edit Passenger Service · {}", service.name))
+                .map(|service| format!("Edit Passenger Service · {}", service.display_name()))
         })
         .unwrap_or_else(|| "Create Passenger Service".to_owned());
     let modal_areas = modal::render_shell(

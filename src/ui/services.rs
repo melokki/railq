@@ -43,6 +43,10 @@ pub enum ServiceWorkspaceAction {
         stop_station_ids: Vec<RailStationId>,
         direction_mode: ServiceDirectionMode,
     },
+    Rename {
+        service_id: ServiceId,
+        custom_name: Option<String>,
+    },
     Delete {
         service_id: ServiceId,
     },
@@ -55,12 +59,81 @@ pub enum ServiceWorkspaceAction {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ServiceNameEditor {
+    service_id: ServiceId,
+    draft: String,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ServiceNameEditorAction {
+    Continue,
+    Cancel,
+    Confirm {
+        service_id: ServiceId,
+        custom_name: Option<String>,
+    },
+}
+
+impl ServiceNameEditor {
+    fn start(state: &GameState, service_id: ServiceId) -> Result<Self, String> {
+        let service = state
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .ok_or_else(|| "Passenger Service is no longer available.".to_owned())?;
+        Ok(Self {
+            service_id,
+            draft: service.custom_name.clone().unwrap_or_default(),
+            error: None,
+        })
+    }
+
+    fn handle_key(&mut self, key: KeyCode) -> ServiceNameEditorAction {
+        match key {
+            KeyCode::Esc => ServiceNameEditorAction::Cancel,
+            KeyCode::Enter => {
+                let trimmed = self.draft.trim();
+                ServiceNameEditorAction::Confirm {
+                    service_id: self.service_id,
+                    custom_name: (!trimmed.is_empty()).then(|| trimmed.to_owned()),
+                }
+            }
+            KeyCode::Backspace => {
+                self.draft.pop();
+                self.error = None;
+                ServiceNameEditorAction::Continue
+            }
+            KeyCode::Char(character)
+                if !character.is_control()
+                    && self.draft.chars().count()
+                        < PassengerService::MAX_CUSTOM_NAME_CHARACTERS =>
+            {
+                self.draft.push(character);
+                self.error = None;
+                ServiceNameEditorAction::Continue
+            }
+            KeyCode::Char(_) => {
+                self.error = Some(format!(
+                    "Name accepts up to {} visible characters.",
+                    PassengerService::MAX_CUSTOM_NAME_CHARACTERS
+                ));
+                ServiceNameEditorAction::Continue
+            }
+            _ => ServiceNameEditorAction::Continue,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ServiceWorkspace {
     open: bool,
     selected_service_index: usize,
     create_flow: Option<CreateServiceFlow>,
     assignment_flow: Option<ServiceTrainAssignmentFlow>,
+    name_editor: Option<ServiceNameEditor>,
     delete_confirmation: Option<ServiceId>,
 }
 
@@ -81,6 +154,23 @@ impl ServiceWorkspace {
     }
 
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) -> ServiceWorkspaceAction {
+        if let Some(editor) = &mut self.name_editor {
+            return match editor.handle_key(key) {
+                ServiceNameEditorAction::Continue => ServiceWorkspaceAction::Continue,
+                ServiceNameEditorAction::Cancel => {
+                    self.name_editor = None;
+                    ServiceWorkspaceAction::Continue
+                }
+                ServiceNameEditorAction::Confirm {
+                    service_id,
+                    custom_name,
+                } => ServiceWorkspaceAction::Rename {
+                    service_id,
+                    custom_name,
+                },
+            };
+        }
+
         if let Some(flow) = &mut self.assignment_flow {
             return match flow.handle_key(key, state) {
                 ServiceTrainAssignmentAction::Continue => ServiceWorkspaceAction::Continue,
@@ -137,6 +227,15 @@ impl ServiceWorkspace {
                 if let Some(service_id) = self.selected_service_id(state) {
                     match ServiceTrainAssignmentFlow::start(state, service_id) {
                         Ok(flow) => self.assignment_flow = Some(flow),
+                        Err(message) => self.reject_action(message),
+                    }
+                }
+                ServiceWorkspaceAction::Continue
+            }
+            KeyCode::Char('r' | 'R') => {
+                if let Some(service_id) = self.selected_service_id(state) {
+                    match ServiceNameEditor::start(state, service_id) {
+                        Ok(editor) => self.name_editor = Some(editor),
                         Err(message) => self.reject_action(message),
                     }
                 }
@@ -215,6 +314,7 @@ impl ServiceWorkspace {
         self.open = true;
         self.create_flow = None;
         self.assignment_flow = None;
+        self.name_editor = None;
         self.delete_confirmation = None;
         self.selected_service_index = state
             .player_company
@@ -227,6 +327,7 @@ impl ServiceWorkspace {
         self.open = true;
         self.create_flow = None;
         self.assignment_flow = None;
+        self.name_editor = None;
         self.delete_confirmation = None;
         self.selected_service_index = self.selected_service_index.min(
             state
@@ -240,6 +341,7 @@ impl ServiceWorkspace {
     pub fn confirm_deleted(&mut self, state: &GameState) {
         self.open = true;
         self.assignment_flow = None;
+        self.name_editor = None;
         self.delete_confirmation = None;
         self.selected_service_index = self.selected_service_index.min(
             state
@@ -264,6 +366,20 @@ impl ServiceWorkspace {
         } else {
             Some(error)
         }
+    }
+
+    pub fn reject_name(&mut self, error: impl Into<String>) -> Option<String> {
+        let error = error.into();
+        if let Some(editor) = &mut self.name_editor {
+            editor.error = Some(error);
+            None
+        } else {
+            Some(error)
+        }
+    }
+
+    pub fn confirm_name_saved(&mut self) {
+        self.name_editor = None;
     }
 
     pub fn confirm_assignment_saved(&mut self) {
@@ -291,6 +407,14 @@ impl ServiceWorkspace {
             return flow.footer_shortcuts(state, compact);
         }
 
+        if self.name_editor.is_some() {
+            return vec![
+                ("Enter", "Save", true),
+                ("Backspace", "Delete", true),
+                ("Esc", "Cancel", true),
+            ];
+        }
+
         if let Some(flow) = &self.create_flow {
             return flow.footer_shortcuts(compact);
         }
@@ -313,6 +437,7 @@ impl ServiceWorkspace {
             ("Enter", "Run", has_services),
             ("N", "New", true),
             ("A", "Assign train", has_services && !state.player_company.fleet.trains.is_empty()),
+            ("R", "Name", has_services),
             ("E", "Edit", can_edit),
             ("D", "Delete", can_delete),
             ("Esc", "Map", true),
@@ -336,6 +461,7 @@ impl ServiceWorkspace {
                 "Enter Run the selected Service with a READY Train".into(),
                 "n Create a new Passenger Service".into(),
                 "a Assign, reassign, or unassign Trains for the selected Service".into(),
+                "r Set or clear the selected Service's commercial name".into(),
                 "e Edit the selected Service when it has no active Journeys".into(),
                 "d Delete the selected Service when it has no active Journeys".into(),
                 "Esc Return to Map".into(),
@@ -362,6 +488,7 @@ impl ServiceWorkspace {
     pub fn has_modal(&self) -> bool {
         self.create_flow.is_some()
             || self.assignment_flow.is_some()
+            || self.name_editor.is_some()
             || self.delete_confirmation.is_some()
     }
 
@@ -376,6 +503,8 @@ impl ServiceWorkspace {
     pub fn render_modal(&self, frame: &mut Frame, area: Rect, state: &GameState) {
         if let Some(flow) = &self.assignment_flow {
             assignment::render(frame, modal::workflow_rect(area), state, flow);
+        } else if let Some(editor) = &self.name_editor {
+            render_name_editor(frame, area, state, editor);
         } else if let Some(flow) = &self.create_flow {
             editor::render(frame, modal::workflow_rect(area), state, flow);
         } else if let Some(service_id) = self.delete_confirmation {
@@ -493,7 +622,7 @@ fn render_service_picker(
                 let snapshot = service_operating_snapshot(state, service.id);
                 let (state_label, state_style) = service_state_label(&snapshot);
                 Row::new(vec![
-                    Cell::from(service.name.clone()),
+                    Cell::from(service.display_name()),
                     Cell::from(route),
                     Cell::from(state_label).style(state_style),
                     Cell::from(snapshot.assigned_trains.to_string()),
@@ -501,7 +630,7 @@ fn render_service_picker(
                     Cell::from(snapshot.waiting_passengers.to_string()),
                 ])
             } else {
-                Row::new([service.name.clone(), route])
+                Row::new([service.display_name(), route])
             }
         })
         .collect::<Vec<_>>();
@@ -636,7 +765,7 @@ fn service_details(
         .map(|station_id| station_label(state, station_id))
         .unwrap_or_else(|| "Unknown".into());
 
-    let mut lines = vec![Line::styled(service.name.clone(), theme::focused_title())];
+    let mut lines = vec![Line::styled(service.display_name(), theme::focused_title())];
 
     if tight {
         lines.push(Line::styled(state_label.to_owned(), state_style));
@@ -1189,6 +1318,65 @@ fn service_active_journeys(state: &GameState, service_id: ServiceId) -> usize {
         .count()
 }
 
+fn render_name_editor(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    editor: &ServiceNameEditor,
+) {
+    let Some(service) = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == editor.service_id)
+    else {
+        return;
+    };
+
+    let card_height = if editor.error.is_some() { 16 } else { 15 };
+    let card = modal::editor_rect(area, card_height);
+    let footer = if card.width >= 56 {
+        modal::shortcut_line(&[(
+            "Enter", "save"
+        ), ("Backspace", "delete"), ("Esc", "cancel")])
+    } else {
+        modal::shortcut_line(&[("Enter", "save"), ("Esc", "cancel")])
+    };
+    let modal_areas = modal::render_shell(frame, card, "Name Passenger Service", footer);
+
+    let draft = if editor.draft.is_empty() {
+        "(no commercial name)".to_owned()
+    } else {
+        editor.draft.clone()
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Service  ", theme::secondary()),
+            Span::styled(service.name.clone(), theme::focused_title()),
+        ]),
+        Line::styled(service_route_label(state, service), theme::secondary()),
+        Line::from(""),
+        Line::styled("COMMERCIAL NAME", theme::table_header()),
+        Line::styled(draft, theme::primary_value()),
+        Line::from(""),
+        Line::styled(
+            "Shared by both directions. Leave empty to show only the generated Service code.",
+            theme::secondary(),
+        ),
+    ];
+    if let Some(error) = &editor.error {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(error.clone(), theme::error()));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        modal_areas.body,
+    );
+}
+
 fn render_delete_confirmation(
     frame: &mut Frame,
     area: Rect,
@@ -1213,7 +1401,7 @@ fn render_delete_confirmation(
     let modal_areas = modal::render_shell(frame, card, "Delete Passenger Service", footer);
 
     let mut lines = vec![
-        Line::styled(service.name.clone(), theme::focused_title()),
+        Line::styled(service.display_name(), theme::focused_title()),
         Line::from(route_label(state, &service.stop_station_ids)),
         Line::from(""),
     ];

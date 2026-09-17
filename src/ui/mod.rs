@@ -370,6 +370,13 @@ impl Shell {
                         stop_station_ids,
                         direction_mode,
                     }),
+                    services::ServiceWorkspaceAction::Rename {
+                        service_id,
+                        custom_name,
+                    } => ShellAction::Player(AppCommand::UpdatePassengerServiceName {
+                        service_id,
+                        custom_name,
+                    }),
                     services::ServiceWorkspaceAction::Delete { service_id } => {
                         ShellAction::Player(AppCommand::DeletePassengerService { service_id })
                     }
@@ -654,6 +661,10 @@ impl Shell {
             AppCommandResult::PassengerServiceUpdated { .. } => {
                 self.confirm_passenger_service_updated(state)
             }
+            AppCommandResult::PassengerServiceRenamed { .. } => {
+                self.service_workspace.confirm_name_saved();
+                self.notice = Some("Passenger Service name updated and saved.".into());
+            }
             AppCommandResult::PassengerServiceDeleted { .. } => {
                 self.confirm_passenger_service_deleted(state)
             }
@@ -683,6 +694,13 @@ impl Shell {
             | AppCommand::UpdatePassengerService { .. }
             | AppCommand::DeletePassengerService { .. } => {
                 self.reject_passenger_service_action(error)
+            }
+            AppCommand::UpdatePassengerServiceName { .. } => {
+                if let Some(message) = self.service_workspace.reject_name(error) {
+                    self.notice = Some(message);
+                } else {
+                    self.notice = None;
+                }
             }
             AppCommand::AssignTrainToService { .. }
             | AppCommand::UnassignTrainFromService { .. } => {

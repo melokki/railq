@@ -239,7 +239,7 @@ pub(super) fn render(
         };
         Row::new(vec![
             Cell::from(format!("R{}", service.id.get())),
-            Cell::from(service.name.clone()),
+            Cell::from(service.display_name()),
             Cell::from(route),
             Cell::from(if assigned == Some(service.id) { "Current" } else { "" }),
         ])
