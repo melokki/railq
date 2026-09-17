@@ -1,9 +1,7 @@
-//! Rail Authority infrastructure planning helpers.
+//! Rail Authority infrastructure planning and delivery.
 //!
-//! Candidate evaluation and the early Rail Authority planning lifecycle.
-//!
-//! This layer currently advances projects through public funding, scheduling,
-//! and fixed-duration construction. Opening is introduced later.
+//! Candidate evaluation, paced review decisions, public funding, scheduling,
+//! rule-driven construction, and infrastructure opening live in this layer.
 
 use std::{collections::BTreeSet, error::Error, fmt};
 
@@ -1213,14 +1211,6 @@ pub(crate) fn project_review_score_breakdown(
     ))
 }
 
-pub(crate) fn project_review_score(
-    region: &Region,
-    project: &InfrastructureProject,
-    world_seed: u64,
-) -> Option<i32> {
-    project_review_score_breakdown(region, project, world_seed).map(|score| score.total)
-}
-
 fn project_review_bulletin_detail(decision: ProjectReviewDecision, score: Option<i32>) -> String {
     let Some(score) = score else {
         return "The review could not establish enough regional value to keep the connection in the automatic planning pipeline.".into();
@@ -1601,12 +1591,13 @@ mod tests {
         region.rail_authority.infrastructure_projects[project_index]
             .funding
             .estimated_cost = Money::ZERO;
-        let baseline = project_review_score(
+        let baseline = project_review_score_breakdown(
             region,
             &region.rail_authority.infrastructure_projects[project_index],
             world_seed,
         )
-        .expect("New Line project has a review score");
+        .expect("New Line project has a review score")
+        .total;
         let penalty = baseline - target_score;
         assert!(
             (0..=250).contains(&penalty),
@@ -1616,11 +1607,12 @@ mod tests {
             .funding
             .estimated_cost = Money::from_cents(i64::from(penalty) * 100_000);
         assert_eq!(
-            project_review_score(
+            project_review_score_breakdown(
                 region,
                 &region.rail_authority.infrastructure_projects[project_index],
                 world_seed,
-            ),
+            )
+            .map(|score| score.total),
             Some(target_score)
         );
     }
@@ -1879,7 +1871,7 @@ mod tests {
     }
 
     #[test]
-    fn planning_advances_requested_project_to_approval_on_fixed_timeline() {
+    fn planning_advances_requested_project_to_approval_on_configured_timeline() {
         let mut region = generate_region(7);
         let demand = fully_mature_demand(&region, 7);
         let started = UtcSeconds::from_unix_seconds(10_000);

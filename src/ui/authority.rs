@@ -1043,21 +1043,21 @@ fn append_timeline(
     match project.status {
         InfrastructureProjectStatus::Requested => {
             lines.push(Line::styled("REQUESTED", theme::table_header()));
-            lines.push(value_line("Next", "Awaiting review"));
+            lines.push(value_line("Next", &project_next(state, project, now)));
         }
         InfrastructureProjectStatus::UnderReview => {
             lines.push(Line::styled("REVIEW", theme::table_header()));
             if let Some(value) = project.timeline.review_started_at {
                 lines.push(timestamp_line("Started", value, now));
             }
-            lines.push(value_line("Next", "Decision pending"));
+            lines.push(value_line("Next", &project_next(state, project, now)));
         }
         InfrastructureProjectStatus::Proposed => {
             lines.push(Line::styled("PROPOSAL", theme::table_header()));
             if let Some(value) = project.timeline.proposed_at {
                 lines.push(timestamp_line("Proposed", value, now));
             }
-            lines.push(value_line("Next", "Authority decision"));
+            lines.push(value_line("Next", &project_next(state, project, now)));
         }
         InfrastructureProjectStatus::Approved => {
             lines.push(Line::styled("APPROVED", theme::table_header()));
@@ -1352,9 +1352,36 @@ fn funding_percent(project: &InfrastructureProject) -> String {
 
 fn project_next(state: &GameState, project: &InfrastructureProject, now: UtcSeconds) -> String {
     match project.status {
-        InfrastructureProjectStatus::Requested => "Council request · review pending".into(),
-        InfrastructureProjectStatus::UnderReview => "Authority review in progress".into(),
-        InfrastructureProjectStatus::Proposed => "Authority decision pending".into(),
+        InfrastructureProjectStatus::Requested => planning_stage_next(
+            "Review",
+            project.timeline.requested_at,
+            state.rules.authority.request_queue_delay(),
+            now,
+        ),
+        InfrastructureProjectStatus::UnderReview => project
+            .timeline
+            .review_started_at
+            .map(|started_at| {
+                planning_stage_next(
+                    "Proposal",
+                    started_at,
+                    state.rules.authority.review_duration(),
+                    now,
+                )
+            })
+            .unwrap_or_else(|| "Authority review in progress".into()),
+        InfrastructureProjectStatus::Proposed => project
+            .timeline
+            .proposed_at
+            .map(|proposed_at| {
+                planning_stage_next(
+                    "Decision",
+                    proposed_at,
+                    state.rules.authority.proposal_duration(),
+                    now,
+                )
+            })
+            .unwrap_or_else(|| "Authority decision pending".into()),
         InfrastructureProjectStatus::Approved => "Awaiting funding slot".into(),
         InfrastructureProjectStatus::Deferred => deferred_next(state, project, now),
         InfrastructureProjectStatus::Rejected => "Rejected · no automatic review".into(),
@@ -1381,6 +1408,22 @@ fn project_next(state: &GameState, project: &InfrastructureProject, now: UtcSeco
             .unwrap_or_else(|| "Opening pending".into()),
         InfrastructureProjectStatus::Open => "Complete".into(),
         InfrastructureProjectStatus::Cancelled => "Cancelled".into(),
+    }
+}
+
+fn planning_stage_next(
+    label: &str,
+    started_at: UtcSeconds,
+    delay: crate::model::DurationSeconds,
+    now: UtcSeconds,
+) -> String {
+    let Ok(due_at) = started_at.checked_add(delay) else {
+        return format!("{label} pending");
+    };
+    if due_at <= now {
+        format!("{label} ready")
+    } else {
+        format!("{label} {}", relative_time(due_at, now))
     }
 }
 
@@ -1637,13 +1680,13 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use crate::{
-        model::{MarketMaturity, UtcSeconds},
+        model::{DurationSeconds, MarketMaturity, UtcSeconds},
         sim::{authority::advance_rail_authority, world::create_new_game},
     };
 
     use super::{
         AuthorityWorkspace, AuthorityWorkspaceAction, ProjectSelection, compact_duration,
-        construction_remaining_duration, format_project_timestamp, render,
+        construction_remaining_duration, format_project_timestamp, planning_stage_next, render,
     };
 
     fn establish_rail_markets(state: &mut crate::model::GameState) {
@@ -1676,6 +1719,7 @@ mod tests {
         assert!(output.contains("Next fiscal period:"));
         assert!(output.contains("Projects:"));
         assert!(output.contains("Council request"));
+        assert!(output.contains("Review in 1h"));
         assert!(output.contains(" → "));
     }
 
@@ -1707,6 +1751,26 @@ mod tests {
 
         let output = render(&state, now);
         assert!(output.contains("Eligible in 1d · needs 55% adoption"));
+    }
+
+    #[test]
+    fn planning_stage_countdown_exposes_configured_cadence() {
+        let started = UtcSeconds::from_unix_seconds(1_000);
+        let delay = DurationSeconds::from_seconds(60 * 60);
+
+        assert_eq!(
+            planning_stage_next("Review", started, delay, started),
+            "Review in 1h"
+        );
+        assert_eq!(
+            planning_stage_next(
+                "Review",
+                started,
+                delay,
+                UtcSeconds::from_unix_seconds(4_600),
+            ),
+            "Review ready"
+        );
     }
 
     #[test]
