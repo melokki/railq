@@ -30,6 +30,9 @@ use editor::CreateServiceFlow;
 pub enum ServiceWorkspaceAction {
     Continue,
     Close,
+    RunService {
+        service_id: ServiceId,
+    },
     Create {
         stop_station_ids: Vec<RailStationId>,
     },
@@ -119,6 +122,10 @@ impl ServiceWorkspace {
 
         match key {
             KeyCode::Esc => ServiceWorkspaceAction::Close,
+            KeyCode::Enter => self
+                .selected_service_id(state)
+                .map(|service_id| ServiceWorkspaceAction::RunService { service_id })
+                .unwrap_or(ServiceWorkspaceAction::Continue),
             KeyCode::Char('n' | 'N') => {
                 self.create_flow = Some(CreateServiceFlow::new());
                 ServiceWorkspaceAction::Continue
@@ -299,6 +306,7 @@ impl ServiceWorkspace {
             actions.push(("PgUp/PgDn", "Page", true));
         }
         actions.extend([
+            ("Enter", "Run", has_services),
             ("N", "New", true),
             ("A", "Assign train", has_services && !state.player_company.fleet.trains.is_empty()),
             ("E", "Edit", can_edit),
@@ -321,6 +329,7 @@ impl ServiceWorkspace {
             lines.extend([
                 "↑↓ / jk Select Passenger Service".into(),
                 "PgUp / PgDn Move through longer Service lists".into(),
+                "Enter Run the selected Service with a READY Train".into(),
                 "n Create a new Passenger Service".into(),
                 "a Assign, reassign, or unassign Trains for the selected Service".into(),
                 "e Edit the selected Service when it has no active Journeys".into(),

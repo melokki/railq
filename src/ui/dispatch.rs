@@ -60,6 +60,7 @@ enum DispatchStep {
 pub struct DispatchFlow {
     step: DispatchStep,
     preferred_station_id: Option<RailStationId>,
+    preferred_service_id: Option<ServiceId>,
     rejection: Option<String>,
 }
 
@@ -117,6 +118,16 @@ impl DispatchWorkspace {
         Ok(())
     }
 
+    pub fn start_from_service(
+        &mut self,
+        state: &GameState,
+        service_id: ServiceId,
+    ) -> Result<(), String> {
+        self.flow = Some(DispatchFlow::start_with_selected_service(state, service_id)?);
+        self.returns_to_fleet = false;
+        Ok(())
+    }
+
     /// Clears the workflow and reports whether Fleet was its launch context.
     pub fn close(&mut self) -> bool {
         self.flow = None;
@@ -134,7 +145,14 @@ impl DispatchWorkspace {
         if flow.is_selecting_train() {
             return Some(vec![
                 DispatchShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Train"),
-                DispatchShortcut::enabled("Enter", "Next"),
+                DispatchShortcut::enabled(
+                    "Enter",
+                    if flow.preferred_service_id.is_some() {
+                        "Review"
+                    } else {
+                        "Next"
+                    },
+                ),
                 DispatchShortcut::enabled("Esc", "Cancel"),
             ]);
         }
@@ -155,7 +173,14 @@ impl DispatchWorkspace {
 
         Some(vec![
             DispatchShortcut::enabled("Enter", "Confirm"),
-            DispatchShortcut::enabled("←", "Back"),
+            DispatchShortcut::enabled(
+                "←",
+                if flow.preferred_service_id.is_some() {
+                    "Train"
+                } else {
+                    "Back"
+                },
+            ),
             DispatchShortcut::enabled("Esc", "Cancel"),
         ])
     }
@@ -167,7 +192,11 @@ impl DispatchWorkspace {
         if flow.is_selecting_train() {
             lines.extend([
                 "↑↓ / jk Select a READY Train".into(),
-                "Enter Continue to Service selection".into(),
+                if flow.preferred_service_id.is_some() {
+                    "Enter Review this Service run".into()
+                } else {
+                    "Enter Continue to Service selection".into()
+                },
                 "Esc Cancel dispatch".into(),
             ]);
         } else if flow.is_selecting_service() {
@@ -232,20 +261,21 @@ impl DispatchFlow {
                 None => no_ready_train_reason(state),
             });
         }
-        let train_ids = dispatchable_train_ids_for_station(state, preferred_station_id);
+        let train_ids = dispatchable_train_ids_for_context(state, preferred_station_id, None);
         if train_ids.is_empty() {
             return Err(match preferred_station_id {
                 Some(_) => {
-                    "No Passenger Service starts at this Rail Station for a READY Train. Open Services from the Map and create one first."
+                    "No Passenger Service can be operated from this Rail Station by a READY Train. Open Services from the Map and create one first."
                 }
                 None => {
-                    "No Passenger Service starts at any READY Train's Rail Station. Open Services from the Map and create one first."
+                    "No Passenger Service can be operated from any READY Train's Rail Station. Open Services from the Map and create one first."
                 }
             });
         }
         Ok(Self {
-            step: train_selection_step(state, Some(train_ids[0]), preferred_station_id),
+            step: train_selection_step(state, Some(train_ids[0]), preferred_station_id, None),
             preferred_station_id,
+            preferred_service_id: None,
             rejection: None,
         })
     }
@@ -269,14 +299,44 @@ impl DispatchFlow {
         }
         if service_options(state, train_id).is_empty() {
             return Err(
-                "No Passenger Service starts at this Train's current Rail Station. Create one from the Map Services workspace first."
+                "No Passenger Service can be operated from this Train's current Rail Station. Create one from the Map Services workspace first."
                     .into(),
             );
         }
 
         Ok(Self {
-            step: train_selection_step(state, Some(train_id), None),
+            step: train_selection_step(state, Some(train_id), None, None),
             preferred_station_id: None,
+            preferred_service_id: None,
+            rejection: None,
+        })
+    }
+
+    /// Starts Manual Dispatch from Passenger Services with the selected Service
+    /// fixed for the workflow. The player chooses a READY Train that can run
+    /// the Service from its current terminus, then reviews the Journey quote.
+    pub fn start_with_selected_service(
+        state: &GameState,
+        service_id: ServiceId,
+    ) -> Result<Self, String> {
+        let service = state
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .ok_or_else(|| format!("Passenger Service R{} is no longer available.", service_id.get()))?;
+        let train_ids = dispatchable_train_ids_for_context(state, None, Some(service_id));
+        if train_ids.is_empty() {
+            return Err(format!(
+                "No READY Train can run {} from a valid terminus.",
+                service_name(state, service.id)
+            ));
+        }
+
+        Ok(Self {
+            step: train_selection_step(state, Some(train_ids[0]), None, Some(service_id)),
+            preferred_station_id: None,
+            preferred_service_id: Some(service_id),
             rejection: None,
         })
     }
@@ -293,19 +353,30 @@ impl DispatchFlow {
                 table_state,
                 page_size,
             } => {
-                let trains = dispatchable_train_ids_for_station(state, self.preferred_station_id);
+                let trains = dispatchable_train_ids_for_context(
+                    state,
+                    self.preferred_station_id,
+                    self.preferred_service_id,
+                );
                 if trains.is_empty() {
-                    self.rejection = Some(match self.preferred_station_id {
-                        Some(_) => {
-                            "No READY Train is available at the selected Rail Station.".into()
+                    self.rejection = Some(if let Some(service_id) = self.preferred_service_id {
+                        format!(
+                            "No READY Train can currently run {} from a valid terminus.",
+                            service_name(state, service_id)
+                        )
+                    } else {
+                        match self.preferred_station_id {
+                            Some(_) => {
+                                "No READY Train is available at the selected Rail Station.".into()
+                            }
+                            None => no_ready_train_reason(state).into(),
                         }
-                        None => no_ready_train_reason(state).into(),
                     });
                     return DispatchFlowAction::Continue;
                 }
                 if synchronize_train_selection(selected_train_id, table_state, &trains) {
                     self.rejection = Some(
-                        "The previously selected Train is no longer dispatchable; choose a READY Train with an available Service."
+                        "The previously selected Train is no longer dispatchable; choose another READY Train."
                             .into(),
                     );
                 }
@@ -328,12 +399,26 @@ impl DispatchFlow {
                             Some("That Train is no longer READY; select a Train again.".into());
                         return DispatchFlowAction::Continue;
                     }
-                    match service_step(state, train_id, None) {
-                        Ok(step) => {
-                            self.step = step;
-                            self.rejection = None;
+                    if let Some(service_id) = self.preferred_service_id {
+                        match preview_quote(state, train_id, service_id) {
+                            Ok(quote) => {
+                                self.step = DispatchStep::Confirm {
+                                    train_id,
+                                    service_id,
+                                    quote,
+                                };
+                                self.rejection = None;
+                            }
+                            Err(error) => self.rejection = Some(error),
                         }
-                        Err(error) => self.rejection = Some(error),
+                    } else {
+                        match service_step(state, train_id, None) {
+                            Ok(step) => {
+                                self.step = step;
+                                self.rejection = None;
+                            }
+                            Err(error) => self.rejection = Some(error),
+                        }
                     }
                 }
                 DispatchFlowAction::Continue
@@ -350,6 +435,7 @@ impl DispatchFlow {
                         state,
                         Some(selected_train_id),
                         self.preferred_station_id,
+                        self.preferred_service_id,
                     );
                     self.rejection = None;
                     return DispatchFlowAction::Continue;
@@ -364,7 +450,7 @@ impl DispatchFlow {
                 let services = service_options(state, *train_id);
                 if services.is_empty() {
                     self.rejection = Some(
-                        "No Passenger Service starts at this Train's current Rail Station. Create one from the Map Services workspace first."
+                        "No Passenger Service can be operated from this Train's current Rail Station. Create one from the Map Services workspace first."
                             .into(),
                     );
                     return DispatchFlowAction::Continue;
@@ -415,12 +501,22 @@ impl DispatchFlow {
                 quote,
             } => {
                 if matches!(key.code, KeyCode::Left | KeyCode::Backspace) {
-                    match service_step(state, *train_id, Some(*service_id)) {
-                        Ok(step) => {
-                            self.step = step;
-                            self.rejection = None;
+                    if self.preferred_service_id.is_some() {
+                        self.step = train_selection_step(
+                            state,
+                            Some(*train_id),
+                            self.preferred_station_id,
+                            self.preferred_service_id,
+                        );
+                        self.rejection = None;
+                    } else {
+                        match service_step(state, *train_id, Some(*service_id)) {
+                            Ok(step) => {
+                                self.step = step;
+                                self.rejection = None;
+                            }
+                            Err(error) => self.rejection = Some(error),
                         }
-                        Err(error) => self.rejection = Some(error),
                     }
                     DispatchFlowAction::Continue
                 } else if matches!(key.code, KeyCode::Enter) {
@@ -465,7 +561,11 @@ impl DispatchFlow {
                 selected_train_id, ..
             } => {
                 output.push_str("Select a READY Train (Up/Down, Enter; Esc cancels):\n");
-                for train_id in ready_train_ids(state) {
+                for train_id in dispatchable_train_ids_for_context(
+                    state,
+                    self.preferred_station_id,
+                    self.preferred_service_id,
+                ) {
                     let marker = if Some(train_id) == *selected_train_id {
                         '>'
                     } else {
@@ -597,7 +697,11 @@ impl DispatchFlow {
             } => synchronize_train_selection(
                 selected_train_id,
                 table_state,
-                &dispatchable_train_ids_for_station(state, self.preferred_station_id),
+                &dispatchable_train_ids_for_context(
+                    state,
+                    self.preferred_station_id,
+                    self.preferred_service_id,
+                ),
             ),
             DispatchStep::SelectService { .. } | DispatchStep::Confirm { .. } => false,
         };
@@ -612,7 +716,7 @@ impl DispatchFlow {
             frame,
             area,
             "Manual Dispatch",
-            dispatch_footer_line(&self.step, area.width),
+            dispatch_footer_line(&self.step, area.width, self.preferred_service_id.is_some()),
         );
 
         match &mut self.step {
@@ -626,6 +730,7 @@ impl DispatchFlow {
                 TrainChooserContext {
                     state,
                     preferred_station_id: self.preferred_station_id,
+                    preferred_service_id: self.preferred_service_id,
                     selected_train_id: *selected_train_id,
                     rejection: self.rejection.as_deref(),
                 },
@@ -663,23 +768,30 @@ impl DispatchFlow {
                     *service_id,
                     quote,
                     self.rejection.as_deref(),
+                    self.preferred_service_id.is_some(),
                 );
             }
         }
     }
 }
 
-fn dispatch_footer_line(step: &DispatchStep, width: u16) -> Line<'static> {
+fn dispatch_footer_line(
+    step: &DispatchStep,
+    width: u16,
+    service_preselected: bool,
+) -> Line<'static> {
     match step {
         DispatchStep::SelectTrain { .. } if width >= 76 => modal::shortcut_line(&[
             ("↑/↓", "choose"),
             ("PgUp/PgDn", "scroll"),
-            ("Enter", "service"),
+            ("Enter", if service_preselected { "review" } else { "service" }),
             ("Esc", "cancel"),
         ]),
-        DispatchStep::SelectTrain { .. } => {
-            modal::shortcut_line(&[("↑/↓", "choose"), ("Enter", "service"), ("Esc", "cancel")])
-        }
+        DispatchStep::SelectTrain { .. } => modal::shortcut_line(&[
+            ("↑/↓", "choose"),
+            ("Enter", if service_preselected { "review" } else { "service" }),
+            ("Esc", "cancel"),
+        ]),
         DispatchStep::SelectService { .. } if width >= 82 => modal::shortcut_line(&[
             ("↑/↓", "choose"),
             ("PgUp/PgDn", "scroll"),
@@ -693,9 +805,11 @@ fn dispatch_footer_line(step: &DispatchStep, width: u16) -> Line<'static> {
             ("←", "train"),
             ("Esc", "cancel"),
         ]),
-        DispatchStep::Confirm { .. } => {
-            modal::shortcut_line(&[("Enter", "dispatch"), ("←", "service"), ("Esc", "cancel")])
-        }
+        DispatchStep::Confirm { .. } => modal::shortcut_line(&[
+            ("Enter", "dispatch"),
+            ("←", if service_preselected { "train" } else { "service" }),
+            ("Esc", "cancel"),
+        ]),
     }
 }
 
@@ -706,6 +820,7 @@ fn render_quote_review(
     service_id: ServiceId,
     quote: &JourneyQuote,
     rejection: Option<&str>,
+    service_preselected: bool,
 ) {
     let insufficient_funds = quote.cash_after_cost < Money::ZERO;
     let status_rows = u16::from(insufficient_funds) + u16::from(rejection.is_some());
@@ -727,7 +842,7 @@ fn render_quote_review(
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled("Review Dispatch", theme::title()),
-            dispatch_step_line(3),
+            dispatch_step_line(if service_preselected { 2 } else { 3 }, service_preselected),
         ])
         .style(theme::panel()),
         context_area,
@@ -890,8 +1005,12 @@ fn money_pair_line(
     ])
 }
 
-fn dispatch_step_line(active: u8) -> Line<'static> {
-    let steps = [(1, "TRAIN"), (2, "SERVICE"), (3, "REVIEW")];
+fn dispatch_step_line(active: u8, service_preselected: bool) -> Line<'static> {
+    let steps = if service_preselected {
+        vec![(1, "TRAIN"), (2, "REVIEW")]
+    } else {
+        vec![(1, "TRAIN"), (2, "SERVICE"), (3, "REVIEW")]
+    };
     let mut spans = Vec::new();
     for (index, (step, label)) in steps.iter().enumerate() {
         if index > 0 {
@@ -961,6 +1080,7 @@ fn format_money_per_kilometre(cents: u64) -> String {
 struct TrainChooserContext<'a> {
     state: &'a GameState,
     preferred_station_id: Option<RailStationId>,
+    preferred_service_id: Option<ServiceId>,
     selected_train_id: Option<TrainId>,
     rejection: Option<&'a str>,
 }
@@ -973,7 +1093,11 @@ fn render_train_chooser(
     page_size: &mut usize,
 ) {
     let state = chooser.state;
-    let allowed_train_ids = dispatchable_train_ids_for_station(state, chooser.preferred_station_id);
+    let allowed_train_ids = dispatchable_train_ids_for_context(
+        state,
+        chooser.preferred_station_id,
+        chooser.preferred_service_id,
+    );
     let trains = state
         .player_company
         .fleet
@@ -983,7 +1107,14 @@ fn render_train_chooser(
         .collect::<Vec<_>>();
     let origin = chooser
         .preferred_station_id
-        .map(|station_id| station_label(state, station_id));
+        .map(|station_id| station_label(state, station_id).to_owned());
+    let service_context = chooser.preferred_service_id.map(|service_id| {
+        format!(
+            "{} · {}",
+            service_name(state, service_id),
+            service_route_label(state, service_id)
+        )
+    });
     let status_rows = u16::from(chooser.rejection.is_some() || chooser.selected_train_id.is_none());
     let [context_area, body_area, status_area] = Layout::vertical([
         Constraint::Length(2),
@@ -994,10 +1125,12 @@ fn render_train_chooser(
 
     frame.render_widget(
         Paragraph::new(vec![
-            dispatch_step_line(1),
+            dispatch_step_line(1, chooser.preferred_service_id.is_some()),
             Line::from(vec![
                 Span::styled(
-                    if origin.is_some() {
+                    if service_context.is_some() {
+                        "SERVICE  "
+                    } else if origin.is_some() {
                         "FROM  "
                     } else {
                         "READY TRAINS  "
@@ -1005,7 +1138,9 @@ fn render_train_chooser(
                     theme::secondary(),
                 ),
                 Span::styled(
-                    origin.unwrap_or("Choose a Train; its current station becomes the origin."),
+                    service_context
+                        .or(origin)
+                        .unwrap_or_else(|| "Choose a Train; its current station becomes the origin.".into()),
                     theme::primary_value(),
                 ),
             ]),
@@ -1198,7 +1333,7 @@ fn render_service_chooser(
         render_service_unavailable(
             frame,
             area,
-            "No Passenger Service starts here. Create a directional Service from Map → Services, then return to dispatch.",
+            "No Passenger Service can be operated from this station. Create one from Map → Services, then return to dispatch.",
         );
         return;
     }
@@ -1215,7 +1350,7 @@ fn render_service_chooser(
     let registration = train_registration(state, train_id);
     frame.render_widget(
         Paragraph::new(vec![
-            dispatch_step_line(2),
+            dispatch_step_line(2, false),
             Line::from(vec![
                 Span::styled("FROM  ", theme::secondary()),
                 Span::styled(
@@ -1337,7 +1472,7 @@ fn render_service_chooser(
 fn render_service_unavailable(frame: &mut Frame, area: Rect, reason: &str) {
     frame.render_widget(
         Paragraph::new(vec![
-            dispatch_step_line(2),
+            dispatch_step_line(2, false),
             Line::styled("Choose Passenger Service", theme::title()),
             Line::from(""),
             Line::styled("Service unavailable", theme::warning()),
@@ -1441,14 +1576,24 @@ fn ready_train_ids_for_station(
         .collect()
 }
 
-fn dispatchable_train_ids_for_station(
+fn dispatchable_train_ids_for_context(
     state: &GameState,
     station_id: Option<RailStationId>,
+    service_id: Option<ServiceId>,
 ) -> Vec<TrainId> {
-    ready_train_ids_for_station(state, station_id)
+    let mut train_ids = ready_train_ids_for_station(state, station_id)
         .into_iter()
-        .filter(|train_id| !service_options(state, *train_id).is_empty())
-        .collect()
+        .filter(|train_id| match service_id {
+            Some(service_id) => preview_quote(state, *train_id, service_id).is_ok(),
+            None => !service_options(state, *train_id).is_empty(),
+        })
+        .collect::<Vec<_>>();
+    if let Some(service_id) = service_id {
+        train_ids.sort_by_key(|train_id| {
+            state.player_company.fleet.assigned_service_id(*train_id) != Some(service_id)
+        });
+    }
+    train_ids
 }
 
 fn no_ready_train_reason(state: &GameState) -> &'static str {
@@ -1566,8 +1711,10 @@ fn train_selection_step(
     state: &GameState,
     selected_train_id: Option<TrainId>,
     preferred_station_id: Option<RailStationId>,
+    preferred_service_id: Option<ServiceId>,
 ) -> DispatchStep {
-    let train_ids = dispatchable_train_ids_for_station(state, preferred_station_id);
+    let train_ids =
+        dispatchable_train_ids_for_context(state, preferred_station_id, preferred_service_id);
     let selected = selected_train_id.and_then(|train_id| {
         train_ids
             .iter()
@@ -1590,7 +1737,7 @@ fn service_step(
     let services = service_options(state, train_id);
     if services.is_empty() {
         return Err(
-            "No Passenger Service starts at this Train's current Rail Station. Create one from the Map Services workspace first."
+            "No Passenger Service can be operated from this Train's current Rail Station. Create one from the Map Services workspace first."
                 .into(),
         );
     }
@@ -1612,14 +1759,13 @@ fn service_step(
 }
 
 fn service_options(state: &GameState, train_id: TrainId) -> Vec<ServiceOption> {
-    let Some(origin_station_id) = ready_train_station(state, train_id) else {
+    if ready_train_station(state, train_id).is_none() {
         return Vec::new();
-    };
+    }
     state
         .player_company
         .passenger_services
         .iter()
-        .filter(|service| service.origin_station_id() == Some(origin_station_id))
         .filter_map(|service| {
             preview_quote(state, train_id, service.id)
                 .ok()
@@ -1922,27 +2068,14 @@ mod tests {
     }
 
     #[test]
-    fn reverse_direction_requires_a_separate_service() {
-        let (mut state, _) = game_with_ready_train(RailStationId::new(3));
-        add_service(
+    fn bidirectional_service_is_dispatchable_from_reverse_terminus() {
+        let (mut state, train_id) = game_with_ready_train(RailStationId::new(3));
+        let service_id = add_service(
             &mut state,
             vec![RailStationId::new(1), RailStationId::new(3)],
         );
+        let mut flow = DispatchFlow::start(&state).unwrap();
 
-        assert_eq!(
-            DispatchFlow::start(&state),
-            Err(
-                "No Passenger Service starts at any READY Train's Rail Station. Open Services from the Map and create one first."
-            )
-        );
-
-        let reverse = add_service(
-            &mut state,
-            vec![RailStationId::new(3), RailStationId::new(1)],
-        );
-        let mut flow =
-            DispatchFlow::start_with_selected_train(&state, crate::model::TrainId::new(1)).unwrap();
-        assert!(flow.is_selecting_train());
         assert_eq!(
             flow.handle_key(key(KeyCode::Enter), &state),
             DispatchFlowAction::Continue
@@ -1952,11 +2085,47 @@ mod tests {
             flow.handle_key(key(KeyCode::Enter), &state),
             DispatchFlowAction::Continue
         );
+        assert!(flow.is_confirming());
         assert_eq!(
             flow.handle_key(key(KeyCode::Enter), &state),
             DispatchFlowAction::Confirm {
-                train_id: crate::model::TrainId::new(1),
-                service_id: reverse,
+                train_id,
+                service_id,
+            }
+        );
+    }
+
+    #[test]
+    fn service_preselected_dispatch_skips_service_picker() {
+        let (mut state, train_id) = game_with_ready_train(RailStationId::new(3));
+        let service_id = add_service(
+            &mut state,
+            vec![RailStationId::new(1), RailStationId::new(3)],
+        );
+        let mut flow = DispatchFlow::start_with_selected_service(&state, service_id).unwrap();
+
+        assert!(flow.is_selecting_train());
+        assert_eq!(
+            flow.handle_key(key(KeyCode::Enter), &state),
+            DispatchFlowAction::Continue
+        );
+        assert!(flow.is_confirming());
+        assert!(!flow.is_selecting_service());
+
+        assert_eq!(
+            flow.handle_key(key(KeyCode::Left), &state),
+            DispatchFlowAction::Continue
+        );
+        assert!(flow.is_selecting_train());
+        assert_eq!(
+            flow.handle_key(key(KeyCode::Enter), &state),
+            DispatchFlowAction::Continue
+        );
+        assert_eq!(
+            flow.handle_key(key(KeyCode::Enter), &state),
+            DispatchFlowAction::Confirm {
+                train_id,
+                service_id,
             }
         );
     }

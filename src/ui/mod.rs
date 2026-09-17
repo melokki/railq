@@ -347,6 +347,13 @@ impl Shell {
                         self.notice = None;
                         ShellAction::Continue
                     }
+                    services::ServiceWorkspaceAction::RunService { service_id } => {
+                        match self.dispatch_workspace.start_from_service(state, service_id) {
+                            Ok(()) => self.notice = None,
+                            Err(message) => self.notice = Some(message),
+                        }
+                        ShellAction::Continue
+                    }
                     services::ServiceWorkspaceAction::Create { stop_station_ids } => {
                         ShellAction::Player(AppCommand::CreatePassengerService { stop_station_ids })
                     }
