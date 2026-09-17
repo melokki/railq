@@ -276,11 +276,7 @@ pub(super) fn insert_state(
                 params![train_id.to_string(), service_id.to_string()],
             )
             .map_err(|source| {
-                db_error(
-                    "write Train Passenger Service assignments to",
-                    path,
-                    source,
-                )
+                db_error("write Train Passenger Service assignments to", path, source)
             })?;
     }
 
@@ -843,7 +839,10 @@ fn load_infrastructure_projects(
     Ok(projects)
 }
 
-pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<GameState>, SaveSlotError> {
+pub(super) fn load_state(
+    connection: &Connection,
+    path: &Path,
+) -> Result<Option<GameState>, SaveSlotError> {
     let meta = connection
         .query_row(
             "SELECT world_seed, last_processed_at FROM game_meta WHERE singleton = 1",
@@ -1136,7 +1135,12 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
         |row| {
             Ok((
                 row_domain_id(row, 0, "Train assignment Train ID", TrainId::parse)?,
-                row_domain_id(row, 1, "Train assignment Passenger Service ID", ServiceId::parse)?,
+                row_domain_id(
+                    row,
+                    1,
+                    "Train assignment Passenger Service ID",
+                    ServiceId::parse,
+                )?,
             ))
         },
     )?
@@ -1353,4 +1357,3 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
     };
     Ok(Some(state))
 }
-

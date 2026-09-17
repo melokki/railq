@@ -22,12 +22,12 @@ use network::schematic_layout;
 pub use network::{
     MapFocus, MapSelections, SettlementSelection, StationSelection, render_dashboard,
 };
-use operational::{MapDirection, operational_layout, render_operational_map};
 pub(crate) use operational::render_service_route_preview;
+use operational::{MapDirection, operational_layout, render_operational_map};
 #[cfg(test)]
 use operational::{
     focus_rank, journey_route_segments, map_place_label, place_link_distance_label,
-    point_along_orthogonal_rail, point_along_rendered_rail, selected_neighbours,
+    point_along_orthogonal_rail, selected_neighbours,
 };
 #[cfg(test)]
 use shared::journey_progress_percent;
@@ -141,8 +141,8 @@ impl MapWorkspace {
                 WorldDetailsKeyAction::Closed
             }
             KeyCode::Char(
-                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
-                | 'a' | 'A' | 'u' | 'U',
+                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A'
+                | 'u' | 'U',
             ) => {
                 self.world_details_visible = false;
                 WorldDetailsKeyAction::ClosedForNavigation
@@ -168,8 +168,8 @@ impl MapWorkspace {
                 MovementsKeyAction::Closed
             }
             KeyCode::Char(
-                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
-                | 'a' | 'A' | 'u' | 'U',
+                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A'
+                | 'u' | 'U',
             ) => {
                 self.movements_visible = false;
                 self.movements_scroll_offset = 0;
@@ -431,14 +431,15 @@ mod tests {
             fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
             world::create_new_game,
         },
+        ui::map::operational::{point_along_rendered_rail, ready_station_ids},
     };
 
     use super::geometry::{MapCell, RAIL_LEFT, RAIL_RIGHT, rail_glyph};
     use super::{
         MapWorkspace, MapWorkspaceAction, MovementsKeyAction, WorldDetailsKeyAction, focus_rank,
         journey_progress_percent, journey_route_segments, map_place_label, operational_layout,
-        place_link_distance_label, point_along_orthogonal_rail, ready_station_ids, render_at,
-        schematic_layout, selected_neighbours,
+        place_link_distance_label, point_along_orthogonal_rail, render_at, schematic_layout,
+        selected_neighbours,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
@@ -622,7 +623,7 @@ mod tests {
         purchase_train(&mut state, 0, station_id).unwrap();
         purchase_train(&mut state, 0, station_id).unwrap();
 
-        let mut workspace = MapWorkspace::default();
+        let workspace = MapWorkspace::default();
         let dispatch = workspace
             .shortcuts(&state, false)
             .into_iter()

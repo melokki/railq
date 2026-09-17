@@ -17,9 +17,7 @@ use crate::{
 };
 
 use super::{
-    MapWorkspace,
-    network::station_name,
-    operational::journey_next_stop_station_id,
+    MapWorkspace, network::station_name, operational::journey_next_stop_station_id,
     shared::remaining_seconds,
 };
 
@@ -180,16 +178,13 @@ fn render_ready_trains(
                 Cell::from(station_name(state, station_id)),
             ])
         });
-    let table = Table::new(
-        rows,
-        [Constraint::Length(10), Constraint::Min(1)],
-    )
-    .header(
-        Row::new(["TRAIN", "LOCATION"])
-            .style(theme::table_header())
-            .bottom_margin(1),
-    )
-    .style(theme::panel());
+    let table = Table::new(rows, [Constraint::Length(10), Constraint::Min(1)])
+        .header(
+            Row::new(["TRAIN", "LOCATION"])
+                .style(theme::table_header())
+                .bottom_margin(1),
+        )
+        .style(theme::panel());
     frame.render_widget(table, table_area);
 }
 

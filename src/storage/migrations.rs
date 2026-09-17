@@ -2114,7 +2114,10 @@ fn migrate_v28_to_v29(connection: &Connection, path: &Path) -> Result<(), SaveSl
 
     let migration = (|| -> Result<(), SaveSlotError> {
         connection
-            .execute("UPDATE passenger_services SET direction_mode = 'forward'", [])
+            .execute(
+                "UPDATE passenger_services SET direction_mode = 'forward'",
+                [],
+            )
             .map_err(|source| {
                 db_error(
                     "reset Passenger Service direction modes during v29 migration in",
@@ -2208,11 +2211,8 @@ fn migrate_v28_passenger_services(
             "SELECT rail_line_id FROM service_lines WHERE service_id = ?1 ORDER BY sequence",
             &service_id,
         )?;
-        let reversible = stored_service_route_is_reversible(
-            &stop_station_ids,
-            &rail_line_ids,
-            &line_endpoints,
-        );
+        let reversible =
+            stored_service_route_is_reversible(&stop_station_ids, &rail_line_ids, &line_endpoints);
         services.push(V28PassengerServiceRoute {
             has_active_journey: active_service_ids.contains(&service_id),
             id: service_id,
@@ -2331,9 +2331,13 @@ fn ordered_service_ids(
     sql: &str,
     service_id: &str,
 ) -> Result<Vec<String>, SaveSlotError> {
-    let mut statement = connection
-        .prepare(sql)
-        .map_err(|source| db_error("prepare Passenger Service migration query for", path, source))?;
+    let mut statement = connection.prepare(sql).map_err(|source| {
+        db_error(
+            "prepare Passenger Service migration query for",
+            path,
+            source,
+        )
+    })?;
     let rows = statement
         .query_map(params![service_id], |row| row.get::<_, String>(0))
         .map_err(|source| db_error("query Passenger Service migration data from", path, source))?;
@@ -2461,14 +2465,15 @@ fn migrate_v29_to_v30(connection: &Connection, path: &Path) -> Result<(), SaveSl
         let mut next_train_number = 100_i64;
         for (service_id, direction_mode) in services {
             let reverse_train_number = if direction_mode == "both" {
-                let reverse = next_train_number.checked_add(1).ok_or_else(|| {
-                    SaveSlotError::InvalidSave {
-                        path: path.to_path_buf(),
-                        source: Box::new(SaveCodecError::InvalidValue {
-                            field: "Passenger Service train number",
-                        }),
-                    }
-                })?;
+                let reverse =
+                    next_train_number
+                        .checked_add(1)
+                        .ok_or_else(|| SaveSlotError::InvalidSave {
+                            path: path.to_path_buf(),
+                            source: Box::new(SaveCodecError::InvalidValue {
+                                field: "Passenger Service train number",
+                            }),
+                        })?;
                 Some(reverse)
             } else {
                 None
@@ -2569,7 +2574,6 @@ fn migrate_v30_to_v31(connection: &Connection, path: &Path) -> Result<(), SaveSl
         }
     }
 }
-
 
 fn migrate_v31_to_v32(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
     connection

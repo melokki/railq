@@ -17,14 +17,17 @@ use ratatui::{
     },
 };
 
-use super::shared::{format_distance, train_model_name};
-use super::operational::market_maturity_percent;
 use super::journeys::{
     JourneySelection, render_compact_journey_board, render_journey_inspector,
     render_journey_workspace,
 };
+use super::operational::market_maturity_percent;
+use super::shared::{format_distance, train_model_name};
 use crate::{
-    model::{GameState, RailStation, RailStationId, Settlement, SettlementId, Train, TrainStatus, UtcSeconds},
+    model::{
+        GameState, RailStation, RailStationId, Settlement, SettlementId, Train, TrainStatus,
+        UtcSeconds,
+    },
     sim::demand::effective_arrival_rate_per_hour,
     ui::theme,
 };

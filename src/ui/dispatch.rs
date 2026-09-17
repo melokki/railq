@@ -123,7 +123,9 @@ impl DispatchWorkspace {
         state: &GameState,
         service_id: ServiceId,
     ) -> Result<(), String> {
-        self.flow = Some(DispatchFlow::start_with_selected_service(state, service_id)?);
+        self.flow = Some(DispatchFlow::start_with_selected_service(
+            state, service_id,
+        )?);
         self.returns_to_fleet = false;
         Ok(())
     }
@@ -324,7 +326,12 @@ impl DispatchFlow {
             .passenger_services
             .iter()
             .find(|service| service.id == service_id)
-            .ok_or_else(|| format!("Passenger Service R{} is no longer available.", service_id.get()))?;
+            .ok_or_else(|| {
+                format!(
+                    "Passenger Service R{} is no longer available.",
+                    service_id.get()
+                )
+            })?;
         let train_ids = dispatchable_train_ids_for_context(state, None, Some(service_id));
         if train_ids.is_empty() {
             return Err(format!(
@@ -784,12 +791,26 @@ fn dispatch_footer_line(
         DispatchStep::SelectTrain { .. } if width >= 76 => modal::shortcut_line(&[
             ("↑/↓", "choose"),
             ("PgUp/PgDn", "scroll"),
-            ("Enter", if service_preselected { "review" } else { "service" }),
+            (
+                "Enter",
+                if service_preselected {
+                    "review"
+                } else {
+                    "service"
+                },
+            ),
             ("Esc", "cancel"),
         ]),
         DispatchStep::SelectTrain { .. } => modal::shortcut_line(&[
             ("↑/↓", "choose"),
-            ("Enter", if service_preselected { "review" } else { "service" }),
+            (
+                "Enter",
+                if service_preselected {
+                    "review"
+                } else {
+                    "service"
+                },
+            ),
             ("Esc", "cancel"),
         ]),
         DispatchStep::SelectService { .. } if width >= 82 => modal::shortcut_line(&[
@@ -807,7 +828,14 @@ fn dispatch_footer_line(
         ]),
         DispatchStep::Confirm { .. } => modal::shortcut_line(&[
             ("Enter", "dispatch"),
-            ("←", if service_preselected { "train" } else { "service" }),
+            (
+                "←",
+                if service_preselected {
+                    "train"
+                } else {
+                    "service"
+                },
+            ),
             ("Esc", "cancel"),
         ]),
     }
@@ -918,9 +946,7 @@ fn render_quote_review(
         occupancy_area,
     );
 
-    let mut terms = vec![
-        Line::styled("PAID AT DEPARTURE", theme::warning()),
-    ];
+    let mut terms = vec![Line::styled("PAID AT DEPARTURE", theme::warning())];
     if quote.infrastructure_access_fee_credit > Money::ZERO {
         terms.push(money_pair_line(
             "Access before credit",
@@ -1138,9 +1164,9 @@ fn render_train_chooser(
                     theme::secondary(),
                 ),
                 Span::styled(
-                    service_context
-                        .or(origin)
-                        .unwrap_or_else(|| "Choose a Train; its current station becomes the origin.".into()),
+                    service_context.or(origin).unwrap_or_else(|| {
+                        "Choose a Train; its current station becomes the origin.".into()
+                    }),
                     theme::primary_value(),
                 ),
             ]),

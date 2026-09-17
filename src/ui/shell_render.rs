@@ -125,7 +125,9 @@ pub(super) fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state:
             .authority_workspace
             .render_dashboard(frame, content_area, state, now);
     } else if shell.active_view == View::Bulletin && !is_bankrupt(state) {
-        shell.bulletin_workspace.render(frame, content_area, state, now);
+        shell
+            .bulletin_workspace
+            .render(frame, content_area, state, now);
     } else {
         let content = if is_bankrupt(state) {
             bankruptcy_text(false)

@@ -17,9 +17,9 @@ use crate::{
     ui::theme,
 };
 
-use super::shared::{format_duration, journey_progress_percent, remaining_seconds};
 use super::network::{labelled_line, panel_block, station_name};
 use super::operational::journey_next_stop_station_id;
+use super::shared::{format_duration, journey_progress_percent, remaining_seconds};
 
 /// Presentation-only selection for the active departure board.
 ///

@@ -1098,7 +1098,10 @@ pub fn render_dashboard(
 
 fn catalogue_header_row(headers: Vec<&str>) -> Row<'static> {
     Row::new(headers.into_iter().map(|header| {
-        if matches!(header, "Seats" | "Top speed" | "Fuel/km" | "Owned" | "Price") {
+        if matches!(
+            header,
+            "Seats" | "Top speed" | "Fuel/km" | "Owned" | "Price"
+        ) {
             Cell::from(Text::from(header.to_owned()).right_aligned())
         } else {
             Cell::from(header.to_owned())
@@ -1515,7 +1518,6 @@ fn render_delivery_inspector(
         area,
     );
 }
-
 
 fn render_selected(state: &GameState, selected_catalogue_index: usize) -> String {
     let mut output = String::from("Market\n");

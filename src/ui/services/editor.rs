@@ -47,11 +47,7 @@ impl CreateServiceFlow {
         }
     }
 
-    pub(super) fn handle_key(
-        &mut self,
-        key: KeyCode,
-        state: &GameState,
-    ) -> ServiceWorkspaceAction {
+    pub(super) fn handle_key(&mut self, key: KeyCode, state: &GameState) -> ServiceWorkspaceAction {
         if self.review {
             return match key {
                 KeyCode::Enter => match self.editing_service_id {
@@ -199,12 +195,7 @@ impl CreateServiceFlow {
     }
 }
 
-pub(super) fn render(
-    frame: &mut Frame,
-    area: Rect,
-    state: &GameState,
-    flow: &CreateServiceFlow,
-) {
+pub(super) fn render(frame: &mut Frame, area: Rect, state: &GameState, flow: &CreateServiceFlow) {
     let title = flow
         .editing_service_id
         .and_then(|service_id| {
@@ -216,12 +207,7 @@ pub(super) fn render(
                 .map(|service| format!("Edit Passenger Service · {}", service.display_name()))
         })
         .unwrap_or_else(|| "Create Passenger Service".to_owned());
-    let modal_areas = modal::render_shell(
-        frame,
-        area,
-        &title,
-        footer_line(flow, area.width),
-    );
+    let modal_areas = modal::render_shell(frame, area, &title, footer_line(flow, area.width));
 
     if flow.review {
         render_review(frame, modal_areas.body, state, flow);
@@ -266,7 +252,11 @@ fn footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'static> {
 
 fn render_picker(frame: &mut Frame, area: Rect, state: &GameState, flow: &CreateServiceFlow) {
     let status_rows = if flow.error.is_some() { 2 } else { 0 };
-    let route_strip_rows = if flow.stop_station_ids.is_empty() { 0 } else { 1 };
+    let route_strip_rows = if flow.stop_station_ids.is_empty() {
+        0
+    } else {
+        1
+    };
     let [context_area, content_area, status_area, route_strip_area] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(5),
@@ -295,7 +285,10 @@ fn render_picker(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
             ]),
             Line::from(vec![
                 Span::styled("DIRECTION  ", theme::secondary()),
-                Span::styled(direction_mode_display(flow.direction_mode), theme::primary_value()),
+                Span::styled(
+                    direction_mode_display(flow.direction_mode),
+                    theme::primary_value(),
+                ),
                 Span::styled("   [M] change", theme::secondary()),
             ]),
         ])
@@ -380,12 +373,7 @@ fn render_picker(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
     }
 }
 
-fn render_route_strip(
-    frame: &mut Frame,
-    area: Rect,
-    state: &GameState,
-    flow: &CreateServiceFlow,
-) {
+fn render_route_strip(frame: &mut Frame, area: Rect, state: &GameState, flow: &CreateServiceFlow) {
     if area.width == 0 || flow.stop_station_ids.is_empty() {
         return;
     }
@@ -402,8 +390,8 @@ fn render_route_strip(
             .iter()
             .position(|selected_id| *selected_id == station_id)
     });
-    let focus_index = selected_route_index
-        .unwrap_or_else(|| flow.stop_station_ids.len().saturating_sub(1));
+    let focus_index =
+        selected_route_index.unwrap_or_else(|| flow.stop_station_ids.len().saturating_sub(1));
 
     let labels = flow
         .stop_station_ids
@@ -639,7 +627,10 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
             ]),
             Line::from(vec![
                 Span::styled("MODE       ", theme::secondary()),
-                Span::styled(direction_mode_label(flow.direction_mode), theme::primary_value()),
+                Span::styled(
+                    direction_mode_label(flow.direction_mode),
+                    theme::primary_value(),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("DISTANCE   ", theme::secondary()),

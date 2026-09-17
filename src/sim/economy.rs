@@ -279,8 +279,8 @@ pub fn quote_journey(
             access_fee_rate,
             infrastructure_access_fee_before_credit,
         )?;
-    let infrastructure_access_fee = infrastructure_access_fee_before_credit
-        .checked_sub(infrastructure_access_fee_credit)?;
+    let infrastructure_access_fee =
+        infrastructure_access_fee_before_credit.checked_sub(infrastructure_access_fee_credit)?;
     let fuel_cost = train_model
         .fuel_cost_per_kilometre()
         .checked_charge(distance)?;
@@ -596,8 +596,8 @@ mod tests {
         balance::BalanceConfig,
         model::{
             DemandRules, Financials, Fleet, GameRules, MarketMaturity, OriginDestinationDemand,
-            PassengerArrivalRate, PassengerService, PlayerCompany, RailAuthority,
-            RailLine, RailNetwork, RailStation, Settlement, Train, UtcSeconds,
+            PassengerArrivalRate, PassengerService, PlayerCompany, RailAuthority, RailLine,
+            RailNetwork, RailStation, Settlement, Train, UtcSeconds,
         },
     };
 
@@ -841,16 +841,19 @@ mod tests {
     fn assigned_train_cannot_quote_a_different_service() {
         let mut state = fixture();
         let assigned_service_id = ServiceId::new(2);
-        state.player_company.passenger_services.push(PassengerService {
-            id: assigned_service_id,
-            name: "R2".into(),
-            custom_name: None,
-            direction_mode: ServiceDirectionMode::BothDirections,
-            forward_train_number: 102,
-            reverse_train_number: Some(103),
-            stop_station_ids: vec![ORIGIN, RailStationId::new(2)],
-            rail_line_ids: vec![FIRST_LINE],
-        });
+        state
+            .player_company
+            .passenger_services
+            .push(PassengerService {
+                id: assigned_service_id,
+                name: "R2".into(),
+                custom_name: None,
+                direction_mode: ServiceDirectionMode::BothDirections,
+                forward_train_number: 102,
+                reverse_train_number: Some(103),
+                stop_station_ids: vec![ORIGIN, RailStationId::new(2)],
+                rail_line_ids: vec![FIRST_LINE],
+            });
         state
             .player_company
             .fleet
@@ -913,9 +916,11 @@ mod tests {
 
         let quote = quote_journey(&state, TRAIN_ID, SERVICE_ID).unwrap();
 
-        assert_eq!(quote.infrastructure_access_fee_before_credit, Money::from_cents(8));
+        assert_eq!(
+            quote.infrastructure_access_fee_before_credit,
+            Money::from_cents(8)
+        );
         assert_eq!(quote.infrastructure_access_fee_credit, Money::from_cents(5));
         assert_eq!(quote.infrastructure_access_fee, Money::from_cents(3));
     }
-
 }

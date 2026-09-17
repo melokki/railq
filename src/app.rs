@@ -386,7 +386,9 @@ impl<S: GameStore> App<S> {
             .iter()
             .find(|service| service.id == service_id)
             .map(|service| service.direction_mode)
-            .ok_or(AppError::Service(ServiceError::ServiceNotFound { service_id }))?;
+            .ok_or(AppError::Service(ServiceError::ServiceNotFound {
+                service_id,
+            }))?;
         self.update_passenger_service_with_mode(service_id, stop_station_ids, direction_mode, now)
     }
 
@@ -626,12 +628,15 @@ mod tests {
 
     use crate::{
         catalog::train_catalogue,
-        model::{GameState, RailStationId, TrainNickname, TrainStatus, UtcSeconds},
+        model::{
+            GameState, RailStationId, ServiceDirectionMode, TrainNickname, TrainStatus, UtcSeconds,
+        },
         sim::{
             economy::quote_journey,
             fleet::{FleetError, purchase_train},
             journeys::dispatch_journey,
-            services::find_or_create_service, world::create_new_game,
+            services::find_or_create_service,
+            world::create_new_game,
         },
     };
 
@@ -718,14 +723,9 @@ mod tests {
             )
             .unwrap();
 
+        assert_eq!(result, AppCommandResult::TrainNicknameUpdated { train_id });
         assert_eq!(
-            result,
-            AppCommandResult::TrainNicknameUpdated { train_id }
-        );
-        assert_eq!(
-            app.state().player_company.fleet.trains[0]
-                .nickname
-                .as_ref(),
+            app.state().player_company.fleet.trains[0].nickname.as_ref(),
             Some(&nickname)
         );
         assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
@@ -794,14 +794,9 @@ mod tests {
             )
             .unwrap();
 
+        assert_eq!(result, AppCommandResult::TrainNicknameUpdated { train_id });
         assert_eq!(
-            result,
-            AppCommandResult::TrainNicknameUpdated { train_id }
-        );
-        assert_eq!(
-            app.state().player_company.fleet.trains[0]
-                .nickname
-                .as_ref(),
+            app.state().player_company.fleet.trains[0].nickname.as_ref(),
             Some(&nickname)
         );
         assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());

@@ -227,10 +227,16 @@ pub(super) fn render(
     } else if state.player_company.fleet.trains.is_empty() {
         vec![
             Line::styled("No Trains", theme::title()),
-            Line::styled("Buy a Train before assigning fleet to this Service.", theme::secondary()),
+            Line::styled(
+                "Buy a Train before assigning fleet to this Service.",
+                theme::secondary(),
+            ),
         ]
     } else if let Some(service) = service {
-        let route = match (service.stop_station_ids.first(), service.stop_station_ids.last()) {
+        let route = match (
+            service.stop_station_ids.first(),
+            service.stop_station_ids.last(),
+        ) {
             (Some(origin), Some(destination)) => format!(
                 "{} {} {}",
                 station_label(state, *origin),
@@ -305,8 +311,7 @@ pub(super) fn render(
         ],
     )
     .header(
-        Row::new(["Train", "Name", "State", "Location", "Assignment"])
-            .style(theme::table_header()),
+        Row::new(["Train", "Name", "State", "Location", "Assignment"]).style(theme::table_header()),
     )
     .style(theme::panel())
     .row_highlight_style(theme::selected_row())
@@ -357,8 +362,7 @@ mod tests {
 
     #[test]
     fn service_assignment_can_assign_and_unassign_a_train() {
-        let mut state =
-            create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
         state.player_company.funds = Money::from_cents(10_000_000);
         let service_id = create_service(
             &mut state,
@@ -386,8 +390,7 @@ mod tests {
 
     #[test]
     fn service_assignment_reassigns_a_ready_train_from_another_service() {
-        let mut state =
-            create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
         state.player_company.funds = Money::from_cents(10_000_000);
         let first_service_id = create_service(
             &mut state,

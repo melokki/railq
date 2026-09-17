@@ -203,7 +203,11 @@ pub fn sell_train(state: &mut GameState, train_id: TrainId) -> Result<Money, Fle
 
     state.player_company.funds = funds_after_sale;
     state.player_company.fleet.trains.remove(train_index);
-    state.player_company.fleet.service_assignments.remove(&train_id);
+    state
+        .player_company
+        .fleet
+        .service_assignments
+        .remove(&train_id);
     Ok(proceeds)
 }
 
@@ -412,7 +416,10 @@ mod tests {
 
         sell_train(&mut state, train_id).unwrap();
 
-        assert_eq!(state.player_company.fleet.assigned_service_id(train_id), None);
+        assert_eq!(
+            state.player_company.fleet.assigned_service_id(train_id),
+            None
+        );
     }
 
     #[test]

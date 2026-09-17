@@ -9,8 +9,8 @@ use std::{error::Error, fmt};
 
 use crate::{
     model::{
-        CalculationError, GameState, InfrastructureProjectId, Journey, JourneyId, JourneyPassengerGroup, Money,
-        RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
+        CalculationError, GameState, InfrastructureProjectId, Journey, JourneyId,
+        JourneyPassengerGroup, Money, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
     },
     sim::economy::{EconomyError, quote_journey},
 };
@@ -356,7 +356,10 @@ mod tests {
 
         assert_eq!(journey.origin_station_id, DESTINATION);
         assert_eq!(journey.destination_station_id, ORIGIN);
-        assert_eq!(journey.current_stop_index, service.stop_station_ids.len() - 1);
+        assert_eq!(
+            journey.current_stop_index,
+            service.stop_station_ids.len() - 1
+        );
     }
 
     #[test]

@@ -13,8 +13,7 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
     widgets::{
-        Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table,
-        TableState, Wrap,
+        Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
     },
 };
 
@@ -438,12 +437,13 @@ impl CompanyWorkspace {
         }
         items.push(CompanyShortcut::enabled("V", "Edit VKM"));
 
-        let recovery_available = evaluate_financial_recovery(state)
-            .ok()
-            .is_some_and(|evaluation| {
-                evaluation.status == FinancialStatus::Insolvent
-                    && !evaluation.recovery_options.is_empty()
-            });
+        let recovery_available =
+            evaluate_financial_recovery(state)
+                .ok()
+                .is_some_and(|evaluation| {
+                    evaluation.status == FinancialStatus::Insolvent
+                        && !evaluation.recovery_options.is_empty()
+                });
         items.push(if recovery_available {
             CompanyShortcut::enabled("R", "Recovery")
         } else {
@@ -480,10 +480,7 @@ impl CompanyWorkspace {
             ];
         }
 
-        let mut lines = vec![
-            "Current · Company".into(),
-            "v Edit Company VKM".into(),
-        ];
+        let mut lines = vec!["Current · Company".into(), "v Edit Company VKM".into()];
         if state.financials.recent_journey_receipts.is_empty() {
             lines.extend([
                 "No settled Journey receipts yet".into(),
@@ -573,7 +570,11 @@ impl CompanyWorkspace {
                 CompanyWorkspaceAction::ClearNotice
             }
             KeyCode::Char('r' | 'R') if !self.receipt_details_open => {
-                if self.recovery_selection.selected_destination(state).is_some() {
+                if self
+                    .recovery_selection
+                    .selected_destination(state)
+                    .is_some()
+                {
                     self.recovery_review_open = true;
                     self.receipt_details_open = false;
                     CompanyWorkspaceAction::ClearNotice
@@ -979,7 +980,12 @@ fn render_wide_dashboard(
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
-    let [identity_area, performance_area, operations_area, history_area] = Layout::vertical([
+    let [
+        identity_area,
+        performance_area,
+        operations_area,
+        history_area,
+    ] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(5),
         Constraint::Length(4),

@@ -544,7 +544,11 @@ fn service_preview_layout(
     let station_to_settlement = layout
         .places
         .iter()
-        .filter_map(|place| place.station_id.map(|station_id| (station_id, place.settlement_id)))
+        .filter_map(|place| {
+            place
+                .station_id
+                .map(|station_id| (station_id, place.settlement_id))
+        })
         .collect::<BTreeMap<_, _>>();
 
     let mut focus = BTreeSet::new();
@@ -582,10 +586,12 @@ fn service_preview_layout(
 
     let mut context_candidates = BTreeSet::new();
     for line in &layout.lines {
-        if focus.contains(&line.first_settlement_id) && !focus.contains(&line.second_settlement_id) {
+        if focus.contains(&line.first_settlement_id) && !focus.contains(&line.second_settlement_id)
+        {
             context_candidates.insert(line.second_settlement_id);
         }
-        if focus.contains(&line.second_settlement_id) && !focus.contains(&line.first_settlement_id) {
+        if focus.contains(&line.second_settlement_id) && !focus.contains(&line.first_settlement_id)
+        {
             context_candidates.insert(line.first_settlement_id);
         }
     }
@@ -834,9 +840,8 @@ fn render_map_rows_with_overlay(
                 .station_id
                 .is_some_and(|station_id| overlay.stop_order.contains_key(&station_id))
         });
-        let preview_cursor = overlay.is_some_and(|overlay| {
-            place.station_id == overlay.highlighted_station_id
-        });
+        let preview_cursor =
+            overlay.is_some_and(|overlay| place.station_id == overlay.highlighted_station_id);
         let preview_stop_order = overlay.and_then(|overlay| {
             place
                 .station_id
@@ -916,9 +921,8 @@ fn render_map_rows_with_overlay(
                 .station_id
                 .and_then(|station_id| overlay.stop_order.get(&station_id).copied())
         });
-        let preview_cursor = overlay.is_some_and(|overlay| {
-            place.station_id == overlay.highlighted_station_id
-        });
+        let preview_cursor =
+            overlay.is_some_and(|overlay| place.station_id == overlay.highlighted_station_id);
 
         // The service editor is smaller than the full Map. Keep the exact same
         // topology, but reserve scarce label space for Rail Stations and the
@@ -954,14 +958,7 @@ fn render_map_rows_with_overlay(
             // station marker; the route strip below the map remains the exact
             // ordered fallback if the map is genuinely too dense to label all
             // route stations at once.
-            try_place_service_preview_label(
-                &mut grid,
-                x,
-                y,
-                &label,
-                ink,
-                preferred_direction,
-            );
+            try_place_service_preview_label(&mut grid, x, y, &label, ink, preferred_direction);
         } else {
             place_map_label(&mut grid, x, y, &label, ink, preferred_direction);
         }
@@ -974,8 +971,7 @@ fn render_map_rows_with_overlay(
     if overlay.is_none() {
         if let Some(selected_id) = selected {
             for line in layout.lines.iter().filter(|line| {
-                line.first_settlement_id == selected_id
-                    || line.second_settlement_id == selected_id
+                line.first_settlement_id == selected_id || line.second_settlement_id == selected_id
             }) {
                 let (Some(first), Some(second)) = (
                     by_id.get(&line.first_settlement_id),
@@ -1085,12 +1081,7 @@ fn journey_map_marker(
             } else {
                 ((travelled_metres - distance_before) / segment_distance).clamp(0.0, 1.0)
             };
-            return journey_segment_map_marker(
-                state,
-                segment,
-                station_positions,
-                local_progress,
-            );
+            return journey_segment_map_marker(state, segment, station_positions, local_progress);
         }
         distance_before = distance_after;
     }
@@ -1542,14 +1533,7 @@ fn place_map_label(
     ink: MapInk,
     preferred_direction: Option<MapDirection>,
 ) {
-    if try_place_map_label(
-        grid,
-        marker_x,
-        marker_y,
-        text,
-        ink,
-        preferred_direction,
-    ) {
+    if try_place_map_label(grid, marker_x, marker_y, text, ink, preferred_direction) {
         return;
     }
 

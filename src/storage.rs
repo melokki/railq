@@ -46,8 +46,8 @@ use crate::{
         PassengerService, PlannedRailLine, PlannedRailStation, PlayerCompany, RailAuthority,
         RailAuthorityFinances, RailLine, RailLineId, RailNetwork, RailStation, RailStationId,
         RailwayRegistration, Region, ServiceDirectionMode, ServiceId, Settlement, SettlementId,
-        SpeedKilometresPerHour, TrackCount, Train, TrainId, TrainModelId, TrainNickname, TrainStatus, UtcSeconds,
-        VehicleKeeperMark, WorldPosition,
+        SpeedKilometresPerHour, TrackCount, Train, TrainId, TrainModelId, TrainNickname,
+        TrainStatus, UtcSeconds, VehicleKeeperMark, WorldPosition,
     },
     sim::{
         demand::waiting_passenger_cap,
@@ -67,7 +67,6 @@ pub const DEFAULT_SAVE_PATH: &str = "railq.db";
 /// Previous default RON save. `open_default` imports it once when no database
 /// exists yet, leaving the source file untouched as a player-visible backup.
 pub const LEGACY_SAVE_PATH: &str = "railq.ron";
-
 
 use self::support::*;
 

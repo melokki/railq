@@ -11,9 +11,7 @@ use railq::{
         DurationSeconds, GameState, MarketMaturity, Money, PassengerArrivalRate, RailStationId,
         TrainStatus, UtcSeconds,
     },
-    sim::{
-        fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service,
-    },
+    sim::{fleet::purchase_train, journeys::dispatch_journey, services::find_or_create_service},
     storage::SaveSlot,
 };
 

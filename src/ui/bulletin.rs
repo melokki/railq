@@ -136,13 +136,7 @@ impl BulletinWorkspace {
         self.table_state.select(Some(selected));
     }
 
-    fn render_summary(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        state: &GameState,
-        now: UtcSeconds,
-    ) {
+    fn render_summary(&self, frame: &mut Frame, area: Rect, state: &GameState, now: UtcSeconds) {
         let entries = visible_entries(state, self.filter);
         let visible = entries.len();
         let total = state.region.bulletin.len();

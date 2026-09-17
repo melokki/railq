@@ -83,7 +83,6 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     );
 }
 
-
 #[test]
 fn service_editor_can_create_an_explicit_one_way_service() {
     let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
@@ -155,7 +154,6 @@ fn existing_services_are_listed_and_can_request_deletion() {
         ShellAction::Player(AppCommand::DeletePassengerService { service_id })
     );
 }
-
 
 #[test]
 fn passenger_service_can_set_a_shared_commercial_name() {

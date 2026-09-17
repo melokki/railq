@@ -15,7 +15,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     catalog::model_for_train,
-    model::{GameState, PassengerService, RailStationId, ServiceDirectionMode, ServiceId, TrainStatus},
+    model::{
+        GameState, PassengerService, RailStationId, ServiceDirectionMode, ServiceId, TrainStatus,
+    },
     sim::demand::effective_arrival_rate_per_hour,
 };
 
@@ -178,9 +180,13 @@ impl ServiceWorkspace {
                     self.assignment_flow = None;
                     ServiceWorkspaceAction::Continue
                 }
-                ServiceTrainAssignmentAction::Assign { train_id, service_id } => {
-                    ServiceWorkspaceAction::AssignTrain { train_id, service_id }
-                }
+                ServiceTrainAssignmentAction::Assign {
+                    train_id,
+                    service_id,
+                } => ServiceWorkspaceAction::AssignTrain {
+                    train_id,
+                    service_id,
+                },
                 ServiceTrainAssignmentAction::Unassign { train_id } => {
                     ServiceWorkspaceAction::UnassignTrain { train_id }
                 }
@@ -436,7 +442,11 @@ impl ServiceWorkspace {
         actions.extend([
             ("Enter", "Run", has_services),
             ("N", "New", true),
-            ("A", "Assign train", has_services && !state.player_company.fleet.trains.is_empty()),
+            (
+                "A",
+                "Assign train",
+                has_services && !state.player_company.fleet.trains.is_empty(),
+            ),
             ("R", "Name", has_services),
             ("E", "Edit", can_edit),
             ("Del", "Delete", can_delete),
@@ -1015,7 +1025,9 @@ fn service_assigned_fleet_lines(
         .fleet
         .trains
         .iter()
-        .filter(|train| state.player_company.fleet.assigned_service_id(train.id) == Some(service.id))
+        .filter(|train| {
+            state.player_company.fleet.assigned_service_id(train.id) == Some(service.id)
+        })
         .take(limit)
         .map(|train| {
             let label = train
@@ -1024,16 +1036,12 @@ fn service_assigned_fleet_lines(
                 .map(|nickname| nickname.as_str().to_owned())
                 .unwrap_or_else(|| format!("Train {:02}", train.id.get()));
             let (status, detail, style) = match train.status {
-                TrainStatus::Ready { at } if service_accepts_departure(service, at) => (
-                    "READY",
-                    station_label(state, at),
-                    theme::success(),
-                ),
-                TrainStatus::Ready { at } => (
-                    "POSITION",
-                    station_label(state, at),
-                    theme::warning(),
-                ),
+                TrainStatus::Ready { at } if service_accepts_departure(service, at) => {
+                    ("READY", station_label(state, at), theme::success())
+                }
+                TrainStatus::Ready { at } => {
+                    ("POSITION", station_label(state, at), theme::warning())
+                }
                 TrainStatus::Travelling { journey_id } => {
                     let destination = state
                         .active_journeys
@@ -1114,8 +1122,7 @@ fn service_operating_snapshot(
         if let TrainStatus::Ready { at } = train.status
             && service_accepts_departure(service, at)
         {
-            snapshot.runnable_assigned_trains =
-                snapshot.runnable_assigned_trains.saturating_add(1);
+            snapshot.runnable_assigned_trains = snapshot.runnable_assigned_trains.saturating_add(1);
         }
     }
 
@@ -1339,9 +1346,7 @@ fn render_name_editor(
     let card_height = if editor.error.is_some() { 16 } else { 15 };
     let card = modal::editor_rect(area, card_height);
     let footer = if card.width >= 56 {
-        modal::shortcut_line(&[(
-            "Enter", "save"
-        ), ("Backspace", "erase"), ("Esc", "cancel")])
+        modal::shortcut_line(&[("Enter", "save"), ("Backspace", "erase"), ("Esc", "cancel")])
     } else {
         modal::shortcut_line(&[("Enter", "save"), ("Esc", "cancel")])
     };
@@ -1451,20 +1456,6 @@ fn service_route_label(state: &GameState, service: &PassengerService) -> String 
         ServiceDirectionMode::ForwardOnly => "→",
     };
     format!("{origin} {arrow} {destination}")
-}
-
-fn stop_direction_label(state: &GameState, stop_station_ids: &[RailStationId]) -> String {
-    let origin = stop_station_ids
-        .first()
-        .copied()
-        .map(|station_id| station_label(state, station_id))
-        .unwrap_or_else(|| "Unknown".into());
-    let destination = stop_station_ids
-        .last()
-        .copied()
-        .map(|station_id| station_label(state, station_id))
-        .unwrap_or_else(|| "Unknown".into());
-    format!("{origin} → {destination}")
 }
 
 fn truncate_display(value: &str, max_width: usize) -> String {

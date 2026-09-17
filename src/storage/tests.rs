@@ -12,6 +12,7 @@ use crate::{
         services::{assign_train_to_service, find_or_create_service},
         world::create_new_game,
     },
+    storage::{legacy::decode_legacy_game_state, migrations::ensure_schema},
 };
 
 use super::*;
@@ -51,8 +52,7 @@ fn active_game() -> GameState {
     state.player_company.fleet.trains[0].nickname =
         Some(TrainNickname::parse("Morning Star").unwrap());
     let service_id =
-        find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))
-            .unwrap();
+        find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2)).unwrap();
     assign_train_to_service(&mut state, train_id, service_id).unwrap();
     dispatch_journey(&mut state, train_id, service_id, departed_at).unwrap();
     state.origin_destination_demand[0].market_maturity =
@@ -92,8 +92,7 @@ fn sqlite_round_trips_all_current_operating_state() {
     let slot = SaveSlot::open(directory.save_path()).unwrap();
     let mut state = active_game();
     state.player_company.passenger_services[0].custom_name = Some("Capital Link".into());
-    state.player_company.passenger_services[0].direction_mode =
-        ServiceDirectionMode::ForwardOnly;
+    state.player_company.passenger_services[0].direction_mode = ServiceDirectionMode::ForwardOnly;
     state.player_company.passenger_services[0].reverse_train_number = None;
     state.region.rail_authority.construction_capacity = 2;
     state.region.bulletin.push(BulletinEntry {
@@ -476,8 +475,7 @@ fn v9_catalogue_ids_migrate_to_replacement_models() {
     let path = directory.save_path();
     {
         let slot = SaveSlot::open(&path).unwrap();
-        let mut state =
-            create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
         state.player_company.funds = Money::from_cents(1_000_000);
         purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
         purchase_train(&mut state, 1, RailStationId::new(1)).unwrap();
@@ -1538,7 +1536,9 @@ fn v28_migration_merges_idle_reciprocal_services_into_the_older_service() {
         )
         .unwrap();
     let service_count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM passenger_services", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM passenger_services", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     let retired_stop_count: i64 = connection
         .query_row(
@@ -1577,7 +1577,9 @@ fn v28_migration_preserves_the_active_direction_when_merging_a_pair() {
         )
         .unwrap();
     let active_service_id: String = connection
-        .query_row("SELECT service_id FROM active_journeys", [], |row| row.get(0))
+        .query_row("SELECT service_id FROM active_journeys", [], |row| {
+            row.get(0)
+        })
         .unwrap();
 
     assert_eq!(remaining, ("service-b".into(), "both".into()));
@@ -1602,7 +1604,9 @@ fn v28_migration_keeps_both_reciprocal_services_one_way_when_both_are_active() {
     ensure_schema(&connection, &path).unwrap();
 
     let service_count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM passenger_services", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM passenger_services", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     let bidirectional_count: i64 = connection
         .query_row(

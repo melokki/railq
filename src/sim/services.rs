@@ -124,7 +124,10 @@ impl fmt::Display for ServiceError {
                 PassengerService::MAX_CUSTOM_NAME_CHARACTERS
             ),
             Self::InvalidServiceName => {
-                write!(formatter, "Passenger Service name contains an invalid character")
+                write!(
+                    formatter,
+                    "Passenger Service name contains an invalid character"
+                )
             }
         }
     }
@@ -231,7 +234,12 @@ pub fn unassign_train_from_service(
         .iter()
         .find(|train| train.id == train_id)
         .ok_or(ServiceAssignmentError::TrainNotFound { train_id })?;
-    if state.player_company.fleet.assigned_service_id(train_id).is_none() {
+    if state
+        .player_company
+        .fleet
+        .assigned_service_id(train_id)
+        .is_none()
+    {
         return Ok(());
     }
     if let TrainStatus::Travelling { journey_id } = train.status {
@@ -241,7 +249,11 @@ pub fn unassign_train_from_service(
         });
     }
 
-    state.player_company.fleet.service_assignments.remove(&train_id);
+    state
+        .player_company
+        .fleet
+        .service_assignments
+        .remove(&train_id);
     Ok(())
 }
 
@@ -528,11 +540,9 @@ pub fn update_service_with_mode(
     let current_mode = state.player_company.passenger_services[index].direction_mode;
     let reverse_train_number = match (current_mode, direction_mode) {
         (ServiceDirectionMode::BothDirections, ServiceDirectionMode::ForwardOnly) => None,
-        (ServiceDirectionMode::ForwardOnly, ServiceDirectionMode::BothDirections) => {
-            Some(next_available_train_number(
-                &state.player_company.passenger_services,
-            )?)
-        }
+        (ServiceDirectionMode::ForwardOnly, ServiceDirectionMode::BothDirections) => Some(
+            next_available_train_number(&state.player_company.passenger_services)?,
+        ),
         (_, ServiceDirectionMode::BothDirections) => {
             state.player_company.passenger_services[index].reverse_train_number
         }
@@ -1010,7 +1020,10 @@ mod tests {
         );
 
         unassign_train_from_service(&mut game, train_id).unwrap();
-        assert_eq!(game.player_company.fleet.assigned_service_id(train_id), None);
+        assert_eq!(
+            game.player_company.fleet.assigned_service_id(train_id),
+            None
+        );
     }
 
     #[test]
@@ -1069,6 +1082,9 @@ mod tests {
         delete_service(&mut game, service_id).unwrap();
 
         assert!(game.player_company.passenger_services.is_empty());
-        assert_eq!(game.player_company.fleet.assigned_service_id(train_id), None);
+        assert_eq!(
+            game.player_company.fleet.assigned_service_id(train_id),
+            None
+        );
     }
 }

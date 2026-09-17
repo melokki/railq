@@ -168,10 +168,7 @@ pub(super) fn render_outcome_overlay(
     );
 }
 
-pub(super) fn render_bankruptcy_restart_confirmation(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-) {
+pub(super) fn render_bankruptcy_restart_confirmation(frame: &mut ratatui::Frame, area: Rect) {
     let card = modal::centered_rect(area, 70, 15);
     let modal_areas = modal::render_shell(
         frame,

@@ -16,8 +16,7 @@ use crate::{
         JourneyPassengerGroup, Money, MoneyPerKilometre, OriginDestinationDemand,
         PassengerCapacity, PassengerService, PlayerCompany, RailLineId, RailStationId, Region,
         ServiceDirectionMode, ServiceId, SpeedMetresPerSecond, Train, TrainId, TrainModelId,
-        TrainStatus, UtcSeconds,
-        VehicleKeeperMark,
+        TrainStatus, UtcSeconds, VehicleKeeperMark,
     },
     sim::world::railway_registration_for_existing_region,
 };
@@ -181,11 +180,12 @@ pub(super) fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCo
                 .ok_or(SaveCodecError::InvalidValue {
                     field: "Passenger Service train number",
                 })?;
-            let reverse_train_number = forward_train_number
-                .checked_add(1)
-                .ok_or(SaveCodecError::InvalidValue {
-                    field: "Passenger Service train number",
-                })?;
+            let reverse_train_number =
+                forward_train_number
+                    .checked_add(1)
+                    .ok_or(SaveCodecError::InvalidValue {
+                        field: "Passenger Service train number",
+                    })?;
             Ok(PassengerService {
                 id: service.id,
                 name: format!("R{}", service.id.get()),

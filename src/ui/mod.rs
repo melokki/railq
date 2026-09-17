@@ -4,7 +4,6 @@
 //! application boundary, where callers supply an elapsed-time reconciliation
 //! callback before the shell accepts each input event.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::{
     app::{AppCommand, AppCommandResult},
     model::{GameState, Money},
@@ -13,9 +12,11 @@ use crate::{
         time::SettledJourney,
     },
 };
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 pub mod authority;
 pub mod bulletin;
+mod chrome;
 pub mod company;
 pub mod components;
 pub mod dispatch;
@@ -25,12 +26,13 @@ pub mod layout;
 pub mod map;
 pub mod market;
 pub mod modal;
-mod chrome;
 use chrome::{HELP_PAGE_STEP, help_lines};
 mod overlays;
 use overlays::ActionOutcome;
 mod feedback;
-use feedback::{PendingAction, arrival_station_label, pending_dispatch, pending_purchase, pending_resale};
+use feedback::{
+    PendingAction, arrival_station_label, pending_dispatch, pending_purchase, pending_resale,
+};
 mod shell_render;
 use shell_render::render_frame;
 mod runtime;
@@ -334,7 +336,19 @@ impl Shell {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
-                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'u' | 'U'
+                    '1' | '2'
+                        | '3'
+                        | '4'
+                        | '5'
+                        | '6'
+                        | 't'
+                        | 'T'
+                        | 'b'
+                        | 'B'
+                        | 'c'
+                        | 'C'
+                        | 'u'
+                        | 'U'
                 )
             );
             if navigation_key {
@@ -348,7 +362,10 @@ impl Shell {
                         ShellAction::Continue
                     }
                     services::ServiceWorkspaceAction::RunService { service_id } => {
-                        match self.dispatch_workspace.start_from_service(state, service_id) {
+                        match self
+                            .dispatch_workspace
+                            .start_from_service(state, service_id)
+                        {
                             Ok(()) => self.notice = None,
                             Err(message) => self.notice = Some(message),
                         }
@@ -380,12 +397,13 @@ impl Shell {
                     services::ServiceWorkspaceAction::Delete { service_id } => {
                         ShellAction::Player(AppCommand::DeletePassengerService { service_id })
                     }
-                    services::ServiceWorkspaceAction::AssignTrain { train_id, service_id } => {
-                        ShellAction::Player(AppCommand::AssignTrainToService {
-                            train_id,
-                            service_id,
-                        })
-                    }
+                    services::ServiceWorkspaceAction::AssignTrain {
+                        train_id,
+                        service_id,
+                    } => ShellAction::Player(AppCommand::AssignTrainToService {
+                        train_id,
+                        service_id,
+                    }),
                     services::ServiceWorkspaceAction::UnassignTrain { train_id } => {
                         ShellAction::Player(AppCommand::UnassignTrainFromService { train_id })
                     }
@@ -525,8 +543,7 @@ impl Shell {
                     company::RecoveryDestination::Map => View::Map,
                 };
                 self.notice = Some(
-                    "Recovery route opened for review only; no action has been authorised."
-                        .into(),
+                    "Recovery route opened for review only; no action has been authorised.".into(),
                 );
                 ShellAction::Continue
             }
@@ -614,9 +631,13 @@ impl Shell {
                 }
                 ShellAction::Continue
             }
-            fleet::FleetWorkspaceAction::AssignService { train_id, service_id } => {
-                ShellAction::Player(AppCommand::AssignTrainToService { train_id, service_id })
-            }
+            fleet::FleetWorkspaceAction::AssignService {
+                train_id,
+                service_id,
+            } => ShellAction::Player(AppCommand::AssignTrainToService {
+                train_id,
+                service_id,
+            }),
             fleet::FleetWorkspaceAction::UnassignService { train_id } => {
                 ShellAction::Player(AppCommand::UnassignTrainFromService { train_id })
             }
@@ -704,9 +725,14 @@ impl Shell {
             }
             AppCommand::AssignTrainToService { .. }
             | AppCommand::UnassignTrainFromService { .. } => {
-                if self.service_workspace.reject_assignment(error.clone()).is_none() {
+                if self
+                    .service_workspace
+                    .reject_assignment(error.clone())
+                    .is_none()
+                {
                     self.notice = None;
-                } else if let Some(message) = self.fleet_workspace.reject_assignment(error.clone()) {
+                } else if let Some(message) = self.fleet_workspace.reject_assignment(error.clone())
+                {
                     self.notice = Some(message);
                 } else {
                     self.notice = Some(error);

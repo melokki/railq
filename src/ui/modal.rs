@@ -123,11 +123,7 @@ pub fn render_shell(
 /// Destructive secondary actions are kept last. Call sites may provide shortcuts
 /// in whatever order is most convenient; this renderer owns the convention.
 pub fn shortcut_line(shortcuts: &[(&str, &str)]) -> Line<'static> {
-    let mut ordered = shortcuts
-        .iter()
-        .copied()
-        .enumerate()
-        .collect::<Vec<_>>();
+    let mut ordered = shortcuts.iter().copied().enumerate().collect::<Vec<_>>();
     ordered.sort_by_key(|(original_index, (key, action))| {
         (shortcut_priority(key, action), *original_index)
     });

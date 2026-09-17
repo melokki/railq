@@ -2,8 +2,8 @@ use std::{any::TypeId, collections::HashSet};
 
 use crate::balance::BalanceConfig;
 
-use super::*;
 use super::vehicle::evn_check_digit;
+use super::*;
 
 #[test]
 fn infrastructure_projects_conflict_when_they_target_the_same_rail_line() {
@@ -570,9 +570,7 @@ fn a_small_valid_game_state_fixture_builds() {
         },
         player_company: PlayerCompany {
             name: "Alden Passenger".into(),
-            vehicle_keeper_mark: VehicleKeeperMark::generated_from_company_name(
-                "Alden Passenger",
-            ),
+            vehicle_keeper_mark: VehicleKeeperMark::generated_from_company_name("Alden Passenger"),
             funds: Money::from_cents(10_000),
             fleet: Fleet {
                 service_assignments: Default::default(),

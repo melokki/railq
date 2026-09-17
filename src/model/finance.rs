@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::balance::BalanceConfig;
 
-use super::{
-    DurationSeconds, JourneyId, Money, RailStationId, TrainId, UtcSeconds,
-};
+use super::{DurationSeconds, JourneyId, Money, RailStationId, TrainId, UtcSeconds};
 
 /// Cumulative financial data and receipts for the current game.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

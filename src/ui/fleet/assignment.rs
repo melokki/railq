@@ -117,7 +117,12 @@ impl ServiceAssignmentFlow {
                 else {
                     return ServiceAssignmentAction::Continue;
                 };
-                if state.player_company.fleet.assigned_service_id(self.train_id) == Some(service.id) {
+                if state
+                    .player_company
+                    .fleet
+                    .assigned_service_id(self.train_id)
+                    == Some(service.id)
+                {
                     ServiceAssignmentAction::Cancel
                 } else {
                     ServiceAssignmentAction::Assign {
@@ -144,7 +149,11 @@ impl ServiceAssignmentFlow {
             .fleet
             .assigned_service_id(self.train_id);
         let action = if self.selected_index == 0 {
-            if assigned.is_some() { "Unassign" } else { "Close" }
+            if assigned.is_some() {
+                "Unassign"
+            } else {
+                "Close"
+            }
         } else if state
             .player_company
             .passenger_services
@@ -175,7 +184,11 @@ pub(super) fn render(
         .fleet
         .assigned_service_id(flow.train_id);
     let enter_action = if flow.selected_index == 0 {
-        if assigned.is_some() { "unassign" } else { "close" }
+        if assigned.is_some() {
+            "unassign"
+        } else {
+            "close"
+        }
     } else if state
         .player_company
         .passenger_services
@@ -203,12 +216,21 @@ pub(super) fn render(
     } else if state.player_company.passenger_services.is_empty() {
         vec![
             Line::styled("No Passenger Services", theme::title()),
-            Line::styled("Create a Service before assigning this Train.", theme::secondary()),
+            Line::styled(
+                "Create a Service before assigning this Train.",
+                theme::secondary(),
+            ),
         ]
     } else {
         vec![
-            Line::styled("Select the Passenger Service for this Train.", theme::title()),
-            Line::styled("Choose Unassigned to remove its current allocation.", theme::secondary()),
+            Line::styled(
+                "Select the Passenger Service for this Train.",
+                theme::title(),
+            ),
+            Line::styled(
+                "Choose Unassigned to remove its current allocation.",
+                theme::secondary(),
+            ),
         ]
     };
     frame.render_widget(
@@ -224,26 +246,39 @@ pub(super) fn render(
         Cell::from("No Passenger Service"),
         Cell::from(if assigned.is_none() { "Current" } else { "" }),
     ])];
-    rows.extend(state.player_company.passenger_services.iter().map(|service| {
-        let route = match (service.stop_station_ids.first(), service.stop_station_ids.last()) {
-            (Some(origin), Some(destination)) => format!(
-                "{} {} {}",
-                station_label(state, *origin),
-                match service.direction_mode {
-                    ServiceDirectionMode::BothDirections => "↔",
-                    ServiceDirectionMode::ForwardOnly => "→",
-                },
-                station_label(state, *destination),
-            ),
-            _ => "Invalid route".to_owned(),
-        };
-        Row::new(vec![
-            Cell::from(format!("R{}", service.id.get())),
-            Cell::from(service.display_name()),
-            Cell::from(route),
-            Cell::from(if assigned == Some(service.id) { "Current" } else { "" }),
-        ])
-    }));
+    rows.extend(
+        state
+            .player_company
+            .passenger_services
+            .iter()
+            .map(|service| {
+                let route = match (
+                    service.stop_station_ids.first(),
+                    service.stop_station_ids.last(),
+                ) {
+                    (Some(origin), Some(destination)) => format!(
+                        "{} {} {}",
+                        station_label(state, *origin),
+                        match service.direction_mode {
+                            ServiceDirectionMode::BothDirections => "↔",
+                            ServiceDirectionMode::ForwardOnly => "→",
+                        },
+                        station_label(state, *destination),
+                    ),
+                    _ => "Invalid route".to_owned(),
+                };
+                Row::new(vec![
+                    Cell::from(format!("R{}", service.id.get())),
+                    Cell::from(service.display_name()),
+                    Cell::from(route),
+                    Cell::from(if assigned == Some(service.id) {
+                        "Current"
+                    } else {
+                        ""
+                    }),
+                ])
+            }),
+    );
 
     let table = Table::new(
         rows,
@@ -302,8 +337,7 @@ mod tests {
 
     #[test]
     fn fleet_assignment_can_assign_and_unassign_the_selected_train() {
-        let mut state =
-            create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
         state.player_company.funds = Money::from_cents(10_000_000);
         let service_id = create_service(
             &mut state,

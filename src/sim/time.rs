@@ -692,7 +692,10 @@ mod tests {
 
         for pool in &mut state.origin_destination_demand {
             if matches!(
-                (pool.origin_station_id.get(), pool.destination_station_id.get()),
+                (
+                    pool.origin_station_id.get(),
+                    pool.destination_station_id.get()
+                ),
                 (1, 2) | (1, 3) | (2, 3)
             ) {
                 pool.market_maturity = MarketMaturity::from_basis_points(2_500).unwrap();

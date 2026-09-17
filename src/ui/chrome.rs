@@ -38,7 +38,12 @@ impl FooterShortcut {
     }
 }
 
-pub(super) fn render_footer(frame: &mut ratatui::Frame, area: Rect, shell: &mut Shell, state: &GameState) {
+pub(super) fn render_footer(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    shell: &mut Shell,
+    state: &GameState,
+) {
     let mut lines = Vec::new();
     if let Some(outcome) = &shell.action_outcome {
         lines.push(Line::styled(
@@ -106,8 +111,8 @@ fn shortcut_line(shortcuts: &[FooterShortcut]) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, shortcut) in shortcuts.iter().enumerate() {
         if index > 0 {
-            let separates_utilities = is_utility_shortcut(shortcut)
-                && !is_utility_shortcut(&shortcuts[index - 1]);
+            let separates_utilities =
+                is_utility_shortcut(shortcut) && !is_utility_shortcut(&shortcuts[index - 1]);
             spans.push(Span::styled(
                 if separates_utilities { " │ " } else { " " },
                 theme::shortcut_action(),
@@ -459,7 +464,8 @@ pub(super) fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
                 "PgUp / PgDn Scroll history".into(),
                 "f Cycle Local / Authority / Construction / Network filters".into(),
                 String::new(),
-                "The Bulletin records significant world developments, not routine Train movements.".into(),
+                "The Bulletin records significant world developments, not routine Train movements."
+                    .into(),
             ]);
         }
     }
@@ -472,7 +478,12 @@ pub(super) fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     lines
 }
 
-pub(super) fn render_help_overlay(frame: &mut ratatui::Frame, area: Rect, shell: &Shell, state: &GameState) {
+pub(super) fn render_help_overlay(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    shell: &Shell,
+    state: &GameState,
+) {
     let card = modal::centered_rect(area, 96, 30);
     let footer = if card.width < 76 {
         modal::shortcut_line(&[("↑↓", "scroll"), ("Esc/?", "close")])
@@ -514,4 +525,3 @@ pub(super) fn render_help_overlay(frame: &mut ratatui::Frame, area: Rect, shell:
         modal_areas.body,
     );
 }
-

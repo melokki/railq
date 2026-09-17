@@ -407,21 +407,29 @@ impl FleetFlow {
     }
 }
 
-
 /// Result of routing one Fleet-owned keyboard event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FleetWorkspaceAction {
     Continue,
     ClearNotice,
     Notice(String),
-    SellTrain { train_id: TrainId },
+    SellTrain {
+        train_id: TrainId,
+    },
     UpdateNickname {
         train_id: TrainId,
         nickname: Option<TrainNickname>,
     },
-    Dispatch { train_id: TrainId },
-    AssignService { train_id: TrainId, service_id: crate::model::ServiceId },
-    UnassignService { train_id: TrainId },
+    Dispatch {
+        train_id: TrainId,
+    },
+    AssignService {
+        train_id: TrainId,
+        service_id: crate::model::ServiceId,
+    },
+    UnassignService {
+        train_id: TrainId,
+    },
 }
 
 /// One contextual footer action owned by the Fleet workspace.
@@ -494,10 +502,12 @@ impl FleetWorkspace {
             return flow
                 .footer_shortcuts(state, compact)
                 .into_iter()
-                .map(|(key, action, enabled)| if enabled {
-                    FleetShortcut::enabled(key, action)
-                } else {
-                    FleetShortcut::disabled(key, action)
+                .map(|(key, action, enabled)| {
+                    if enabled {
+                        FleetShortcut::enabled(key, action)
+                    } else {
+                        FleetShortcut::disabled(key, action)
+                    }
                 })
                 .collect();
         }
@@ -614,7 +624,10 @@ impl FleetWorkspace {
             } else {
                 FleetShortcut::disabled("R", "Rename")
             },
-            if has_selection && !selected.is_some_and(|train| matches!(&train.status, TrainStatus::Travelling { .. })) {
+            if has_selection
+                && !selected
+                    .is_some_and(|train| matches!(&train.status, TrainStatus::Travelling { .. }))
+            {
                 FleetShortcut::enabled("A", "Service")
             } else {
                 FleetShortcut::disabled("A", "Service")
@@ -644,9 +657,7 @@ impl FleetWorkspace {
             TrainNicknameEditorAction::Continue => FleetWorkspaceAction::Continue,
             TrainNicknameEditorAction::Cancel => {
                 self.nickname_editor = None;
-                FleetWorkspaceAction::Notice(
-                    "Train rename cancelled; no changes were made.".into(),
-                )
+                FleetWorkspaceAction::Notice("Train rename cancelled; no changes were made.".into())
             }
             TrainNicknameEditorAction::Confirm { train_id, nickname } => {
                 FleetWorkspaceAction::UpdateNickname { train_id, nickname }
@@ -654,11 +665,7 @@ impl FleetWorkspace {
         }
     }
 
-    pub fn handle_resale_key(
-        &mut self,
-        key: KeyEvent,
-        state: &GameState,
-    ) -> FleetWorkspaceAction {
+    pub fn handle_resale_key(&mut self, key: KeyEvent, state: &GameState) -> FleetWorkspaceAction {
         let Some(flow) = &mut self.flow else {
             return FleetWorkspaceAction::Continue;
         };
@@ -666,9 +673,7 @@ impl FleetWorkspace {
             FleetFlowAction::Continue => FleetWorkspaceAction::Continue,
             FleetFlowAction::Cancel => {
                 self.flow = None;
-                FleetWorkspaceAction::Notice(
-                    "Train resale cancelled; no changes were made.".into(),
-                )
+                FleetWorkspaceAction::Notice("Train resale cancelled; no changes were made.".into())
             }
             FleetFlowAction::Confirm { train_id } => FleetWorkspaceAction::SellTrain { train_id },
         }
@@ -688,9 +693,13 @@ impl FleetWorkspace {
                 self.assignment_flow = None;
                 FleetWorkspaceAction::Continue
             }
-            ServiceAssignmentAction::Assign { train_id, service_id } => {
-                FleetWorkspaceAction::AssignService { train_id, service_id }
-            }
+            ServiceAssignmentAction::Assign {
+                train_id,
+                service_id,
+            } => FleetWorkspaceAction::AssignService {
+                train_id,
+                service_id,
+            },
             ServiceAssignmentAction::Unassign { train_id } => {
                 FleetWorkspaceAction::UnassignService { train_id }
             }
@@ -711,20 +720,16 @@ impl FleetWorkspace {
                 self.details_open = false;
                 FleetWorkspaceAction::Continue
             }
-            KeyCode::Char('r' | 'R' | 'n' | 'N') => {
-                match self.selection.selected_train_id(state) {
-                    Some(train_id) => match TrainNicknameEditor::start(state, train_id) {
-                        Ok(editor) => {
-                            self.nickname_editor = Some(editor);
-                            FleetWorkspaceAction::ClearNotice
-                        }
-                        Err(message) => FleetWorkspaceAction::Notice(message),
-                    },
-                    None => FleetWorkspaceAction::Notice(
-                        "Select a Train before renaming it.".into(),
-                    ),
-                }
-            }
+            KeyCode::Char('r' | 'R' | 'n' | 'N') => match self.selection.selected_train_id(state) {
+                Some(train_id) => match TrainNicknameEditor::start(state, train_id) {
+                    Ok(editor) => {
+                        self.nickname_editor = Some(editor);
+                        FleetWorkspaceAction::ClearNotice
+                    }
+                    Err(message) => FleetWorkspaceAction::Notice(message),
+                },
+                None => FleetWorkspaceAction::Notice("Select a Train before renaming it.".into()),
+            },
             KeyCode::Char('a' | 'A') => match self.selection.selected_train_id(state) {
                 Some(train_id) => match ServiceAssignmentFlow::start(state, train_id) {
                     Ok(flow) => {
@@ -783,7 +788,10 @@ impl FleetWorkspace {
     }
 
     pub fn confirm_nickname_saved(&mut self) -> Option<TrainId> {
-        let train_id = self.nickname_editor.as_ref().map(TrainNicknameEditor::train_id);
+        let train_id = self
+            .nickname_editor
+            .as_ref()
+            .map(TrainNicknameEditor::train_id);
         self.nickname_editor = None;
         train_id
     }
@@ -1511,7 +1519,6 @@ fn horizontal_inset(area: Rect, amount: u16) -> Rect {
     )
 }
 
-
 struct TrainFields {
     model: String,
     status: String,
@@ -1954,16 +1961,26 @@ mod tests {
 
         let shortcuts = workspace.shortcuts(&state, false, true);
         assert!(shortcuts.iter().any(|shortcut| shortcut.action == "Rename"));
-        assert!(shortcuts.iter().any(|shortcut| shortcut.action == "Dispatch"));
+        assert!(
+            shortcuts
+                .iter()
+                .any(|shortcut| shortcut.action == "Dispatch")
+        );
         assert!(shortcuts.iter().any(|shortcut| shortcut.action == "Sell"));
-        assert!(workspace.help_lines(&state).iter().any(|line| line == "Current · Trains"));
+        assert!(
+            workspace
+                .help_lines(&state)
+                .iter()
+                .any(|line| line == "Current · Trains")
+        );
 
         assert_eq!(
             workspace.handle_key(key(KeyCode::Char('s')), &state),
             FleetWorkspaceAction::ClearNotice
         );
         assert_eq!(
-            workspace.shortcuts(&state, false, true)
+            workspace
+                .shortcuts(&state, false, true)
                 .iter()
                 .map(|shortcut| shortcut.action.as_str())
                 .collect::<Vec<_>>(),
