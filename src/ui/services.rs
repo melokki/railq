@@ -436,12 +436,10 @@ impl ServiceWorkspace {
             .selected_service_id(state)
             .map(|service_id| service_active_journeys(state, service_id) == 0)
             .unwrap_or(false);
-        let can_delete = self
-            .selected_service_id(state)
-            .is_some_and(|service_id| {
-                service_active_journeys(state, service_id) == 0
-                    && service_assigned_trains(state, service_id) == 0
-            });
+        let can_delete = self.selected_service_id(state).is_some_and(|service_id| {
+            service_active_journeys(state, service_id) == 0
+                && service_assigned_trains(state, service_id) == 0
+        });
         let mut actions = vec![(
             if compact { "↑↓" } else { "↑↓/JK" },
             "Service",

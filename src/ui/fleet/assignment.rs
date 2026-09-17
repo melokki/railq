@@ -106,7 +106,7 @@ impl ServiceAssignmentFlow {
                         train_id: self.train_id,
                     }
                 } else {
-                    ServiceAssignmentAction::Cancel
+                    ServiceAssignmentAction::Continue
                 }
             }
             KeyCode::Enter => {
@@ -123,7 +123,7 @@ impl ServiceAssignmentFlow {
                     .assigned_service_id(self.train_id)
                     == Some(service.id)
                 {
-                    ServiceAssignmentAction::Cancel
+                    ServiceAssignmentAction::Continue
                 } else {
                     ServiceAssignmentAction::Assign {
                         train_id: self.train_id,
@@ -148,11 +148,11 @@ impl ServiceAssignmentFlow {
             .player_company
             .fleet
             .assigned_service_id(self.train_id);
-        let action = if self.selected_index == 0 {
+        let (action, action_enabled) = if self.selected_index == 0 {
             if assigned.is_some() {
-                "Unassign"
+                ("Unassign", true)
             } else {
-                "Close"
+                ("Unassign", false)
             }
         } else if state
             .player_company
@@ -160,14 +160,14 @@ impl ServiceAssignmentFlow {
             .get(self.selected_index.saturating_sub(1))
             .is_some_and(|service| assigned == Some(service.id))
         {
-            "Close"
+            ("Assign", false)
         } else {
-            "Assign"
+            ("Assign", true)
         };
         vec![
             ("Esc", "Cancel", true),
+            ("Enter", action, action_enabled),
             (if compact { "↑↓" } else { "↑↓/JK" }, "Service", true),
-            ("Enter", action, true),
         ]
     }
 }
@@ -183,26 +183,27 @@ pub(super) fn render(
         .player_company
         .fleet
         .assigned_service_id(flow.train_id);
-    let enter_action = if flow.selected_index == 0 {
-        if assigned.is_some() {
-            modal::ModalAction::Unassign
-        } else {
-            modal::ModalAction::Close
-        }
+    let (enter_action, enter_enabled) = if flow.selected_index == 0 {
+        (modal::ModalAction::Unassign, assigned.is_some())
     } else if state
         .player_company
         .passenger_services
         .get(flow.selected_index.saturating_sub(1))
         .is_some_and(|service| assigned == Some(service.id))
     {
-        modal::ModalAction::Close
+        (modal::ModalAction::Assign, false)
     } else {
-        modal::ModalAction::Assign
+        (modal::ModalAction::Assign, true)
+    };
+    let enter_shortcut = if enter_enabled {
+        modal::ModalShortcut::enabled("Enter", enter_action)
+    } else {
+        modal::ModalShortcut::disabled("Enter", enter_action)
     };
     let footer = modal::shortcut_line(&[
         modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        enter_shortcut,
         modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Service),
-        modal::ModalShortcut::enabled("Enter", enter_action),
     ]);
     let modal_areas = modal::render_shell(frame, area, &title, footer);
     let [context_area, table_area] =
@@ -222,15 +223,46 @@ pub(super) fn render(
             ),
         ]
     } else {
+        let selection_hint = if flow.selected_index == 0 {
+            if let Some(service_id) = assigned {
+                format!(
+                    "Currently R{} · Enter unassigns this Train.",
+                    service_id.get()
+                )
+            } else {
+                "Already unassigned · choose a Service to allocate this Train.".to_owned()
+            }
+        } else if let Some(service) = state
+            .player_company
+            .passenger_services
+            .get(flow.selected_index.saturating_sub(1))
+        {
+            if assigned == Some(service.id) {
+                format!(
+                    "R{} is the current assignment · no change required.",
+                    service.id.get()
+                )
+            } else if let Some(current_service_id) = assigned {
+                format!(
+                    "Currently R{} · Enter reassigns this Train to R{}.",
+                    current_service_id.get(),
+                    service.id.get()
+                )
+            } else {
+                format!(
+                    "Unassigned · Enter assigns this Train to R{}.",
+                    service.id.get()
+                )
+            }
+        } else {
+            "Select a Passenger Service for this Train.".to_owned()
+        };
         vec![
             Line::styled(
                 "Select the Passenger Service for this Train.",
                 theme::title(),
             ),
-            Line::styled(
-                "Choose Unassigned to remove its current allocation.",
-                theme::secondary(),
-            ),
+            Line::styled(selection_hint, theme::secondary()),
         ]
     };
     frame.render_widget(
@@ -334,6 +366,37 @@ mod tests {
     };
 
     use super::{ServiceAssignmentAction, ServiceAssignmentFlow};
+
+    #[test]
+    fn no_op_assignment_choices_stay_open_and_clear_old_feedback_on_navigation() {
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        state.player_company.funds = Money::from_cents(10_000_000);
+        let service_id = create_service(
+            &mut state,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+        )
+        .unwrap();
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+
+        let mut flow = ServiceAssignmentFlow::start(&state, train_id).unwrap();
+        assert_eq!(
+            flow.handle_key(KeyCode::Enter, &state),
+            ServiceAssignmentAction::Continue
+        );
+
+        assign_train_to_service(&mut state, train_id, service_id).unwrap();
+        let mut flow = ServiceAssignmentFlow::start(&state, train_id).unwrap();
+        assert_eq!(
+            flow.handle_key(KeyCode::Enter, &state),
+            ServiceAssignmentAction::Continue
+        );
+        flow.reject("old assignment error");
+        assert_eq!(
+            flow.handle_key(KeyCode::Up, &state),
+            ServiceAssignmentAction::Continue
+        );
+        assert!(flow.rejection.is_none());
+    }
 
     #[test]
     fn fleet_assignment_can_assign_and_unassign_the_selected_train() {

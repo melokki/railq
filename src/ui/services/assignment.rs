@@ -101,45 +101,26 @@ impl ServiceTrainAssignmentFlow {
                 let Some(train) = state.player_company.fleet.trains.get(self.selected_index) else {
                     return ServiceTrainAssignmentAction::Continue;
                 };
-                if matches!(&train.status, TrainStatus::Travelling { .. }) {
-                    self.rejection = Some(format!(
-                        "Train {:02} is travelling; change its Service assignment after arrival.",
-                        train.id.get()
-                    ));
+                if matches!(&train.status, TrainStatus::Travelling { .. })
+                    || state.player_company.fleet.assigned_service_id(train.id)
+                        == Some(self.service_id)
+                {
                     return ServiceTrainAssignmentAction::Continue;
                 }
 
-                if state.player_company.fleet.assigned_service_id(train.id) == Some(self.service_id)
-                {
-                    self.rejection = Some(format!(
-                        "Train {:02} is already assigned to this Service; press U to unassign it.",
-                        train.id.get()
-                    ));
-                    ServiceTrainAssignmentAction::Continue
-                } else {
-                    ServiceTrainAssignmentAction::Assign {
-                        train_id: train.id,
-                        service_id: self.service_id,
-                    }
+                ServiceTrainAssignmentAction::Assign {
+                    train_id: train.id,
+                    service_id: self.service_id,
                 }
             }
             KeyCode::Char('u' | 'U') => {
                 let Some(train) = state.player_company.fleet.trains.get(self.selected_index) else {
                     return ServiceTrainAssignmentAction::Continue;
                 };
-                if matches!(&train.status, TrainStatus::Travelling { .. }) {
-                    self.rejection = Some(format!(
-                        "Train {:02} is travelling; unassign it after arrival.",
-                        train.id.get()
-                    ));
-                    return ServiceTrainAssignmentAction::Continue;
-                }
-                if state.player_company.fleet.assigned_service_id(train.id) != Some(self.service_id)
+                if matches!(&train.status, TrainStatus::Travelling { .. })
+                    || state.player_company.fleet.assigned_service_id(train.id)
+                        != Some(self.service_id)
                 {
-                    self.rejection = Some(format!(
-                        "Train {:02} is not assigned to this Service.",
-                        train.id.get()
-                    ));
                     return ServiceTrainAssignmentAction::Continue;
                 }
                 ServiceTrainAssignmentAction::Unassign { train_id: train.id }
@@ -178,14 +159,14 @@ impl ServiceTrainAssignmentFlow {
         vec![
             ("Esc", "Cancel", true),
             (
-                if compact { "↑↓" } else { "↑↓/JK" },
-                "Train",
-                !state.player_company.fleet.trains.is_empty(),
-            ),
-            (
                 "Enter",
                 enter_action,
                 selected.is_some() && !travelling && !current,
+            ),
+            (
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Train",
+                !state.player_company.fleet.trains.is_empty(),
             ),
             ("U", "Unassign", current && !travelling),
         ]
@@ -248,8 +229,8 @@ pub(super) fn render(
     };
     let footer = modal::shortcut_line(&[
         modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
-        train_navigation,
         enter_shortcut,
+        train_navigation,
         unassign_shortcut,
     ]);
     let modal_areas = modal::render_shell(frame, area, &title, footer);
@@ -285,13 +266,36 @@ pub(super) fn render(
             ),
             _ => "Invalid route".to_owned(),
         };
+        let selection_hint = flow
+            .selected_train(state)
+            .map(|train| {
+                if matches!(&train.status, TrainStatus::Travelling { .. }) {
+                    format!(
+                        "T{:02} is travelling · assignment locked until arrival.",
+                        train.id.get()
+                    )
+                } else {
+                    match state.player_company.fleet.assigned_service_id(train.id) {
+                        Some(service_id) if service_id == flow.service_id => {
+                            format!("T{:02} is assigned here · U unassigns it.", train.id.get())
+                        }
+                        Some(service_id) => format!(
+                            "T{:02} is assigned to R{} · Enter reassigns it here.",
+                            train.id.get(),
+                            service_id.get()
+                        ),
+                        None => format!(
+                            "T{:02} is unassigned · Enter assigns it here.",
+                            train.id.get()
+                        ),
+                    }
+                }
+            })
+            .unwrap_or_else(|| "Select a Train to manage its allocation.".to_owned());
         vec![
             Line::styled("Allocate fleet to this Passenger Service.", theme::title()),
             Line::styled(route, theme::primary_value()),
-            Line::styled(
-                "Enter assigns or reassigns. U removes the selected Train allocation.",
-                theme::secondary(),
-            ),
+            Line::styled(selection_hint, theme::secondary()),
         ]
     } else {
         vec![Line::styled(
@@ -423,6 +427,33 @@ mod tests {
             flow.handle_key(KeyCode::Char('u'), &state),
             ServiceTrainAssignmentAction::Unassign { train_id }
         );
+    }
+
+    #[test]
+    fn disabled_assignment_actions_do_not_leave_stale_errors() {
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        state.player_company.funds = Money::from_cents(10_000_000);
+        let service_id = create_service(
+            &mut state,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+        )
+        .unwrap();
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        assign_train_to_service(&mut state, train_id, service_id).unwrap();
+
+        let mut flow = ServiceTrainAssignmentFlow::start(&state, service_id).unwrap();
+        assert_eq!(
+            flow.handle_key(KeyCode::Enter, &state),
+            ServiceTrainAssignmentAction::Continue
+        );
+        assert!(flow.rejection.is_none());
+
+        flow.reject("old assignment error");
+        assert_eq!(
+            flow.handle_key(KeyCode::Down, &state),
+            ServiceTrainAssignmentAction::Continue
+        );
+        assert!(flow.rejection.is_none());
     }
 
     #[test]

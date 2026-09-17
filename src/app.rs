@@ -1044,7 +1044,10 @@ mod tests {
         assert_eq!(journey.passengers_carried, 0);
         assert_eq!(journey.operating_revenue, crate::model::Money::ZERO);
         assert!(app.state().player_company.funds < funds_before);
-        assert_eq!(app.state().financials.operating_revenue, crate::model::Money::ZERO);
+        assert_eq!(
+            app.state().financials.operating_revenue,
+            crate::model::Money::ZERO
+        );
         assert!(app.state().financials.infrastructure_access_fees > crate::model::Money::ZERO);
         assert!(app.state().financials.fuel_costs > crate::model::Money::ZERO);
         assert_eq!(app.state().origin_destination_demand, demand_before);

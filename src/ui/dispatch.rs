@@ -868,16 +868,28 @@ impl DispatchFlow {
             );
         }
 
-        let modal_title = if matches!(self.step, DispatchStep::Positioning { .. }) {
-            "Position Train"
-        } else {
-            "Manual Dispatch"
+        let modal_title = match &self.step {
+            DispatchStep::Positioning {
+                train_id,
+                service_id,
+                ..
+            } => format!(
+                "Position Train {:02} · {}",
+                train_id.get(),
+                service_name(state, *service_id)
+            ),
+            _ => "Manual Dispatch".to_owned(),
         };
         let modal_areas = modal::render_shell(
             frame,
             area,
-            modal_title,
-            dispatch_footer_line(&self.step, area.width, self.preferred_service_id.is_some()),
+            &modal_title,
+            dispatch_footer_line(
+                &self.step,
+                area.width,
+                self.preferred_service_id.is_some(),
+                state,
+            ),
         );
 
         match &mut self.step {
@@ -957,6 +969,7 @@ fn dispatch_footer_line(
     step: &DispatchStep,
     width: u16,
     service_preselected: bool,
+    state: &GameState,
 ) -> Line<'static> {
     let select_train_action = if service_preselected {
         modal::ModalAction::Review
@@ -999,11 +1012,29 @@ fn dispatch_footer_line(
             modal::ModalShortcut::enabled("←", confirm_back_action),
             modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]),
-        DispatchStep::Positioning { .. } => modal::shortcut_line(&[
-            modal::ModalShortcut::enabled("↑/↓", modal::ModalAction::Choose),
-            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Position),
-            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
-        ]),
+        DispatchStep::Positioning {
+            train_id,
+            service_id,
+            selected_destination_station_id,
+            ..
+        } => {
+            let can_position = selected_destination_station_id
+                .and_then(|destination_station_id| {
+                    quote_positioning_journey(state, *train_id, *service_id, destination_station_id)
+                        .ok()
+                })
+                .is_some_and(|quote| quote.cash_after_cost >= Money::ZERO);
+            let position = if can_position {
+                modal::ModalShortcut::enabled("Enter", modal::ModalAction::Position)
+            } else {
+                modal::ModalShortcut::disabled("Enter", modal::ModalAction::Position)
+            };
+            modal::shortcut_line(&[
+                modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+                position,
+                modal::ModalShortcut::enabled("↑/↓/JK", modal::ModalAction::Choose),
+            ])
+        }
     }
 }
 
@@ -1690,16 +1721,45 @@ fn render_positioning_chooser(
     synchronize_positioning_selection(selected_destination_station_id, table_state, &options);
 
     let current_station = ready_train_station(state, train_id)
-        .map(|station_id| station_label(state, station_id))
-        .unwrap_or("Unknown");
-    let status_rows = u16::from(rejection.is_some());
+        .map(|station_id| station_label(state, station_id).to_owned())
+        .unwrap_or_else(|| "Unknown".to_owned());
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id);
+    let selected_option = (*selected_destination_station_id).and_then(|station_id| {
+        options
+            .iter()
+            .find(|option| option.destination_station_id == station_id)
+    });
+    let insufficient_funds =
+        selected_option.is_some_and(|option| option.quote.cash_after_cost < Money::ZERO);
+    let status_rows = u16::from(rejection.is_some() || insufficient_funds);
     let [context_area, table_area, detail_area, status_area] = Layout::vertical([
         Constraint::Length(5),
         Constraint::Min(4),
-        Constraint::Length(3),
+        Constraint::Length(4),
         Constraint::Length(status_rows),
     ])
     .areas(area);
+
+    let availability_hint = match service {
+        Some(service)
+            if service.direction_mode == crate::model::ServiceDirectionMode::ForwardOnly =>
+        {
+            let destination = options
+                .first()
+                .map(|option| station_label(state, option.destination_station_id).to_owned())
+                .unwrap_or_else(|| "the Service origin".to_owned());
+            format!("One-way Service · revenue runs must start from {destination}.")
+        }
+        Some(_) if options.len() == 1 => {
+            "Only one reachable departure terminus is currently available.".to_owned()
+        }
+        Some(_) => "Choose which Service terminus this Train should position to.".to_owned(),
+        None => "Choose a valid departure terminus for this empty move.".to_owned(),
+    };
 
     frame.render_widget(
         Paragraph::new(vec![
@@ -1710,7 +1770,7 @@ fn render_positioning_chooser(
                     theme::primary_value(),
                 ),
                 Span::styled(" at ", theme::secondary()),
-                Span::styled(current_station.to_owned(), theme::primary_value()),
+                Span::styled(current_station.clone(), theme::primary_value()),
             ]),
             Line::from(vec![
                 Span::styled("Assigned  ", theme::secondary()),
@@ -1718,12 +1778,9 @@ fn render_positioning_chooser(
                 Span::styled(" · ", theme::secondary()),
                 Span::styled(service_route_label(state, service_id), theme::secondary()),
             ]),
+            Line::styled(availability_hint, theme::warning()),
             Line::styled(
-                "Revenue service cannot start here. Choose a departure terminus for an empty move.",
-                theme::warning(),
-            ),
-            Line::styled(
-                "No passengers · no fare revenue · infrastructure and fuel costs are paid now.",
+                "Empty move · 0 passengers · $0 fare revenue · operating costs paid now.",
                 theme::secondary(),
             ),
         ])
@@ -1754,7 +1811,7 @@ fn render_positioning_chooser(
         ],
     )
     .header(
-        Row::new(["Position to", "Distance", "Time", "Total cost"])
+        Row::new(["Position to", "Distance", "Time", "Est. cost"])
             .style(theme::table_header())
             .bottom_margin(1),
     )
@@ -1763,11 +1820,8 @@ fn render_positioning_chooser(
     .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(table, table_area, table_state);
 
-    if let Some(selected_station_id) = *selected_destination_station_id
-        && let Some(option) = options
-            .iter()
-            .find(|option| option.destination_station_id == selected_station_id)
-    {
+    if let Some(option) = selected_option {
+        let destination = station_label(state, option.destination_station_id);
         let funds_style = if option.quote.cash_after_cost < Money::ZERO {
             theme::error()
         } else {
@@ -1776,18 +1830,38 @@ fn render_positioning_chooser(
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
-                    Span::styled("Access  ", theme::secondary()),
+                    Span::styled("MOVE   ", theme::secondary()),
+                    Span::styled(current_station, theme::primary_value()),
+                    Span::styled(" → ", theme::secondary()),
+                    Span::styled(destination, theme::primary_value()),
+                ]),
+                Line::from(vec![
+                    Span::styled("COST   ", theme::secondary()),
+                    Span::styled(
+                        format_money(option.quote.operating_cost),
+                        theme::primary_value(),
+                    ),
+                    Span::styled(" · access ", theme::secondary()),
                     Span::styled(
                         format_money(option.quote.infrastructure_access_fee),
                         theme::primary_value(),
                     ),
-                    Span::styled("   Fuel  ", theme::secondary()),
+                    Span::styled(" · fuel ", theme::secondary()),
                     Span::styled(format_money(option.quote.fuel_cost), theme::primary_value()),
                 ]),
                 Line::from(vec![
-                    Span::styled("Funds after move  ", theme::secondary()),
+                    Span::styled("FUNDS  ", theme::secondary()),
+                    Span::styled(
+                        format_money(state.player_company.funds),
+                        theme::primary_value(),
+                    ),
+                    Span::styled(" → ", theme::secondary()),
                     Span::styled(format_money(option.quote.cash_after_cost), funds_style),
                 ]),
+                Line::styled(
+                    "Arrival leaves the Train assigned and READY for its Passenger Service.",
+                    theme::secondary(),
+                ),
             ])
             .style(theme::panel()),
             detail_area,
@@ -1799,6 +1873,19 @@ fn render_positioning_chooser(
             Paragraph::new(Line::styled(rejection.to_owned(), theme::error()))
                 .style(theme::panel())
                 .wrap(Wrap { trim: true }),
+            status_area,
+        );
+    } else if insufficient_funds && let Some(option) = selected_option {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!(
+                    "Insufficient funds: positioning costs {}. Enter is disabled.",
+                    format_money(option.quote.operating_cost)
+                ),
+                theme::error(),
+            ))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
             status_area,
         );
     }
