@@ -88,6 +88,8 @@ fn sqlite_round_trips_all_current_operating_state() {
     let directory = TestDirectory::new();
     let slot = SaveSlot::open(directory.save_path()).unwrap();
     let mut state = active_game();
+    state.player_company.passenger_services[0].direction_mode =
+        ServiceDirectionMode::ForwardOnly;
     state.region.rail_authority.construction_capacity = 2;
     state.region.bulletin.push(BulletinEntry {
         occurred_at: UtcSeconds::from_unix_seconds(12_345),
@@ -1415,4 +1417,39 @@ fn legacy_ron_decoder_accepts_the_previous_versioned_envelope() {
     let source = legacy::encode_v1_for_test(&state);
 
     assert_eq!(decode_legacy_game_state(&source).unwrap(), state);
+}
+
+#[test]
+fn v27_schema_adds_bidirectional_passenger_service_mode_by_default() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE passenger_services (
+                 id TEXT PRIMARY KEY,
+                 sequence INTEGER NOT NULL UNIQUE,
+                 name TEXT NOT NULL
+             );
+             INSERT INTO passenger_services(id, sequence, name)
+             VALUES('00000004-0000-4000-8000-000000000001', 0, 'R1');
+             PRAGMA user_version = 27;",
+        )
+        .unwrap();
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    let direction_mode: String = connection
+        .query_row(
+            "SELECT direction_mode FROM passenger_services WHERE sequence = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(version, SAVE_VERSION);
+    assert_eq!(direction_mode, "both");
 }

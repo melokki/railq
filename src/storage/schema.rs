@@ -140,7 +140,9 @@ CREATE TABLE IF NOT EXISTS train_model_sequences (
 CREATE TABLE IF NOT EXISTS passenger_services (
     id TEXT PRIMARY KEY,
     sequence INTEGER NOT NULL UNIQUE,
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    direction_mode TEXT NOT NULL DEFAULT 'both'
+        CHECK (direction_mode IN ('both', 'forward'))
 );
 CREATE TABLE IF NOT EXISTS service_stops (
     service_id TEXT NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,

@@ -242,11 +242,12 @@ pub(super) fn insert_state(
     for (sequence, service) in state.player_company.passenger_services.iter().enumerate() {
         transaction
             .execute(
-                "INSERT INTO passenger_services(id, sequence, name) VALUES(?1, ?2, ?3)",
+                "INSERT INTO passenger_services(id, sequence, name, direction_mode) VALUES(?1, ?2, ?3, ?4)",
                 params![
                     service.id.to_string(),
                     i64::try_from(sequence).unwrap_or(i64::MAX),
-                    &service.name
+                    &service.name,
+                    service.direction_mode.as_str(),
                 ],
             )
             .map_err(|source| db_error("write Passenger Services to", path, source))?;
@@ -1049,12 +1050,16 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
 
     let mut services = query_all(
         connection,
-        "SELECT id, name FROM passenger_services ORDER BY sequence",
+        "SELECT id, name, direction_mode FROM passenger_services ORDER BY sequence",
         path,
         |row| {
+            let direction_mode_value = row.get::<_, String>(2)?;
+            let direction_mode = ServiceDirectionMode::parse(&direction_mode_value)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
             Ok(PassengerService {
                 id: row_domain_id(row, 0, "Passenger Service ID", ServiceId::parse)?,
                 name: row.get(1)?,
+                direction_mode,
                 stop_station_ids: Vec::new(),
                 rail_line_ids: Vec::new(),
             })

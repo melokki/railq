@@ -6,15 +6,46 @@ use super::{
     JourneyId, Money, RailLineId, RailStationId, ServiceId, TrainId, UtcSeconds, ValidationError,
 };
 
-/// A directional passenger offering over an ordered set of stops and Rail Lines.
+/// Whether a Passenger Service may operate only in its canonical stop order
+/// or in both directions over the same route pattern.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceDirectionMode {
+    /// The canonical stop order may be operated in either direction.
+    #[default]
+    BothDirections,
+    /// Only the canonical first-to-last stop order may be operated.
+    ForwardOnly,
+}
+
+impl ServiceDirectionMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BothDirections => "both",
+            Self::ForwardOnly => "forward",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "both" => Some(Self::BothDirections),
+            "forward" => Some(Self::ForwardOnly),
+            _ => None,
+        }
+    }
+}
+
+/// A passenger route pattern over an ordered set of stops and Rail Lines.
 ///
-/// `stop_station_ids` contains only the stations at which the Service calls.
-/// `rail_line_ids` contains the full physical path between those stops, so a
-/// Service may pass through intermediate Rail Stations without stopping.
+/// `stop_station_ids` stores the canonical first-to-last order. Bidirectional
+/// Services use the reverse order for the opposite working without duplicating
+/// the Service itself. `rail_line_ids` stores the matching physical path.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PassengerService {
     pub id: ServiceId,
     pub name: String,
+    #[serde(default)]
+    pub direction_mode: ServiceDirectionMode,
     pub stop_station_ids: Vec<RailStationId>,
     pub rail_line_ids: Vec<RailLineId>,
 }

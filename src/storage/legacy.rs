@@ -15,7 +15,8 @@ use crate::{
         DemandRules, EuropeanVehicleNumber, Financials, Fleet, GameRules, GameState, Journey,
         JourneyPassengerGroup, Money, MoneyPerKilometre, OriginDestinationDemand,
         PassengerCapacity, PassengerService, PlayerCompany, RailLineId, RailStationId, Region,
-        ServiceId, SpeedMetresPerSecond, Train, TrainId, TrainModelId, TrainStatus, UtcSeconds,
+        ServiceDirectionMode, ServiceId, SpeedMetresPerSecond, Train, TrainId, TrainModelId,
+        TrainStatus, UtcSeconds,
         VehicleKeeperMark,
     },
     sim::world::railway_registration_for_existing_region,
@@ -172,6 +173,7 @@ pub(super) fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCo
         .map(|service| PassengerService {
             id: service.id,
             name: format!("R{}", service.id.get()),
+            direction_mode: ServiceDirectionMode::BothDirections,
             stop_station_ids: vec![service.first_station_id, service.second_station_id],
             rail_line_ids: service.rail_line_ids,
         })

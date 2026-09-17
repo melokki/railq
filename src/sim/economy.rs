@@ -659,6 +659,7 @@ mod tests {
                 passenger_services: vec![PassengerService {
                     id: SERVICE_ID,
                     name: "R1".into(),
+                    direction_mode: crate::model::ServiceDirectionMode::BothDirections,
                     stop_station_ids: vec![ORIGIN, DESTINATION],
                     rail_line_ids: vec![FIRST_LINE, SECOND_LINE],
                 }],

@@ -52,7 +52,7 @@ mod operations;
 
 pub use operations::{
     Journey, JourneyPassengerGroup, MarketMaturity, OriginDestinationDemand, PassengerArrivalRate,
-    PassengerService,
+    PassengerService, ServiceDirectionMode,
 };
 
 mod finance;

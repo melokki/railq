@@ -1,8 +1,7 @@
 //! Passenger Service path lookup, creation, editing, and deletion.
 //!
 //! Services belong to the Player Company. They reuse Rail Authority-owned
-//! Rail Lines, remain directional, and are deliberately distinct from
-//! individual Journeys.
+//! Rail Lines and are deliberately distinct from individual directional Journeys.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -11,7 +10,8 @@ use std::{
 };
 
 use crate::model::{
-    GameState, PassengerService, RailLineId, RailNetwork, RailStationId, ServiceId, SettlementId,
+    GameState, PassengerService, RailLineId, RailNetwork, RailStationId, ServiceDirectionMode,
+    ServiceId, SettlementId,
 };
 
 /// Why a Passenger Service path cannot be selected, created, or removed.
@@ -234,7 +234,7 @@ pub fn service_path_for_stops(
     Ok(path)
 }
 
-/// Creates one named, directional Passenger Service.
+/// Creates one named Passenger Service, bidirectional by default.
 ///
 /// Names are intentionally generated from the persistent Service ID for now;
 /// a later naming feature can change the display name without changing identity.
@@ -264,6 +264,7 @@ pub fn create_service(
         .push(PassengerService {
             id: service_id,
             name: service_name,
+            direction_mode: ServiceDirectionMode::BothDirections,
             stop_station_ids,
             rail_line_ids,
         });

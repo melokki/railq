@@ -77,6 +77,7 @@ fn migrate_one_version(
         24 => migrate_v24_to_v25(connection, path),
         25 => migrate_v25_to_v26(connection, path),
         26 => migrate_v26_to_v27(connection, path),
+        27 => migrate_v27_to_v28(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -2049,6 +2050,42 @@ fn migrate_v26_to_v27(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v26 to v27 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v27_to_v28(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v27 to v28 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE passenger_services
+                 ADD COLUMN direction_mode TEXT NOT NULL DEFAULT 'both'
+                 CHECK (direction_mode IN ('both', 'forward'));",
+            )
+            .map_err(|source| {
+                db_error(
+                    "add Passenger Service direction mode during v28 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 28_u32)
+            .map_err(|source| db_error("write v28 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v27 to v28 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)
