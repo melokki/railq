@@ -91,8 +91,10 @@ fn sqlite_round_trips_all_current_operating_state() {
     let directory = TestDirectory::new();
     let slot = SaveSlot::open(directory.save_path()).unwrap();
     let mut state = active_game();
+    state.player_company.passenger_services[0].custom_name = Some("Capital Link".into());
     state.player_company.passenger_services[0].direction_mode =
         ServiceDirectionMode::ForwardOnly;
+    state.player_company.passenger_services[0].reverse_train_number = None;
     state.region.rail_authority.construction_capacity = 2;
     state.region.bulletin.push(BulletinEntry {
         occurred_at: UtcSeconds::from_unix_seconds(12_345),

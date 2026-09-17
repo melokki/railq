@@ -274,7 +274,7 @@ impl ServiceWorkspace {
                 }
                 ServiceWorkspaceAction::Continue
             }
-            KeyCode::Char('d' | 'D') => {
+            KeyCode::Delete => {
                 if let Some(service_id) = self.selected_service_id(state) {
                     if service_active_journeys(state, service_id) == 0 {
                         self.delete_confirmation = Some(service_id);
@@ -410,7 +410,7 @@ impl ServiceWorkspace {
         if self.name_editor.is_some() {
             return vec![
                 ("Enter", "Save", true),
-                ("Backspace", "Delete", true),
+                ("Backspace", "Erase", true),
                 ("Esc", "Cancel", true),
             ];
         }
@@ -439,7 +439,7 @@ impl ServiceWorkspace {
             ("A", "Assign train", has_services && !state.player_company.fleet.trains.is_empty()),
             ("R", "Name", has_services),
             ("E", "Edit", can_edit),
-            ("D", "Delete", can_delete),
+            ("Del", "Delete", can_delete),
             ("Esc", "Map", true),
         ]);
         actions
@@ -463,7 +463,7 @@ impl ServiceWorkspace {
                 "a Assign, reassign, or unassign Trains for the selected Service".into(),
                 "r Set or clear the selected Service's commercial name".into(),
                 "e Edit the selected Service when it has no active Journeys".into(),
-                "d Delete the selected Service when it has no active Journeys".into(),
+                "Del Delete the selected Service when it has no active Journeys".into(),
                 "Esc Return to Map".into(),
             ]);
         }
@@ -1338,7 +1338,7 @@ fn render_name_editor(
     let footer = if card.width >= 56 {
         modal::shortcut_line(&[(
             "Enter", "save"
-        ), ("Backspace", "delete"), ("Esc", "cancel")])
+        ), ("Backspace", "erase"), ("Esc", "cancel")])
     } else {
         modal::shortcut_line(&[("Enter", "save"), ("Esc", "cancel")])
     };

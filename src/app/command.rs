@@ -18,7 +18,7 @@ pub enum AppCommand {
     },
     /// Sell one READY owned Train.
     SellTrain { train_id: TrainId },
-    /// Create one persistent directional Passenger Service.
+    /// Create one persistent Passenger Service route pattern.
     CreatePassengerService {
         stop_station_ids: Vec<RailStationId>,
         direction_mode: ServiceDirectionMode,

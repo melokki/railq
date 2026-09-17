@@ -682,14 +682,19 @@ pub fn find_or_create_service_between_settlements(
 #[cfg(test)]
 mod tests {
     use crate::{
-        model::{JourneyId, Money, RailLineId, RailStationId, SettlementId, TrainStatus, UtcSeconds},
+        model::{
+            JourneyId, Money, RailLineId, RailStationId, ServiceDirectionMode, SettlementId,
+            TrainStatus, UtcSeconds,
+        },
         sim::{fleet::purchase_train, world::create_new_game},
     };
 
     use super::{
         ServiceAssignmentError, ServiceError, assign_train_to_service, create_service,
-        delete_service, find_or_create_service, find_or_create_service_between_settlements,
-        path_between_stations, service_path_for_stops, unassign_train_from_service, update_service,
+        create_service_with_mode, delete_service, find_or_create_service,
+        find_or_create_service_between_settlements, path_between_stations, rename_service,
+        service_path_for_stops, unassign_train_from_service, update_service,
+        update_service_with_mode,
     };
 
     fn game() -> crate::model::GameState {
@@ -938,6 +943,36 @@ mod tests {
             service.rail_line_ids,
             vec![RailLineId::new(1), RailLineId::new(2)]
         );
+    }
+
+    #[test]
+    fn commercial_name_is_shared_metadata_and_can_be_cleared() {
+        let mut game = game();
+        let service_id = create_service(
+            &mut game,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+        )
+        .unwrap();
+
+        rename_service(&mut game, service_id, Some("  Capital Link  ".into())).unwrap();
+        let service = game
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .unwrap();
+        assert_eq!(service.custom_name.as_deref(), Some("Capital Link"));
+        assert_eq!(service.display_name(), "R1 · Capital Link");
+
+        rename_service(&mut game, service_id, None).unwrap();
+        let service = game
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .unwrap();
+        assert_eq!(service.custom_name, None);
+        assert_eq!(service.display_name(), "R1");
     }
 
     #[test]

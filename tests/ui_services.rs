@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
-    model::{Money, RailStationId, UtcSeconds},
+    app::AppCommand,
+    model::{Money, RailStationId, ServiceDirectionMode, UtcSeconds},
     sim::{
         fleet::purchase_train,
         journeys::dispatch_journey,
@@ -74,9 +75,40 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),
-        ShellAction::CreatePassengerService {
+        ShellAction::Player(AppCommand::CreatePassengerService {
             stop_station_ids: vec![RailStationId::new(1), RailStationId::new(2)],
-        }
+            direction_mode: ServiceDirectionMode::BothDirections,
+        })
+    );
+}
+
+
+#[test]
+fn service_editor_can_create_an_explicit_one_way_service() {
+    let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+    let mut shell = Shell::new();
+
+    press(&mut shell, &state, KeyCode::Char('s'));
+    press(&mut shell, &state, KeyCode::Char('n'));
+    press(&mut shell, &state, KeyCode::Char(' '));
+    press(&mut shell, &state, KeyCode::Down);
+    press(&mut shell, &state, KeyCode::Char(' '));
+
+    let both_directions = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(both_directions.contains("BOTH DIRECTIONS"));
+
+    press(&mut shell, &state, KeyCode::Char('m'));
+    let one_way = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(one_way.contains("ONE WAY"));
+    assert!(one_way.contains("Oakridge → Fairford"));
+
+    press(&mut shell, &state, KeyCode::Enter);
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Player(AppCommand::CreatePassengerService {
+            stop_station_ids: vec![RailStationId::new(1), RailStationId::new(2)],
+            direction_mode: ServiceDirectionMode::ForwardOnly,
+        })
     );
 }
 
@@ -109,7 +141,7 @@ fn existing_services_are_listed_and_can_request_deletion() {
     assert!(!rendered.contains("Service Details"));
 
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Char('d')),
+        press(&mut shell, &state, KeyCode::Delete),
         ShellAction::Continue
     );
     let confirmation = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
@@ -119,7 +151,66 @@ fn existing_services_are_listed_and_can_request_deletion() {
     assert!(confirmation.contains("[Esc] cancel"));
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),
-        ShellAction::DeletePassengerService { service_id }
+        ShellAction::Player(AppCommand::DeletePassengerService { service_id })
+    );
+}
+
+
+#[test]
+fn passenger_service_can_set_a_shared_commercial_name() {
+    let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+    let service_id = create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(2)],
+    )
+    .unwrap();
+    let mut shell = Shell::new();
+
+    press(&mut shell, &state, KeyCode::Char('s'));
+    press(&mut shell, &state, KeyCode::Char('r'));
+    let editor = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(editor.contains("Name Passenger Service"));
+    assert!(editor.contains("COMMERCIAL NAME"));
+    assert!(editor.contains("Shared by both directions"));
+
+    for character in "Capital Link".chars() {
+        press(&mut shell, &state, KeyCode::Char(character));
+    }
+
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Player(AppCommand::UpdatePassengerServiceName {
+            service_id,
+            custom_name: Some("Capital Link".into()),
+        })
+    );
+}
+
+#[test]
+fn passenger_service_can_assign_a_ready_train_without_dispatching_it() {
+    let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+    state.player_company.funds = Money::from_cents(10_000_000);
+    let service_id = create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(2)],
+    )
+    .unwrap();
+    let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    let mut shell = Shell::new();
+
+    press(&mut shell, &state, KeyCode::Char('s'));
+    press(&mut shell, &state, KeyCode::Char('a'));
+    let assignment = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(assignment.contains("Assign Trains · R1"));
+    assert!(assignment.contains("Allocate fleet to this Passenger Service"));
+    assert!(assignment.contains("T01"));
+
+    assert_eq!(
+        press(&mut shell, &state, KeyCode::Enter),
+        ShellAction::Player(AppCommand::AssignTrainToService {
+            train_id,
+            service_id,
+        })
     );
 }
 
@@ -324,7 +415,7 @@ fn service_footer_keeps_delete_visible_but_disabled_while_service_is_active() {
     assert_eq!(
         idle_footer
             .iter()
-            .find(|(key, _, _)| *key == "D")
+            .find(|(key, _, _)| *key == "Del")
             .map(|(_, _, enabled)| *enabled),
         Some(true),
     );
@@ -348,7 +439,7 @@ fn service_footer_keeps_delete_visible_but_disabled_while_service_is_active() {
     assert_eq!(
         active_footer
             .iter()
-            .find(|(key, _, _)| *key == "D")
+            .find(|(key, _, _)| *key == "Del")
             .map(|(_, _, enabled)| *enabled),
         Some(false),
     );
@@ -370,7 +461,7 @@ fn delete_shortcut_is_a_no_op_while_selected_service_is_active() {
 
     press(&mut shell, &state, KeyCode::Char('s'));
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Char('d')),
+        press(&mut shell, &state, KeyCode::Delete),
         ShellAction::Continue
     );
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
@@ -415,10 +506,11 @@ fn idle_service_uses_the_shared_editor_for_route_changes() {
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),
-        ShellAction::UpdatePassengerService {
+        ShellAction::Player(AppCommand::UpdatePassengerService {
             service_id,
             stop_station_ids: vec![RailStationId::new(1), RailStationId::new(3)],
-        }
+            direction_mode: ServiceDirectionMode::BothDirections,
+        })
     );
 }
 

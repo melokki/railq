@@ -538,7 +538,7 @@
         );
         let services_help = super::help_lines(&shell, &state).join("\n");
         assert!(services_help.contains("Current · Passenger Services"));
-        assert!(services_help.contains("n Create the first directional Passenger Service"));
+        assert!(services_help.contains("n Create the first Passenger Service"));
     }
 
     #[test]
