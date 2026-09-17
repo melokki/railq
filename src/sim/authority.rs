@@ -1308,66 +1308,20 @@ fn project_from_candidate(
     }
 }
 
-/// Evaluates and ranks every currently unconnected Settlement.
-///
-/// RailQ does not yet store geographical coordinates. Until that arrives,
-/// proximity and construction difficulty are stable seeded estimates derived
-/// from the world seed and entity identities. Keeping this logic isolated makes
-/// it straightforward to replace with real map geometry later without changing
-/// the Authority project model.
+/// Evaluates and ranks every currently unconnected Settlement against the
+/// Stations that are open in the Rail Network now. Geography comes from the
+/// Region's stable world coordinates; construction difficulty remains seeded so
+/// the same world and endpoint pair always produce the same estimate.
 pub fn evaluate_connection_candidates(
     region: &Region,
     world_seed: u64,
 ) -> Result<Vec<ConnectionCandidate>, CalculationError> {
-    let network = &region.rail_authority.rail_network;
-    if network.rail_stations.is_empty() {
-        return Ok(Vec::new());
+    let mut candidates = Vec::new();
+    for settlement in &region.settlements {
+        if let Some(candidate) = evaluate_connection_candidate(region, world_seed, settlement.id)? {
+            candidates.push(candidate);
+        }
     }
-
-    let mut candidates = region
-        .settlements
-        .iter()
-        .filter(|settlement| {
-            !network
-                .rail_stations
-                .iter()
-                .any(|station| station.settlement_id == settlement.id)
-        })
-        .map(|settlement| {
-            let (connection_station_id, estimated_distance) = network
-                .rail_stations
-                .iter()
-                .map(|station| {
-                    (
-                        station.id,
-                        geographic_connection_distance(region, settlement.id, station.id),
-                    )
-                })
-                .min_by_key(|(station_id, distance)| (*distance, *station_id))
-                .expect("non-empty Rail Network has at least one Station");
-
-            let construction_difficulty =
-                estimated_construction_difficulty(world_seed, settlement.id, connection_station_id);
-            let estimated_cost =
-                estimated_connection_cost(estimated_distance, construction_difficulty)?;
-            let score = score_candidate(
-                region,
-                settlement.id,
-                connection_station_id,
-                estimated_cost,
-                world_seed,
-            );
-
-            Ok(ConnectionCandidate {
-                settlement_id: settlement.id,
-                connection_station_id,
-                estimated_distance,
-                construction_difficulty,
-                estimated_cost,
-                score,
-            })
-        })
-        .collect::<Result<Vec<_>, CalculationError>>()?;
 
     candidates.sort_by(|left, right| {
         right
@@ -1379,6 +1333,51 @@ pub fn evaluate_connection_candidates(
     });
 
     Ok(candidates)
+}
+
+/// Evaluates one Settlement against the Rail Network that is open *now*.
+///
+/// Keeping this calculation separate from the ranked planning pass lets later
+/// lifecycle stages reconsider an already-approved New Line against newly opened
+/// Stations without duplicating geography, difficulty, cost, or scoring rules.
+fn evaluate_connection_candidate(
+    region: &Region,
+    world_seed: u64,
+    settlement_id: SettlementId,
+) -> Result<Option<ConnectionCandidate>, CalculationError> {
+    let network = &region.rail_authority.rail_network;
+    if network.rail_stations.is_empty()
+        || network
+            .rail_stations
+            .iter()
+            .any(|station| station.settlement_id == settlement_id)
+    {
+        return Ok(None);
+    }
+
+    let connection_station_id = nearest_connection_station_id(region, settlement_id)
+        .expect("non-empty Rail Network has at least one Station");
+    let estimated_distance =
+        geographic_connection_distance(region, settlement_id, connection_station_id);
+    let construction_difficulty =
+        estimated_construction_difficulty(world_seed, settlement_id, connection_station_id);
+    let estimated_cost = estimated_connection_cost(estimated_distance, construction_difficulty)?;
+    let score = score_candidate(
+        region,
+        settlement_id,
+        connection_station_id,
+        estimated_cost,
+        world_seed,
+    );
+
+    Ok(Some(ConnectionCandidate {
+        settlement_id,
+        connection_station_id,
+        estimated_distance,
+        construction_difficulty,
+        estimated_cost,
+        score,
+    }))
 }
 
 pub(crate) fn nearest_connection_station_id(
@@ -1544,7 +1543,7 @@ mod tests {
             AuthorityRules, BulletinCategory, ConstructionDifficulty, DistanceMetres,
             DurationSeconds, InfrastructureProjectId, InfrastructureProjectKind,
             InfrastructureProjectStatus, MarketMaturity, Money, OriginDestinationDemand,
-            UtcSeconds,
+            RailStation, RailStationId, UtcSeconds, WorldPosition,
         },
         sim::{
             authority::MAX_OFFLINE_FISCAL_CATCHUP_PERIODS,
@@ -1559,9 +1558,10 @@ mod tests {
         advance_project_funding, advance_project_scheduling_with_rules,
         cancel_infrastructure_project, contribute_to_infrastructure_project,
         deferred_reconsideration_threshold, estimated_connection_cost,
-        evaluate_connection_candidates, local_rail_success_basis_points,
-        new_line_construction_duration_with_rules, open_completed_infrastructure_projects,
-        project_from_candidate, project_review_decision, project_review_score,
+        evaluate_connection_candidate, evaluate_connection_candidates,
+        local_rail_success_basis_points, new_line_construction_duration_with_rules,
+        open_completed_infrastructure_projects, project_from_candidate, project_review_decision,
+        project_review_score,
     };
 
     const PROVISIONAL_AUTHORITY_RULES: AuthorityRules = AuthorityRules::provisional();
@@ -1749,6 +1749,58 @@ mod tests {
                     .any(|station| station.id == candidate.connection_station_id)
             );
         }
+    }
+
+    #[test]
+    fn single_candidate_evaluation_uses_newly_opened_station() {
+        let world_seed = 42;
+        let mut region = generate_region(world_seed);
+        let target_settlement_id = region.settlements[4].id;
+        region.settlements[4].position = WorldPosition::new(100, 100);
+
+        let before = evaluate_connection_candidate(&region, world_seed, target_settlement_id)
+            .unwrap()
+            .expect("target Settlement is initially unconnected");
+
+        let closer_settlement_id = region.settlements[5].id;
+        region.settlements[5].position = WorldPosition::new(95, 100);
+        let closer_station_id = RailStationId::new(100);
+        region.rail_authority.rail_network.rail_stations.push(RailStation {
+            id: closer_station_id,
+            settlement_id: closer_settlement_id,
+        });
+
+        let after = evaluate_connection_candidate(&region, world_seed, target_settlement_id)
+            .unwrap()
+            .expect("target Settlement remains unconnected");
+
+        assert_ne!(before.connection_station_id, closer_station_id);
+        assert_eq!(after.connection_station_id, closer_station_id);
+        assert_eq!(after.estimated_distance.metres(), 5_000);
+        assert!(after.estimated_distance < before.estimated_distance);
+    }
+
+    #[test]
+    fn single_candidate_evaluation_stops_after_target_is_connected() {
+        let world_seed = 7;
+        let mut region = generate_region(world_seed);
+        let target_settlement_id = region.settlements[4].id;
+
+        assert!(
+            evaluate_connection_candidate(&region, world_seed, target_settlement_id)
+                .unwrap()
+                .is_some()
+        );
+
+        region.rail_authority.rail_network.rail_stations.push(RailStation {
+            id: RailStationId::new(100),
+            settlement_id: target_settlement_id,
+        });
+
+        assert_eq!(
+            evaluate_connection_candidate(&region, world_seed, target_settlement_id).unwrap(),
+            None
+        );
     }
 
     #[test]
