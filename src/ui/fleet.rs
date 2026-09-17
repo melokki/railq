@@ -994,6 +994,7 @@ fn render_wide_dashboard(
     let visible_items = usize::from(list_area.height.saturating_sub(2)).max(1);
     selection.set_page_size(visible_items);
 
+    let show_service = list_area.width >= 72;
     let rows = state
         .player_company
         .fleet
@@ -1001,31 +1002,50 @@ fn render_wide_dashboard(
         .iter()
         .map(|train| {
             let fields = train_fields(state, train, now);
-            Row::new([
-                Cell::from(train_picker_label(train, &fields.model)),
-                Cell::from(fields.status).style(train_status_style(train)),
-                Cell::from(fields.place),
-                Cell::from(fields.eta),
-            ])
+            if show_service {
+                Row::new(vec![
+                    Cell::from(train_picker_label(train, &fields.model)),
+                    Cell::from(fields.status).style(train_status_style(train)),
+                    Cell::from(assigned_service_label(state, train.id).unwrap_or_else(|| "—".into()))
+                        .style(theme::secondary()),
+                    Cell::from(fields.place),
+                    Cell::from(fields.eta),
+                ])
+            } else {
+                Row::new(vec![
+                    Cell::from(train_picker_label(train, &fields.model)),
+                    Cell::from(fields.status).style(train_status_style(train)),
+                    Cell::from(fields.place),
+                    Cell::from(fields.eta),
+                ])
+            }
         })
         .collect::<Vec<_>>();
-    let header = Row::new(["Train", "State", "Position", "ETA"])
-        .style(theme::table_header())
-        .bottom_margin(1);
-    let widths = if list_area.width >= 90 {
-        [
-            Constraint::Length(30),
-            Constraint::Length(13),
-            Constraint::Length(24),
-            Constraint::Length(10),
-        ]
+    let (header, widths) = if show_service {
+        (
+            Row::new(["Train", "State", "Service", "Position", "ETA"])
+                .style(theme::table_header())
+                .bottom_margin(1),
+            vec![
+                Constraint::Min(18),
+                Constraint::Length(11),
+                Constraint::Length(18),
+                Constraint::Min(10),
+                Constraint::Length(9),
+            ],
+        )
     } else {
-        [
-            Constraint::Min(16),
-            Constraint::Length(11),
-            Constraint::Min(10),
-            Constraint::Length(9),
-        ]
+        (
+            Row::new(["Train", "State", "Position", "ETA"])
+                .style(theme::table_header())
+                .bottom_margin(1),
+            vec![
+                Constraint::Min(16),
+                Constraint::Length(11),
+                Constraint::Min(10),
+                Constraint::Length(9),
+            ],
+        )
     };
     let table = Table::new(rows, widths)
         .header(header)
@@ -1234,18 +1254,10 @@ fn render_train_inspector(
             ));
 
             inspector_section(&mut lines, "SERVICE", dense_detail);
-            if let Some(service_id) = state.player_company.fleet.assigned_service_id(train.id) {
-                let service_label = state
-                    .player_company
-                    .passenger_services
-                    .iter()
-                    .find(|service| service.id == service_id)
-                    .map(|service| service.display_name())
-                    .unwrap_or_else(|| format!("R{} · Missing service", service_id.get()));
-                lines.push(labelled_line("Assigned", &service_label));
-            } else {
-                lines.push(labelled_line("Assigned", "Unassigned"));
-            }
+            lines.push(labelled_line(
+                "Assigned",
+                &assigned_service_label(state, train.id).unwrap_or_else(|| "Unassigned".into()),
+            ));
 
             inspector_section(&mut lines, "CAPACITY", dense_detail);
             lines.push(labelled_line("Seats", &format_capacity(train)));
@@ -1493,10 +1505,16 @@ fn compact_train_lines(
         .as_ref()
         .map(|nickname| format!(" · {}", nickname.as_str()))
         .unwrap_or_default();
+    let service = state
+        .player_company
+        .fleet
+        .assigned_service_id(train.id)
+        .map(|service_id| format!(" · R{}", service_id.get()))
+        .unwrap_or_default();
     [
         Line::styled(
             format!(
-                "{marker} Train {:02}{nickname}  {}",
+                "{marker} Train {:02}{nickname}  {}{service}",
                 train.id.get(),
                 train_status_label(train)
             ),
@@ -1507,6 +1525,19 @@ fn compact_train_lines(
             row_style,
         ),
     ]
+}
+
+fn assigned_service_label(state: &GameState, train_id: TrainId) -> Option<String> {
+    let service_id = state.player_company.fleet.assigned_service_id(train_id)?;
+    Some(
+        state
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == service_id)
+            .map(|service| service.display_name())
+            .unwrap_or_else(|| format!("R{} · Missing service", service_id.get())),
+    )
 }
 
 fn train_picker_label(train: &Train, model: &str) -> String {

@@ -238,6 +238,7 @@ fn active_service_inspector_surfaces_live_operating_context() {
     )
     .unwrap();
     let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    assign_train_to_service(&mut state, train_id, service_id).unwrap();
     dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
 
     let mut shell = Shell::new();
@@ -245,6 +246,7 @@ fn active_service_inspector_surfaces_live_operating_context() {
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
     assert!(rendered.contains("LIVE"));
+    assert!(rendered.contains("1 assigned · 0 ready · 1 running"));
     assert!(rendered.contains("Active trains"));
     assert!(rendered.contains("Next arrival"));
     assert!(rendered.contains("Train 01"));
@@ -374,9 +376,9 @@ fn wide_service_picker_surfaces_operational_summary_without_repeating_full_stop_
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
-    assert!(rendered.contains("State"));
-    assert!(rendered.contains("Fleet"));
-    assert!(rendered.contains("Active"));
+    assert!(rendered.contains("Assigned"));
+    assert!(rendered.contains("Ready"));
+    assert!(rendered.contains("Running"));
     assert!(rendered.contains("Waiting"));
     assert!(rendered.contains("LIVE"));
     assert!(!rendered.contains("1 active"));
@@ -399,7 +401,7 @@ fn service_inspector_surfaces_assigned_fleet_and_runnable_state() {
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
     assert!(rendered.contains("READY"));
-    assert!(rendered.contains("1 assigned · 1 ready"));
+    assert!(rendered.contains("1 assigned · 1 ready · 0 running"));
     assert!(rendered.contains("ASSIGNED FLEET"));
     assert!(rendered.contains("Train 01"));
     assert!(rendered.contains("READY · Oakridge"));

@@ -639,12 +639,11 @@ fn render_service_picker(
             let route = service_route_label(state, service);
             if wide {
                 let snapshot = service_operating_snapshot(state, service.id);
-                let (state_label, state_style) = service_state_label(&snapshot);
                 Row::new(vec![
                     Cell::from(service.display_name()),
                     Cell::from(route),
-                    Cell::from(state_label).style(state_style),
                     Cell::from(snapshot.assigned_trains.to_string()),
+                    Cell::from(snapshot.runnable_assigned_trains.to_string()),
                     Cell::from(snapshot.active_trains.to_string()),
                     Cell::from(snapshot.waiting_passengers.to_string()),
                 ])
@@ -656,15 +655,15 @@ fn render_service_picker(
 
     let (header, widths) = if wide {
         (
-            Row::new(["Service", "Route", "State", "Fleet", "Active", "Waiting"])
+            Row::new(["Service", "Route", "Assigned", "Ready", "Running", "Waiting"])
                 .style(theme::table_header())
                 .bottom_margin(1),
             vec![
-                Constraint::Length(9),
-                Constraint::Min(15),
+                Constraint::Length(8),
+                Constraint::Min(12),
                 Constraint::Length(8),
                 Constraint::Length(5),
-                Constraint::Length(6),
+                Constraint::Length(7),
                 Constraint::Length(7),
             ],
         )
@@ -794,8 +793,10 @@ fn service_details(
         lines.push(labelled_line(
             "Fleet",
             &format!(
-                "{} assigned · {} ready",
-                snapshot.assigned_trains, snapshot.runnable_assigned_trains
+                "{} assigned · {} ready · {} running",
+                snapshot.assigned_trains,
+                snapshot.runnable_assigned_trains,
+                snapshot.active_trains
             ),
         ));
     }
