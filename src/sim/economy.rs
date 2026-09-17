@@ -65,6 +65,25 @@ pub struct JourneyQuote {
     pub(crate) access_fee_credit_uses: Vec<InfrastructureAccessCreditUse>,
 }
 
+/// The current economic and operational terms for one empty positioning move.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PositioningQuote {
+    pub service_id: ServiceId,
+    pub train_id: TrainId,
+    pub origin_station_id: RailStationId,
+    pub destination_station_id: RailStationId,
+    pub rail_line_path: Vec<RailLineId>,
+    pub distance: DistanceMetres,
+    pub infrastructure_access_fee_before_credit: Money,
+    pub infrastructure_access_fee_credit: Money,
+    pub infrastructure_access_fee: Money,
+    pub fuel_cost: Money,
+    pub operating_cost: Money,
+    pub duration: DurationSeconds,
+    pub cash_after_cost: Money,
+    pub(crate) access_fee_credit_uses: Vec<InfrastructureAccessCreditUse>,
+}
+
 /// Why a Journey cannot be quoted from the current state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EconomyError {
@@ -80,6 +99,10 @@ pub enum EconomyError {
     TrainTravelling {
         train_id: TrainId,
     },
+    TrainNotAssignedToService {
+        train_id: TrainId,
+        service_id: ServiceId,
+    },
     TrainAssignedToOtherService {
         train_id: TrainId,
         assigned_service_id: ServiceId,
@@ -89,6 +112,18 @@ pub enum EconomyError {
         train_id: TrainId,
         station_id: RailStationId,
         service_id: ServiceId,
+    },
+    InvalidPositioningDestination {
+        service_id: ServiceId,
+        station_id: RailStationId,
+    },
+    TrainAlreadyAtPositioningDestination {
+        train_id: TrainId,
+        station_id: RailStationId,
+    },
+    PositioningPathNotFound {
+        origin_station_id: RailStationId,
+        destination_station_id: RailStationId,
     },
     EmptyServicePath {
         service_id: ServiceId,
@@ -127,6 +162,15 @@ impl fmt::Display for EconomyError {
                 "Train {} is already travelling and cannot be quoted",
                 train_id.get()
             ),
+            Self::TrainNotAssignedToService {
+                train_id,
+                service_id,
+            } => write!(
+                formatter,
+                "Train {} is not assigned to Passenger Service {}",
+                train_id.get(),
+                service_id.get()
+            ),
             Self::TrainAssignedToOtherService {
                 train_id,
                 assigned_service_id,
@@ -148,6 +192,33 @@ impl fmt::Display for EconomyError {
                 train_id.get(),
                 station_id.get(),
                 service_id.get()
+            ),
+            Self::InvalidPositioningDestination {
+                service_id,
+                station_id,
+            } => write!(
+                formatter,
+                "Rail Station {} is not a valid departure terminus for Passenger Service {}",
+                station_id.get(),
+                service_id.get()
+            ),
+            Self::TrainAlreadyAtPositioningDestination {
+                train_id,
+                station_id,
+            } => write!(
+                formatter,
+                "Train {} is already at Rail Station {}",
+                train_id.get(),
+                station_id.get()
+            ),
+            Self::PositioningPathNotFound {
+                origin_station_id,
+                destination_station_id,
+            } => write!(
+                formatter,
+                "no open Rail Line path exists from Rail Station {} to Rail Station {}",
+                origin_station_id.get(),
+                destination_station_id.get()
             ),
             Self::EmptyServicePath { service_id } => write!(
                 formatter,
@@ -326,6 +397,114 @@ pub fn quote_journey(
         first_leg_duration,
         cash_after_cost,
         boarding_groups,
+        access_fee_credit_uses,
+    })
+}
+
+/// Quotes an empty movement that positions an assigned READY Train at a
+/// departure terminus of its Passenger Service. No passenger demand or fare
+/// revenue is involved; infrastructure and fuel costs are paid at departure.
+pub fn quote_positioning_journey(
+    state: &GameState,
+    train_id: TrainId,
+    service_id: ServiceId,
+    destination_station_id: RailStationId,
+) -> Result<PositioningQuote, EconomyError> {
+    let train = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .ok_or(EconomyError::TrainNotFound { train_id })?;
+    let train_model =
+        model_for_train(train).ok_or(EconomyError::TrainModelNotFound { train_id })?;
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+        .ok_or(EconomyError::ServiceNotFound { service_id })?;
+
+    match state.player_company.fleet.assigned_service_id(train_id) {
+        None => {
+            return Err(EconomyError::TrainNotAssignedToService {
+                train_id,
+                service_id,
+            });
+        }
+        Some(assigned_service_id) if assigned_service_id != service_id => {
+            return Err(EconomyError::TrainAssignedToOtherService {
+                train_id,
+                assigned_service_id,
+                requested_service_id: service_id,
+            });
+        }
+        Some(_) => {}
+    }
+
+    let origin_station_id = match train.status {
+        TrainStatus::Ready { at } => at,
+        TrainStatus::Travelling { .. } => return Err(EconomyError::TrainTravelling { train_id }),
+    };
+    let valid_destination = service.origin_station_id() == Some(destination_station_id)
+        || (service.direction_mode == ServiceDirectionMode::BothDirections
+            && service.destination_station_id() == Some(destination_station_id));
+    if !valid_destination {
+        return Err(EconomyError::InvalidPositioningDestination {
+            service_id,
+            station_id: destination_station_id,
+        });
+    }
+    if origin_station_id == destination_station_id {
+        return Err(EconomyError::TrainAlreadyAtPositioningDestination {
+            train_id,
+            station_id: destination_station_id,
+        });
+    }
+
+    let rail_line_path = path_between_stations(
+        &state.region.rail_authority.rail_network,
+        origin_station_id,
+        destination_station_id,
+    )
+    .map_err(|_| EconomyError::PositioningPathNotFound {
+        origin_station_id,
+        destination_station_id,
+    })?;
+    let distance = distance_for_lines(state, &rail_line_path)?;
+    let access_fee_rate = state.rules.balance.access_fee_per_train_kilometre();
+    let infrastructure_access_fee_before_credit = access_fee_rate.checked_charge(distance)?;
+    let (infrastructure_access_fee_credit, access_fee_credit_uses) =
+        quote_infrastructure_access_credits(
+            state,
+            &rail_line_path,
+            access_fee_rate,
+            infrastructure_access_fee_before_credit,
+        )?;
+    let infrastructure_access_fee =
+        infrastructure_access_fee_before_credit.checked_sub(infrastructure_access_fee_credit)?;
+    let fuel_cost = train_model
+        .fuel_cost_per_kilometre()
+        .checked_charge(distance)?;
+    let operating_cost = infrastructure_access_fee.checked_add(fuel_cost)?;
+    let duration = duration_for_lines(state, &rail_line_path, train_model.speed())?;
+    let cash_after_cost = state.player_company.funds.checked_sub(operating_cost)?;
+
+    Ok(PositioningQuote {
+        service_id,
+        train_id,
+        origin_station_id,
+        destination_station_id,
+        rail_line_path,
+        distance,
+        infrastructure_access_fee_before_credit,
+        infrastructure_access_fee_credit,
+        infrastructure_access_fee,
+        fuel_cost,
+        operating_cost,
+        duration,
+        cash_after_cost,
         access_fee_credit_uses,
     })
 }

@@ -20,7 +20,7 @@ use crate::{
         economy::EconomyError,
         finance::{FinanceError, FinancialStatus, evaluate_financial_recovery},
         fleet::{FleetError, purchase_train, sell_train},
-        journeys::{DispatchError, dispatch_journey},
+        journeys::{DispatchError, dispatch_journey, dispatch_positioning_journey},
         services::{
             ServiceAssignmentError, ServiceError, assign_train_to_service,
             create_service_with_mode, delete_service, find_or_create_service, rename_service,
@@ -228,6 +228,19 @@ impl<S: GameStore> App<S> {
             } => {
                 let journey_id = self.dispatch_journey(train_id, service_id, now)?;
                 Ok(AppCommandResult::JourneyDispatched { journey_id })
+            }
+            AppCommand::PositionTrainForService {
+                train_id,
+                service_id,
+                destination_station_id,
+            } => {
+                let journey_id = self.position_train_for_service(
+                    train_id,
+                    service_id,
+                    destination_station_id,
+                    now,
+                )?;
+                Ok(AppCommandResult::TrainPositioningStarted { journey_id })
             }
             AppCommand::ContributeInfrastructure { project_id, amount } => {
                 self.contribute_to_infrastructure_project(project_id, amount, now)?;
@@ -505,6 +518,33 @@ impl<S: GameStore> App<S> {
         })
     }
 
+    /// Moves one assigned READY Train empty to a valid departure terminus of
+    /// its Passenger Service and persists the resulting positioning Journey.
+    pub fn position_train_for_service(
+        &mut self,
+        train_id: TrainId,
+        service_id: ServiceId,
+        destination_station_id: RailStationId,
+        now: UtcSeconds,
+    ) -> Result<crate::model::JourneyId, AppError<S::Error>> {
+        self.transact(now, |state, effective_now| {
+            let bankruptcy_prevents_operation = bankruptcy_prevents_operations(state)?;
+            let journey_id = dispatch_positioning_journey(
+                state,
+                train_id,
+                service_id,
+                destination_station_id,
+                effective_now,
+            )
+            .map_err(AppError::Dispatch)?;
+            if bankruptcy_prevents_operation {
+                Err(AppError::Bankruptcy)
+            } else {
+                Ok(journey_id)
+            }
+        })
+    }
+
     /// Compatibility helper for legacy destination-based callers.
     ///
     /// The player-facing Manual Dispatch flow now selects an existing
@@ -644,7 +684,7 @@ mod tests {
         sim::{
             economy::quote_journey,
             fleet::{FleetError, purchase_train},
-            journeys::{DispatchError, dispatch_journey},
+            journeys::{DispatchError, dispatch_journey, dispatch_positioning_journey},
             services::{assign_train_to_service, find_or_create_service},
             world::create_new_game,
         },

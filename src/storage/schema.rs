@@ -188,6 +188,7 @@ CREATE TABLE IF NOT EXISTS origin_destination_demand (
 CREATE TABLE IF NOT EXISTS active_journeys (
     id TEXT PRIMARY KEY,
     sequence INTEGER NOT NULL UNIQUE,
+    purpose TEXT NOT NULL DEFAULT 'revenue' CHECK (purpose IN ('revenue', 'positioning')),
     service_id TEXT NOT NULL REFERENCES passenger_services(id),
     train_id TEXT NOT NULL REFERENCES trains(id),
     origin_station_id TEXT NOT NULL REFERENCES rail_stations(id),

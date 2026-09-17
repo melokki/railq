@@ -296,10 +296,11 @@ pub(super) fn insert_state(
 
     for (sequence, journey) in state.active_journeys.iter().enumerate() {
         transaction.execute(
-            "INSERT INTO active_journeys(id, sequence, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT INTO active_journeys(id, sequence, purpose, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
-                journey.id.to_string(), i64::try_from(sequence).unwrap_or(i64::MAX), journey.service_id.to_string(), journey.train_id.to_string(),
+                journey.id.to_string(), i64::try_from(sequence).unwrap_or(i64::MAX), journey.purpose.as_str(),
+                journey.service_id.to_string(), journey.train_id.to_string(),
                 journey.origin_station_id.to_string(), journey.destination_station_id.to_string(), i64::from(journey.passengers_carried),
                 journey.fare.cents(), journey.operating_revenue.cents(), journey.credited_revenue.cents(),
                 journey.infrastructure_access_fee.cents(), journey.fuel_cost.cents(),
@@ -1177,32 +1178,34 @@ pub(super) fn load_state(
 
     let mut active_journeys = query_all(
         connection,
-        "SELECT id, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at FROM active_journeys ORDER BY sequence",
+        "SELECT id, purpose, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at FROM active_journeys ORDER BY sequence",
         path,
         |row| {
             Ok(Journey {
                 id: row_domain_id(row, 0, "Journey ID", JourneyId::parse)?,
-                service_id: row_domain_id(row, 1, "Passenger Service ID", ServiceId::parse)?,
-                train_id: row_domain_id(row, 2, "Train ID", TrainId::parse)?,
-                origin_station_id: row_domain_id(row, 3, "Journey origin", RailStationId::parse)?,
+                purpose: JourneyPurpose::parse(&row.get::<_, String>(1)?)
+                    .ok_or(rusqlite::Error::InvalidQuery)?,
+                service_id: row_domain_id(row, 2, "Passenger Service ID", ServiceId::parse)?,
+                train_id: row_domain_id(row, 3, "Train ID", TrainId::parse)?,
+                origin_station_id: row_domain_id(row, 4, "Journey origin", RailStationId::parse)?,
                 destination_station_id: row_domain_id(
                     row,
-                    4,
+                    5,
                     "Journey destination",
                     RailStationId::parse,
                 )?,
-                passengers_carried: u32::try_from(row.get::<_, i64>(5)?)
+                passengers_carried: u32::try_from(row.get::<_, i64>(6)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                fare: Money::from_cents(row.get(6)?),
-                operating_revenue: Money::from_cents(row.get(7)?),
-                credited_revenue: Money::from_cents(row.get(8)?),
-                infrastructure_access_fee: Money::from_cents(row.get(9)?),
-                fuel_cost: Money::from_cents(row.get(10)?),
-                current_stop_index: usize::try_from(row.get::<_, i64>(11)?)
+                fare: Money::from_cents(row.get(7)?),
+                operating_revenue: Money::from_cents(row.get(8)?),
+                credited_revenue: Money::from_cents(row.get(9)?),
+                infrastructure_access_fee: Money::from_cents(row.get(10)?),
+                fuel_cost: Money::from_cents(row.get(11)?),
+                current_stop_index: usize::try_from(row.get::<_, i64>(12)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 passenger_groups: Vec::new(),
-                departed_at: UtcSeconds::from_unix_seconds(row.get(12)?),
-                arrives_at: UtcSeconds::from_unix_seconds(row.get(13)?),
+                departed_at: UtcSeconds::from_unix_seconds(row.get(13)?),
+                arrives_at: UtcSeconds::from_unix_seconds(row.get(14)?),
             })
         },
     )?;

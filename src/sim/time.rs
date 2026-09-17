@@ -10,8 +10,8 @@ use std::{collections::HashMap, error::Error, fmt};
 use crate::{
     catalog::model_for_train,
     model::{
-        CalculationError, GameState, JourneyId, JourneyPassengerGroup, JourneyReceipt, Money,
-        RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
+        CalculationError, GameState, JourneyId, JourneyPassengerGroup, JourneyPurpose,
+        JourneyReceipt, Money, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
     },
     sim::{
         authority::advance_rail_authority,
@@ -201,6 +201,10 @@ fn process_stop_arrival(
     journey_index: usize,
 ) -> Result<(Option<SettledJourney>, Money), AdvanceTimeError> {
     let journey_snapshot = state.active_journeys[journey_index].clone();
+    if journey_snapshot.purpose == JourneyPurpose::Positioning {
+        return process_positioning_arrival(state, journey_index, &journey_snapshot);
+    }
+
     let service = state
         .player_company
         .passenger_services
@@ -455,6 +459,65 @@ fn process_stop_arrival(
     journey.arrives_at = next_arrival;
 
     Ok((None, credited_now))
+}
+
+fn process_positioning_arrival(
+    state: &mut GameState,
+    journey_index: usize,
+    journey: &crate::model::Journey,
+) -> Result<(Option<SettledJourney>, Money), AdvanceTimeError> {
+    let train_index = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .position(|train| train.id == journey.train_id)
+        .ok_or(AdvanceTimeError::TrainNotFound {
+            train_id: journey.train_id,
+        })?;
+    if state.player_company.fleet.trains[train_index].status
+        != (TrainStatus::Travelling {
+            journey_id: journey.id,
+        })
+    {
+        return Err(AdvanceTimeError::TrainNotTravelling {
+            train_id: journey.train_id,
+            journey_id: journey.id,
+        });
+    }
+    let train_model = model_for_train(&state.player_company.fleet.trains[train_index]).ok_or(
+        AdvanceTimeError::TrainModelNotFound {
+            train_id: journey.train_id,
+        },
+    )?;
+
+    state.player_company.fleet.trains[train_index].status = TrainStatus::Ready {
+        at: journey.destination_station_id,
+    };
+    state.financials.recent_journey_receipts.push(JourneyReceipt {
+        journey_id: journey.id,
+        revenue: Money::ZERO,
+        infrastructure_access_fee: journey.infrastructure_access_fee,
+        fuel_cost: journey.fuel_cost,
+        train_id: Some(journey.train_id),
+        train_model_name: Some(train_model.name().to_owned()),
+        origin_station_id: Some(journey.origin_station_id),
+        destination_station_id: Some(journey.destination_station_id),
+        passengers_carried: Some(0),
+        passenger_capacity: Some(train_model.passenger_capacity().passengers()),
+        completed_at: Some(journey.arrives_at),
+    });
+    state.active_journeys.remove(journey_index);
+
+    Ok((
+        Some(SettledJourney {
+            journey_id: journey.id,
+            train_id: journey.train_id,
+            destination_station_id: journey.destination_station_id,
+            credited_revenue: Money::ZERO,
+        }),
+        Money::ZERO,
+    ))
 }
 
 fn service_direction(

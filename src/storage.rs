@@ -41,7 +41,8 @@ use crate::{
         DistanceMetres, DurationSeconds, Electrification, EuropeanVehicleNumber, Financials, Fleet,
         GameRules, GameState, InfrastructureProject, InfrastructureProjectFunding,
         InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus,
-        InfrastructureProjectTimeline, Journey, JourneyId, JourneyPassengerGroup, JourneyReceipt,
+        InfrastructureProjectTimeline, Journey, JourneyId, JourneyPassengerGroup, JourneyPurpose,
+        JourneyReceipt,
         MarketMaturity, Money, MoneyPerKilometre, OriginDestinationDemand, PassengerArrivalRate,
         PassengerService, PlannedRailLine, PlannedRailStation, PlayerCompany, RailAuthority,
         RailAuthorityFinances, RailLine, RailLineId, RailNetwork, RailStation, RailStationId,
@@ -59,7 +60,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 32;
+pub const SAVE_VERSION: u32 = 33;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";

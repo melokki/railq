@@ -967,6 +967,59 @@ fn validate_journey(
         .iter()
         .find(|service| service.id == journey.service_id)
         .expect("a validated Journey Passenger Service ID resolves in the Service Network");
+
+    if journey.purpose == JourneyPurpose::Positioning {
+        if state.player_company.fleet.assigned_service_id(journey.train_id) != Some(journey.service_id) {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "positioning Journey Train is not assigned to its Passenger Service",
+            });
+        }
+        let valid_destination = service.origin_station_id() == Some(journey.destination_station_id)
+            || (service.direction_mode == ServiceDirectionMode::BothDirections
+                && service.destination_station_id() == Some(journey.destination_station_id));
+        if !valid_destination || journey.origin_station_id == journey.destination_station_id {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "positioning Journey does not end at a valid Service departure terminus",
+            });
+        }
+        let line_ids = path_between_stations(
+            &state.region.rail_authority.rail_network,
+            journey.origin_station_id,
+            journey.destination_station_id,
+        )
+        .map_err(|_| SaveValidationError::ImpossibleState {
+            reason: "positioning Journey has no open Rail Line path",
+        })?;
+        let distance = distance_for_rail_lines(
+            &state.region.rail_authority.rail_network,
+            &line_ids,
+        )?;
+        let gross_access_fee = state
+            .rules
+            .balance
+            .access_fee_per_train_kilometre()
+            .checked_charge(distance)?;
+        let expected_fuel_cost = train_model
+            .fuel_cost_per_kilometre()
+            .checked_charge(distance)?;
+        if journey.passengers_carried != 0
+            || !journey.passenger_groups.is_empty()
+            || journey.fare != Money::ZERO
+            || journey.operating_revenue != Money::ZERO
+            || journey.credited_revenue != Money::ZERO
+            || journey.infrastructure_access_fee < Money::ZERO
+            || journey.infrastructure_access_fee > gross_access_fee
+            || journey.fuel_cost != expected_fuel_cost
+            || journey.current_stop_index != 0
+            || journey.arrives_at <= journey.departed_at
+        {
+            return Err(SaveValidationError::ImpossibleState {
+                reason: "positioning Journey actuals do not match an empty non-revenue movement",
+            });
+        }
+        return Ok(());
+    }
+
     let Some(service_origin) = service.origin_station_id() else {
         return Err(SaveValidationError::ImpossibleState {
             reason: "Journey references a Passenger Service without an origin",
@@ -1133,6 +1186,34 @@ fn validate_journey(
     }
 
     Ok(())
+}
+
+fn distance_for_rail_lines(
+    network: &RailNetwork,
+    rail_line_ids: &[RailLineId],
+) -> Result<DistanceMetres, SaveValidationError> {
+    let metres = rail_line_ids.iter().try_fold(0_u64, |total, rail_line_id| {
+        let line = network
+            .rail_lines
+            .iter()
+            .find(|line| line.id == *rail_line_id)
+            .ok_or(SaveValidationError::DanglingReference {
+                field: "Journey Rail Line",
+            })?;
+        total
+            .checked_add(line.distance.metres())
+            .ok_or(SaveValidationError::Calculation(CalculationError::Overflow {
+                operation: "Journey path distance",
+            }))
+    })?;
+    let metres = i64::try_from(metres).map_err(|_| {
+        SaveValidationError::Calculation(CalculationError::Overflow {
+            operation: "Journey path distance",
+        })
+    })?;
+    DistanceMetres::new(metres).map_err(|_| SaveValidationError::InvalidValue {
+        field: "Journey path distance",
+    })
 }
 
 fn distance_between_service_stops(

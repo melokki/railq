@@ -48,6 +48,12 @@ pub enum AppCommand {
         train_id: TrainId,
         service_id: ServiceId,
     },
+    /// Move one assigned Train empty to a valid departure terminus.
+    PositionTrainForService {
+        train_id: TrainId,
+        service_id: ServiceId,
+        destination_station_id: RailStationId,
+    },
     /// Contribute Player Company funds to one Authority infrastructure project.
     ContributeInfrastructure {
         project_id: InfrastructureProjectId,
@@ -88,6 +94,8 @@ pub enum AppCommandResult {
     TrainServiceUnassigned { train_id: TrainId },
     /// One Manual Dispatch was durably committed.
     JourneyDispatched { journey_id: JourneyId },
+    /// One empty positioning Journey was durably committed.
+    TrainPositioningStarted { journey_id: JourneyId },
     /// One infrastructure contribution was durably committed.
     InfrastructureContributionRecorded {
         project_id: InfrastructureProjectId,
