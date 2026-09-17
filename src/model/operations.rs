@@ -3,7 +3,8 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use super::{
-    JourneyId, Money, RailLineId, RailStationId, ServiceId, TrainId, UtcSeconds, ValidationError,
+    JourneyId, Money, MoneyPerKilometre, RailLineId, RailStationId, ServiceId, TrainId, UtcSeconds,
+    ValidationError,
 };
 
 /// Whether a Passenger Service may operate only in its canonical stop order
@@ -164,6 +165,10 @@ pub struct Journey {
     pub destination_station_id: RailStationId,
     /// Total passenger boardings across the Service run so far.
     pub passengers_carried: u32,
+    /// Fare rate accepted when this Journey first departed. This remains stable
+    /// for the whole run so a balance migration cannot change fares mid-Journey.
+    #[serde(default = "legacy_journey_fare_rate")]
+    pub fare_rate: MoneyPerKilometre,
     /// Through fare from the Service origin to terminus. Kept as a stable
     /// summary value; individual onboard groups may have shorter fares.
     pub fare: Money,
@@ -187,6 +192,10 @@ pub struct Journey {
     pub departed_at: UtcSeconds,
     /// Arrival time of the next Service stop.
     pub arrives_at: UtcSeconds,
+}
+
+fn legacy_journey_fare_rate() -> MoneyPerKilometre {
+    MoneyPerKilometre::new(20).expect("legacy Journey fare rate must remain valid")
 }
 
 impl Journey {

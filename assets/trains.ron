@@ -13,7 +13,7 @@
         purchase_price_cents: 300000,
         passenger_capacity: 70,
         speed_metres_per_second: 33,
-        fuel_cost_cents_per_kilometre: 38,
+        fuel_cost_cents_per_kilometre: 120,
     ),
     (
         id: "veltrian-d121",
@@ -23,7 +23,7 @@
         purchase_price_cents: 440000,
         passenger_capacity: 121,
         speed_metres_per_second: 33,
-        fuel_cost_cents_per_kilometre: 48,
+        fuel_cost_cents_per_kilometre: 152,
     ),
     (
         id: "montaire-r125",
@@ -33,7 +33,7 @@
         purchase_price_cents: 560000,
         passenger_capacity: 125,
         speed_metres_per_second: 39,
-        fuel_cost_cents_per_kilometre: 43,
+        fuel_cost_cents_per_kilometre: 136,
     ),
     (
         id: "korven-r160",
@@ -43,7 +43,7 @@
         purchase_price_cents: 720000,
         passenger_capacity: 160,
         speed_metres_per_second: 44,
-        fuel_cost_cents_per_kilometre: 54,
+        fuel_cost_cents_per_kilometre: 171,
     ),
     (
         id: "helvetra-f171",
@@ -53,7 +53,7 @@
         purchase_price_cents: 850000,
         passenger_capacity: 171,
         speed_metres_per_second: 39,
-        fuel_cost_cents_per_kilometre: 46,
+        fuel_cost_cents_per_kilometre: 145,
     ),
     (
         id: "montaire-r300",
@@ -63,6 +63,6 @@
         purchase_price_cents: 1200000,
         passenger_capacity: 300,
         speed_metres_per_second: 39,
-        fuel_cost_cents_per_kilometre: 78,
+        fuel_cost_cents_per_kilometre: 246,
     ),
 ]

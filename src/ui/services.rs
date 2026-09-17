@@ -952,6 +952,14 @@ fn service_details(
                 ));
             }
             lines.push(labelled_line(
+                "Access fee",
+                &format_cents(snapshot.access_fee_cents),
+            ));
+            lines.push(labelled_line(
+                "Fuel cost",
+                &format_cents(snapshot.fuel_cost_cents),
+            ));
+            lines.push(labelled_line(
                 "Operating cost",
                 &format_cents(snapshot.operating_cost_cents),
             ));
@@ -1103,6 +1111,8 @@ struct ServiceOperatingSnapshot {
     passengers_carried: u32,
     booked_revenue_cents: i128,
     credited_revenue_cents: i128,
+    access_fee_cents: i128,
+    fuel_cost_cents: i128,
     operating_cost_cents: i128,
     running_trains: Vec<RunningTrainSnapshot>,
 }
@@ -1153,10 +1163,14 @@ fn service_operating_snapshot(
         snapshot.credited_revenue_cents = snapshot
             .credited_revenue_cents
             .saturating_add(i128::from(journey.credited_revenue.cents()));
+        let access_fee_cents = i128::from(journey.infrastructure_access_fee.cents());
+        let fuel_cost_cents = i128::from(journey.fuel_cost.cents());
+        snapshot.access_fee_cents = snapshot.access_fee_cents.saturating_add(access_fee_cents);
+        snapshot.fuel_cost_cents = snapshot.fuel_cost_cents.saturating_add(fuel_cost_cents);
         snapshot.operating_cost_cents = snapshot
             .operating_cost_cents
-            .saturating_add(i128::from(journey.infrastructure_access_fee.cents()))
-            .saturating_add(i128::from(journey.fuel_cost.cents()));
+            .saturating_add(access_fee_cents)
+            .saturating_add(fuel_cost_cents);
 
         let remaining = remaining_journey_seconds(state, journey.arrives_at);
         let current_station_id = service

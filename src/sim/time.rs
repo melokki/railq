@@ -351,6 +351,7 @@ fn process_stop_arrival(
         arrival_stop_index,
         direction,
         free_capacity,
+        journey_snapshot.fare_rate,
     )?;
 
     let mut demand_deductions = Vec::new();

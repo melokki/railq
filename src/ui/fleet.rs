@@ -1441,6 +1441,11 @@ fn render_train_inspector(
                     "Credited",
                     &format_money(journey.credited_revenue),
                 ));
+                lines.push(labelled_line(
+                    "Access fee",
+                    &format_money(journey.infrastructure_access_fee),
+                ));
+                lines.push(labelled_line("Fuel cost", &format_money(journey.fuel_cost)));
                 match journey_operating_cost(journey) {
                     Some(cost) => lines.push(labelled_line("Operating cost", &format_money(cost))),
                     None => lines.push(labelled_line("Operating cost", "Unavailable")),

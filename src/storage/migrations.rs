@@ -85,6 +85,8 @@ fn migrate_one_version(
         32 => migrate_v32_to_v33(connection, path),
         33 => migrate_v33_to_v34(connection, path),
         34 => migrate_v34_to_v35(connection, path),
+        35 => migrate_v35_to_v36(connection, path),
+        36 => migrate_v36_to_v37(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -2813,4 +2815,95 @@ fn migrate_v34_to_v35(connection: &Connection, path: &Path) -> Result<(), SaveSl
     };
     let _ = connection.execute_batch("PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;");
     result
+}
+
+fn migrate_v35_to_v36(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v35 to v36 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute(
+                "UPDATE game_rules
+                 SET fare_cents_per_passenger_km = 12,
+                     access_fee_cents_per_train_km = 35
+                 WHERE fare_cents_per_passenger_km = 20
+                   AND access_fee_cents_per_train_km = 12",
+                [],
+            )
+            .map_err(|source| {
+                db_error(
+                    "rebalance operating rates during v36 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 36_u32)
+            .map_err(|source| db_error("write v36 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v35 to v36 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v36_to_v37(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v36 to v37 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE active_journeys
+                     ADD COLUMN fare_rate_cents_per_passenger_km INTEGER NOT NULL DEFAULT 12
+                     CHECK (fare_rate_cents_per_passenger_km > 0);
+
+                 UPDATE active_journeys
+                 SET fare_rate_cents_per_passenger_km =
+                     CASE
+                         WHEN purpose = 'revenue'
+                          AND (SELECT fare_cents_per_passenger_km FROM game_rules WHERE singleton = 1) = 12
+                          AND (SELECT access_fee_cents_per_train_km FROM game_rules WHERE singleton = 1) = 35
+                          AND fare_cents = (
+                              SELECT (20 * SUM(rail_lines.distance_metres) + 999) / 1000
+                              FROM service_lines
+                              JOIN rail_lines ON rail_lines.id = service_lines.rail_line_id
+                              WHERE service_lines.service_id = active_journeys.service_id
+                          )
+                         THEN 20
+                         ELSE (SELECT fare_cents_per_passenger_km FROM game_rules WHERE singleton = 1)
+                     END;",
+            )
+            .map_err(|source| {
+                db_error(
+                    "snapshot active Journey fare rates during v37 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 37_u32)
+            .map_err(|source| db_error("write v37 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v36 to v37 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
 }

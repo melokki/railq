@@ -1033,7 +1033,7 @@ fn validate_journey(
                 reason: "positioning Journey does not end at a valid Service departure terminus",
             });
         }
-        let line_ids = path_between_stations(
+        path_between_stations(
             &state.region.rail_authority.rail_network,
             journey.origin_station_id,
             journey.destination_station_id,
@@ -1041,24 +1041,13 @@ fn validate_journey(
         .map_err(|_| SaveValidationError::ImpossibleState {
             reason: "positioning Journey has no open Rail Line path",
         })?;
-        let distance =
-            distance_for_rail_lines(&state.region.rail_authority.rail_network, &line_ids)?;
-        let gross_access_fee = state
-            .rules
-            .balance
-            .access_fee_per_train_kilometre()
-            .checked_charge(distance)?;
-        let expected_fuel_cost = train_model
-            .fuel_cost_per_kilometre()
-            .checked_charge(distance)?;
         if journey.passengers_carried != 0
             || !journey.passenger_groups.is_empty()
             || journey.fare != Money::ZERO
             || journey.operating_revenue != Money::ZERO
             || journey.credited_revenue != Money::ZERO
             || journey.infrastructure_access_fee < Money::ZERO
-            || journey.infrastructure_access_fee > gross_access_fee
-            || journey.fuel_cost != expected_fuel_cost
+            || journey.fuel_cost.cents() <= 0
             || journey.current_stop_index != 0
             || journey.arrives_at <= journey.departed_at
         {
@@ -1109,19 +1098,10 @@ fn validate_journey(
         .get(&journey.service_id)
         .copied()
         .expect("every validated Passenger Service has a calculated distance");
-    let expected_through_fare = state
-        .rules
-        .balance
-        .fare_per_passenger_kilometre()
-        .checked_charge(distance)?;
-    let expected_access_fee = state
-        .rules
-        .balance
-        .access_fee_per_train_kilometre()
-        .checked_charge(distance)?;
+    let expected_through_fare = journey.fare_rate.checked_charge(distance)?;
 
     if journey.fare != expected_through_fare
-        || journey.infrastructure_access_fee != expected_access_fee
+        || journey.infrastructure_access_fee < Money::ZERO
         || journey.fuel_cost.cents() <= 0
         || journey.operating_revenue.cents() < 0
         || journey.credited_revenue.cents() < 0
@@ -1132,7 +1112,6 @@ fn validate_journey(
             reason: "Journey actuals do not match its saved rules and departure snapshot",
         });
     }
-    expected_access_fee.checked_add(journey.fuel_cost)?;
 
     let mut onboard_passengers = 0_u32;
     let mut onboard_revenue = Money::ZERO;
@@ -1186,11 +1165,7 @@ fn validate_journey(
             origin_index,
             destination_index,
         )?;
-        let expected_group_fare = state
-            .rules
-            .balance
-            .fare_per_passenger_kilometre()
-            .checked_charge(group_distance)?;
+        let expected_group_fare = journey.fare_rate.checked_charge(group_distance)?;
         if group.fare != expected_group_fare {
             return Err(SaveValidationError::ImpossibleState {
                 reason: "Journey passenger fare does not match its origin-destination distance",
@@ -1235,38 +1210,6 @@ fn validate_journey(
     }
 
     Ok(())
-}
-
-fn distance_for_rail_lines(
-    network: &RailNetwork,
-    rail_line_ids: &[RailLineId],
-) -> Result<DistanceMetres, SaveValidationError> {
-    let metres = rail_line_ids
-        .iter()
-        .try_fold(0_u64, |total, rail_line_id| {
-            let line = network
-                .rail_lines
-                .iter()
-                .find(|line| line.id == *rail_line_id)
-                .ok_or(SaveValidationError::DanglingReference {
-                    field: "Journey Rail Line",
-                })?;
-            total
-                .checked_add(line.distance.metres())
-                .ok_or(SaveValidationError::Calculation(
-                    CalculationError::Overflow {
-                        operation: "Journey path distance",
-                    },
-                ))
-        })?;
-    let metres = i64::try_from(metres).map_err(|_| {
-        SaveValidationError::Calculation(CalculationError::Overflow {
-            operation: "Journey path distance",
-        })
-    })?;
-    DistanceMetres::new(metres).map_err(|_| SaveValidationError::InvalidValue {
-        field: "Journey path distance",
-    })
 }
 
 fn distance_between_service_stops(

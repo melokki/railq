@@ -200,6 +200,7 @@ pub(super) fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCo
         .collect::<Result<Vec<_>, SaveCodecError>>()?;
     let mut active_journeys = legacy.active_journeys;
     for journey in &mut active_journeys {
+        journey.fare_rate = legacy.rules.balance.fare_per_passenger_kilometre;
         if let Some(service) = passenger_services
             .iter()
             .find(|service| service.id == journey.service_id)

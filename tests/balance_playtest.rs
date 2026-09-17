@@ -69,7 +69,7 @@ fn grow_to_second_train_funds(
     service_id: railq::model::ServiceId,
 ) {
     assert!(dispatch_and_arrive(state, train_id, service_id).journey_profitability > Money::ZERO);
-    for day in 1..=8 {
+    for day in 1..=15 {
         advance_time(state, UtcSeconds::from_unix_seconds(day * 86_400))
             .expect("injected demand accumulation succeeds");
         let quote = dispatch_and_arrive(state, train_id, service_id);
