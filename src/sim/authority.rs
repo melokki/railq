@@ -99,6 +99,23 @@ fn project_target_settlement_name(region: &Region, project_index: usize) -> Stri
         .unwrap_or_else(|| "Regional".into())
 }
 
+fn rail_station_settlement_name(region: &Region, station_id: RailStationId) -> String {
+    region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .find(|station| station.id == station_id)
+        .and_then(|station| {
+            region
+                .settlements
+                .iter()
+                .find(|settlement| settlement.id == station.settlement_id)
+        })
+        .map(|settlement| settlement.name.clone())
+        .unwrap_or_else(|| "Regional".into())
+}
+
 fn push_bulletin(
     region: &mut Region,
     occurred_at: UtcSeconds,
@@ -320,7 +337,7 @@ pub fn advance_rail_authority(
     advance_authority_fiscal_periods(region, now)?;
     advance_infrastructure_planning_with_rules(region, world_seed, demand, authority_rules, now)?;
     advance_project_funding(region, now)?;
-    advance_project_scheduling_with_rules(region, authority_rules, now)?;
+    advance_project_scheduling_with_rules(region, world_seed, authority_rules, now)?;
     advance_project_construction_with_rules(region, authority_rules, now)?;
     open_completed_infrastructure_projects(region, now)?;
     Ok(())
@@ -749,6 +766,7 @@ pub(crate) fn advance_project_funding(
 /// `Funding`, even when their financial gap is already zero.
 fn advance_project_scheduling_with_rules(
     region: &mut Region,
+    world_seed: u64,
     authority_rules: &AuthorityRules,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
@@ -782,6 +800,32 @@ fn advance_project_scheduling_with_rules(
         let Some(index) = next_index else {
             break;
         };
+
+        if let Some(replan) = {
+            let project = &region.rail_authority.infrastructure_projects[index];
+            project_route_replan(region, world_seed, project)?
+        } {
+            let target_name = project_target_settlement_name(region, index);
+            let connection_name = rail_station_settlement_name(
+                region,
+                replan.replacement.connection_station_id,
+            );
+            apply_project_route_replan(region, index, &replan)?;
+            push_bulletin(
+                region,
+                now,
+                BulletinCategory::Authority,
+                format!("{target_name} connection replanned via {connection_name}"),
+                "A newly opened station provides a materially shorter route, so the funded project has been updated before construction scheduling.".into(),
+            );
+
+            if !region.rail_authority.infrastructure_projects[index]
+                .funding
+                .is_fully_funded()
+            {
+                continue;
+            }
+        }
 
         let scheduled_start = now.checked_add(authority_rules.construction_mobilisation_delay())?;
         let target_name = project_target_settlement_name(region, index);
@@ -1204,6 +1248,79 @@ fn project_route_replan(
         replacement,
         distance_saving_metres,
     }))
+}
+
+fn apply_project_route_replan(
+    region: &mut Region,
+    project_index: usize,
+    replan: &ConnectionRouteReplan,
+) -> Result<(), CalculationError> {
+    let released_authority_commitment = {
+        let project = &mut region.rail_authority.infrastructure_projects[project_index];
+        let InfrastructureProjectKind::NewLine {
+            planned_stations,
+            planned_lines,
+        } = &mut project.kind
+        else {
+            return Ok(());
+        };
+        let Some(planned_station) = planned_stations.first() else {
+            return Ok(());
+        };
+        let Some(planned_line) = planned_lines.iter_mut().find(|line| {
+            line.first_station_id == planned_station.id
+                || line.second_station_id == planned_station.id
+        }) else {
+            return Ok(());
+        };
+
+        if planned_line.first_station_id == planned_station.id {
+            planned_line.second_station_id = replan.replacement.connection_station_id;
+        } else {
+            planned_line.first_station_id = replan.replacement.connection_station_id;
+        }
+        planned_line.distance = replan.replacement.estimated_distance;
+        planned_line.construction_difficulty = replan.replacement.construction_difficulty;
+
+        project.funding.estimated_cost = replan.replacement.estimated_cost;
+        let minimum_authority_commitment = if project.funding.estimated_cost
+            > project.funding.operator_contributed
+        {
+            project
+                .funding
+                .estimated_cost
+                .checked_sub(project.funding.operator_contributed)?
+        } else {
+            Money::ZERO
+        };
+
+        let released = if project.funding.authority_committed > minimum_authority_commitment {
+            let released = project
+                .funding
+                .authority_committed
+                .checked_sub(minimum_authority_commitment)?;
+            project.funding.authority_committed = minimum_authority_commitment;
+            released
+        } else {
+            Money::ZERO
+        };
+
+        if !project.funding.is_fully_funded() {
+            project.timeline.funding_completed_at = None;
+        }
+
+        released
+    };
+
+    if released_authority_commitment > Money::ZERO {
+        region.rail_authority.finances.committed_investment = region
+            .rail_authority
+            .finances
+            .committed_investment
+            .checked_sub(released_authority_commitment)?;
+    }
+
+    Ok(())
 }
 
 fn route_replan_savings_are_material(
@@ -1641,8 +1758,9 @@ mod tests {
         deferred_reconsideration_threshold, estimated_connection_cost,
         evaluate_connection_candidate, evaluate_connection_candidates,
         local_rail_success_basis_points, new_line_construction_duration_with_rules,
-        open_completed_infrastructure_projects, project_from_candidate, project_review_decision,
-        project_review_score, project_route_replan, route_replan_savings_are_material,
+        open_completed_infrastructure_projects, project_connection_station_id,
+        project_from_candidate, project_review_decision, project_review_score, project_route_replan,
+        route_replan_savings_are_material,
     };
 
     const PROVISIONAL_AUTHORITY_RULES: AuthorityRules = AuthorityRules::provisional();
@@ -2683,7 +2801,7 @@ mod tests {
         project.timeline.funding_completed_at = Some(now);
         region.rail_authority.infrastructure_projects = vec![project];
 
-        advance_project_scheduling_with_rules(&mut region, &PROVISIONAL_AUTHORITY_RULES, now)
+        advance_project_scheduling_with_rules(&mut region, 11, &PROVISIONAL_AUTHORITY_RULES, now)
             .unwrap();
 
         let project = &region.rail_authority.infrastructure_projects[0];
@@ -2694,6 +2812,87 @@ mod tests {
         );
         assert_eq!(region.rail_authority.reserved_construction_count(), 1);
         assert_eq!(region.rail_authority.construction_slots_remaining(), 0);
+    }
+
+    #[test]
+    fn scheduling_replans_funded_project_against_newly_opened_station() {
+        let world_seed = 42;
+        let mut region = generate_region(world_seed);
+        let target_settlement_id = region.settlements[4].id;
+        region.settlements[4].position = WorldPosition::new(100, 100);
+
+        let original_candidate = evaluate_connection_candidate(
+            &region,
+            world_seed,
+            target_settlement_id,
+        )
+        .unwrap()
+        .expect("target Settlement is initially unconnected");
+        let now = UtcSeconds::from_unix_seconds(15_000);
+        let operator_contribution = Money::from_cents(100);
+        let mut project = project_from_candidate(original_candidate.clone(), now);
+        project.status = InfrastructureProjectStatus::Funding;
+        project.funding.operator_contributed = operator_contribution;
+        project.funding.authority_committed = project
+            .funding
+            .estimated_cost
+            .checked_sub(operator_contribution)
+            .unwrap();
+        project.timeline.funding_completed_at = Some(now);
+        let original_authority_commitment = project.funding.authority_committed;
+        region.rail_authority.finances.committed_investment = original_authority_commitment;
+        region.rail_authority.infrastructure_projects = vec![project];
+
+        let closer_settlement_id = region.settlements[5].id;
+        region.settlements[5].position = WorldPosition::new(95, 100);
+        let closer_station_id = RailStationId::new(100);
+        region.rail_authority.rail_network.rail_stations.push(RailStation {
+            id: closer_station_id,
+            settlement_id: closer_settlement_id,
+        });
+        let replacement = evaluate_connection_candidate(&region, world_seed, target_settlement_id)
+            .unwrap()
+            .expect("target Settlement should still be unconnected");
+
+        advance_project_scheduling_with_rules(
+            &mut region,
+            world_seed,
+            &PROVISIONAL_AUTHORITY_RULES,
+            now,
+        )
+        .unwrap();
+
+        let project = &region.rail_authority.infrastructure_projects[0];
+        assert_eq!(project.status, InfrastructureProjectStatus::Scheduled);
+        assert_eq!(
+            project_connection_station_id(project),
+            Some(closer_station_id)
+        );
+        let InfrastructureProjectKind::NewLine { planned_lines, .. } = &project.kind else {
+            panic!("connection candidate must remain a New Line project");
+        };
+        assert_eq!(planned_lines[0].distance, replacement.estimated_distance);
+        assert_eq!(
+            planned_lines[0].construction_difficulty,
+            replacement.construction_difficulty
+        );
+        assert_eq!(project.funding.estimated_cost, replacement.estimated_cost);
+        assert_eq!(project.funding.operator_contributed, operator_contribution);
+        let expected_authority_commitment = replacement
+            .estimated_cost
+            .checked_sub(operator_contribution)
+            .unwrap();
+        assert_eq!(
+            project.funding.authority_committed,
+            expected_authority_commitment
+        );
+        assert_eq!(
+            region.rail_authority.finances.committed_investment,
+            expected_authority_commitment
+        );
+        assert!(region.bulletin.iter().any(|entry| {
+            entry.headline.contains("connection replanned via")
+        }));
     }
 
     #[test]
@@ -2716,7 +2915,7 @@ mod tests {
         region.rail_authority.construction_capacity = 1;
         region.rail_authority.infrastructure_projects = vec![second, first];
 
-        advance_project_scheduling_with_rules(&mut region, &PROVISIONAL_AUTHORITY_RULES, now)
+        advance_project_scheduling_with_rules(&mut region, 13, &PROVISIONAL_AUTHORITY_RULES, now)
             .unwrap();
 
         let scheduled = region
@@ -2787,7 +2986,7 @@ mod tests {
             2,
         );
 
-        advance_project_scheduling_with_rules(&mut region, &rules, now).unwrap();
+        advance_project_scheduling_with_rules(&mut region, 43, &rules, now).unwrap();
         let scheduled_start = UtcSeconds::from_unix_seconds(35_037);
         assert_eq!(
             region.rail_authority.infrastructure_projects[0]
