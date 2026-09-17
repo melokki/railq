@@ -186,7 +186,26 @@ pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError>
             kind: "Passenger Service",
         });
     }
+    let mut service_train_numbers = HashSet::new();
     for service in &state.player_company.passenger_services {
+        if service.forward_train_number < 100
+            || !service_train_numbers.insert(service.forward_train_number)
+        {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Passenger Service train number",
+            });
+        }
+        match (service.direction_mode, service.reverse_train_number) {
+            (ServiceDirectionMode::BothDirections, Some(reverse_train_number))
+                if reverse_train_number >= 100
+                    && service_train_numbers.insert(reverse_train_number) => {}
+            (ServiceDirectionMode::ForwardOnly, None) => {}
+            _ => {
+                return Err(SaveValidationError::InvalidValue {
+                    field: "Passenger Service reverse train number",
+                });
+            }
+        }
         if service.name.trim().is_empty() {
             return Err(SaveValidationError::InvalidValue {
                 field: "Passenger Service name",

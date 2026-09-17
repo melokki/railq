@@ -1632,13 +1632,14 @@ fn v28_migration_upgrades_a_valid_standalone_service_to_bidirectional() {
 
     ensure_schema(&connection, &path).unwrap();
 
-    let direction_mode: String = connection
+    let service: (String, i64, Option<i64>) = connection
         .query_row(
-            "SELECT direction_mode FROM passenger_services WHERE id = 'service-a'",
+            "SELECT direction_mode, forward_train_number, reverse_train_number
+             FROM passenger_services WHERE id = 'service-a'",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
 
-    assert_eq!(direction_mode, "both");
+    assert_eq!(service, ("both".into(), 100, Some(101)));
 }

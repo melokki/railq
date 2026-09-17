@@ -660,6 +660,8 @@ mod tests {
                     id: SERVICE_ID,
                     name: "R1".into(),
                     direction_mode: crate::model::ServiceDirectionMode::BothDirections,
+                    forward_train_number: 100,
+                    reverse_train_number: Some(101),
                     stop_station_ids: vec![ORIGIN, DESTINATION],
                     rail_line_ids: vec![FIRST_LINE, SECOND_LINE],
                 }],

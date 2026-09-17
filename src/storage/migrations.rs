@@ -79,6 +79,7 @@ fn migrate_one_version(
         26 => migrate_v26_to_v27(connection, path),
         27 => migrate_v27_to_v28(connection, path),
         28 => migrate_v28_to_v29(connection, path),
+        29 => migrate_v29_to_v30(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -2428,4 +2429,102 @@ fn set_service_direction_mode(
             )
         })?;
     Ok(())
+}
+
+fn migrate_v29_to_v30(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v29 to v30 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE passenger_services ADD COLUMN forward_train_number INTEGER;
+                 ALTER TABLE passenger_services ADD COLUMN reverse_train_number INTEGER;",
+            )
+            .map_err(|source| {
+                db_error(
+                    "add Passenger Service train numbers during v30 migration in",
+                    path,
+                    source,
+                )
+            })?;
+
+        let services = query_all(
+            connection,
+            "SELECT id, direction_mode FROM passenger_services ORDER BY sequence",
+            path,
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        let mut next_train_number = 100_i64;
+        for (service_id, direction_mode) in services {
+            let reverse_train_number = if direction_mode == "both" {
+                let reverse = next_train_number.checked_add(1).ok_or_else(|| {
+                    SaveSlotError::InvalidSave {
+                        path: path.to_path_buf(),
+                        source: Box::new(SaveCodecError::InvalidValue {
+                            field: "Passenger Service train number",
+                        }),
+                    }
+                })?;
+                Some(reverse)
+            } else {
+                None
+            };
+            connection
+                .execute(
+                    "UPDATE passenger_services
+                     SET forward_train_number = ?1, reverse_train_number = ?2
+                     WHERE id = ?3",
+                    params![next_train_number, reverse_train_number, service_id],
+                )
+                .map_err(|source| {
+                    db_error(
+                        "assign Passenger Service train numbers during v30 migration in",
+                        path,
+                        source,
+                    )
+                })?;
+            next_train_number = match reverse_train_number {
+                Some(reverse) => reverse.checked_add(1),
+                None => next_train_number.checked_add(1),
+            }
+            .ok_or_else(|| SaveSlotError::InvalidSave {
+                path: path.to_path_buf(),
+                source: Box::new(SaveCodecError::InvalidValue {
+                    field: "Passenger Service train number",
+                }),
+            })?;
+        }
+
+        connection
+            .execute_batch(
+                "CREATE UNIQUE INDEX passenger_services_forward_train_number_idx
+                     ON passenger_services(forward_train_number);
+                 CREATE UNIQUE INDEX passenger_services_reverse_train_number_idx
+                     ON passenger_services(reverse_train_number)
+                     WHERE reverse_train_number IS NOT NULL;",
+            )
+            .map_err(|source| {
+                db_error(
+                    "index Passenger Service train numbers during v30 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 30_u32)
+            .map_err(|source| db_error("write v30 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v29 to v30 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
 }

@@ -59,7 +59,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 29;
+pub const SAVE_VERSION: u32 = 30;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";

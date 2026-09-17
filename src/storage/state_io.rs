@@ -242,12 +242,14 @@ pub(super) fn insert_state(
     for (sequence, service) in state.player_company.passenger_services.iter().enumerate() {
         transaction
             .execute(
-                "INSERT INTO passenger_services(id, sequence, name, direction_mode) VALUES(?1, ?2, ?3, ?4)",
+                "INSERT INTO passenger_services(id, sequence, name, direction_mode, forward_train_number, reverse_train_number) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     service.id.to_string(),
                     i64::try_from(sequence).unwrap_or(i64::MAX),
                     &service.name,
                     service.direction_mode.as_str(),
+                    i64::from(service.forward_train_number),
+                    service.reverse_train_number.map(i64::from),
                 ],
             )
             .map_err(|source| db_error("write Passenger Services to", path, source))?;
@@ -1050,7 +1052,7 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
 
     let mut services = query_all(
         connection,
-        "SELECT id, name, direction_mode FROM passenger_services ORDER BY sequence",
+        "SELECT id, name, direction_mode, forward_train_number, reverse_train_number FROM passenger_services ORDER BY sequence",
         path,
         |row| {
             let direction_mode_value = row.get::<_, String>(2)?;
@@ -1060,6 +1062,13 @@ pub(super) fn load_state(connection: &Connection, path: &Path) -> Result<Option<
                 id: row_domain_id(row, 0, "Passenger Service ID", ServiceId::parse)?,
                 name: row.get(1)?,
                 direction_mode,
+                forward_train_number: u32::try_from(row.get::<_, i64>(3)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                reverse_train_number: row
+                    .get::<_, Option<i64>>(4)?
+                    .map(u32::try_from)
+                    .transpose()
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 stop_station_ids: Vec::new(),
                 rail_line_ids: Vec::new(),
             })

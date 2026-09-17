@@ -44,6 +44,8 @@ pub enum ServiceError {
     ServiceInUse { service_id: ServiceId },
     /// A new Service ID cannot be represented.
     ServiceIdExhausted,
+    /// No further public train number can be allocated.
+    TrainNumberExhausted,
 }
 
 impl fmt::Display for ServiceError {
@@ -109,6 +111,9 @@ impl fmt::Display for ServiceError {
                 service_id.get()
             ),
             Self::ServiceIdExhausted => write!(formatter, "Passenger Service IDs are exhausted"),
+            Self::TrainNumberExhausted => {
+                write!(formatter, "Passenger Service train numbers are exhausted")
+            }
         }
     }
 }
@@ -258,6 +263,10 @@ pub fn create_service(
 
     let service_id = ServiceId::new_v4();
     let service_name = next_service_name(&state.player_company.passenger_services);
+    let (forward_train_number, reverse_train_number) = allocate_train_numbers(
+        &state.player_company.passenger_services,
+        ServiceDirectionMode::BothDirections,
+    )?;
     state
         .player_company
         .passenger_services
@@ -265,6 +274,8 @@ pub fn create_service(
             id: service_id,
             name: service_name,
             direction_mode: ServiceDirectionMode::BothDirections,
+            forward_train_number,
+            reverse_train_number,
             stop_station_ids,
             rail_line_ids,
         });
@@ -279,6 +290,40 @@ fn next_service_name(services: &[PassengerService]) -> String {
         .unwrap_or(0)
         .saturating_add(1);
     format!("R{next}")
+}
+
+const FIRST_PASSENGER_TRAIN_NUMBER: u32 = 100;
+
+fn allocate_train_numbers(
+    services: &[PassengerService],
+    direction_mode: ServiceDirectionMode,
+) -> Result<(u32, Option<u32>), ServiceError> {
+    let highest = services
+        .iter()
+        .flat_map(|service| {
+            [
+                Some(service.forward_train_number),
+                service.reverse_train_number,
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .max();
+    let forward = match highest {
+        Some(number) => number
+            .checked_add(1)
+            .ok_or(ServiceError::TrainNumberExhausted)?,
+        None => FIRST_PASSENGER_TRAIN_NUMBER,
+    };
+    let reverse = match direction_mode {
+        ServiceDirectionMode::BothDirections => Some(
+            forward
+                .checked_add(1)
+                .ok_or(ServiceError::TrainNumberExhausted)?,
+        ),
+        ServiceDirectionMode::ForwardOnly => None,
+    };
+    Ok((forward, reverse))
 }
 
 /// Updates the ordered stop pattern of an unused Passenger Service while
@@ -527,6 +572,8 @@ mod tests {
             .find(|service| service.id == service_id)
             .unwrap();
         assert_eq!(service.name, "R1");
+        assert_eq!(service.forward_train_number, 100);
+        assert_eq!(service.reverse_train_number, Some(101));
         assert_eq!(
             service.stop_station_ids,
             vec![
@@ -534,6 +581,44 @@ mod tests {
                 RailStationId::new(2),
                 RailStationId::new(3)
             ]
+        );
+    }
+
+    #[test]
+    fn new_services_receive_unique_consecutive_directional_train_numbers() {
+        let mut game = game();
+
+        let first = create_service(
+            &mut game,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+        )
+        .unwrap();
+        let second = create_service(
+            &mut game,
+            vec![RailStationId::new(2), RailStationId::new(3)],
+        )
+        .unwrap();
+
+        let first = game
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == first)
+            .unwrap();
+        let second = game
+            .player_company
+            .passenger_services
+            .iter()
+            .find(|service| service.id == second)
+            .unwrap();
+
+        assert_eq!(
+            (first.forward_train_number, first.reverse_train_number),
+            (100, Some(101))
+        );
+        assert_eq!(
+            (second.forward_train_number, second.reverse_train_number),
+            (102, Some(103))
         );
     }
 

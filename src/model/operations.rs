@@ -46,6 +46,11 @@ pub struct PassengerService {
     pub name: String,
     #[serde(default)]
     pub direction_mode: ServiceDirectionMode,
+    /// Public train number used for the canonical first-to-last working.
+    pub forward_train_number: u32,
+    /// Public train number used for the reverse working, when this Service is
+    /// bidirectional.
+    pub reverse_train_number: Option<u32>,
     pub stop_station_ids: Vec<RailStationId>,
     pub rail_line_ids: Vec<RailLineId>,
 }

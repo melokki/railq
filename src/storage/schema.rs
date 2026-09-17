@@ -142,8 +142,19 @@ CREATE TABLE IF NOT EXISTS passenger_services (
     sequence INTEGER NOT NULL UNIQUE,
     name TEXT NOT NULL,
     direction_mode TEXT NOT NULL DEFAULT 'both'
-        CHECK (direction_mode IN ('both', 'forward'))
+        CHECK (direction_mode IN ('both', 'forward')),
+    forward_train_number INTEGER NOT NULL CHECK (forward_train_number >= 100),
+    reverse_train_number INTEGER CHECK (reverse_train_number >= 100),
+    CHECK (
+        (direction_mode = 'both' AND reverse_train_number IS NOT NULL) OR
+        (direction_mode = 'forward' AND reverse_train_number IS NULL)
+    )
 );
+CREATE UNIQUE INDEX IF NOT EXISTS passenger_services_forward_train_number_idx
+    ON passenger_services(forward_train_number);
+CREATE UNIQUE INDEX IF NOT EXISTS passenger_services_reverse_train_number_idx
+    ON passenger_services(reverse_train_number)
+    WHERE reverse_train_number IS NOT NULL;
 CREATE TABLE IF NOT EXISTS service_stops (
     service_id TEXT NOT NULL REFERENCES passenger_services(id) ON DELETE CASCADE,
     sequence INTEGER NOT NULL,
