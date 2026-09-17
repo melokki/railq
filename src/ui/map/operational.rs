@@ -837,14 +837,28 @@ fn render_map_rows_with_overlay(
         let preview_cursor = overlay.is_some_and(|overlay| {
             place.station_id == overlay.highlighted_station_id
         });
+        let preview_stop_order = overlay.and_then(|overlay| {
+            place
+                .station_id
+                .and_then(|station_id| overlay.stop_order.get(&station_id).copied())
+        });
+        let preview_last_stop = overlay
+            .and_then(|overlay| overlay.stop_order.values().copied().max())
+            .is_some_and(|last_stop| preview_stop_order == Some(last_stop));
         let (marker, ink) = if preview_cursor {
             ('◆', MapInk::Cursor)
+        } else if preview_stop_order == Some(1) {
+            ('◉', MapInk::Selected)
+        } else if preview_last_stop {
+            ('◆', MapInk::Selected)
         } else if preview_stop {
             ('●', MapInk::Selected)
         } else if selected == Some(place.settlement_id) {
             ('◆', MapInk::Selected)
         } else if overlay.is_none() && is_ready_station {
             ('◉', MapInk::Ready)
+        } else if overlay.is_some() && place.station_id.is_some() {
+            ('●', MapInk::Unconnected)
         } else if place.station_id.is_some() {
             ('●', place_ink(place, selected, &adjacent))
         } else {
@@ -924,6 +938,8 @@ fn render_map_rows_with_overlay(
             MapInk::Cursor
         } else if stop_number.is_some() {
             MapInk::Selected
+        } else if overlay.is_some() {
+            MapInk::Unconnected
         } else {
             place_ink(place, selected, &adjacent)
         };

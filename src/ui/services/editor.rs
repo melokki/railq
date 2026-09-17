@@ -294,9 +294,9 @@ fn render_picker(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
                 ),
             ]),
             Line::from(vec![
-                Span::styled("MODE   ", theme::secondary()),
-                Span::styled(direction_mode_label(flow.direction_mode), theme::primary_value()),
-                Span::styled(" · M to toggle", theme::secondary()),
+                Span::styled("DIRECTION  ", theme::secondary()),
+                Span::styled(direction_mode_display(flow.direction_mode), theme::primary_value()),
+                Span::styled("   [M] change", theme::secondary()),
             ]),
         ])
         .style(theme::panel())
@@ -411,7 +411,10 @@ fn render_route_strip(
         .map(|station_id| truncate_display(&station_label(state, *station_id), 14))
         .collect::<Vec<_>>();
     let prefix = "ROUTE  ";
-    let available_width = usize::from(area.width).saturating_sub(UnicodeWidthStr::width(prefix));
+    let suffix = format!("   {}", direction_mode_glyph(flow.direction_mode));
+    let available_width = usize::from(area.width)
+        .saturating_sub(UnicodeWidthStr::width(prefix))
+        .saturating_sub(UnicodeWidthStr::width(suffix.as_str()));
     let (start, end) = route_strip_window(&labels, focus_index, available_width);
 
     let mut spans = vec![Span::styled(prefix, theme::table_header())];
@@ -432,6 +435,7 @@ fn render_route_strip(
     if end < labels.len() {
         spans.push(Span::styled(" ── …", theme::secondary()));
     }
+    spans.push(Span::styled(suffix, theme::focused_title()));
 
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(theme::panel()),
@@ -488,7 +492,7 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
     // preview nearly all available height and keep only the current action
     // underneath it; duplicating the whole stop list made the map unnecessarily
     // cramped as Services became longer.
-    let details_height = if area.height >= 7 { 3 } else { 2 };
+    let details_height = if area.height >= 6 { 2 } else { 1 };
     let [title_area, map_area, details_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(4),
@@ -497,9 +501,16 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
     .areas(area);
 
     let title = if flow.stop_station_ids.is_empty() {
-        "Route Preview".to_owned()
+        format!(
+            "Route Preview · {}",
+            direction_mode_compact_label(flow.direction_mode)
+        )
     } else {
-        format!("Route Preview · {} stops", flow.stop_station_ids.len())
+        format!(
+            "Route Preview · {} stops · {}",
+            flow.stop_station_ids.len(),
+            direction_mode_compact_label(flow.direction_mode)
+        )
     };
     frame.render_widget(
         Paragraph::new(Line::styled(title, theme::title())).style(theme::panel()),
@@ -528,37 +539,50 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
         return;
     };
 
-    lines.push(Line::from(vec![
-        Span::styled("SELECTED  ", theme::table_header()),
-        Span::styled(station_label(state, station_id), theme::focused_title()),
-    ]));
-
+    let station_name = station_label(state, station_id);
     if let Some(selected_index) = flow
         .stop_station_ids
         .iter()
         .position(|selected_id| *selected_id == station_id)
     {
-        lines.push(Line::styled(
-            format!("Selected stop {} · Space to remove", selected_index + 1),
-            theme::success(),
-        ));
+        lines.push(Line::from(vec![
+            Span::styled("◆ ", theme::warning()),
+            Span::styled(station_name, theme::focused_title()),
+            Span::styled(
+                format!(" · stop {} · ", selected_index + 1),
+                theme::secondary(),
+            ),
+            Span::styled("Space to remove", theme::success()),
+        ]));
     } else if flow.stop_station_ids.is_empty() {
-        lines.push(Line::styled(
-            "Valid origin · Space to select",
-            theme::success(),
-        ));
+        lines.push(Line::from(vec![
+            Span::styled("◆ ", theme::warning()),
+            Span::styled(station_name, theme::focused_title()),
+            Span::styled(" · valid origin · ", theme::secondary()),
+            Span::styled("Space to select", theme::success()),
+        ]));
     } else {
         let mut candidate = flow.stop_station_ids.clone();
         candidate.push(station_id);
         match service_path_for_stops(&state.region.rail_authority.rail_network, &candidate) {
             Ok(line_ids) => {
                 let distance = distance_for_line_ids(state, &line_ids);
-                lines.push(Line::styled(
-                    format!("Valid next stop · {}", format::distance(distance)),
-                    theme::success(),
-                ));
+                lines.push(Line::from(vec![
+                    Span::styled("◆ ", theme::warning()),
+                    Span::styled(station_name, theme::focused_title()),
+                    Span::styled(
+                        format!(" · valid next stop · {} · ", format::distance(distance)),
+                        theme::secondary(),
+                    ),
+                    Span::styled("Space to select", theme::success()),
+                ]));
             }
-            Err(error) => lines.push(Line::styled(error.to_string(), theme::error())),
+            Err(error) => lines.push(Line::from(vec![
+                Span::styled("◆ ", theme::warning()),
+                Span::styled(station_name, theme::focused_title()),
+                Span::styled(" · ", theme::secondary()),
+                Span::styled(error.to_string(), theme::error()),
+            ])),
         }
     }
 
@@ -687,6 +711,28 @@ fn direction_mode_label(direction_mode: ServiceDirectionMode) -> &'static str {
     match direction_mode {
         ServiceDirectionMode::BothDirections => "BOTH DIRECTIONS",
         ServiceDirectionMode::ForwardOnly => "ONE WAY",
+    }
+}
+
+fn direction_mode_glyph(direction_mode: ServiceDirectionMode) -> &'static str {
+    match direction_mode {
+        ServiceDirectionMode::BothDirections => "↔",
+        ServiceDirectionMode::ForwardOnly => "→",
+    }
+}
+
+fn direction_mode_display(direction_mode: ServiceDirectionMode) -> String {
+    format!(
+        "{} {}",
+        direction_mode_glyph(direction_mode),
+        direction_mode_label(direction_mode)
+    )
+}
+
+fn direction_mode_compact_label(direction_mode: ServiceDirectionMode) -> &'static str {
+    match direction_mode {
+        ServiceDirectionMode::BothDirections => "↔ BOTH",
+        ServiceDirectionMode::ForwardOnly => "→ ONE WAY",
     }
 }
 
