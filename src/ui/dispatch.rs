@@ -787,56 +787,46 @@ fn dispatch_footer_line(
     width: u16,
     service_preselected: bool,
 ) -> Line<'static> {
+    let select_train_action = if service_preselected {
+        modal::ModalAction::Review
+    } else {
+        modal::ModalAction::Service
+    };
+    let confirm_back_action = if service_preselected {
+        modal::ModalAction::Train
+    } else {
+        modal::ModalAction::Service
+    };
+
     match step {
         DispatchStep::SelectTrain { .. } if width >= 76 => modal::shortcut_line(&[
-            ("↑/↓", "choose"),
-            ("PgUp/PgDn", "scroll"),
-            (
-                "Enter",
-                if service_preselected {
-                    "review"
-                } else {
-                    "service"
-                },
-            ),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("↑/↓", modal::ModalAction::Choose),
+            modal::ModalShortcut::enabled("PgUp/PgDn", modal::ModalAction::Scroll),
+            modal::ModalShortcut::enabled("Enter", select_train_action),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]),
         DispatchStep::SelectTrain { .. } => modal::shortcut_line(&[
-            ("↑/↓", "choose"),
-            (
-                "Enter",
-                if service_preselected {
-                    "review"
-                } else {
-                    "service"
-                },
-            ),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("↑/↓", modal::ModalAction::Choose),
+            modal::ModalShortcut::enabled("Enter", select_train_action),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]),
         DispatchStep::SelectService { .. } if width >= 82 => modal::shortcut_line(&[
-            ("↑/↓", "choose"),
-            ("PgUp/PgDn", "scroll"),
-            ("Enter", "review"),
-            ("←", "train"),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("↑/↓", modal::ModalAction::Choose),
+            modal::ModalShortcut::enabled("PgUp/PgDn", modal::ModalAction::Scroll),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Review),
+            modal::ModalShortcut::enabled("←", modal::ModalAction::Train),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]),
         DispatchStep::SelectService { .. } => modal::shortcut_line(&[
-            ("↑/↓", "choose"),
-            ("Enter", "review"),
-            ("←", "train"),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("↑/↓", modal::ModalAction::Choose),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Review),
+            modal::ModalShortcut::enabled("←", modal::ModalAction::Train),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]),
         DispatchStep::Confirm { .. } => modal::shortcut_line(&[
-            ("Enter", "dispatch"),
-            (
-                "←",
-                if service_preselected {
-                    "train"
-                } else {
-                    "service"
-                },
-            ),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Dispatch),
+            modal::ModalShortcut::enabled("←", confirm_back_action),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]),
     }
 }

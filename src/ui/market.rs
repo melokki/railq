@@ -621,7 +621,11 @@ fn render_purchase_review(
     rejection: Option<&str>,
 ) {
     let footer =
-        modal::shortcut_line(&[("Enter", "confirm"), ("←", "delivery"), ("Esc", "cancel")]);
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Confirm),
+            modal::ModalShortcut::enabled("←", modal::ModalAction::Delivery),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ]);
     let modal_areas = modal::render_shell(frame, area, "Confirm Train Purchase", footer);
 
     let Some(train) = train_catalogue().models().get(catalogue_index) else {

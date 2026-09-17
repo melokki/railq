@@ -1352,9 +1352,16 @@ fn render_name_editor(
     let card_height = if editor.error.is_some() { 16 } else { 15 };
     let card = modal::editor_rect(area, card_height);
     let footer = if card.width >= 56 {
-        modal::shortcut_line(&[("Enter", "save"), ("Backspace", "erase"), ("Esc", "cancel")])
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Save),
+            modal::ModalShortcut::enabled("Backspace", modal::ModalAction::Erase),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ])
     } else {
-        modal::shortcut_line(&[("Enter", "save"), ("Esc", "cancel")])
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Save),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ])
     };
     let modal_areas = modal::render_shell(frame, card, "Name Passenger Service", footer);
 
@@ -1408,9 +1415,15 @@ fn render_delete_confirmation(
     let active = service_active_journeys(state, service_id);
     let card = modal::centered_rect(area, 64, 14);
     let footer = if active == 0 {
-        modal::shortcut_line(&[("Enter", "delete"), ("Esc", "cancel")])
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Delete),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ])
     } else {
-        modal::shortcut_line(&[("Esc", "close")])
+        modal::shortcut_line(&[modal::ModalShortcut::enabled(
+            "Esc",
+            modal::ModalAction::Close,
+        )])
     };
     let modal_areas = modal::render_shell(frame, card, "Delete Passenger Service", footer);
 

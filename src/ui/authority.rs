@@ -377,7 +377,10 @@ pub fn render_contribution_review(
         frame,
         card,
         "Infrastructure Contribution",
-        modal::shortcut_line(&[("Enter", "contribute"), ("Esc", "cancel")]),
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Contribute),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ]),
     );
     let remaining_cap = project
         .funding

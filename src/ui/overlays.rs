@@ -32,7 +32,10 @@ pub(super) fn render_world_details_overlay(
         frame,
         card,
         "World Details",
-        modal::shortcut_line(&[("Esc/W", "close")]),
+        modal::shortcut_line(&[modal::ModalShortcut::enabled(
+            "Esc/W",
+            modal::ModalAction::Close,
+        )]),
     );
 
     let region = &state.region;
@@ -174,7 +177,10 @@ pub(super) fn render_bankruptcy_restart_confirmation(frame: &mut ratatui::Frame,
         frame,
         card,
         "Confirm Safe Restart",
-        modal::shortcut_line(&[("Enter", "restart"), ("Esc", "keep save")]),
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Restart),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::KeepSave),
+        ]),
     );
     frame.render_widget(
         Paragraph::new(vec![

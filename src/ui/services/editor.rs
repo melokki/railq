@@ -218,34 +218,38 @@ pub(super) fn render(frame: &mut Frame, area: Rect, state: &GameState, flow: &Cr
 
 fn footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'static> {
     if flow.review {
+        let primary_action = if flow.editing_service_id.is_some() {
+            modal::ModalAction::Save
+        } else {
+            modal::ModalAction::Create
+        };
         return modal::shortcut_line(&[
-            (
-                "Enter",
-                if flow.editing_service_id.is_some() {
-                    "save"
-                } else {
-                    "create"
-                },
-            ),
-            ("←", "edit"),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("Enter", primary_action),
+            modal::ModalShortcut::enabled("←", modal::ModalAction::Edit),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]);
     }
 
+    let review_shortcut = if flow.stop_station_ids.len() >= 2 {
+        modal::ModalShortcut::enabled("Enter", modal::ModalAction::Review)
+    } else {
+        modal::ModalShortcut::disabled("Enter", modal::ModalAction::Review)
+    };
+
     if width >= 76 {
         modal::shortcut_line(&[
-            ("↑↓/JK", "choose"),
-            ("Space", "toggle"),
-            ("M", "direction"),
-            ("Enter", "review"),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Choose),
+            modal::ModalShortcut::enabled("Space", modal::ModalAction::ToggleStop),
+            modal::ModalShortcut::enabled("M", modal::ModalAction::Direction),
+            review_shortcut,
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ])
     } else {
         modal::shortcut_line(&[
-            ("Space", "toggle"),
-            ("M", "direction"),
-            ("Enter", "review"),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("Space", modal::ModalAction::Toggle),
+            modal::ModalShortcut::enabled("M", modal::ModalAction::Direction),
+            review_shortcut,
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ])
     }
 }

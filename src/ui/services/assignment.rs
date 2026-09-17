@@ -189,31 +189,41 @@ pub(super) fn render(
     let title = service
         .map(|service| format!("Assign Trains · {}", service.display_name()))
         .unwrap_or_else(|| format!("Assign Trains · R{}", flow.service_id.get()));
-    let enter_action = flow
+    let (enter_action, enter_enabled) = flow
         .selected_train(state)
         .map(|train| {
             if matches!(&train.status, TrainStatus::Travelling { .. }) {
-                "locked"
+                (modal::ModalAction::Locked, false)
             } else if state.player_company.fleet.assigned_service_id(train.id)
                 == Some(flow.service_id)
             {
-                "unassign"
+                (modal::ModalAction::Unassign, true)
             } else if state
                 .player_company
                 .fleet
                 .assigned_service_id(train.id)
                 .is_some()
             {
-                "reassign"
+                (modal::ModalAction::Reassign, true)
             } else {
-                "assign"
+                (modal::ModalAction::Assign, true)
             }
         })
-        .unwrap_or("close");
+        .unwrap_or((modal::ModalAction::Close, false));
+    let enter_shortcut = if enter_enabled {
+        modal::ModalShortcut::enabled("Enter", enter_action)
+    } else {
+        modal::ModalShortcut::disabled("Enter", enter_action)
+    };
+    let train_navigation = if state.player_company.fleet.trains.is_empty() {
+        modal::ModalShortcut::disabled("↑↓/JK", modal::ModalAction::Train)
+    } else {
+        modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Train)
+    };
     let footer = modal::shortcut_line(&[
-        ("Esc", "cancel"),
-        ("↑↓/JK", "train"),
-        ("Enter", enter_action),
+        modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        train_navigation,
+        enter_shortcut,
     ]);
     let modal_areas = modal::render_shell(frame, area, &title, footer);
     let [context_area, table_area] =

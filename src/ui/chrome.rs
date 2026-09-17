@@ -486,13 +486,16 @@ pub(super) fn render_help_overlay(
 ) {
     let card = modal::centered_rect(area, 96, 30);
     let footer = if card.width < 76 {
-        modal::shortcut_line(&[("↑↓", "scroll"), ("Esc/?", "close")])
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("↑↓", modal::ModalAction::Scroll),
+            modal::ModalShortcut::enabled("Esc/?", modal::ModalAction::Close),
+        ])
     } else {
         modal::shortcut_line(&[
-            ("↑↓", "scroll"),
-            ("PgUp/PgDn", "page"),
-            ("Esc/?", "close"),
-            ("Q", "quit"),
+            modal::ModalShortcut::enabled("↑↓", modal::ModalAction::Scroll),
+            modal::ModalShortcut::enabled("PgUp/PgDn", modal::ModalAction::Page),
+            modal::ModalShortcut::enabled("Esc/?", modal::ModalAction::Close),
+            modal::ModalShortcut::enabled("Q", modal::ModalAction::Quit),
         ])
     };
     let modal_areas = modal::render_shell(frame, card, "Keyboard Help", footer);

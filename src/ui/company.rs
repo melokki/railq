@@ -99,9 +99,9 @@ pub fn render_vkm_editor(frame: &mut Frame, area: Rect, editor: &VkmEditor, stat
         card,
         "Edit Vehicle Keeper Mark",
         modal::shortcut_line(&[
-            ("Enter", "save"),
-            ("Backspace", "delete"),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Save),
+            modal::ModalShortcut::enabled("Backspace", modal::ModalAction::Erase),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]),
     );
 
@@ -673,13 +673,17 @@ pub fn render_recovery_review(
     let card = modal::workflow_rect(area);
     let compact = card.width < 76;
     let footer = if compact {
-        modal::shortcut_line(&[("↑↓", "route"), ("Enter", "review"), ("Esc", "cancel")])
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("↑↓", modal::ModalAction::Route),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Review),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ])
     } else {
         modal::shortcut_line(&[
-            ("↑↓/JK", "route"),
-            ("PgUp/PgDn", "page"),
-            ("Enter", "review"),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Route),
+            modal::ModalShortcut::enabled("PgUp/PgDn", modal::ModalAction::Page),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Review),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ])
     };
     let modal_areas = modal::render_shell(frame, card, "Financial Recovery", footer);
@@ -743,7 +747,10 @@ pub fn render_receipt_modal(
         frame,
         card,
         &title,
-        modal::shortcut_line(&[("Esc", "close")]),
+        modal::shortcut_line(&[modal::ModalShortcut::enabled(
+            "Esc",
+            modal::ModalAction::Close,
+        )]),
     );
     let lines = receipt_detail_lines(state, receipt);
     frame.render_widget(

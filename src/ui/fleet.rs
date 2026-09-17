@@ -247,12 +247,15 @@ pub fn render_nickname_editor(
     let card = modal::editor_rect(area, card_height);
     let footer = if card.width >= 56 {
         modal::shortcut_line(&[
-            ("Enter", "save"),
-            ("Backspace", "delete"),
-            ("Esc", "cancel"),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Save),
+            modal::ModalShortcut::enabled("Backspace", modal::ModalAction::Erase),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ])
     } else {
-        modal::shortcut_line(&[("Enter", "save"), ("Esc", "cancel")])
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Save),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ])
     };
     let modal_areas = modal::render_shell(frame, card, "Rename Train", footer);
 
@@ -890,9 +893,15 @@ fn render_resale_review(frame: &mut Frame, area: Rect, state: &GameState, flow: 
     let review = resale_review(state, flow.train_id);
     let card = modal::confirmation_rect(area, 16);
     let footer = if review.is_ok() {
-        modal::shortcut_line(&[("Enter", "resell"), ("Esc", "cancel")])
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Resell),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        ])
     } else {
-        modal::shortcut_line(&[("Esc", "close")])
+        modal::shortcut_line(&[modal::ModalShortcut::enabled(
+            "Esc",
+            modal::ModalAction::Close,
+        )])
     };
     let modal_areas = modal::render_shell(frame, card, "Confirm Train Resale", footer);
 

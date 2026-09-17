@@ -185,9 +185,9 @@ pub(super) fn render(
         .assigned_service_id(flow.train_id);
     let enter_action = if flow.selected_index == 0 {
         if assigned.is_some() {
-            "unassign"
+            modal::ModalAction::Unassign
         } else {
-            "close"
+            modal::ModalAction::Close
         }
     } else if state
         .player_company
@@ -195,14 +195,14 @@ pub(super) fn render(
         .get(flow.selected_index.saturating_sub(1))
         .is_some_and(|service| assigned == Some(service.id))
     {
-        "close"
+        modal::ModalAction::Close
     } else {
-        "assign"
+        modal::ModalAction::Assign
     };
     let footer = modal::shortcut_line(&[
-        ("Esc", "cancel"),
-        ("↑↓/JK", "service"),
-        ("Enter", enter_action),
+        modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
+        modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Service),
+        modal::ModalShortcut::enabled("Enter", enter_action),
     ]);
     let modal_areas = modal::render_shell(frame, area, &title, footer);
     let [context_area, table_area] =
