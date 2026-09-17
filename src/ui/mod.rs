@@ -334,7 +334,7 @@ impl Shell {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
-                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A' | 'u' | 'U'
+                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'u' | 'U'
                 )
             );
             if navigation_key {
@@ -359,6 +359,15 @@ impl Shell {
                     }),
                     services::ServiceWorkspaceAction::Delete { service_id } => {
                         ShellAction::Player(AppCommand::DeletePassengerService { service_id })
+                    }
+                    services::ServiceWorkspaceAction::AssignTrain { train_id, service_id } => {
+                        ShellAction::Player(AppCommand::AssignTrainToService {
+                            train_id,
+                            service_id,
+                        })
+                    }
+                    services::ServiceWorkspaceAction::UnassignTrain { train_id } => {
+                        ShellAction::Player(AppCommand::UnassignTrainFromService { train_id })
                     }
                 };
             }
@@ -664,7 +673,9 @@ impl Shell {
             }
             AppCommand::AssignTrainToService { .. }
             | AppCommand::UnassignTrainFromService { .. } => {
-                if let Some(message) = self.fleet_workspace.reject_assignment(error.clone()) {
+                if self.service_workspace.reject_assignment(error.clone()).is_none() {
+                    self.notice = None;
+                } else if let Some(message) = self.fleet_workspace.reject_assignment(error.clone()) {
                     self.notice = Some(message);
                 } else {
                     self.notice = Some(error);
@@ -856,6 +867,7 @@ impl Shell {
         service_id: Option<crate::model::ServiceId>,
     ) {
         self.fleet_workspace.confirm_assignment_saved();
+        self.service_workspace.confirm_assignment_saved();
         self.notice = Some(match service_id {
             Some(service_id) => format!(
                 "Train {:02} assigned to R{} and saved.",

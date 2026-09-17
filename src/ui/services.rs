@@ -20,8 +20,10 @@ use crate::{
 
 use super::{format, modal, theme};
 
+mod assignment;
 mod editor;
 
+use assignment::{ServiceTrainAssignmentAction, ServiceTrainAssignmentFlow};
 use editor::CreateServiceFlow;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,6 +40,13 @@ pub enum ServiceWorkspaceAction {
     Delete {
         service_id: ServiceId,
     },
+    AssignTrain {
+        train_id: crate::model::TrainId,
+        service_id: ServiceId,
+    },
+    UnassignTrain {
+        train_id: crate::model::TrainId,
+    },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -45,6 +54,7 @@ pub struct ServiceWorkspace {
     open: bool,
     selected_service_index: usize,
     create_flow: Option<CreateServiceFlow>,
+    assignment_flow: Option<ServiceTrainAssignmentFlow>,
     delete_confirmation: Option<ServiceId>,
 }
 
@@ -65,6 +75,22 @@ impl ServiceWorkspace {
     }
 
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) -> ServiceWorkspaceAction {
+        if let Some(flow) = &mut self.assignment_flow {
+            return match flow.handle_key(key, state) {
+                ServiceTrainAssignmentAction::Continue => ServiceWorkspaceAction::Continue,
+                ServiceTrainAssignmentAction::Cancel => {
+                    self.assignment_flow = None;
+                    ServiceWorkspaceAction::Continue
+                }
+                ServiceTrainAssignmentAction::Assign { train_id, service_id } => {
+                    ServiceWorkspaceAction::AssignTrain { train_id, service_id }
+                }
+                ServiceTrainAssignmentAction::Unassign { train_id } => {
+                    ServiceWorkspaceAction::UnassignTrain { train_id }
+                }
+            };
+        }
+
         if let Some(service_id) = self.delete_confirmation {
             return match key {
                 KeyCode::Enter if service_active_journeys(state, service_id) == 0 => {
@@ -95,6 +121,15 @@ impl ServiceWorkspace {
             KeyCode::Esc => ServiceWorkspaceAction::Close,
             KeyCode::Char('n' | 'N') => {
                 self.create_flow = Some(CreateServiceFlow::new());
+                ServiceWorkspaceAction::Continue
+            }
+            KeyCode::Char('a' | 'A') => {
+                if let Some(service_id) = self.selected_service_id(state) {
+                    match ServiceTrainAssignmentFlow::start(state, service_id) {
+                        Ok(flow) => self.assignment_flow = Some(flow),
+                        Err(message) => self.reject_action(message),
+                    }
+                }
                 ServiceWorkspaceAction::Continue
             }
             KeyCode::Char('e' | 'E') => {
@@ -168,6 +203,7 @@ impl ServiceWorkspace {
     pub fn confirm_created(&mut self, state: &GameState) {
         self.open = true;
         self.create_flow = None;
+        self.assignment_flow = None;
         self.delete_confirmation = None;
         self.selected_service_index = state
             .player_company
@@ -179,6 +215,7 @@ impl ServiceWorkspace {
     pub fn confirm_updated(&mut self, state: &GameState) {
         self.open = true;
         self.create_flow = None;
+        self.assignment_flow = None;
         self.delete_confirmation = None;
         self.selected_service_index = self.selected_service_index.min(
             state
@@ -191,6 +228,7 @@ impl ServiceWorkspace {
 
     pub fn confirm_deleted(&mut self, state: &GameState) {
         self.open = true;
+        self.assignment_flow = None;
         self.delete_confirmation = None;
         self.selected_service_index = self.selected_service_index.min(
             state
@@ -205,6 +243,20 @@ impl ServiceWorkspace {
         if let Some(flow) = &mut self.create_flow {
             flow.reject(message);
         }
+    }
+
+    pub fn reject_assignment(&mut self, error: impl Into<String>) -> Option<String> {
+        let error = error.into();
+        if let Some(flow) = &mut self.assignment_flow {
+            flow.reject(error);
+            None
+        } else {
+            Some(error)
+        }
+    }
+
+    pub fn confirm_assignment_saved(&mut self) {
+        self.assignment_flow = None;
     }
 
     /// Contextual actions for the shared RailQ footer.  The footer owns the
@@ -222,6 +274,10 @@ impl ServiceWorkspace {
             } else {
                 vec![("Esc", "Close", true)]
             };
+        }
+
+        if let Some(flow) = &self.assignment_flow {
+            return flow.footer_shortcuts(state, compact);
         }
 
         if let Some(flow) = &self.create_flow {
@@ -244,6 +300,7 @@ impl ServiceWorkspace {
         }
         actions.extend([
             ("N", "New", true),
+            ("A", "Assign train", has_services && !state.player_company.fleet.trains.is_empty()),
             ("E", "Edit", can_edit),
             ("D", "Delete", can_delete),
             ("Esc", "Map", true),
@@ -257,14 +314,15 @@ impl ServiceWorkspace {
         let mut lines = vec!["Current · Passenger Services".into()];
         if state.player_company.passenger_services.is_empty() {
             lines.extend([
-                "n Create the first directional Passenger Service".into(),
+                "n Create the first Passenger Service".into(),
                 "Esc Return to Map".into(),
             ]);
         } else {
             lines.extend([
                 "↑↓ / jk Select Passenger Service".into(),
                 "PgUp / PgDn Move through longer Service lists".into(),
-                "n Create a new directional Passenger Service".into(),
+                "n Create a new Passenger Service".into(),
+                "a Assign, reassign, or unassign Trains for the selected Service".into(),
                 "e Edit the selected Service when it has no active Journeys".into(),
                 "d Delete the selected Service when it has no active Journeys".into(),
                 "Esc Return to Map".into(),
@@ -289,7 +347,9 @@ impl ServiceWorkspace {
 
     /// Returns whether Passenger Services currently owns a focused modal.
     pub fn has_modal(&self) -> bool {
-        self.create_flow.is_some() || self.delete_confirmation.is_some()
+        self.create_flow.is_some()
+            || self.assignment_flow.is_some()
+            || self.delete_confirmation.is_some()
     }
 
     /// Renders only the persistent Passenger Services workspace.  The shell
@@ -301,7 +361,9 @@ impl ServiceWorkspace {
 
     /// Renders the currently focused Passenger Services modal, if any.
     pub fn render_modal(&self, frame: &mut Frame, area: Rect, state: &GameState) {
-        if let Some(flow) = &self.create_flow {
+        if let Some(flow) = &self.assignment_flow {
+            assignment::render(frame, modal::workflow_rect(area), state, flow);
+        } else if let Some(flow) = &self.create_flow {
             editor::render(frame, modal::workflow_rect(area), state, flow);
         } else if let Some(service_id) = self.delete_confirmation {
             render_delete_confirmation(frame, area, state, service_id);
