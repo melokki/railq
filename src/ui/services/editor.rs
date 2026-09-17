@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{ServiceWorkspaceAction, station_label, truncate_display};
-use crate::ui::{format, modal, theme};
+use crate::ui::{components, format, modal, theme};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct CreateServiceFlow {
@@ -594,13 +594,25 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
     .unwrap_or_default();
     let distance = distance_for_line_ids(state, &line_ids);
 
-    let [context_area, content_area, route_area, note_area] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Min(10),
-        Constraint::Length(1),
-        Constraint::Length(2),
-    ])
-    .areas(area);
+    let compact_height = area.height < 16;
+    let (context_area, content_area, route_area, note_area) = if compact_height {
+        let [context_area, content_area, route_area] = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Min(8),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        (context_area, content_area, route_area, None)
+    } else {
+        let [context_area, content_area, route_area, note_area] = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Min(10),
+            Constraint::Length(1),
+            Constraint::Length(2),
+        ])
+        .areas(area);
+        (context_area, content_area, route_area, Some(note_area))
+    };
 
     frame.render_widget(
         Paragraph::new(vec![
@@ -636,7 +648,14 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
         (content_area, None, None)
     };
 
-    render_review_summary(frame, summary_area, state, flow, distance);
+    render_review_summary(
+        frame,
+        summary_area,
+        state,
+        flow,
+        distance,
+        !show_preview,
+    );
 
     if let (Some(divider_area), Some(preview_area)) = (divider_area, preview_area) {
         modal::render_vertical_separator(frame, divider_area);
@@ -653,12 +672,14 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
             "→ Runs only in the ordered first-to-last direction."
         }
     };
-    frame.render_widget(
-        Paragraph::new(Line::styled(note, theme::secondary()))
-            .style(theme::panel())
-            .wrap(Wrap { trim: true }),
-        note_area,
-    );
+    if let Some(note_area) = note_area {
+        frame.render_widget(
+            Paragraph::new(Line::styled(note, theme::secondary()))
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            note_area,
+        );
+    }
 }
 
 fn render_review_summary(
@@ -667,6 +688,7 @@ fn render_review_summary(
     state: &GameState,
     flow: &CreateServiceFlow,
     distance: u64,
+    compact: bool,
 ) {
     let commercial_name = flow
         .editing_service_id
@@ -680,33 +702,50 @@ fn render_review_summary(
         })
         .unwrap_or_else(|| "—".to_owned());
 
+    let value_width = usize::from(area.width).saturating_sub(12);
     let mut lines = vec![
-        Line::styled("SERVICE", theme::table_header()),
-        review_summary_line("Name", &commercial_name, area.width, theme::primary_value()),
-        review_summary_line(
-            "Direction",
-            direction_mode_display(flow.direction_mode).as_str(),
-            area.width,
+        components::section_heading("SERVICE"),
+        components::summary_line(
+            "Name",
+            &truncate_display(&commercial_name, value_width),
             theme::primary_value(),
         ),
-        review_summary_line(
+    ];
+    if compact {
+        lines.push(components::summary_line(
+            "Route",
+            &truncate_display(
+                &route_pattern_label(state, &flow.stop_station_ids, flow.direction_mode),
+                value_width,
+            ),
+            theme::focused_title(),
+        ));
+    }
+    lines.extend([
+        components::summary_line(
+            "Direction",
+            &truncate_display(
+                direction_mode_display(flow.direction_mode).as_str(),
+                value_width,
+            ),
+            theme::primary_value(),
+        ),
+        components::summary_line(
             "Distance",
             &review_distance_label(distance),
-            area.width,
             theme::primary_value(),
         ),
-        review_summary_line(
+        components::summary_line(
             "Stops",
             &flow.stop_station_ids.len().to_string(),
-            area.width,
             theme::primary_value(),
         ),
         Line::from(""),
-        Line::styled("PUBLIC TRAINS", theme::table_header()),
-    ];
+        components::section_heading("PUBLIC TRAINS"),
+    ]);
     lines.extend(review_train_number_lines(state, flow));
 
-    if commercial_name == "—" {
+    if commercial_name == "—" && area.height >= 10 {
         lines.push(Line::from(""));
         lines.push(Line::styled(
             "Commercial name can be added later with R.",
@@ -795,22 +834,6 @@ fn render_review_route_strip(
     spans.push(Span::styled(suffix, theme::focused_title()));
 
     frame.render_widget(Paragraph::new(Line::from(spans)).style(theme::panel()), area);
-}
-
-fn review_summary_line(
-    label: &str,
-    value: &str,
-    width: u16,
-    style: ratatui::style::Style,
-) -> Line<'static> {
-    const LABEL_WIDTH: usize = 12;
-    Line::from(vec![
-        Span::styled(format!("{label:<12}"), theme::secondary()),
-        Span::styled(
-            truncate_display(value, usize::from(width).saturating_sub(LABEL_WIDTH)),
-            style,
-        ),
-    ])
 }
 
 fn review_train_number_lines(state: &GameState, flow: &CreateServiceFlow) -> Vec<Line<'static>> {
