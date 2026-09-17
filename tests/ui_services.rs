@@ -40,6 +40,7 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     assert!(create.contains("Create Passenger Service"));
     assert!(create.contains("1 STOPS"));
     assert!(create.contains("Route Preview"));
+    assert!(create.contains("cursor"));
     assert!(create.contains("Choose stops"));
     assert_eq!(
         capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),

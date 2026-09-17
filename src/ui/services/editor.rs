@@ -1,9 +1,15 @@
+use std::collections::BTreeMap;
+
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
+    symbols::Marker,
     text::{Line, Span},
-    widgets::{HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{
+        HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
+        canvas::{Canvas, Line as CanvasLine},
+    },
 };
 
 use crate::{
@@ -373,7 +379,34 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
         .get(flow.selected_station_index)
         .map(|station| station.id);
 
-    let mut lines = vec![Line::styled("Route Preview", theme::title())];
+    let map_height = area.height.saturating_sub(8).clamp(4, 9);
+    let [title_area, map_area, legend_area, details_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(map_height),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas(area);
+
+    frame.render_widget(
+        Paragraph::new(Line::styled("Route Preview", theme::title())).style(theme::panel()),
+        title_area,
+    );
+    render_route_map(frame, map_area, state, flow, selected_station_id);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("━", theme::focused_title()),
+            Span::styled(" route  ", theme::secondary()),
+            Span::styled("━", theme::success()),
+            Span::styled(" preview  ", theme::secondary()),
+            Span::styled("◆", theme::warning()),
+            Span::styled(" cursor", theme::secondary()),
+        ]))
+        .style(theme::panel()),
+        legend_area,
+    );
+
+    let mut lines = Vec::new();
     if flow.stop_station_ids.is_empty() {
         lines.push(Line::styled(
             "The first stop becomes the Service origin.",
@@ -381,7 +414,7 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
         ));
     } else {
         lines.push(Line::styled("ORDERED STOPS", theme::table_header()));
-        let max_stop_rows = area.height.saturating_sub(8).max(1) as usize;
+        let max_stop_rows = details_area.height.saturating_sub(3).max(1) as usize;
         lines.extend(preview_stop_lines(
             state,
             &flow.stop_station_ids,
@@ -389,8 +422,6 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
         ));
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::styled("SELECTED", theme::table_header()));
     let Some(station_id) = selected_station_id else {
         lines.push(Line::styled(
             "No Rail Station available.",
@@ -400,14 +431,18 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
             Paragraph::new(lines)
                 .style(theme::panel())
                 .wrap(Wrap { trim: true }),
-            area,
+            details_area,
         );
         return;
     };
-    lines.push(Line::styled(
-        station_label(state, station_id),
-        theme::focused_title(),
-    ));
+
+    if !flow.stop_station_ids.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("SELECTED  ", theme::table_header()),
+        Span::styled(station_label(state, station_id), theme::focused_title()),
+    ]));
 
     if let Some(selected_index) = flow
         .stop_station_ids
@@ -430,12 +465,8 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
             Ok(line_ids) => {
                 let distance = distance_for_line_ids(state, &line_ids);
                 lines.push(Line::styled(
-                    "Valid next stop · Space to select",
+                    format!("Valid next stop · {}", format::distance(distance)),
                     theme::success(),
-                ));
-                lines.push(Line::styled(
-                    format!("Route after add · {}", format::distance(distance)),
-                    theme::secondary(),
                 ));
             }
             Err(error) => lines.push(Line::styled(error.to_string(), theme::error())),
@@ -446,8 +477,161 @@ fn render_preview(frame: &mut Frame, area: Rect, state: &GameState, flow: &Creat
         Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        area,
+        details_area,
     );
+}
+
+fn render_route_map(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    flow: &CreateServiceFlow,
+    highlighted_station_id: Option<RailStationId>,
+) {
+    if area.width < 8 || area.height < 4 {
+        return;
+    }
+
+    let network = &state.region.rail_authority.rail_network;
+    let positions = mini_map_station_positions(state);
+    if positions.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No Rail Stations available.")
+                .style(theme::panel())
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+
+    let committed_line_ids = if flow.stop_station_ids.len() >= 2 {
+        service_path_for_stops(network, &flow.stop_station_ids).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let preview_line_ids = highlighted_station_id
+        .filter(|station_id| !flow.stop_station_ids.contains(station_id))
+        .and_then(|station_id| {
+            let mut candidate = flow.stop_station_ids.clone();
+            candidate.push(station_id);
+            (candidate.len() >= 2)
+                .then(|| service_path_for_stops(network, &candidate).ok())
+                .flatten()
+        })
+        .unwrap_or_default();
+
+    let min_x = positions
+        .values()
+        .map(|(x, _)| *x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = positions
+        .values()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = positions
+        .values()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = positions
+        .values()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let x_padding = ((max_x - min_x) * 0.12).max(4.0);
+    let y_padding = ((max_y - min_y) * 0.12).max(2.0);
+
+    let canvas = Canvas::default()
+        .background_color(theme::PANEL)
+        .marker(Marker::Braille)
+        .x_bounds([min_x - x_padding, max_x + x_padding])
+        .y_bounds([min_y - y_padding, max_y + y_padding])
+        .paint(|context| {
+            for rail_line in &network.rail_lines {
+                if let Some((x1, y1, x2, y2)) = mini_map_line_endpoints(rail_line, &positions) {
+                    context.draw(&CanvasLine::new(x1, y1, x2, y2, theme::SECONDARY));
+                }
+            }
+
+            context.layer();
+            for rail_line in &network.rail_lines {
+                if committed_line_ids.contains(&rail_line.id) {
+                    if let Some((x1, y1, x2, y2)) = mini_map_line_endpoints(rail_line, &positions) {
+                        context.draw(&CanvasLine::new(x1, y1, x2, y2, theme::ACCENT));
+                    }
+                }
+            }
+            for rail_line in &network.rail_lines {
+                if preview_line_ids.contains(&rail_line.id)
+                    && !committed_line_ids.contains(&rail_line.id)
+                {
+                    if let Some((x1, y1, x2, y2)) = mini_map_line_endpoints(rail_line, &positions) {
+                        context.draw(&CanvasLine::new(x1, y1, x2, y2, theme::SUCCESS));
+                    }
+                }
+            }
+
+            context.layer();
+            for station in &network.rail_stations {
+                let Some(&(x, y)) = positions.get(&station.id) else {
+                    continue;
+                };
+                let stop_index = flow
+                    .stop_station_ids
+                    .iter()
+                    .position(|station_id| *station_id == station.id);
+                let highlighted = highlighted_station_id == Some(station.id);
+                let (marker, style) = if highlighted {
+                    let marker = stop_index
+                        .map(|index| format!("◆{}", index + 1))
+                        .unwrap_or_else(|| "◆".to_owned());
+                    (marker, theme::warning())
+                } else if let Some(index) = stop_index {
+                    (format!("{}", index + 1), theme::focused_title())
+                } else {
+                    ("·".to_owned(), theme::secondary())
+                };
+                context.print(x, y, Line::styled(marker, style));
+            }
+        });
+    frame.render_widget(canvas, area);
+}
+
+fn mini_map_station_positions(state: &GameState) -> BTreeMap<RailStationId, (f64, f64)> {
+    let settlements = state
+        .region
+        .settlements
+        .iter()
+        .map(|settlement| (settlement.id, settlement))
+        .collect::<BTreeMap<_, _>>();
+
+    state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .filter_map(|station| {
+            let settlement = settlements.get(&station.settlement_id)?;
+            // Match the operational Map's terminal-cell aspect correction and
+            // invert Y because Canvas coordinates grow upward while terminal
+            // rows grow downward.
+            Some((
+                station.id,
+                (
+                    f64::from(settlement.position.x),
+                    -f64::from(settlement.position.y.div_euclid(2)),
+                ),
+            ))
+        })
+        .collect()
+}
+
+fn mini_map_line_endpoints(
+    rail_line: &crate::model::RailLine,
+    positions: &BTreeMap<RailStationId, (f64, f64)>,
+) -> Option<(f64, f64, f64, f64)> {
+    let &(x1, y1) = positions.get(&rail_line.first_station_id)?;
+    let &(x2, y2) = positions.get(&rail_line.second_station_id)?;
+    Some((x1, y1, x2, y2))
 }
 
 fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &CreateServiceFlow) {
