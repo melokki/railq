@@ -180,6 +180,7 @@ pub fn advance_time_with_arrivals(
         &mut state.region,
         state.world_seed,
         &state.origin_destination_demand,
+        &state.rules.authority,
         effective_now,
     )?;
     synchronize_directional_demand_with_network(state, effective_now);

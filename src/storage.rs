@@ -37,17 +37,18 @@ use crate::{
     balance::BalanceConfig,
     catalog::{TrainModel, model_for_train, train_catalogue},
     model::{
-        BulletinCategory, BulletinEntry, CalculationError, ConstructionDifficulty, DemandRules,
-        DistanceMetres, DurationSeconds, Electrification, EuropeanVehicleNumber, Financials, Fleet,
-        GameRules, GameState, InfrastructureProject, InfrastructureProjectFunding,
-        InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus,
-        InfrastructureProjectTimeline, Journey, JourneyId, JourneyPassengerGroup, JourneyPurpose,
-        JourneyReceipt, MarketMaturity, Money, MoneyPerKilometre, OriginDestinationDemand,
-        PassengerArrivalRate, PassengerService, PlannedRailLine, PlannedRailStation, PlayerCompany,
-        RailAuthority, RailAuthorityFinances, RailLine, RailLineId, RailNetwork, RailStation,
-        RailStationId, RailwayRegistration, Region, ServiceDirectionMode, ServiceId, Settlement,
-        SettlementId, SpeedKilometresPerHour, TrackCount, Train, TrainId, TrainModelId,
-        TrainNickname, TrainStatus, UtcSeconds, VehicleKeeperMark, WorldPosition,
+        AuthorityRules, BulletinCategory, BulletinEntry, CalculationError, ConstructionDifficulty,
+        DemandRules, DistanceMetres, DurationSeconds, Electrification, EuropeanVehicleNumber,
+        Financials, Fleet, GameRules, GameState, InfrastructureProject,
+        InfrastructureProjectFunding, InfrastructureProjectId, InfrastructureProjectKind,
+        InfrastructureProjectStatus, InfrastructureProjectTimeline, Journey, JourneyId,
+        JourneyPassengerGroup, JourneyPurpose, JourneyReceipt, MarketMaturity, Money,
+        MoneyPerKilometre, OriginDestinationDemand, PassengerArrivalRate, PassengerService,
+        PlannedRailLine, PlannedRailStation, PlayerCompany, RailAuthority, RailAuthorityFinances,
+        RailLine, RailLineId, RailNetwork, RailStation, RailStationId, RailwayRegistration, Region,
+        ServiceDirectionMode, ServiceId, Settlement, SettlementId, SpeedKilometresPerHour,
+        TrackCount, Train, TrainId, TrainModelId, TrainNickname, TrainStatus, UtcSeconds,
+        VehicleKeeperMark, WorldPosition,
     },
     sim::{
         demand::waiting_passenger_cap,
@@ -59,7 +60,7 @@ use crate::{
 };
 
 /// SQLite schema understood by this build.
-pub const SAVE_VERSION: u32 = 33;
+pub const SAVE_VERSION: u32 = 35;
 
 /// The local SQLite save used when no explicit path is supplied.
 pub const DEFAULT_SAVE_PATH: &str = "railq.db";

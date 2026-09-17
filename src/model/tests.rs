@@ -600,6 +600,7 @@ fn a_small_valid_game_state_fixture_builds() {
         rules: GameRules {
             balance: BalanceConfig::new(rate, rate, Money::from_cents(10_000)),
             demand: DemandRules::provisional(),
+            authority: AuthorityRules::provisional(),
         },
         last_processed_at: UtcSeconds::from_unix_seconds(0),
     };

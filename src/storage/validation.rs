@@ -428,7 +428,9 @@ fn validate_infrastructure_projects(
         }
         if !matches!(
             project.status,
-            InfrastructureProjectStatus::Open | InfrastructureProjectStatus::Cancelled
+            InfrastructureProjectStatus::Open
+                | InfrastructureProjectStatus::Rejected
+                | InfrastructureProjectStatus::Cancelled
         ) {
             total_project_commitments =
                 total_project_commitments.checked_add(project.funding.authority_committed)?;
@@ -620,6 +622,51 @@ fn validate_rules(state: &GameState) -> Result<(), SaveValidationError> {
     if state.rules.demand.cap_duration.seconds() == 0 {
         return Err(SaveValidationError::InvalidValue {
             field: "demand cap duration",
+        });
+    }
+
+    let authority = &state.rules.authority;
+    let authority_durations = [
+        (
+            "Authority request queue delay",
+            authority.request_queue_delay(),
+        ),
+        ("Authority review duration", authority.review_duration()),
+        ("Authority proposal duration", authority.proposal_duration()),
+        (
+            "Authority request cooldown",
+            authority.council_request_cooldown(),
+        ),
+        (
+            "Authority deferred reconsideration delay",
+            authority.deferred_reconsideration_delay(),
+        ),
+        (
+            "Authority mobilisation delay",
+            authority.construction_mobilisation_delay(),
+        ),
+        (
+            "Authority base construction duration",
+            authority.new_line_base_construction_duration(),
+        ),
+    ];
+    if let Some((field, _)) = authority_durations
+        .into_iter()
+        .find(|(_, duration)| duration.seconds() == 0)
+    {
+        return Err(SaveValidationError::InvalidValue { field });
+    }
+    if authority.low_difficulty_seconds_per_kilometre() == 0
+        || authority.moderate_difficulty_seconds_per_kilometre() == 0
+        || authority.high_difficulty_seconds_per_kilometre() == 0
+    {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Authority construction rate",
+        });
+    }
+    if authority.max_active_expansion_projects() == 0 {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Authority active expansion project limit",
         });
     }
     Ok(())

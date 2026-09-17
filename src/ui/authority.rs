@@ -21,8 +21,9 @@ use crate::{
         UtcSeconds,
     },
     sim::authority::{
-        AUTHORITY_APPROVAL_SCORE_THRESHOLD, deferred_reconsideration_threshold,
-        local_rail_success_basis_points, project_connection_station_id, project_review_score,
+        AUTHORITY_APPROVAL_SCORE_THRESHOLD, AUTHORITY_REJECTION_SCORE_THRESHOLD,
+        deferred_reconsideration_threshold, local_rail_success_basis_points,
+        project_connection_station_id, project_review_score_breakdown,
     },
     ui::{components::panel_block, format, modal, theme},
 };
@@ -68,7 +69,9 @@ impl ProjectSelection {
                 projects.iter().position(|project| {
                     !matches!(
                         project.status,
-                        InfrastructureProjectStatus::Open | InfrastructureProjectStatus::Cancelled
+                        InfrastructureProjectStatus::Open
+                            | InfrastructureProjectStatus::Rejected
+                            | InfrastructureProjectStatus::Cancelled
                     )
                 })
             })
@@ -555,7 +558,9 @@ fn render_programme(frame: &mut Frame, area: Rect, state: &GameState) {
         .filter(|project| {
             !matches!(
                 project.status,
-                InfrastructureProjectStatus::Open | InfrastructureProjectStatus::Cancelled
+                InfrastructureProjectStatus::Open
+                    | InfrastructureProjectStatus::Rejected
+                    | InfrastructureProjectStatus::Cancelled
             )
         })
         .count();
@@ -650,7 +655,7 @@ fn render_projects(
         .map(|(index, project)| {
             let scope = project_scope(state, project);
             let status = project_status(project.status);
-            let next = project_next(project, now);
+            let next = project_next(state, project, now);
             if compact {
                 Row::new(vec![
                     Cell::from(format!("{:02}", index + 1)),
@@ -749,11 +754,11 @@ fn render_project_inspector(
         ]),
         Line::from(vec![
             Span::styled("Next  ", theme::secondary()),
-            Span::styled(project_next(project, now), theme::primary_value()),
+            Span::styled(project_next(state, project, now), theme::primary_value()),
         ]),
     ];
 
-    append_project_development_context(&mut lines, state, project);
+    append_project_development_context(&mut lines, state, project, now);
     lines.push(Line::from(""));
     lines.extend([
         money_line("Estimated cost", project.funding.estimated_cost),
@@ -784,7 +789,7 @@ fn render_project_inspector(
 
     append_project_scope_details(&mut lines, state, project);
     lines.push(Line::from(""));
-    append_timeline(&mut lines, project, now);
+    append_timeline(&mut lines, state, project, now);
 
     frame.render_widget(
         Paragraph::new(lines)
@@ -799,6 +804,7 @@ fn append_project_development_context(
     lines: &mut Vec<Line<'static>>,
     state: &GameState,
     project: &InfrastructureProject,
+    now: UtcSeconds,
 ) {
     let InfrastructureProjectKind::NewLine {
         planned_stations, ..
@@ -841,26 +847,74 @@ fn append_project_development_context(
         ]));
     }
 
-    if let Some(score) = project_review_score(&state.region, project, state.world_seed) {
-        lines.push(Line::from(vec![
-            Span::styled("Authority case  ", theme::secondary()),
-            Span::styled(
-                format!("{score} / {AUTHORITY_APPROVAL_SCORE_THRESHOLD}"),
-                if score >= AUTHORITY_APPROVAL_SCORE_THRESHOLD {
-                    theme::success()
-                } else {
-                    theme::warning()
-                },
-            ),
-        ]));
-        if project.status == InfrastructureProjectStatus::Deferred
-            && score < AUTHORITY_APPROVAL_SCORE_THRESHOLD
+    if matches!(
+        project.status,
+        InfrastructureProjectStatus::Requested
+            | InfrastructureProjectStatus::UnderReview
+            | InfrastructureProjectStatus::Proposed
+            | InfrastructureProjectStatus::Deferred
+    ) {
+        if let Some(score) =
+            project_review_score_breakdown(&state.region, project, state.world_seed)
         {
-            lines.push(Line::styled(
-                "Deferred: current regional value does not yet justify the project cost.",
-                theme::secondary(),
-            ));
+            lines.push(Line::from(vec![
+                Span::styled("Current case  ", theme::secondary()),
+                Span::styled(
+                    format!("{} / {}", score.total, AUTHORITY_APPROVAL_SCORE_THRESHOLD),
+                    if score.total >= AUTHORITY_APPROVAL_SCORE_THRESHOLD {
+                        theme::success()
+                    } else {
+                        theme::warning()
+                    },
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Public value  ", theme::secondary()),
+                Span::styled(
+                    format!(
+                        "+{} population · +{} demand · +{} network",
+                        score.population, score.latent_demand, score.network_usefulness
+                    ),
+                    theme::primary_value(),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Regional / cost  ", theme::secondary()),
+                Span::styled(
+                    format!(
+                        "+{} development · -{} construction",
+                        score.regional_development, score.construction_cost_penalty
+                    ),
+                    theme::primary_value(),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Decision bands  ", theme::secondary()),
+                Span::styled(
+                    format!(
+                        "approve ≥{} · defer {}–{} · reject <{}",
+                        AUTHORITY_APPROVAL_SCORE_THRESHOLD,
+                        AUTHORITY_REJECTION_SCORE_THRESHOLD,
+                        AUTHORITY_APPROVAL_SCORE_THRESHOLD - 1,
+                        AUTHORITY_REJECTION_SCORE_THRESHOLD,
+                    ),
+                    theme::secondary(),
+                ),
+            ]));
         }
+    }
+
+    match project.status {
+        InfrastructureProjectStatus::Deferred => {
+            lines.push(Line::from(vec![
+                Span::styled("Reconsideration  ", theme::secondary()),
+                Span::styled(deferred_next(state, project, now), theme::primary_value()),
+            ]));
+        }
+        InfrastructureProjectStatus::Rejected => {
+            lines.push(value_line("Reconsideration", "Not automatic"));
+        }
+        _ => {}
     }
 
     if project.timeline.reconsideration_count > 0 {
@@ -963,6 +1017,7 @@ fn append_project_scope_details(
 
 fn append_timeline(
     lines: &mut Vec<Line<'static>>,
+    state: &GameState,
     project: &InfrastructureProject,
     now: UtcSeconds,
 ) {
@@ -988,21 +1043,21 @@ fn append_timeline(
     match project.status {
         InfrastructureProjectStatus::Requested => {
             lines.push(Line::styled("REQUESTED", theme::table_header()));
-            lines.push(value_line("Next", "Awaiting review"));
+            lines.push(value_line("Next", &project_next(state, project, now)));
         }
         InfrastructureProjectStatus::UnderReview => {
             lines.push(Line::styled("REVIEW", theme::table_header()));
             if let Some(value) = project.timeline.review_started_at {
                 lines.push(timestamp_line("Started", value, now));
             }
-            lines.push(value_line("Next", "Decision pending"));
+            lines.push(value_line("Next", &project_next(state, project, now)));
         }
         InfrastructureProjectStatus::Proposed => {
             lines.push(Line::styled("PROPOSAL", theme::table_header()));
             if let Some(value) = project.timeline.proposed_at {
                 lines.push(timestamp_line("Proposed", value, now));
             }
-            lines.push(value_line("Next", "Authority decision"));
+            lines.push(value_line("Next", &project_next(state, project, now)));
         }
         InfrastructureProjectStatus::Approved => {
             lines.push(Line::styled("APPROVED", theme::table_header()));
@@ -1013,19 +1068,11 @@ fn append_timeline(
             if let Some(value) = project.timeline.deferred_at {
                 lines.push(timestamp_line("Deferred", value, now));
             }
-            let required =
-                deferred_reconsideration_threshold(project.timeline.reconsideration_count);
-            if required <= 10_000 {
-                lines.push(value_line(
-                    "Next",
-                    &format!(
-                        "Reconsider at {} nearby rail adoption",
-                        maturity_percent(required)
-                    ),
-                ));
-            } else {
-                lines.push(value_line("Next", "No further automatic reconsideration"));
-            }
+            lines.push(value_line("Next", &deferred_next(state, project, now)));
+        }
+        InfrastructureProjectStatus::Rejected => {
+            lines.push(Line::styled("REJECTED", theme::table_header()));
+            lines.push(value_line("Next", "No automatic reconsideration"));
         }
         InfrastructureProjectStatus::Funding => {
             lines.push(Line::styled("FUNDING", theme::table_header()));
@@ -1263,6 +1310,7 @@ fn project_status(status: InfrastructureProjectStatus) -> &'static str {
         InfrastructureProjectStatus::Proposed => "PROPOSED",
         InfrastructureProjectStatus::Approved => "APPROVED",
         InfrastructureProjectStatus::Deferred => "DEFERRED",
+        InfrastructureProjectStatus::Rejected => "REJECTED",
         InfrastructureProjectStatus::Funding => "FUNDING",
         InfrastructureProjectStatus::Scheduled => "SCHEDULED",
         InfrastructureProjectStatus::Construction => "CONSTRUCTION",
@@ -1275,7 +1323,9 @@ fn status_style(status: InfrastructureProjectStatus) -> ratatui::style::Style {
     match status {
         InfrastructureProjectStatus::Open => theme::success(),
         InfrastructureProjectStatus::Deferred => theme::warning(),
-        InfrastructureProjectStatus::Cancelled => theme::error(),
+        InfrastructureProjectStatus::Rejected | InfrastructureProjectStatus::Cancelled => {
+            theme::error()
+        }
         InfrastructureProjectStatus::Funding
         | InfrastructureProjectStatus::Scheduled
         | InfrastructureProjectStatus::Construction => theme::warning(),
@@ -1300,21 +1350,41 @@ fn funding_percent(project: &InfrastructureProject) -> String {
     format!("{percent}%")
 }
 
-fn project_next(project: &InfrastructureProject, now: UtcSeconds) -> String {
+fn project_next(state: &GameState, project: &InfrastructureProject, now: UtcSeconds) -> String {
     match project.status {
-        InfrastructureProjectStatus::Requested => "Council request · review pending".into(),
-        InfrastructureProjectStatus::UnderReview => "Authority review in progress".into(),
-        InfrastructureProjectStatus::Proposed => "Authority decision pending".into(),
+        InfrastructureProjectStatus::Requested => planning_stage_next(
+            "Review",
+            project.timeline.requested_at,
+            state.rules.authority.request_queue_delay(),
+            now,
+        ),
+        InfrastructureProjectStatus::UnderReview => project
+            .timeline
+            .review_started_at
+            .map(|started_at| {
+                planning_stage_next(
+                    "Proposal",
+                    started_at,
+                    state.rules.authority.review_duration(),
+                    now,
+                )
+            })
+            .unwrap_or_else(|| "Authority review in progress".into()),
+        InfrastructureProjectStatus::Proposed => project
+            .timeline
+            .proposed_at
+            .map(|proposed_at| {
+                planning_stage_next(
+                    "Decision",
+                    proposed_at,
+                    state.rules.authority.proposal_duration(),
+                    now,
+                )
+            })
+            .unwrap_or_else(|| "Authority decision pending".into()),
         InfrastructureProjectStatus::Approved => "Awaiting funding slot".into(),
-        InfrastructureProjectStatus::Deferred => {
-            let required =
-                deferred_reconsideration_threshold(project.timeline.reconsideration_count);
-            if required <= 10_000 {
-                format!("Needs {} adoption", maturity_percent(required))
-            } else {
-                "No further automatic review".into()
-            }
-        }
+        InfrastructureProjectStatus::Deferred => deferred_next(state, project, now),
+        InfrastructureProjectStatus::Rejected => "Rejected · no automatic review".into(),
         InfrastructureProjectStatus::Funding => project
             .funding
             .funding_gap()
@@ -1338,6 +1408,54 @@ fn project_next(project: &InfrastructureProject, now: UtcSeconds) -> String {
             .unwrap_or_else(|| "Opening pending".into()),
         InfrastructureProjectStatus::Open => "Complete".into(),
         InfrastructureProjectStatus::Cancelled => "Cancelled".into(),
+    }
+}
+
+fn planning_stage_next(
+    label: &str,
+    started_at: UtcSeconds,
+    delay: crate::model::DurationSeconds,
+    now: UtcSeconds,
+) -> String {
+    let Ok(due_at) = started_at.checked_add(delay) else {
+        return format!("{label} pending");
+    };
+    if due_at <= now {
+        format!("{label} ready")
+    } else {
+        format!("{label} {}", relative_time(due_at, now))
+    }
+}
+
+fn deferred_next(state: &GameState, project: &InfrastructureProject, now: UtcSeconds) -> String {
+    let required = deferred_reconsideration_threshold(project.timeline.reconsideration_count);
+    if required > 10_000 {
+        return "No further automatic review".into();
+    }
+
+    let current_maturity = project_connection_station_id(project)
+        .map(|station_id| {
+            local_rail_success_basis_points(&state.origin_destination_demand, station_id)
+        })
+        .unwrap_or(0);
+    let maturity_ready = current_maturity >= required;
+    let eligible_at = project.timeline.deferred_at.and_then(|deferred_at| {
+        deferred_at
+            .checked_add(state.rules.authority.deferred_reconsideration_delay())
+            .ok()
+    });
+    let cooldown_ready = eligible_at.map_or(true, |eligible_at| eligible_at <= now);
+
+    match (cooldown_ready, maturity_ready, eligible_at) {
+        (true, true, _) => "Reconsideration ready".into(),
+        (true, false, _) => format!("Needs {} adoption", maturity_percent(required)),
+        (false, true, Some(eligible_at)) => format!("Eligible {}", relative_time(eligible_at, now)),
+        (false, false, Some(eligible_at)) => format!(
+            "Eligible {} · needs {} adoption",
+            relative_time(eligible_at, now),
+            maturity_percent(required)
+        ),
+        _ => format!("Needs {} adoption", maturity_percent(required)),
     }
 }
 
@@ -1550,7 +1668,7 @@ pub fn render(state: &GameState, now: UtcSeconds) -> String {
             index + 1,
             project_status(project.status),
             project_scope(state, project),
-            project_next(project, now)
+            project_next(state, project, now)
         )
         .expect("writing to String cannot fail");
     }
@@ -1562,13 +1680,13 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use crate::{
-        model::{MarketMaturity, UtcSeconds},
-        sim::{authority::advance_infrastructure_planning, world::create_new_game},
+        model::{DurationSeconds, MarketMaturity, UtcSeconds},
+        sim::{authority::advance_rail_authority, world::create_new_game},
     };
 
     use super::{
         AuthorityWorkspace, AuthorityWorkspaceAction, ProjectSelection, compact_duration,
-        construction_remaining_duration, format_project_timestamp, render,
+        construction_remaining_duration, format_project_timestamp, planning_stage_next, render,
     };
 
     fn establish_rail_markets(state: &mut crate::model::GameState) {
@@ -1586,10 +1704,11 @@ mod tests {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         let world_seed = state.world_seed;
         establish_rail_markets(&mut state);
-        advance_infrastructure_planning(
+        advance_rail_authority(
             &mut state.region,
             world_seed,
             &state.origin_destination_demand,
+            &state.rules.authority,
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();
@@ -1600,7 +1719,58 @@ mod tests {
         assert!(output.contains("Next fiscal period:"));
         assert!(output.contains("Projects:"));
         assert!(output.contains("Council request"));
+        assert!(output.contains("Review in 1h"));
         assert!(output.contains(" → "));
+    }
+
+    #[test]
+    fn deferred_project_render_exposes_reconsideration_gates() {
+        let now = UtcSeconds::from_unix_seconds(0);
+        let mut state = create_new_game(42, "One More Prime", now);
+        let world_seed = state.world_seed;
+        establish_rail_markets(&mut state);
+        advance_rail_authority(
+            &mut state.region,
+            world_seed,
+            &state.origin_destination_demand,
+            &state.rules.authority,
+            now,
+        )
+        .unwrap();
+        for pool in &mut state.origin_destination_demand {
+            pool.market_maturity = MarketMaturity::from_basis_points(2_500).unwrap();
+        }
+        let project = state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .first_mut()
+            .expect("planning should create an infrastructure project");
+        project.status = crate::model::InfrastructureProjectStatus::Deferred;
+        project.timeline.deferred_at = Some(now);
+
+        let output = render(&state, now);
+        assert!(output.contains("Eligible in 1d · needs 55% adoption"));
+    }
+
+    #[test]
+    fn planning_stage_countdown_exposes_configured_cadence() {
+        let started = UtcSeconds::from_unix_seconds(1_000);
+        let delay = DurationSeconds::from_seconds(60 * 60);
+
+        assert_eq!(
+            planning_stage_next("Review", started, delay, started),
+            "Review in 1h"
+        );
+        assert_eq!(
+            planning_stage_next(
+                "Review",
+                started,
+                delay,
+                UtcSeconds::from_unix_seconds(4_600),
+            ),
+            "Review ready"
+        );
     }
 
     #[test]
@@ -1623,10 +1793,11 @@ mod tests {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         let world_seed = state.world_seed;
         establish_rail_markets(&mut state);
-        advance_infrastructure_planning(
+        advance_rail_authority(
             &mut state.region,
             world_seed,
             &state.origin_destination_demand,
+            &state.rules.authority,
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();
@@ -1661,10 +1832,11 @@ mod tests {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         let world_seed = state.world_seed;
         establish_rail_markets(&mut state);
-        advance_infrastructure_planning(
+        advance_rail_authority(
             &mut state.region,
             world_seed,
             &state.origin_destination_demand,
+            &state.rules.authority,
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();

@@ -83,6 +83,8 @@ fn migrate_one_version(
         30 => migrate_v30_to_v31(connection, path),
         31 => migrate_v31_to_v32(connection, path),
         32 => migrate_v32_to_v33(connection, path),
+        33 => migrate_v33_to_v34(connection, path),
+        34 => migrate_v34_to_v35(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -2640,4 +2642,175 @@ fn migrate_v32_to_v33(connection: &Connection, path: &Path) -> Result<(), SaveSl
             Err(error)
         }
     }
+}
+
+fn migrate_v33_to_v34(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v33 to v34 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let game_rules_exists = connection
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'game_rules'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|source| db_error("inspect v33 game rules in", path, source))?
+            .is_some();
+
+        if game_rules_exists {
+            connection
+                .execute_batch(
+                    "ALTER TABLE game_rules ADD COLUMN authority_request_queue_seconds INTEGER NOT NULL DEFAULT 3600;
+                     ALTER TABLE game_rules ADD COLUMN authority_review_seconds INTEGER NOT NULL DEFAULT 7200;
+                     ALTER TABLE game_rules ADD COLUMN authority_proposal_seconds INTEGER NOT NULL DEFAULT 3600;
+                     ALTER TABLE game_rules ADD COLUMN authority_request_cooldown_seconds INTEGER NOT NULL DEFAULT 86400;
+                     ALTER TABLE game_rules ADD COLUMN authority_deferred_reconsideration_seconds INTEGER NOT NULL DEFAULT 86400;
+                     ALTER TABLE game_rules ADD COLUMN authority_mobilisation_seconds INTEGER NOT NULL DEFAULT 3600;
+                     ALTER TABLE game_rules ADD COLUMN authority_new_line_base_construction_seconds INTEGER NOT NULL DEFAULT 18000;
+                     ALTER TABLE game_rules ADD COLUMN authority_low_difficulty_seconds_per_km INTEGER NOT NULL DEFAULT 120;
+                     ALTER TABLE game_rules ADD COLUMN authority_moderate_difficulty_seconds_per_km INTEGER NOT NULL DEFAULT 180;
+                     ALTER TABLE game_rules ADD COLUMN authority_high_difficulty_seconds_per_km INTEGER NOT NULL DEFAULT 240;
+                     ALTER TABLE game_rules ADD COLUMN authority_max_active_expansion_projects INTEGER NOT NULL DEFAULT 2;",
+                )
+                .map_err(|source| {
+                    db_error(
+                        "add Authority pacing rules during v34 migration in",
+                        path,
+                        source,
+                    )
+                })?;
+        } else {
+            connection
+                .execute_batch(
+                    "CREATE TABLE game_rules (
+                         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                         fare_cents_per_passenger_km INTEGER NOT NULL,
+                         access_fee_cents_per_train_km INTEGER NOT NULL,
+                         starting_company_funds_cents INTEGER NOT NULL,
+                         demand_cap_seconds INTEGER NOT NULL,
+                         authority_request_queue_seconds INTEGER NOT NULL,
+                         authority_review_seconds INTEGER NOT NULL,
+                         authority_proposal_seconds INTEGER NOT NULL,
+                         authority_request_cooldown_seconds INTEGER NOT NULL,
+                         authority_deferred_reconsideration_seconds INTEGER NOT NULL,
+                         authority_mobilisation_seconds INTEGER NOT NULL,
+                         authority_new_line_base_construction_seconds INTEGER NOT NULL,
+                         authority_low_difficulty_seconds_per_km INTEGER NOT NULL,
+                         authority_moderate_difficulty_seconds_per_km INTEGER NOT NULL,
+                         authority_high_difficulty_seconds_per_km INTEGER NOT NULL,
+                         authority_max_active_expansion_projects INTEGER NOT NULL
+                     );",
+                )
+                .map_err(|source| db_error("create missing v34 game rules in", path, source))?;
+        }
+
+        connection
+            .pragma_update(None, "user_version", 34_u32)
+            .map_err(|source| db_error("write v34 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v33 to v34 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v34_to_v35(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    let projects_have_status = connection
+        .query_row(
+            "SELECT 1 FROM pragma_table_info('infrastructure_projects') WHERE name = 'status'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|source| db_error("inspect v34 infrastructure project status in", path, source))?
+        .is_some();
+
+    if !projects_have_status {
+        connection
+            .pragma_update(None, "user_version", 35_u32)
+            .map_err(|source| db_error("write v35 schema version to", path, source))?;
+        return Ok(());
+    }
+
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             PRAGMA legacy_alter_table = ON;
+             BEGIN IMMEDIATE;",
+        )
+        .map_err(|source| db_error("begin v34 to v35 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE infrastructure_projects RENAME TO infrastructure_projects_v34;
+                 CREATE TABLE infrastructure_projects (
+                     id TEXT PRIMARY KEY,
+                     sequence INTEGER NOT NULL UNIQUE,
+                     kind TEXT NOT NULL CHECK (kind IN ('new_line', 'speed_upgrade', 'double_tracking', 'electrification', 'renewal', 'station_upgrade')),
+                     status TEXT NOT NULL CHECK (status IN ('requested', 'under_review', 'proposed', 'approved', 'deferred', 'rejected', 'funding', 'scheduled', 'construction', 'open', 'cancelled')),
+                     estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0),
+                     authority_committed_cents INTEGER NOT NULL DEFAULT 0 CHECK (authority_committed_cents >= 0),
+                     operator_contributed_cents INTEGER NOT NULL DEFAULT 0 CHECK (operator_contributed_cents >= 0),
+                     access_fee_credit_awarded_cents INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_credit_awarded_cents >= 0),
+                     access_fee_credit_remaining_cents INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_credit_remaining_cents >= 0),
+                     requested_at INTEGER NOT NULL,
+                     review_started_at INTEGER,
+                     proposed_at INTEGER,
+                     approved_at INTEGER,
+                     funding_completed_at INTEGER,
+                     scheduled_start_at INTEGER,
+                     construction_started_at INTEGER,
+                     planned_completion_at INTEGER,
+                     completed_at INTEGER,
+                     deferred_at INTEGER,
+                     cancelled_at INTEGER,
+                     reconsideration_count INTEGER NOT NULL DEFAULT 0 CHECK (reconsideration_count BETWEEN 0 AND 255),
+                     target_speed_limit_kmh INTEGER CHECK (target_speed_limit_kmh IS NULL OR target_speed_limit_kmh > 0),
+                     target_track_count INTEGER CHECK (target_track_count IS NULL OR target_track_count > 0)
+                 );
+                 INSERT INTO infrastructure_projects(
+                     id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
+                     operator_contributed_cents, access_fee_credit_awarded_cents, access_fee_credit_remaining_cents,
+                     requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
+                     scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
+                     deferred_at, cancelled_at, reconsideration_count, target_speed_limit_kmh, target_track_count
+                 )
+                 SELECT id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
+                        operator_contributed_cents, access_fee_credit_awarded_cents, access_fee_credit_remaining_cents,
+                        requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
+                        scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
+                        deferred_at, cancelled_at, reconsideration_count, target_speed_limit_kmh, target_track_count
+                 FROM infrastructure_projects_v34;
+                 DROP TABLE infrastructure_projects_v34;",
+            )
+            .map_err(|source| db_error("add rejected Authority project status in", path, source))?;
+
+        connection
+            .pragma_update(None, "user_version", 35_u32)
+            .map_err(|source| db_error("write v35 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    let result = match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v34 to v35 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    };
+    let _ = connection.execute_batch("PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;");
+    result
 }

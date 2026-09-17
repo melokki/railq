@@ -347,15 +347,78 @@ pub(super) fn insert_state(
     }
 
     let balance = &state.rules.balance;
-    transaction.execute(
-        "INSERT INTO game_rules(singleton, fare_cents_per_passenger_km, access_fee_cents_per_train_km, starting_company_funds_cents, demand_cap_seconds)
-         VALUES(1, ?1, ?2, ?3, ?4)",
-        params![
-            db(balance.fare_per_passenger_kilometre().cents_per_kilometre(), "fare rate")?,
-            db(balance.access_fee_per_train_kilometre().cents_per_kilometre(), "access fee rate")?,
-            balance.starting_company_funds().cents(), db(state.rules.demand.cap_duration.seconds(), "demand cap duration")?
-        ],
-    ).map_err(|source| db_error("write game rules to", path, source))?;
+    let authority = &state.rules.authority;
+    transaction
+        .execute(
+            "INSERT INTO game_rules(
+             singleton, fare_cents_per_passenger_km, access_fee_cents_per_train_km,
+             starting_company_funds_cents, demand_cap_seconds,
+             authority_request_queue_seconds, authority_review_seconds, authority_proposal_seconds,
+             authority_request_cooldown_seconds, authority_deferred_reconsideration_seconds,
+             authority_mobilisation_seconds, authority_new_line_base_construction_seconds,
+             authority_low_difficulty_seconds_per_km, authority_moderate_difficulty_seconds_per_km,
+             authority_high_difficulty_seconds_per_km, authority_max_active_expansion_projects
+         ) VALUES(1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                db(
+                    balance.fare_per_passenger_kilometre().cents_per_kilometre(),
+                    "fare rate"
+                )?,
+                db(
+                    balance
+                        .access_fee_per_train_kilometre()
+                        .cents_per_kilometre(),
+                    "access fee rate"
+                )?,
+                balance.starting_company_funds().cents(),
+                db(
+                    state.rules.demand.cap_duration.seconds(),
+                    "demand cap duration"
+                )?,
+                db(
+                    authority.request_queue_delay().seconds(),
+                    "Authority request queue delay"
+                )?,
+                db(
+                    authority.review_duration().seconds(),
+                    "Authority review duration"
+                )?,
+                db(
+                    authority.proposal_duration().seconds(),
+                    "Authority proposal duration"
+                )?,
+                db(
+                    authority.council_request_cooldown().seconds(),
+                    "Authority request cooldown"
+                )?,
+                db(
+                    authority.deferred_reconsideration_delay().seconds(),
+                    "Authority deferred reconsideration delay"
+                )?,
+                db(
+                    authority.construction_mobilisation_delay().seconds(),
+                    "Authority mobilisation delay"
+                )?,
+                db(
+                    authority.new_line_base_construction_duration().seconds(),
+                    "Authority base construction duration"
+                )?,
+                db(
+                    authority.low_difficulty_seconds_per_kilometre(),
+                    "Authority low-difficulty construction rate"
+                )?,
+                db(
+                    authority.moderate_difficulty_seconds_per_kilometre(),
+                    "Authority moderate-difficulty construction rate"
+                )?,
+                db(
+                    authority.high_difficulty_seconds_per_kilometre(),
+                    "Authority high-difficulty construction rate"
+                )?,
+                i64::from(authority.max_active_expansion_projects()),
+            ],
+        )
+        .map_err(|source| db_error("write game rules to", path, source))?;
     Ok(())
 }
 
@@ -391,6 +454,7 @@ fn insert_infrastructure_project(
         InfrastructureProjectStatus::Proposed => "proposed",
         InfrastructureProjectStatus::Approved => "approved",
         InfrastructureProjectStatus::Deferred => "deferred",
+        InfrastructureProjectStatus::Rejected => "rejected",
         InfrastructureProjectStatus::Funding => "funding",
         InfrastructureProjectStatus::Scheduled => "scheduled",
         InfrastructureProjectStatus::Construction => "construction",
@@ -732,6 +796,7 @@ fn load_infrastructure_projects(
             "proposed" => InfrastructureProjectStatus::Proposed,
             "approved" => InfrastructureProjectStatus::Approved,
             "deferred" => InfrastructureProjectStatus::Deferred,
+            "rejected" => InfrastructureProjectStatus::Rejected,
             "funding" => InfrastructureProjectStatus::Funding,
             "scheduled" => InfrastructureProjectStatus::Scheduled,
             "construction" => InfrastructureProjectStatus::Construction,
@@ -1289,8 +1354,72 @@ pub(super) fn load_state(
         })
     })?;
 
-    let (fare_rate, access_rate, starting_funds, demand_cap): (i64, i64, i64, i64) = connection
-        .query_row("SELECT fare_cents_per_passenger_km, access_fee_cents_per_train_km, starting_company_funds_cents, demand_cap_seconds FROM game_rules WHERE singleton = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+    let (
+        fare_rate,
+        access_rate,
+        starting_funds,
+        demand_cap,
+        authority_request_queue,
+        authority_review,
+        authority_proposal,
+        authority_request_cooldown,
+        authority_deferred_reconsideration,
+        authority_mobilisation,
+        authority_base_construction,
+        authority_low_difficulty_rate,
+        authority_moderate_difficulty_rate,
+        authority_high_difficulty_rate,
+        authority_max_active_expansion_projects,
+    ): (
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = connection
+        .query_row(
+            "SELECT fare_cents_per_passenger_km, access_fee_cents_per_train_km,
+                    starting_company_funds_cents, demand_cap_seconds,
+                    authority_request_queue_seconds, authority_review_seconds,
+                    authority_proposal_seconds, authority_request_cooldown_seconds,
+                    authority_deferred_reconsideration_seconds, authority_mobilisation_seconds,
+                    authority_new_line_base_construction_seconds,
+                    authority_low_difficulty_seconds_per_km,
+                    authority_moderate_difficulty_seconds_per_km,
+                    authority_high_difficulty_seconds_per_km,
+                    authority_max_active_expansion_projects
+             FROM game_rules WHERE singleton = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
+                ))
+            },
+        )
         .map_err(|source| db_error("read game rules from", path, source))?;
 
     let state = GameState {
@@ -1355,6 +1484,59 @@ pub(super) fn load_state(
                         .map_err(|field| invalid_value(path, field))?,
                 ),
             },
+            authority: AuthorityRules::new(
+                DurationSeconds::from_seconds(
+                    from_db_u64(authority_request_queue, "Authority request queue delay")
+                        .map_err(|field| invalid_value(path, field))?,
+                ),
+                DurationSeconds::from_seconds(
+                    from_db_u64(authority_review, "Authority review duration")
+                        .map_err(|field| invalid_value(path, field))?,
+                ),
+                DurationSeconds::from_seconds(
+                    from_db_u64(authority_proposal, "Authority proposal duration")
+                        .map_err(|field| invalid_value(path, field))?,
+                ),
+                DurationSeconds::from_seconds(
+                    from_db_u64(authority_request_cooldown, "Authority request cooldown")
+                        .map_err(|field| invalid_value(path, field))?,
+                ),
+                DurationSeconds::from_seconds(
+                    from_db_u64(
+                        authority_deferred_reconsideration,
+                        "Authority deferred reconsideration delay",
+                    )
+                    .map_err(|field| invalid_value(path, field))?,
+                ),
+                DurationSeconds::from_seconds(
+                    from_db_u64(authority_mobilisation, "Authority mobilisation delay")
+                        .map_err(|field| invalid_value(path, field))?,
+                ),
+                DurationSeconds::from_seconds(
+                    from_db_u64(
+                        authority_base_construction,
+                        "Authority base construction duration",
+                    )
+                    .map_err(|field| invalid_value(path, field))?,
+                ),
+                from_db_u64(
+                    authority_low_difficulty_rate,
+                    "Authority low-difficulty construction rate",
+                )
+                .map_err(|field| invalid_value(path, field))?,
+                from_db_u64(
+                    authority_moderate_difficulty_rate,
+                    "Authority moderate-difficulty construction rate",
+                )
+                .map_err(|field| invalid_value(path, field))?,
+                from_db_u64(
+                    authority_high_difficulty_rate,
+                    "Authority high-difficulty construction rate",
+                )
+                .map_err(|field| invalid_value(path, field))?,
+                u32::try_from(authority_max_active_expansion_projects)
+                    .map_err(|_| invalid_value(path, "Authority active expansion project limit"))?,
+            ),
         },
         last_processed_at: UtcSeconds::from_unix_seconds(last_processed_at),
     };
