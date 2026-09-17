@@ -52,9 +52,9 @@ pub struct GameRules {
 
 /// Tunable Rail Authority progression cadence saved with a game.
 ///
-/// Planning consumes these values directly, keeping request cadence and
-/// review throughput deterministic for each save. Construction timing fields
-/// are consumed by the construction lifecycle in the following pacing batch.
+/// Planning and construction consume these values directly, keeping request
+/// cadence, review throughput, mobilisation, and build duration deterministic
+/// for each save.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AuthorityRules {
     request_queue_delay: DurationSeconds,

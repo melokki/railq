@@ -60,17 +60,8 @@ const DEFERRED_RECONSIDERATION_STEP_BASIS_POINTS: u16 = 1_500;
 // demand, network usefulness, regional-development value, and construction
 // cost (which incorporates distance and difficulty).
 pub(crate) const AUTHORITY_APPROVAL_SCORE_THRESHOLD: i32 = 250;
-// A small mobilisation window keeps Scheduled visible as a real lifecycle
-// state while reserving scarce construction capacity before work begins.
-const CONSTRUCTION_MOBILISATION_DELAY: DurationSeconds = DurationSeconds::from_seconds(15 * 60);
-// Provisional compressed construction cadence for the first progression playtest.
-// Physical work remains deterministic once construction starts; later balancing
-// may change these rates without changing the lifecycle model.
-const NEW_LINE_BASE_CONSTRUCTION_DURATION: DurationSeconds =
-    DurationSeconds::from_seconds(2 * 60 * 60);
-const LOW_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 2 * 60;
-const MODERATE_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 3 * 60;
-const HIGH_DIFFICULTY_SECONDS_PER_KILOMETRE: u64 = 4 * 60;
+// Construction mobilisation and physical-work cadence are persisted in
+// `AuthorityRules`, keeping progression deterministic for each save.
 /// Maximum number of missed daily fiscal periods applied when RailQ catches up
 /// after being closed. Older missed periods are skipped so long absences do not
 /// turn into unlimited unattended public funding.
@@ -321,8 +312,8 @@ pub fn advance_rail_authority(
     advance_authority_fiscal_periods(region, now)?;
     advance_infrastructure_planning_with_rules(region, world_seed, demand, authority_rules, now)?;
     advance_project_funding(region, now)?;
-    advance_project_scheduling(region, now)?;
-    advance_project_construction(region, now)?;
+    advance_project_scheduling_with_rules(region, authority_rules, now)?;
+    advance_project_construction_with_rules(region, authority_rules, now)?;
     open_completed_infrastructure_projects(region, now)?;
     Ok(())
 }
@@ -758,6 +749,14 @@ pub(crate) fn advance_project_scheduling(
     region: &mut Region,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
+    advance_project_scheduling_with_rules(region, &AuthorityRules::provisional(), now)
+}
+
+fn advance_project_scheduling_with_rules(
+    region: &mut Region,
+    authority_rules: &AuthorityRules,
+    now: UtcSeconds,
+) -> Result<(), CalculationError> {
     loop {
         let next_index = {
             let authority = &region.rail_authority;
@@ -789,7 +788,7 @@ pub(crate) fn advance_project_scheduling(
             break;
         };
 
-        let scheduled_start = now.checked_add(CONSTRUCTION_MOBILISATION_DELAY)?;
+        let scheduled_start = now.checked_add(authority_rules.construction_mobilisation_delay())?;
         let target_name = project_target_settlement_name(region, index);
         let project = &mut region.rail_authority.infrastructure_projects[index];
         project.status = InfrastructureProjectStatus::Scheduled;
@@ -816,6 +815,14 @@ pub(crate) fn advance_project_construction(
     region: &mut Region,
     now: UtcSeconds,
 ) -> Result<(), CalculationError> {
+    advance_project_construction_with_rules(region, &AuthorityRules::provisional(), now)
+}
+
+fn advance_project_construction_with_rules(
+    region: &mut Region,
+    authority_rules: &AuthorityRules,
+    now: UtcSeconds,
+) -> Result<(), CalculationError> {
     for index in 0..region.rail_authority.infrastructure_projects.len() {
         let project = &region.rail_authority.infrastructure_projects[index];
         if project.status != InfrastructureProjectStatus::Scheduled {
@@ -833,7 +840,7 @@ pub(crate) fn advance_project_construction(
             continue;
         }
 
-        let duration = new_line_construction_duration(project)?;
+        let duration = new_line_construction_duration_with_rules(project, authority_rules)?;
         let planned_completion = scheduled_start.checked_add(duration)?;
         let target_name = project_target_settlement_name(region, index);
         let project = &mut region.rail_authority.infrastructure_projects[index];
@@ -970,16 +977,27 @@ pub(crate) fn open_completed_infrastructure_projects(
 fn new_line_construction_duration(
     project: &InfrastructureProject,
 ) -> Result<DurationSeconds, CalculationError> {
+    new_line_construction_duration_with_rules(project, &AuthorityRules::provisional())
+}
+
+fn new_line_construction_duration_with_rules(
+    project: &InfrastructureProject,
+    authority_rules: &AuthorityRules,
+) -> Result<DurationSeconds, CalculationError> {
     let InfrastructureProjectKind::NewLine { planned_lines, .. } = &project.kind else {
         return Ok(DurationSeconds::from_seconds(0));
     };
 
-    let mut seconds = NEW_LINE_BASE_CONSTRUCTION_DURATION.seconds();
+    let mut seconds = authority_rules
+        .new_line_base_construction_duration()
+        .seconds();
     for line in planned_lines {
         let seconds_per_kilometre = match line.construction_difficulty {
-            ConstructionDifficulty::Low => LOW_DIFFICULTY_SECONDS_PER_KILOMETRE,
-            ConstructionDifficulty::Moderate => MODERATE_DIFFICULTY_SECONDS_PER_KILOMETRE,
-            ConstructionDifficulty::High => HIGH_DIFFICULTY_SECONDS_PER_KILOMETRE,
+            ConstructionDifficulty::Low => authority_rules.low_difficulty_seconds_per_kilometre(),
+            ConstructionDifficulty::Moderate => {
+                authority_rules.moderate_difficulty_seconds_per_kilometre()
+            }
+            ConstructionDifficulty::High => authority_rules.high_difficulty_seconds_per_kilometre(),
         };
         let metre_seconds = line
             .distance
@@ -1500,7 +1518,8 @@ mod tests {
         model::{
             AuthorityRules, BulletinCategory, ConstructionDifficulty, DistanceMetres,
             DurationSeconds, InfrastructureProjectId, InfrastructureProjectKind,
-            InfrastructureProjectStatus, MarketMaturity, Money, OriginDestinationDemand, UtcSeconds,
+            InfrastructureProjectStatus, MarketMaturity, Money, OriginDestinationDemand,
+            UtcSeconds,
         },
         sim::{
             authority::MAX_OFFLINE_FISCAL_CATCHUP_PERIODS,
@@ -1512,12 +1531,13 @@ mod tests {
     use super::{
         InfrastructureProjectActionError, advance_authority_fiscal_periods,
         advance_infrastructure_planning, advance_infrastructure_planning_with_rules,
-        advance_project_construction, advance_project_funding,
-        advance_project_scheduling, cancel_infrastructure_project,
-        contribute_to_infrastructure_project, deferred_reconsideration_threshold,
-        estimated_connection_cost, evaluate_connection_candidates, local_rail_success_basis_points,
-        new_line_construction_duration, open_completed_infrastructure_projects,
-        project_from_candidate,
+        advance_project_construction, advance_project_construction_with_rules,
+        advance_project_funding, advance_project_scheduling, advance_project_scheduling_with_rules,
+        cancel_infrastructure_project, contribute_to_infrastructure_project,
+        deferred_reconsideration_threshold, estimated_connection_cost,
+        evaluate_connection_candidates, local_rail_success_basis_points,
+        new_line_construction_duration, new_line_construction_duration_with_rules,
+        open_completed_infrastructure_projects, project_from_candidate,
     };
 
     fn fully_mature_demand(
@@ -1967,18 +1987,12 @@ mod tests {
             2,
         );
 
-        advance_infrastructure_planning_with_rules(
-            &mut region,
-            31,
-            &demand,
-            &rules,
-            started,
-        )
-        .unwrap();
+        advance_infrastructure_planning_with_rules(&mut region, 31, &demand, &rules, started)
+            .unwrap();
         let target_settlement_id = match &region.rail_authority.infrastructure_projects[0].kind {
-            InfrastructureProjectKind::NewLine { planned_stations, .. } => {
-                planned_stations[0].settlement_id
-            }
+            InfrastructureProjectKind::NewLine {
+                planned_stations, ..
+            } => planned_stations[0].settlement_id,
             _ => panic!("expected a New Line project"),
         };
         region
@@ -2049,26 +2063,11 @@ mod tests {
             .collect();
 
         let now = UtcSeconds::from_unix_seconds(1_000 + 48 * 60 * 60);
-        advance_infrastructure_planning_with_rules(
-            &mut region,
-            37,
-            &demand,
-            &rules,
-            now,
-        )
-        .unwrap();
+        advance_infrastructure_planning_with_rules(&mut region, 37, &demand, &rules, now).unwrap();
         assert_eq!(region.rail_authority.infrastructure_projects.len(), 2);
 
-        region.rail_authority.infrastructure_projects[0].status =
-            InfrastructureProjectStatus::Open;
-        advance_infrastructure_planning_with_rules(
-            &mut region,
-            37,
-            &demand,
-            &rules,
-            now,
-        )
-        .unwrap();
+        region.rail_authority.infrastructure_projects[0].status = InfrastructureProjectStatus::Open;
+        advance_infrastructure_planning_with_rules(&mut region, 37, &demand, &rules, now).unwrap();
         assert_eq!(region.rail_authority.infrastructure_projects.len(), 3);
         assert_eq!(
             region.rail_authority.infrastructure_projects[2].status,
@@ -2292,7 +2291,7 @@ mod tests {
         assert_eq!(project.status, InfrastructureProjectStatus::Scheduled);
         assert_eq!(
             project.timeline.scheduled_start_at,
-            Some(UtcSeconds::from_unix_seconds(12_000 + 15 * 60))
+            Some(UtcSeconds::from_unix_seconds(12_000 + 60 * 60))
         );
         assert_eq!(region.rail_authority.reserved_construction_count(), 1);
         assert_eq!(region.rail_authority.construction_slots_remaining(), 0);
@@ -2353,7 +2352,67 @@ mod tests {
 
         assert_eq!(
             new_line_construction_duration(&project).unwrap(),
-            DurationSeconds::from_seconds(2 * 60 * 60 + 10 * 3 * 60)
+            DurationSeconds::from_seconds(5 * 60 * 60 + 10 * 3 * 60)
+        );
+    }
+
+    #[test]
+    fn construction_uses_configured_mobilisation_and_duration() {
+        let mut region = generate_region(43);
+        let candidate = evaluate_connection_candidates(&region, 43).unwrap()[0].clone();
+        let now = UtcSeconds::from_unix_seconds(35_000);
+        let mut project = project_from_candidate(candidate, now);
+        project.status = InfrastructureProjectStatus::Funding;
+        project.funding.authority_committed = project.funding.estimated_cost;
+        project.timeline.funding_completed_at = Some(now);
+        let InfrastructureProjectKind::NewLine { planned_lines, .. } = &mut project.kind else {
+            panic!("connection candidate must become a New Line project");
+        };
+        planned_lines[0].distance = DistanceMetres::new(10_000).unwrap();
+        planned_lines[0].construction_difficulty = ConstructionDifficulty::Moderate;
+        region.rail_authority.infrastructure_projects = vec![project];
+
+        let rules = AuthorityRules::new(
+            DurationSeconds::from_seconds(10),
+            DurationSeconds::from_seconds(20),
+            DurationSeconds::from_seconds(30),
+            DurationSeconds::from_seconds(40),
+            DurationSeconds::from_seconds(50),
+            DurationSeconds::from_seconds(37),
+            DurationSeconds::from_seconds(100),
+            1,
+            2,
+            3,
+            2,
+        );
+
+        advance_project_scheduling_with_rules(&mut region, &rules, now).unwrap();
+        let scheduled_start = UtcSeconds::from_unix_seconds(35_037);
+        assert_eq!(
+            region.rail_authority.infrastructure_projects[0]
+                .timeline
+                .scheduled_start_at,
+            Some(scheduled_start)
+        );
+        assert_eq!(
+            new_line_construction_duration_with_rules(
+                &region.rail_authority.infrastructure_projects[0],
+                &rules,
+            )
+            .unwrap(),
+            DurationSeconds::from_seconds(120)
+        );
+
+        advance_project_construction_with_rules(&mut region, &rules, scheduled_start).unwrap();
+        let project = &region.rail_authority.infrastructure_projects[0];
+        assert_eq!(project.status, InfrastructureProjectStatus::Construction);
+        assert_eq!(
+            project.timeline.construction_started_at,
+            Some(scheduled_start)
+        );
+        assert_eq!(
+            project.timeline.planned_completion_at,
+            Some(UtcSeconds::from_unix_seconds(35_157))
         );
     }
 
