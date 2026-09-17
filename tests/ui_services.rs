@@ -49,11 +49,14 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     );
     let workspace = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(workspace.contains("Passenger Services"));
-    assert!(workspace.contains("No Passenger Services yet"));
-    assert!(workspace.contains("Assign Trains to a Service"));
+    assert!(workspace.contains("●━━●━━●"));
+    assert!(workspace.contains("No Passenger Services"));
+    assert!(workspace.contains("Create a reusable route, assign trains"));
+    assert!(workspace.contains("[N] Create service"));
+    assert!(workspace.contains("both directions by default"));
     assert!(workspace.contains("one-way operation is optional"));
     assert!(!workspace.contains("Manual Dispatch"));
-    assert!(!workspace.contains("Press N"));
+    assert!(!workspace.contains("No Passenger Services yet"));
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Char('n')),

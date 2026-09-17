@@ -21,7 +21,7 @@ use crate::{
     sim::demand::effective_arrival_rate_per_hour,
 };
 
-use super::{format, modal, theme};
+use super::{components::EmptyState, format, modal, theme};
 
 mod assignment;
 mod editor;
@@ -547,27 +547,14 @@ fn render_service_list(frame: &mut Frame, area: Rect, state: &GameState, selecte
 
     let services = &state.player_company.passenger_services;
     if services.is_empty() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::styled("No Passenger Services yet", theme::title()),
-                Line::from(""),
-                Line::styled(
-                    "Passenger Services define reusable routes, direction, and public train numbers.",
-                    theme::secondary(),
-                ),
-                Line::styled(
-                    "Assign Trains to a Service, then run it directly from this workspace.",
-                    theme::secondary(),
-                ),
-                Line::styled(
-                    "New Services operate both directions by default; one-way operation is optional.",
-                    theme::secondary(),
-                ),
-            ])
-            .style(theme::panel())
-            .wrap(Wrap { trim: true }),
-            content,
-        );
+        EmptyState::new(
+            "No Passenger Services",
+            "Create a reusable route, assign trains, and run it directly from this workspace.",
+        )
+        .motif("●━━●━━●")
+        .primary_action("N", "Create service")
+        .hint("Services operate both directions by default; one-way operation is optional.")
+        .render(frame, content);
         return;
     }
 
