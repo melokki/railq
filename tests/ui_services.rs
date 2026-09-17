@@ -538,6 +538,39 @@ fn service_footer_keeps_delete_visible_but_disabled_while_service_is_active() {
 }
 
 #[test]
+fn assigned_service_disables_delete_and_explains_the_required_unassignment() {
+    let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
+    let mut state = create_new_game(42, "Alden Passenger", started_at);
+    state.player_company.funds = Money::from_cents(10_000_000);
+    let service_id = create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(2)],
+    )
+    .unwrap();
+    let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    assign_train_to_service(&mut state, train_id, service_id).unwrap();
+    let workspace = ServiceWorkspace::default();
+
+    let footer = workspace.footer_shortcuts(false, true, &state);
+    assert_eq!(
+        footer
+            .iter()
+            .find(|(key, _, _)| *key == "Del")
+            .map(|(_, _, enabled)| *enabled),
+        Some(false),
+    );
+
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('s'));
+    press(&mut shell, &state, KeyCode::Delete);
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(rendered.contains("Delete Passenger Service"));
+    assert!(rendered.contains("Deletion unavailable"));
+    assert!(rendered.contains("1 Train(s) are still assigned"));
+    assert!(rendered.contains("Unassign or reassign"));
+}
+
+#[test]
 fn delete_shortcut_is_a_no_op_while_selected_service_is_active() {
     let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
     let mut state = create_new_game(42, "Alden Passenger", started_at);

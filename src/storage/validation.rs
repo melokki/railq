@@ -979,10 +979,9 @@ fn validate_journey(
                 reason: "positioning Journey Train is not assigned to its Passenger Service",
             });
         }
-        let valid_destination = service.origin_station_id() == Some(journey.destination_station_id)
-            || (service.direction_mode == ServiceDirectionMode::BothDirections
-                && service.destination_station_id() == Some(journey.destination_station_id));
-        if !valid_destination || journey.origin_station_id == journey.destination_station_id {
+        if !service.accepts_departure_station(journey.destination_station_id)
+            || journey.origin_station_id == journey.destination_station_id
+        {
             return Err(SaveValidationError::ImpossibleState {
                 reason: "positioning Journey does not end at a valid Service departure terminus",
             });

@@ -2112,18 +2112,8 @@ fn positioning_options(
         return Vec::new();
     };
 
-    let mut destinations = Vec::new();
-    if let Some(origin) = service.origin_station_id() {
-        destinations.push(origin);
-    }
-    if service.direction_mode == crate::model::ServiceDirectionMode::BothDirections
-        && let Some(destination) = service.destination_station_id()
-        && !destinations.contains(&destination)
-    {
-        destinations.push(destination);
-    }
-
-    destinations
+    service
+        .departure_station_ids()
         .into_iter()
         .filter_map(|destination_station_id| {
             quote_positioning_journey(state, train_id, service_id, destination_station_id)

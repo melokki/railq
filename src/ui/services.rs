@@ -196,7 +196,10 @@ impl ServiceWorkspace {
 
         if let Some(service_id) = self.delete_confirmation {
             return match key {
-                KeyCode::Enter if service_active_journeys(state, service_id) == 0 => {
+                KeyCode::Enter
+                    if service_active_journeys(state, service_id) == 0
+                        && service_assigned_trains(state, service_id) == 0 =>
+                {
                     ServiceWorkspaceAction::Delete { service_id }
                 }
                 KeyCode::Esc | KeyCode::Backspace | KeyCode::Left => {
@@ -403,7 +406,9 @@ impl ServiceWorkspace {
         state: &GameState,
     ) -> Vec<(&'static str, &'static str, bool)> {
         if let Some(service_id) = self.delete_confirmation {
-            return if service_active_journeys(state, service_id) == 0 {
+            return if service_active_journeys(state, service_id) == 0
+                && service_assigned_trains(state, service_id) == 0
+            {
                 vec![("Enter", "Delete", true), ("Esc", "Cancel", true)]
             } else {
                 vec![("Esc", "Close", true)]
@@ -431,7 +436,12 @@ impl ServiceWorkspace {
             .selected_service_id(state)
             .map(|service_id| service_active_journeys(state, service_id) == 0)
             .unwrap_or(false);
-        let can_delete = can_edit;
+        let can_delete = self
+            .selected_service_id(state)
+            .is_some_and(|service_id| {
+                service_active_journeys(state, service_id) == 0
+                    && service_assigned_trains(state, service_id) == 0
+            });
         let mut actions = vec![(
             if compact { "↑↓" } else { "↑↓/JK" },
             "Service",
@@ -476,7 +486,8 @@ impl ServiceWorkspace {
                 "a Assign, reassign, or unassign Trains for the selected Service".into(),
                 "r Set or clear the selected Service's commercial name".into(),
                 "e Edit the selected Service when it has no active Journeys".into(),
-                "Del Delete the selected Service when it has no active Journeys".into(),
+                "Del Delete the selected Service when it has no active Journeys or assigned Trains"
+                    .into(),
                 "Esc Return to Map".into(),
             ]);
         }
@@ -1070,9 +1081,7 @@ fn service_assigned_fleet_lines(
 }
 
 fn service_accepts_departure(service: &PassengerService, station_id: RailStationId) -> bool {
-    service.origin_station_id() == Some(station_id)
-        || (service.direction_mode == ServiceDirectionMode::BothDirections
-            && service.destination_station_id() == Some(station_id))
+    service.accepts_departure_station(station_id)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1330,6 +1339,16 @@ fn service_active_journeys(state: &GameState, service_id: ServiceId) -> usize {
         .count()
 }
 
+fn service_assigned_trains(state: &GameState, service_id: ServiceId) -> usize {
+    state
+        .player_company
+        .fleet
+        .service_assignments
+        .values()
+        .filter(|&&assigned_service_id| assigned_service_id == service_id)
+        .count()
+}
+
 fn render_name_editor(
     frame: &mut Frame,
     area: Rect,
@@ -1409,8 +1428,9 @@ fn render_delete_confirmation(
         return;
     };
     let active = service_active_journeys(state, service_id);
+    let assigned = service_assigned_trains(state, service_id);
     let card = modal::centered_rect(area, 64, 14);
-    let footer = if active == 0 {
+    let footer = if active == 0 && assigned == 0 {
         modal::shortcut_line(&[
             modal::ModalShortcut::enabled("Enter", modal::ModalAction::Delete),
             modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
@@ -1428,16 +1448,7 @@ fn render_delete_confirmation(
         Line::from(route_label(state, &service.stop_station_ids)),
         Line::from(""),
     ];
-    if active == 0 {
-        lines.extend([
-            Line::styled("Delete this Service?", theme::warning()),
-            Line::from("The saved stop pattern will be removed."),
-            Line::from(Span::styled(
-                "This does not sell Trains or change completed Journey receipts.",
-                theme::secondary(),
-            )),
-        ]);
-    } else {
+    if active > 0 {
         lines.extend([
             Line::styled("Deletion unavailable", theme::error()),
             Line::from(format!(
@@ -1445,6 +1456,26 @@ fn render_delete_confirmation(
             )),
             Line::from(Span::styled(
                 "Wait for those Journeys to arrive before deleting it.",
+                theme::secondary(),
+            )),
+        ]);
+    } else if assigned > 0 {
+        lines.extend([
+            Line::styled("Deletion unavailable", theme::error()),
+            Line::from(format!(
+                "{assigned} Train(s) are still assigned to this Service."
+            )),
+            Line::from(Span::styled(
+                "Unassign or reassign those Trains before deleting it.",
+                theme::secondary(),
+            )),
+        ]);
+    } else {
+        lines.extend([
+            Line::styled("Delete this Service?", theme::warning()),
+            Line::from("The saved stop pattern will be removed."),
+            Line::from(Span::styled(
+                "This does not sell Trains or change completed Journey receipts.",
                 theme::secondary(),
             )),
         ]);

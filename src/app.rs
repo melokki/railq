@@ -684,7 +684,8 @@ mod tests {
     use crate::{
         catalog::train_catalogue,
         model::{
-            GameState, RailStationId, ServiceDirectionMode, TrainNickname, TrainStatus, UtcSeconds,
+            GameState, JourneyPurpose, RailStationId, ServiceDirectionMode, TrainNickname,
+            TrainStatus, UtcSeconds,
         },
         sim::{
             economy::quote_journey,
@@ -1006,6 +1007,68 @@ mod tests {
             None
         );
         assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
+    }
+
+    #[test]
+    fn positioning_journey_persists_across_reload_without_revenue() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        let away_station = RailStationId::new(3);
+        let train_id = purchase_train(&mut state, 0, away_station).unwrap();
+        let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        assign_train_to_service(&mut state, train_id, service_id).unwrap();
+        let funds_before = state.player_company.funds;
+        let demand_before = state.origin_destination_demand.clone();
+        let mut app = App::start_new(store.clone(), state).unwrap();
+
+        let result = app
+            .execute(
+                AppCommand::PositionTrainForService {
+                    train_id,
+                    service_id,
+                    destination_station_id: ORIGIN,
+                },
+                DEPARTED_AT,
+            )
+            .unwrap();
+        let AppCommandResult::TrainPositioningStarted { journey_id } = result else {
+            panic!("expected TrainPositioningStarted command result");
+        };
+        let journey = app
+            .state()
+            .active_journeys
+            .iter()
+            .find(|journey| journey.id == journey_id)
+            .unwrap();
+        assert_eq!(journey.purpose, JourneyPurpose::Positioning);
+        assert_eq!(journey.passengers_carried, 0);
+        assert_eq!(journey.operating_revenue, crate::model::Money::ZERO);
+        assert!(app.state().player_company.funds < funds_before);
+        assert_eq!(app.state().financials.operating_revenue, crate::model::Money::ZERO);
+        assert!(app.state().financials.infrastructure_access_fees > crate::model::Money::ZERO);
+        assert!(app.state().financials.fuel_costs > crate::model::Money::ZERO);
+        assert_eq!(app.state().origin_destination_demand, demand_before);
+        assert_eq!(
+            app.state()
+                .player_company
+                .fleet
+                .assigned_service_id(train_id),
+            Some(service_id)
+        );
+        assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
+
+        let persisted = app.state().clone();
+        drop(app);
+        let reloaded = App::load(store, DEPARTED_AT).unwrap().unwrap();
+        assert_eq!(reloaded.state(), &persisted);
+        assert_eq!(
+            reloaded
+                .state()
+                .player_company
+                .fleet
+                .assigned_service_id(train_id),
+            Some(service_id)
+        );
     }
 
     #[test]
