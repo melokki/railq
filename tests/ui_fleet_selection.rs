@@ -182,6 +182,8 @@ fn fleet_inspector_surfaces_state_specific_information() {
     assert!(travelling.contains("Leg progress"));
     assert!(travelling.contains("COMMERCIAL"));
     assert!(travelling.contains("Expected revenue"));
+    assert!(travelling.contains("Access fee"));
+    assert!(travelling.contains("Fuel cost"));
     assert!(travelling.contains("Operating cost"));
     assert!(travelling.contains("Expected result"));
     assert!(!travelling.contains("VALUE"));

@@ -334,6 +334,8 @@ fn active_service_inspector_surfaces_live_operating_context() {
     assert!(rendered.contains("Carried"));
     assert!(rendered.contains("COMMERCIAL"));
     assert!(rendered.contains("Expected revenue"));
+    assert!(rendered.contains("Access fee"));
+    assert!(rendered.contains("Fuel cost"));
     assert!(rendered.contains("Operating cost"));
     assert!(rendered.contains("Expected result"));
     assert!(!rendered.contains("STOP PATTERN"));
