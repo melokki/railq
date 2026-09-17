@@ -717,11 +717,9 @@ fn review_summary_line(
 }
 
 fn review_train_number_label(state: &GameState, flow: &CreateServiceFlow) -> String {
-    let Ok((forward, reverse)) = preview_service_train_numbers(
-        state,
-        flow.editing_service_id,
-        flow.direction_mode,
-    ) else {
+    let Ok((forward, reverse)) =
+        preview_service_train_numbers(state, flow.editing_service_id, flow.direction_mode)
+    else {
         return "Unavailable".to_owned();
     };
 
@@ -734,9 +732,9 @@ fn review_train_number_label(state: &GameState, flow: &CreateServiceFlow) -> Str
     let origin = station_label(state, origin);
     let destination = station_label(state, destination);
     match reverse {
-        Some(reverse) => format!(
-            "{forward} {origin} → {destination} · {reverse} {destination} → {origin}"
-        ),
+        Some(reverse) => {
+            format!("{forward} {origin} → {destination} · {reverse} {destination} → {origin}")
+        }
         None => format!("{forward} {origin} → {destination}"),
     }
 }

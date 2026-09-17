@@ -116,10 +116,7 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     assert!(review.contains("100 Oakridge → Fairford"));
     assert!(review.contains("101 Fairford → Oakridge"));
     assert!(review.contains("ORDERED STOPS"));
-    assert_shortcut_order(
-        &review,
-        &["[Esc] cancel", "[Enter] create", "[←] edit"],
-    );
+    assert_shortcut_order(&review, &["[Esc] cancel", "[Enter] create", "[←] edit"]);
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),

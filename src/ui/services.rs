@@ -547,12 +547,13 @@ fn render_service_list(frame: &mut Frame, area: Rect, state: &GameState, selecte
 
     let services = &state.player_company.passenger_services;
     if services.is_empty() {
-        EmptyState::new(
+        EmptyState::first_use(
             "No Passenger Services",
             "Create a reusable route, assign trains, and run it directly from this workspace.",
+            "N",
+            "Create service",
         )
         .motif("●━━●━━●")
-        .primary_action("N", "Create service")
         .hint("Services operate both directions by default; one-way operation is optional.")
         .render(frame, content);
         return;
@@ -642,9 +643,11 @@ fn render_service_picker(
 
     let (header, widths) = if wide {
         (
-            Row::new(["Service", "Route", "Assigned", "Ready", "Running", "Waiting"])
-                .style(theme::table_header())
-                .bottom_margin(1),
+            Row::new([
+                "Service", "Route", "Assigned", "Ready", "Running", "Waiting",
+            ])
+            .style(theme::table_header())
+            .bottom_margin(1),
             vec![
                 Constraint::Length(8),
                 Constraint::Min(12),
@@ -781,9 +784,7 @@ fn service_details(
             "Fleet",
             &format!(
                 "{} assigned · {} ready · {} running",
-                snapshot.assigned_trains,
-                snapshot.runnable_assigned_trains,
-                snapshot.active_trains
+                snapshot.assigned_trains, snapshot.runnable_assigned_trains, snapshot.active_trains
             ),
         ));
     }

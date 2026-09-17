@@ -56,6 +56,19 @@ pub fn labelled_line_styled(label: &str, value: &str, style: Style) -> Line<'sta
 const EMPTY_STATE_MAX_WIDTH: u16 = 64;
 const EMPTY_STATE_HORIZONTAL_MARGIN: u16 = 2;
 
+/// Semantic empty-state variants shared by RailQ workspaces.
+///
+/// The variant describes why the workspace is empty while keeping the same
+/// visual hierarchy. This lets workspaces use consistent copy and actions
+/// without inventing a new layout for every empty state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmptyStateKind {
+    FirstUse,
+    Temporary,
+    Filtered,
+    Blocked,
+}
+
 /// Primary action shown by an empty workspace state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EmptyStateAction<'a> {
@@ -77,6 +90,7 @@ impl<'a> EmptyStateAction<'a> {
 /// primitive deliberately avoids drawing a second card or border inside it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EmptyState<'a> {
+    pub kind: EmptyStateKind,
     pub motif: Option<&'a str>,
     pub title: &'a str,
     pub description: &'a str,
@@ -85,14 +99,45 @@ pub struct EmptyState<'a> {
 }
 
 impl<'a> EmptyState<'a> {
-    pub const fn new(title: &'a str, description: &'a str) -> Self {
+    const fn new(kind: EmptyStateKind, title: &'a str, description: &'a str) -> Self {
         Self {
+            kind,
             motif: None,
             title,
             description,
             primary_action: None,
             hint: None,
         }
+    }
+
+    /// Empty state for a workspace the player has not configured yet.
+    pub const fn first_use(
+        title: &'a str,
+        description: &'a str,
+        key: &'a str,
+        action: &'a str,
+    ) -> Self {
+        Self::new(EmptyStateKind::FirstUse, title, description).primary_action(key, action)
+    }
+
+    /// Empty state caused by game state the player cannot directly change here.
+    pub const fn temporary(title: &'a str, description: &'a str) -> Self {
+        Self::new(EmptyStateKind::Temporary, title, description)
+    }
+
+    /// Empty state produced by an active search/filter with a recovery action.
+    pub const fn filtered(
+        title: &'a str,
+        description: &'a str,
+        key: &'a str,
+        action: &'a str,
+    ) -> Self {
+        Self::new(EmptyStateKind::Filtered, title, description).primary_action(key, action)
+    }
+
+    /// Empty state where another prerequisite must be satisfied first.
+    pub const fn blocked(title: &'a str, description: &'a str, hint: &'a str) -> Self {
+        Self::new(EmptyStateKind::Blocked, title, description).hint(hint)
     }
 
     pub const fn motif(mut self, motif: &'a str) -> Self {
@@ -118,7 +163,9 @@ impl<'a> EmptyState<'a> {
 
         let width = empty_state_width(area.width);
         let lines = self.lines(width);
-        let content_height = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(area.height);
+        let content_height = u16::try_from(lines.len())
+            .unwrap_or(u16::MAX)
+            .min(area.height);
         let render_area = Rect {
             x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
             y: area
@@ -229,7 +276,7 @@ fn wrap_empty_state_text(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod empty_state_tests {
-    use super::{EmptyState, empty_state_width, wrap_empty_state_text};
+    use super::{EmptyState, EmptyStateKind, empty_state_width, wrap_empty_state_text};
 
     fn line_text(line: &ratatui::text::Line<'static>) -> String {
         line.spans
@@ -240,16 +287,16 @@ mod empty_state_tests {
 
     #[test]
     fn empty_state_keeps_the_shared_visual_hierarchy() {
-        let state = EmptyState::new("No Passenger Services", "Create a reusable route.")
-            .motif("●━━●━━●")
-            .primary_action("N", "Create service")
-            .hint("Services operate both directions by default.");
+        let state = EmptyState::first_use(
+            "No Passenger Services",
+            "Create a reusable route.",
+            "N",
+            "Create service",
+        )
+        .motif("●━━●━━●")
+        .hint("Services operate both directions by default.");
 
-        let rendered = state
-            .lines(60)
-            .iter()
-            .map(line_text)
-            .collect::<Vec<_>>();
+        let rendered = state.lines(60).iter().map(line_text).collect::<Vec<_>>();
 
         assert_eq!(
             rendered,
@@ -269,7 +316,7 @@ mod empty_state_tests {
 
     #[test]
     fn optional_sections_do_not_leave_extra_spacing() {
-        let rendered = EmptyState::new("Nothing here", "")
+        let rendered = EmptyState::temporary("Nothing here", "")
             .lines(40)
             .iter()
             .map(line_text)
@@ -291,5 +338,58 @@ mod empty_state_tests {
         assert_eq!(empty_state_width(100), 64);
         assert_eq!(empty_state_width(40), 36);
         assert_eq!(empty_state_width(3), 3);
+    }
+
+    #[test]
+    fn semantic_helpers_encode_the_expected_empty_state_contract() {
+        let first_use = EmptyState::first_use("No Services", "Create one.", "N", "Create service");
+        assert_eq!(first_use.kind, EmptyStateKind::FirstUse);
+        assert_eq!(first_use.primary_action.unwrap().label, "Create service");
+
+        let temporary = EmptyState::temporary("Nothing available", "Try again later.");
+        assert_eq!(temporary.kind, EmptyStateKind::Temporary);
+        assert!(temporary.primary_action.is_none());
+        assert!(temporary.hint.is_none());
+
+        let filtered = EmptyState::filtered("No matches", "Nothing matches.", "C", "Clear filter");
+        assert_eq!(filtered.kind, EmptyStateKind::Filtered);
+        assert_eq!(filtered.primary_action.unwrap().key, "C");
+
+        let blocked = EmptyState::blocked(
+            "Service unavailable",
+            "Open another station first.",
+            "The Authority must open more infrastructure.",
+        );
+        assert_eq!(blocked.kind, EmptyStateKind::Blocked);
+        assert!(blocked.primary_action.is_none());
+        assert_eq!(
+            blocked.hint,
+            Some("The Authority must open more infrastructure.")
+        );
+    }
+
+    #[test]
+    fn semantic_variants_keep_the_same_visual_hierarchy() {
+        let filtered = EmptyState::filtered(
+            "No matching services",
+            "No Passenger Services match the active filter.",
+            "C",
+            "Clear filter",
+        )
+        .motif("◇");
+
+        let rendered = filtered.lines(60).iter().map(line_text).collect::<Vec<_>>();
+        assert_eq!(
+            rendered,
+            vec![
+                "◇",
+                "",
+                "No matching services",
+                "",
+                "No Passenger Services match the active filter.",
+                "",
+                "[C] Clear filter",
+            ]
+        );
     }
 }

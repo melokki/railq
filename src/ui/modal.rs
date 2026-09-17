@@ -229,9 +229,8 @@ impl ModalShortcut {
 /// in whatever order is most convenient; this renderer owns the convention.
 pub fn shortcut_line(shortcuts: &[ModalShortcut]) -> Line<'static> {
     let mut ordered = shortcuts.iter().copied().enumerate().collect::<Vec<_>>();
-    ordered.sort_by_key(|(original_index, shortcut)| {
-        (shortcut_priority(shortcut), *original_index)
-    });
+    ordered
+        .sort_by_key(|(original_index, shortcut)| (shortcut_priority(shortcut), *original_index));
 
     let mut spans = Vec::new();
     for (index, (_, shortcut)) in ordered.into_iter().enumerate() {
@@ -339,10 +338,7 @@ mod tests {
             ModalShortcut::enabled("↑↓/JK", ModalAction::Choose),
         ]));
 
-        assert_eq!(
-            rendered,
-            "[Esc] cancel   [Enter] review   [↑↓/JK] choose"
-        );
+        assert_eq!(rendered, "[Esc] cancel   [Enter] review   [↑↓/JK] choose");
     }
 
     #[test]

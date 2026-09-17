@@ -1006,8 +1006,10 @@ fn render_wide_dashboard(
                 Row::new(vec![
                     Cell::from(train_picker_label(train, &fields.model)),
                     Cell::from(fields.status).style(train_status_style(train)),
-                    Cell::from(assigned_service_label(state, train.id).unwrap_or_else(|| "—".into()))
-                        .style(theme::secondary()),
+                    Cell::from(
+                        assigned_service_label(state, train.id).unwrap_or_else(|| "—".into()),
+                    )
+                    .style(theme::secondary()),
                     Cell::from(fields.place),
                     Cell::from(fields.eta),
                 ])
