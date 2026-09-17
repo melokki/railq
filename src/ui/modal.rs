@@ -257,22 +257,31 @@ pub fn shortcut_line(shortcuts: &[ModalShortcut]) -> Line<'static> {
     Line::from(spans)
 }
 
-fn shortcut_priority(shortcut: &ModalShortcut) -> u8 {
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ShortcutPriority {
+    Escape,
+    Primary,
+    Navigation,
+    Contextual,
+    Destructive,
+}
+
+fn shortcut_priority(shortcut: &ModalShortcut) -> ShortcutPriority {
     let normalized_key = shortcut.key.to_ascii_lowercase();
 
     if normalized_key.contains("esc") {
-        return 0;
+        return ShortcutPriority::Escape;
     }
     if normalized_key.contains("enter") {
-        return 1;
+        return ShortcutPriority::Primary;
     }
     if is_movement_shortcut(&normalized_key) {
-        return 2;
+        return ShortcutPriority::Navigation;
     }
     if normalized_key.contains("del") || shortcut.action.is_destructive() {
-        return 4;
+        return ShortcutPriority::Destructive;
     }
-    3
+    ShortcutPriority::Contextual
 }
 
 fn is_movement_shortcut(key: &str) -> bool {
@@ -334,6 +343,47 @@ mod tests {
             rendered,
             "[Esc] cancel   [Enter] review   [↑↓/JK] choose"
         );
+    }
+
+    #[test]
+    fn destructive_actions_sort_last_even_without_a_delete_key() {
+        let rendered = text(shortcut_line(&[
+            ModalShortcut::enabled("U", ModalAction::Unassign),
+            ModalShortcut::enabled("Space", ModalAction::Toggle),
+            ModalShortcut::enabled("↑↓/JK", ModalAction::Choose),
+            ModalShortcut::enabled("Enter", ModalAction::Assign),
+            ModalShortcut::enabled("Esc", ModalAction::Cancel),
+        ]));
+
+        assert_eq!(
+            rendered,
+            "[Esc] cancel   [Enter] assign   [↑↓/JK] choose   [Space] toggle   [U] unassign"
+        );
+    }
+
+    #[test]
+    fn contextual_actions_keep_their_declared_order_after_navigation() {
+        let rendered = text(shortcut_line(&[
+            ModalShortcut::enabled("M", ModalAction::Direction),
+            ModalShortcut::enabled("Space", ModalAction::ToggleStop),
+            ModalShortcut::enabled("←", ModalAction::Edit),
+            ModalShortcut::enabled("↑↓/JK", ModalAction::Choose),
+            ModalShortcut::enabled("Esc", ModalAction::Cancel),
+        ]));
+
+        assert_eq!(
+            rendered,
+            "[Esc] cancel   [↑↓/JK] choose   [M] direction   [Space] toggle stop   [←] edit"
+        );
+    }
+
+    #[test]
+    fn disabled_shortcuts_use_the_disabled_style_for_key_and_action() {
+        let line = shortcut_line(&[ModalShortcut::disabled("Enter", ModalAction::Review)]);
+
+        assert_eq!(line.spans.len(), 2);
+        assert_eq!(line.spans[0].style, theme::shortcut_disabled());
+        assert_eq!(line.spans[1].style, theme::shortcut_disabled());
     }
 }
 

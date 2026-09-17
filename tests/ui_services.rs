@@ -18,6 +18,26 @@ fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) -> S
     shell.handle_key(KeyEvent::new(code, KeyModifiers::NONE), state)
 }
 
+fn assert_shortcut_order(rendered: &str, shortcuts: &[&str]) {
+    let footer = rendered
+        .lines()
+        .find(|line| line.contains(shortcuts[0]))
+        .unwrap_or_else(|| panic!("missing modal footer containing {}", shortcuts[0]));
+    let mut previous = None;
+    for shortcut in shortcuts {
+        let index = footer
+            .find(shortcut)
+            .unwrap_or_else(|| panic!("missing shortcut {shortcut} in footer: {footer}"));
+        if let Some(previous) = previous {
+            assert!(
+                previous < index,
+                "shortcut {shortcut} is out of order in footer: {footer}"
+            );
+        }
+        previous = Some(index);
+    }
+}
+
 #[test]
 fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
@@ -45,6 +65,16 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     assert!(create.contains("Route Preview"));
     assert!(create.contains("cursor"));
     assert!(create.contains("Choose stops"));
+    assert_shortcut_order(
+        &create,
+        &[
+            "[Esc] cancel",
+            "[Enter] review",
+            "[↑↓/JK] choose",
+            "[Space] toggle stop",
+            "[M] direction",
+        ],
+    );
     assert_eq!(
         capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
         Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
@@ -83,6 +113,10 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     assert!(review.contains("100 Oakridge → Fairford"));
     assert!(review.contains("101 Fairford → Oakridge"));
     assert!(review.contains("ORDERED STOPS"));
+    assert_shortcut_order(
+        &review,
+        &["[Esc] cancel", "[Enter] create", "[←] edit"],
+    );
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),
