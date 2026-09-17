@@ -320,6 +320,23 @@ impl Shell {
                         service_id,
                     })
                 }
+                dispatch::DispatchFlowAction::ConfirmPositioning {
+                    train_id,
+                    service_id,
+                    destination_station_id,
+                } => {
+                    self.pending_action = Some(feedback::pending_positioning(
+                        state,
+                        train_id,
+                        service_id,
+                        destination_station_id,
+                    ));
+                    ShellAction::Player(AppCommand::PositionTrainForService {
+                        train_id,
+                        service_id,
+                        destination_station_id,
+                    })
+                }
             };
         }
 
@@ -673,7 +690,10 @@ impl Shell {
     /// Publishes UI feedback from the typed result of a durably saved player command.
     fn confirm_player_command_saved(&mut self, result: &AppCommandResult, state: &GameState) {
         match result {
-            AppCommandResult::JourneyDispatched { .. } => self.confirm_manual_dispatch_saved(state),
+            AppCommandResult::JourneyDispatched { .. }
+            | AppCommandResult::TrainPositioningStarted { .. } => {
+                self.confirm_manual_dispatch_saved(state)
+            }
             AppCommandResult::TrainPurchased { .. } => self.confirm_purchase_train_saved(state),
             AppCommandResult::TrainSold { .. } => self.confirm_train_resale_saved(state),
             AppCommandResult::PassengerServiceCreated { .. } => {
@@ -708,7 +728,8 @@ impl Shell {
 
     fn reject_player_command(&mut self, command: &AppCommand, error: String) {
         match command {
-            AppCommand::ManualDispatch { .. } => self.reject_manual_dispatch(error),
+            AppCommand::ManualDispatch { .. }
+            | AppCommand::PositionTrainForService { .. } => self.reject_manual_dispatch(error),
             AppCommand::PurchaseTrain { .. } => self.reject_purchase_train(error),
             AppCommand::SellTrain { .. } => self.reject_train_resale(error),
             AppCommand::CreatePassengerService { .. }
