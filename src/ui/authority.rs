@@ -1563,7 +1563,7 @@ mod tests {
 
     use crate::{
         model::{MarketMaturity, UtcSeconds},
-        sim::{authority::advance_infrastructure_planning, world::create_new_game},
+        sim::{authority::advance_rail_authority, world::create_new_game},
     };
 
     use super::{
@@ -1586,10 +1586,11 @@ mod tests {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         let world_seed = state.world_seed;
         establish_rail_markets(&mut state);
-        advance_infrastructure_planning(
+        advance_rail_authority(
             &mut state.region,
             world_seed,
             &state.origin_destination_demand,
+            &state.rules.authority,
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();
@@ -1623,10 +1624,11 @@ mod tests {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         let world_seed = state.world_seed;
         establish_rail_markets(&mut state);
-        advance_infrastructure_planning(
+        advance_rail_authority(
             &mut state.region,
             world_seed,
             &state.origin_destination_demand,
+            &state.rules.authority,
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();
@@ -1661,10 +1663,11 @@ mod tests {
         let mut state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
         let world_seed = state.world_seed;
         establish_rail_markets(&mut state);
-        advance_infrastructure_planning(
+        advance_rail_authority(
             &mut state.region,
             world_seed,
             &state.origin_destination_demand,
+            &state.rules.authority,
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();
