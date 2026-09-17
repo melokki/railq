@@ -167,7 +167,7 @@ impl CreateServiceFlow {
                     },
                     true,
                 ),
-                ("←", "Edit", true),
+                ("Backspace", "Edit", true),
                 ("Esc", "Cancel", true),
             ]
         } else if compact {
@@ -225,7 +225,7 @@ fn footer_line(flow: &CreateServiceFlow, width: u16) -> Line<'static> {
         };
         return modal::shortcut_line(&[
             modal::ModalShortcut::enabled("Enter", primary_action),
-            modal::ModalShortcut::enabled("←", modal::ModalAction::Edit),
+            modal::ModalShortcut::enabled("Backspace", modal::ModalAction::Edit),
             modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]);
     }
@@ -594,10 +594,11 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
     .unwrap_or_default();
     let distance = distance_for_line_ids(state, &line_ids);
 
-    let [context_area, summary_area, stops_area] = Layout::vertical([
+    let [context_area, content_area, route_area, note_area] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(7),
-        Constraint::Min(3),
+        Constraint::Min(10),
+        Constraint::Length(1),
+        Constraint::Length(2),
     ])
     .areas(area);
 
@@ -617,6 +618,56 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
         context_area,
     );
 
+    let show_preview = content_area.width >= 76 && content_area.height >= 10;
+    let (summary_area, divider_area, preview_area) = if show_preview {
+        let preview_width = content_area
+            .width
+            .saturating_mul(52)
+            .saturating_div(100)
+            .clamp(38, 58);
+        let [summary_area, divider_area, preview_area] = Layout::horizontal([
+            Constraint::Min(30),
+            Constraint::Length(1),
+            Constraint::Length(preview_width),
+        ])
+        .areas(content_area);
+        (summary_area, Some(divider_area), Some(preview_area))
+    } else {
+        (content_area, None, None)
+    };
+
+    render_review_summary(frame, summary_area, state, flow, distance);
+
+    if let (Some(divider_area), Some(preview_area)) = (divider_area, preview_area) {
+        modal::render_vertical_separator(frame, divider_area);
+        render_review_preview(frame, preview_area, state, flow);
+    }
+
+    render_review_route_strip(frame, route_area, state, flow);
+
+    let note = match flow.direction_mode {
+        ServiceDirectionMode::BothDirections => {
+            "↔ Runs from either terminus; each direction has its own public train number."
+        }
+        ServiceDirectionMode::ForwardOnly => {
+            "→ Runs only in the ordered first-to-last direction."
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(Line::styled(note, theme::secondary()))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        note_area,
+    );
+}
+
+fn render_review_summary(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    flow: &CreateServiceFlow,
+    distance: u64,
+) {
     let commercial_name = flow
         .editing_service_id
         .and_then(|service_id| {
@@ -627,77 +678,123 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
                 .find(|service| service.id == service_id)
                 .and_then(|service| service.custom_name.clone())
         })
-        .unwrap_or_else(|| {
-            if flow.editing_service_id.is_some() {
-                "(none)".to_owned()
-            } else {
-                "Optional · add after creation with R".to_owned()
-            }
-        });
-    let train_numbers = review_train_number_label(state, flow);
+        .unwrap_or_else(|| "—".to_owned());
+
+    let mut lines = vec![
+        Line::styled("SERVICE", theme::table_header()),
+        review_summary_line("Name", &commercial_name, area.width, theme::primary_value()),
+        review_summary_line(
+            "Direction",
+            direction_mode_display(flow.direction_mode).as_str(),
+            area.width,
+            theme::primary_value(),
+        ),
+        review_summary_line(
+            "Distance",
+            &review_distance_label(distance),
+            area.width,
+            theme::primary_value(),
+        ),
+        review_summary_line(
+            "Stops",
+            &flow.stop_station_ids.len().to_string(),
+            area.width,
+            theme::primary_value(),
+        ),
+        Line::from(""),
+        Line::styled("PUBLIC TRAINS", theme::table_header()),
+    ];
+    lines.extend(review_train_number_lines(state, flow));
+
+    if commercial_name == "—" {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Commercial name can be added later with R.",
+            theme::secondary(),
+        ));
+    }
 
     frame.render_widget(
-        Paragraph::new(vec![
-            review_summary_line(
-                "COMMERCIAL",
-                &commercial_name,
-                summary_area.width,
-                theme::primary_value(),
-            ),
-            review_summary_line(
-                "ROUTE",
-                &route_pattern_label(state, &flow.stop_station_ids, flow.direction_mode),
-                summary_area.width,
-                theme::focused_title(),
-            ),
-            review_summary_line(
-                "DIRECTION",
-                direction_mode_display(flow.direction_mode).as_str(),
-                summary_area.width,
-                theme::primary_value(),
-            ),
-            review_summary_line(
-                "TRAIN NOS.",
-                &train_numbers,
-                summary_area.width,
-                theme::primary_value(),
-            ),
-            review_summary_line(
-                "DISTANCE",
-                &format::distance(distance),
-                summary_area.width,
-                theme::primary_value(),
-            ),
-            review_summary_line(
-                "STOPS",
-                &flow.stop_station_ids.len().to_string(),
-                summary_area.width,
-                theme::primary_value(),
-            ),
-            Line::styled(
-                match flow.direction_mode {
-                    ServiceDirectionMode::BothDirections => {
-                        "Runs from either terminus; each direction has its own public train number."
-                    }
-                    ServiceDirectionMode::ForwardOnly => {
-                        "Runs only in the ordered first-to-last direction."
-                    }
-                },
-                theme::secondary(),
-            ),
-        ])
-        .style(theme::panel())
-        .wrap(Wrap { trim: true }),
-        summary_area,
-    );
-
-    let stop_lines = review_stop_lines(state, &flow.stop_station_ids, stops_area.height as usize);
-    frame.render_widget(
-        Paragraph::new(stop_lines)
+        Paragraph::new(lines)
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
-        stops_area,
+        area,
     );
+}
+
+fn render_review_preview(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    flow: &CreateServiceFlow,
+) {
+    let [title_area, map_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(4)]).areas(area);
+    let title = format!(
+        "Route Preview · {} stops · {}",
+        flow.stop_station_ids.len(),
+        direction_mode_compact_label(flow.direction_mode)
+    );
+    frame.render_widget(
+        Paragraph::new(Line::styled(title, theme::title())).style(theme::panel()),
+        title_area,
+    );
+    crate::ui::map::render_service_route_preview(
+        frame,
+        map_area,
+        state,
+        &flow.stop_station_ids,
+        None,
+    );
+}
+
+fn render_review_route_strip(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    flow: &CreateServiceFlow,
+) {
+    if area.width == 0 || flow.stop_station_ids.is_empty() {
+        return;
+    }
+
+    let labels = flow
+        .stop_station_ids
+        .iter()
+        .map(|station_id| truncate_display(&station_label(state, *station_id), 14))
+        .collect::<Vec<_>>();
+    let prefix = "ROUTE  ";
+    let suffix = format!("   {}", direction_mode_glyph(flow.direction_mode));
+    let available_width = usize::from(area.width)
+        .saturating_sub(UnicodeWidthStr::width(prefix))
+        .saturating_sub(UnicodeWidthStr::width(suffix.as_str()));
+    let focus_index = labels.len().saturating_sub(1) / 2;
+    let (start, end) = route_strip_window(&labels, focus_index, available_width);
+
+    let mut spans = vec![Span::styled(prefix, theme::table_header())];
+    if start > 0 {
+        spans.push(Span::styled("… ── ", theme::secondary()));
+    }
+    for index in start..end {
+        if index > start {
+            spans.push(Span::styled(" ── ", theme::secondary()));
+        }
+        let endpoint = index == 0 || index + 1 == labels.len();
+        spans.push(Span::styled(
+            labels[index].clone(),
+            if endpoint {
+                theme::focused_title()
+            } else {
+                theme::primary_value()
+            },
+        ));
+    }
+    if end < labels.len() {
+        spans.push(Span::styled(" ── …", theme::secondary()));
+    }
+    spans.push(Span::styled(suffix, theme::focused_title()));
+
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(theme::panel()), area);
 }
 
 fn review_summary_line(
@@ -716,26 +813,40 @@ fn review_summary_line(
     ])
 }
 
-fn review_train_number_label(state: &GameState, flow: &CreateServiceFlow) -> String {
+fn review_train_number_lines(state: &GameState, flow: &CreateServiceFlow) -> Vec<Line<'static>> {
     let Ok((forward, reverse)) =
         preview_service_train_numbers(state, flow.editing_service_id, flow.direction_mode)
     else {
-        return "Unavailable".to_owned();
+        return vec![Line::styled("Unavailable", theme::secondary())];
     };
 
     let Some(origin) = flow.stop_station_ids.first().copied() else {
-        return forward.to_string();
+        return vec![Line::styled(forward.to_string(), theme::primary_value())];
     };
     let Some(destination) = flow.stop_station_ids.last().copied() else {
-        return forward.to_string();
+        return vec![Line::styled(forward.to_string(), theme::primary_value())];
     };
     let origin = station_label(state, origin);
     let destination = station_label(state, destination);
-    match reverse {
-        Some(reverse) => {
-            format!("{forward} {origin} → {destination} · {reverse} {destination} → {origin}")
-        }
-        None => format!("{forward} {origin} → {destination}"),
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("{forward} "), theme::focused_title()),
+        Span::styled(format!("{origin} → {destination}"), theme::primary_value()),
+    ])];
+    if let Some(reverse) = reverse {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{reverse} "), theme::focused_title()),
+            Span::styled(format!("{destination} → {origin}"), theme::primary_value()),
+        ]));
+    }
+    lines
+}
+
+fn review_distance_label(metres: u64) -> String {
+    if metres < 1_000 {
+        format!("{metres} m")
+    } else {
+        format!("{:.1} km", metres as f64 / 1_000.0)
     }
 }
 
@@ -791,87 +902,6 @@ fn direction_mode_compact_label(direction_mode: ServiceDirectionMode) -> &'stati
         ServiceDirectionMode::BothDirections => "↔ BOTH",
         ServiceDirectionMode::ForwardOnly => "→ ONE WAY",
     }
-}
-
-fn review_stop_lines(
-    state: &GameState,
-    stop_station_ids: &[RailStationId],
-    max_lines: usize,
-) -> Vec<Line<'static>> {
-    if max_lines == 0 {
-        return Vec::new();
-    }
-    let mut lines = vec![Line::styled("ORDERED STOPS", theme::table_header())];
-    let row_capacity = max_lines.saturating_sub(1);
-    if row_capacity == 0 || stop_station_ids.is_empty() {
-        return lines;
-    }
-
-    let stop_line = |index: usize, station_id: RailStationId| {
-        let suffix = if index == 0 {
-            "  origin"
-        } else if index + 1 == stop_station_ids.len() {
-            "  destination"
-        } else {
-            ""
-        };
-        Line::from(vec![
-            Span::styled(format!("{}  ", index + 1), theme::secondary()),
-            Span::styled(station_label(state, station_id), theme::primary_value()),
-            Span::styled(suffix, theme::secondary()),
-        ])
-    };
-
-    if stop_station_ids.len() <= row_capacity {
-        lines.extend(
-            stop_station_ids
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(index, station_id)| stop_line(index, station_id)),
-        );
-        return lines;
-    }
-
-    if row_capacity == 1 {
-        lines.push(Line::styled(
-            format!("{} stops selected", stop_station_ids.len()),
-            theme::secondary(),
-        ));
-        return lines;
-    }
-
-    lines.push(stop_line(0, stop_station_ids[0]));
-    if row_capacity == 2 {
-        let last = stop_station_ids.len() - 1;
-        lines.push(stop_line(last, stop_station_ids[last]));
-        return lines;
-    }
-
-    let middle_slots = row_capacity.saturating_sub(3);
-    for (index, station_id) in stop_station_ids
-        .iter()
-        .copied()
-        .enumerate()
-        .skip(1)
-        .take(middle_slots)
-    {
-        lines.push(stop_line(index, station_id));
-    }
-    let hidden_middle = stop_station_ids
-        .len()
-        .saturating_sub(2)
-        .saturating_sub(middle_slots);
-    if hidden_middle > 0 {
-        lines.push(Line::styled(
-            format!("… +{hidden_middle} intermediate stops"),
-            theme::secondary(),
-        ));
-    }
-    let last = stop_station_ids.len() - 1;
-    lines.push(stop_line(last, stop_station_ids[last]));
-    lines.truncate(max_lines);
-    lines
 }
 
 fn step_line(active: u8) -> Line<'static> {

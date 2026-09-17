@@ -108,15 +108,22 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("2 REVIEW"));
     assert!(review.contains("Review Passenger Service"));
-    assert!(review.contains("COMMERCIAL"));
-    assert!(review.contains("Optional · add after creation with R"));
-    assert!(review.contains("DIRECTION"));
+    assert!(review.contains("SERVICE"));
+    assert!(review.contains("Name"));
+    assert!(review.contains("—"));
+    assert!(review.contains("Direction"));
     assert!(review.contains("↔ BOTH DIRECTIONS"));
-    assert!(review.contains("TRAIN NOS."));
+    assert!(review.contains("PUBLIC TRAINS"));
     assert!(review.contains("100 Oakridge → Fairford"));
     assert!(review.contains("101 Fairford → Oakridge"));
-    assert!(review.contains("ORDERED STOPS"));
-    assert_shortcut_order(&review, &["[Esc] cancel", "[Enter] create", "[←] edit"]);
+    assert!(review.contains("Route Preview"));
+    assert!(review.contains("ROUTE"));
+    assert!(review.contains("Oakridge"));
+    assert!(review.contains("Fairford"));
+    assert_shortcut_order(
+        &review,
+        &["[Esc] cancel", "[Enter] create", "[Backspace] edit"],
+    );
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),
@@ -551,8 +558,9 @@ fn idle_service_uses_the_shared_editor_for_route_changes() {
     press(&mut shell, &state, KeyCode::Enter);
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("Review Service Changes"));
-    assert!(review.contains("COMMERCIAL"));
-    assert!(review.contains("(none)"));
+    assert!(review.contains("SERVICE"));
+    assert!(review.contains("Name"));
+    assert!(review.contains("—"));
     assert!(review.contains("100 Oakridge → Juniper"));
     assert!(review.contains("101 Juniper → Oakridge"));
     assert!(review.contains("[Enter] save"));
