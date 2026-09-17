@@ -462,6 +462,8 @@ impl ServiceWorkspace {
         if state.player_company.passenger_services.is_empty() {
             lines.extend([
                 "n Create the first Passenger Service".into(),
+                "New Services start bidirectional; press M in the editor for one-way operation."
+                    .into(),
                 "Esc Return to Map".into(),
             ]);
         } else {
@@ -479,9 +481,9 @@ impl ServiceWorkspace {
         }
         lines.extend([
             String::new(),
-            "During create/edit: Space toggles the highlighted stop; M toggles both-directions/one-way; Enter reviews."
+            "During create/edit: ↑↓/jk moves; Space toggles a stop; M changes direction; Enter reviews."
                 .into(),
-            "During review: Enter creates/saves; Backspace or Left returns to editing.".into(),
+            "During review: Enter creates/saves; Left or Backspace returns to editing.".into(),
         ]);
         lines
     }
@@ -550,11 +552,15 @@ fn render_service_list(frame: &mut Frame, area: Rect, state: &GameState, selecte
                 Line::styled("No Passenger Services yet", theme::title()),
                 Line::from(""),
                 Line::styled(
-                    "Services are reusable route patterns used by Manual Dispatch.",
+                    "Passenger Services define reusable routes, direction, and public train numbers.",
                     theme::secondary(),
                 ),
                 Line::styled(
-                    "Define an ordered stop pattern; new Services operate both directions by default.",
+                    "Assign Trains to a Service, then run it directly from this workspace.",
+                    theme::secondary(),
+                ),
+                Line::styled(
+                    "New Services operate both directions by default; one-way operation is optional.",
                     theme::secondary(),
                 ),
             ])

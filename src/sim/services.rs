@@ -414,7 +414,7 @@ pub fn create_service_with_mode(
     let service_id = ServiceId::new_v4();
     let service_name = next_service_name(&state.player_company.passenger_services);
     let (forward_train_number, reverse_train_number) =
-        allocate_train_numbers(&state.player_company.passenger_services, direction_mode)?;
+        preview_service_train_numbers(state, None, direction_mode)?;
     state
         .player_company
         .passenger_services
@@ -443,20 +443,44 @@ fn next_service_name(services: &[PassengerService]) -> String {
 
 const FIRST_PASSENGER_TRAIN_NUMBER: u32 = 100;
 
-fn allocate_train_numbers(
-    services: &[PassengerService],
+/// Returns the directional public train numbers that would be used if a
+/// Passenger Service were created or changed to `direction_mode`.
+///
+/// This is read-only so review UIs can show the exact numbers before the
+/// player commits the change while sharing the allocation rules with the
+/// mutation path.
+pub fn preview_service_train_numbers(
+    state: &GameState,
+    editing_service_id: Option<ServiceId>,
     direction_mode: ServiceDirectionMode,
 ) -> Result<(u32, Option<u32>), ServiceError> {
-    let forward = next_available_train_number(services)?;
-    let reverse = match direction_mode {
-        ServiceDirectionMode::BothDirections => Some(
-            forward
-                .checked_add(1)
-                .ok_or(ServiceError::TrainNumberExhausted)?,
-        ),
-        ServiceDirectionMode::ForwardOnly => None,
+    let services = &state.player_company.passenger_services;
+    let Some(service_id) = editing_service_id else {
+        let forward = next_available_train_number(services)?;
+        let reverse = match direction_mode {
+            ServiceDirectionMode::BothDirections => Some(
+                forward
+                    .checked_add(1)
+                    .ok_or(ServiceError::TrainNumberExhausted)?,
+            ),
+            ServiceDirectionMode::ForwardOnly => None,
+        };
+        return Ok((forward, reverse));
     };
-    Ok((forward, reverse))
+
+    let service = services
+        .iter()
+        .find(|service| service.id == service_id)
+        .ok_or(ServiceError::ServiceNotFound { service_id })?;
+    let reverse = match (service.direction_mode, direction_mode) {
+        (ServiceDirectionMode::BothDirections, ServiceDirectionMode::ForwardOnly) => None,
+        (ServiceDirectionMode::ForwardOnly, ServiceDirectionMode::BothDirections) => {
+            Some(next_available_train_number(services)?)
+        }
+        (_, ServiceDirectionMode::BothDirections) => service.reverse_train_number,
+        (_, ServiceDirectionMode::ForwardOnly) => None,
+    };
+    Ok((service.forward_train_number, reverse))
 }
 
 fn next_available_train_number(services: &[PassengerService]) -> Result<u32, ServiceError> {
@@ -537,17 +561,8 @@ pub fn update_service_with_mode(
         });
     }
 
-    let current_mode = state.player_company.passenger_services[index].direction_mode;
-    let reverse_train_number = match (current_mode, direction_mode) {
-        (ServiceDirectionMode::BothDirections, ServiceDirectionMode::ForwardOnly) => None,
-        (ServiceDirectionMode::ForwardOnly, ServiceDirectionMode::BothDirections) => Some(
-            next_available_train_number(&state.player_company.passenger_services)?,
-        ),
-        (_, ServiceDirectionMode::BothDirections) => {
-            state.player_company.passenger_services[index].reverse_train_number
-        }
-        (_, ServiceDirectionMode::ForwardOnly) => None,
-    };
+    let (_, reverse_train_number) =
+        preview_service_train_numbers(state, Some(service_id), direction_mode)?;
 
     let service = &mut state.player_company.passenger_services[index];
     service.stop_station_ids = stop_station_ids;

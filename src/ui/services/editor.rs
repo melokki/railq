@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     model::{GameState, RailStationId, ServiceDirectionMode, ServiceId},
-    sim::services::service_path_for_stops,
+    sim::services::{preview_service_train_numbers, service_path_for_stops},
 };
 
 use super::{ServiceWorkspaceAction, station_label, truncate_display};
@@ -592,7 +592,7 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
 
     let [context_area, summary_area, stops_area] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(5),
+        Constraint::Length(7),
         Constraint::Min(3),
     ])
     .areas(area);
@@ -613,47 +613,70 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
         context_area,
     );
 
+    let commercial_name = flow
+        .editing_service_id
+        .and_then(|service_id| {
+            state
+                .player_company
+                .passenger_services
+                .iter()
+                .find(|service| service.id == service_id)
+                .and_then(|service| service.custom_name.clone())
+        })
+        .unwrap_or_else(|| {
+            if flow.editing_service_id.is_some() {
+                "(none)".to_owned()
+            } else {
+                "Optional · add after creation with R".to_owned()
+            }
+        });
+    let train_numbers = review_train_number_label(state, flow);
+
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled("ROUTE      ", theme::secondary()),
-                Span::styled(
-                    truncate_display(
-                        &route_pattern_label(state, &flow.stop_station_ids, flow.direction_mode),
-                        summary_area.width.saturating_sub(11) as usize,
-                    ),
-                    theme::focused_title(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("MODE       ", theme::secondary()),
-                Span::styled(
-                    direction_mode_label(flow.direction_mode),
-                    theme::primary_value(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("DISTANCE   ", theme::secondary()),
-                Span::styled(format::distance(distance), theme::primary_value()),
-            ]),
-            Line::from(vec![
-                Span::styled("STOPS      ", theme::secondary()),
-                Span::styled(
-                    flow.stop_station_ids.len().to_string(),
-                    theme::primary_value(),
-                ),
-            ]),
+            review_summary_line(
+                "COMMERCIAL",
+                &commercial_name,
+                summary_area.width,
+                theme::primary_value(),
+            ),
+            review_summary_line(
+                "ROUTE",
+                &route_pattern_label(state, &flow.stop_station_ids, flow.direction_mode),
+                summary_area.width,
+                theme::focused_title(),
+            ),
+            review_summary_line(
+                "DIRECTION",
+                direction_mode_display(flow.direction_mode).as_str(),
+                summary_area.width,
+                theme::primary_value(),
+            ),
+            review_summary_line(
+                "TRAIN NOS.",
+                &train_numbers,
+                summary_area.width,
+                theme::primary_value(),
+            ),
+            review_summary_line(
+                "DISTANCE",
+                &format::distance(distance),
+                summary_area.width,
+                theme::primary_value(),
+            ),
+            review_summary_line(
+                "STOPS",
+                &flow.stop_station_ids.len().to_string(),
+                summary_area.width,
+                theme::primary_value(),
+            ),
             Line::styled(
-                if flow.editing_service_id.is_some() {
-                    "Service identity and existing train numbers are preserved where possible."
-                } else {
-                    match flow.direction_mode {
-                        ServiceDirectionMode::BothDirections => {
-                            "Bidirectional Service · dispatchable from either terminus."
-                        }
-                        ServiceDirectionMode::ForwardOnly => {
-                            "One-way Service · dispatchable from its first stop only."
-                        }
+                match flow.direction_mode {
+                    ServiceDirectionMode::BothDirections => {
+                        "Runs from either terminus; each direction has its own public train number."
+                    }
+                    ServiceDirectionMode::ForwardOnly => {
+                        "Runs only in the ordered first-to-last direction."
                     }
                 },
                 theme::secondary(),
@@ -671,6 +694,47 @@ fn render_review(frame: &mut Frame, area: Rect, state: &GameState, flow: &Create
             .wrap(Wrap { trim: true }),
         stops_area,
     );
+}
+
+fn review_summary_line(
+    label: &str,
+    value: &str,
+    width: u16,
+    style: ratatui::style::Style,
+) -> Line<'static> {
+    const LABEL_WIDTH: usize = 12;
+    Line::from(vec![
+        Span::styled(format!("{label:<12}"), theme::secondary()),
+        Span::styled(
+            truncate_display(value, usize::from(width).saturating_sub(LABEL_WIDTH)),
+            style,
+        ),
+    ])
+}
+
+fn review_train_number_label(state: &GameState, flow: &CreateServiceFlow) -> String {
+    let Ok((forward, reverse)) = preview_service_train_numbers(
+        state,
+        flow.editing_service_id,
+        flow.direction_mode,
+    ) else {
+        return "Unavailable".to_owned();
+    };
+
+    let Some(origin) = flow.stop_station_ids.first().copied() else {
+        return forward.to_string();
+    };
+    let Some(destination) = flow.stop_station_ids.last().copied() else {
+        return forward.to_string();
+    };
+    let origin = station_label(state, origin);
+    let destination = station_label(state, destination);
+    match reverse {
+        Some(reverse) => format!(
+            "{forward} {origin} → {destination} · {reverse} {destination} → {origin}"
+        ),
+        None => format!("{forward} {origin} → {destination}"),
+    }
 }
 
 fn route_pattern_label(

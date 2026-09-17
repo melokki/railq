@@ -30,6 +30,9 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     let workspace = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(workspace.contains("Passenger Services"));
     assert!(workspace.contains("No Passenger Services yet"));
+    assert!(workspace.contains("Assign Trains to a Service"));
+    assert!(workspace.contains("one-way operation is optional"));
+    assert!(!workspace.contains("Manual Dispatch"));
     assert!(!workspace.contains("Press N"));
 
     assert_eq!(
@@ -72,6 +75,13 @@ fn map_opens_service_workspace_and_builds_an_ordered_stop_pattern() {
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("2 REVIEW"));
     assert!(review.contains("Review Passenger Service"));
+    assert!(review.contains("COMMERCIAL"));
+    assert!(review.contains("Optional · add after creation with R"));
+    assert!(review.contains("DIRECTION"));
+    assert!(review.contains("↔ BOTH DIRECTIONS"));
+    assert!(review.contains("TRAIN NOS."));
+    assert!(review.contains("100 Oakridge → Fairford"));
+    assert!(review.contains("101 Fairford → Oakridge"));
     assert!(review.contains("ORDERED STOPS"));
 
     assert_eq!(
@@ -103,6 +113,10 @@ fn service_editor_can_create_an_explicit_one_way_service() {
     assert!(one_way.contains("Oakridge → Fairford"));
 
     press(&mut shell, &state, KeyCode::Enter);
+    let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(review.contains("→ ONE WAY"));
+    assert!(review.contains("100 Oakridge → Fairford"));
+    assert!(!review.contains("101 Fairford → Oakridge"));
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),
         ShellAction::Player(AppCommand::CreatePassengerService {
@@ -501,6 +515,10 @@ fn idle_service_uses_the_shared_editor_for_route_changes() {
     press(&mut shell, &state, KeyCode::Enter);
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("Review Service Changes"));
+    assert!(review.contains("COMMERCIAL"));
+    assert!(review.contains("(none)"));
+    assert!(review.contains("100 Oakridge → Juniper"));
+    assert!(review.contains("101 Juniper → Oakridge"));
     assert!(review.contains("[Enter] save"));
 
     assert_eq!(
