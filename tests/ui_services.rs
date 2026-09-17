@@ -2,7 +2,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
     model::{Money, RailStationId, UtcSeconds},
     sim::{
-        fleet::purchase_train, journeys::dispatch_journey, services::create_service,
+        fleet::purchase_train,
+        journeys::dispatch_journey,
+        services::{assign_train_to_service, create_service},
         world::create_new_game,
     },
     ui::{
@@ -92,13 +94,17 @@ fn existing_services_are_listed_and_can_request_deletion() {
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(rendered.contains("R1"));
     assert!(rendered.contains("Service"));
-    assert!(rendered.contains("Direction"));
+    assert!(rendered.contains("Route"));
     assert!(rendered.contains("›"));
     assert!(rendered.contains("STATUS"));
     assert!(rendered.contains("IDLE"));
     assert!(rendered.contains("ROUTE"));
     assert!(rendered.contains("OPERATIONS"));
-    assert!(rendered.contains("PASSENGERS"));
+    assert!(rendered.contains("DEMAND"));
+    assert!(rendered.contains("TRAIN NUMBERS"));
+    assert!(rendered.contains("100  Oakridge → Fairford"));
+    assert!(rendered.contains("101  Fairford → Oakridge"));
+    assert!(rendered.contains("Oakridge ↔ Fairford"));
     assert!(rendered.contains("STOP PATTERN"));
     assert!(!rendered.contains("Service Details"));
 
@@ -134,7 +140,7 @@ fn active_service_inspector_surfaces_live_operating_context() {
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
-    assert!(rendered.contains("IN SERVICE"));
+    assert!(rendered.contains("LIVE"));
     assert!(rendered.contains("Active trains"));
     assert!(rendered.contains("Next arrival"));
     assert!(rendered.contains("Train 01"));
@@ -191,7 +197,14 @@ fn bidirectional_service_waiting_summary_includes_reverse_demand() {
     for pool in &mut state.origin_destination_demand {
         pool.waiting_passengers = 0;
     }
-    for (origin, destination, passengers) in [(2, 1, 31), (3, 1, 37), (3, 2, 41)] {
+    for (origin, destination, passengers) in [
+        (1, 2, 11),
+        (1, 3, 13),
+        (2, 3, 17),
+        (2, 1, 31),
+        (3, 1, 37),
+        (3, 2, 41),
+    ] {
         state
             .origin_destination_demand
             .iter_mut()
@@ -207,6 +220,9 @@ fn bidirectional_service_waiting_summary_includes_reverse_demand() {
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
+    assert!(rendered.contains("→ Juniper"));
+    assert!(rendered.contains("41 · +"));
+    assert!(rendered.contains("→ Oakridge"));
     assert!(rendered.contains("109 · +"));
 }
 
@@ -227,7 +243,7 @@ fn compact_service_workspace_prioritizes_live_summary_without_clipping() {
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
 
-    assert!(rendered.contains("IN SERVICE"));
+    assert!(rendered.contains("LIVE"));
     assert!(rendered.contains("Next arrival"));
     assert!(rendered.contains("On board"));
     assert!(rendered.contains("Expected result"));
@@ -255,10 +271,34 @@ fn wide_service_picker_surfaces_operational_summary_without_repeating_full_stop_
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
     assert!(rendered.contains("State"));
-    assert!(rendered.contains("Trains"));
+    assert!(rendered.contains("Fleet"));
+    assert!(rendered.contains("Active"));
     assert!(rendered.contains("Waiting"));
     assert!(rendered.contains("LIVE"));
     assert!(!rendered.contains("1 active"));
+}
+
+#[test]
+fn service_inspector_surfaces_assigned_fleet_and_runnable_state() {
+    let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+    state.player_company.funds = Money::from_cents(10_000_000);
+    let service_id = create_service(
+        &mut state,
+        vec![RailStationId::new(1), RailStationId::new(2)],
+    )
+    .unwrap();
+    let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+    assign_train_to_service(&mut state, train_id, service_id).unwrap();
+
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('s'));
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+
+    assert!(rendered.contains("READY"));
+    assert!(rendered.contains("1 assigned · 1 ready"));
+    assert!(rendered.contains("ASSIGNED FLEET"));
+    assert!(rendered.contains("Train 01"));
+    assert!(rendered.contains("READY · Oakridge"));
 }
 
 #[test]
@@ -335,7 +375,7 @@ fn delete_shortcut_is_a_no_op_while_selected_service_is_active() {
     );
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(!rendered.contains("Delete Passenger Service"));
-    assert!(rendered.contains("IN SERVICE"));
+    assert!(rendered.contains("LIVE"));
 }
 
 #[test]
@@ -412,5 +452,5 @@ fn edit_shortcut_is_disabled_while_selected_service_is_active() {
     );
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(!rendered.contains("Edit Passenger Service"));
-    assert!(rendered.contains("IN SERVICE"));
+    assert!(rendered.contains("LIVE"));
 }

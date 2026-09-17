@@ -1,7 +1,8 @@
 //! Secondary Passenger Service workspace opened from the Map.
 //!
-//! This batch manages persistent directional stop patterns only. Manual Dispatch now selects from these persistent Services; intermediate-stop
-//! boarding and alighting remain deferred to the next roadmap item.
+//! Passenger Services are persistent route patterns that can operate in one or
+//! both directions. This workspace combines route definition with the live
+//! operational view used to run and allocate the Fleet.
 
 use crossterm::event::KeyCode;
 use ratatui::{
@@ -14,7 +15,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     catalog::model_for_train,
-    model::{GameState, PassengerService, RailStationId, ServiceDirectionMode, ServiceId},
+    model::{GameState, PassengerService, RailStationId, ServiceDirectionMode, ServiceId, TrainStatus},
     sim::demand::effective_arrival_rate_per_hour,
 };
 
@@ -404,11 +405,11 @@ fn render_service_list(frame: &mut Frame, area: Rect, state: &GameState, selecte
                 Line::styled("No Passenger Services yet", theme::title()),
                 Line::from(""),
                 Line::styled(
-                    "Services are reusable directional routes used by Manual Dispatch.",
+                    "Services are reusable route patterns used by Manual Dispatch.",
                     theme::secondary(),
                 ),
                 Line::styled(
-                    "Define an ordered stop pattern across connected Rail Stations.",
+                    "Define an ordered stop pattern; new Services operate both directions by default.",
                     theme::secondary(),
                 ),
             ])
@@ -484,43 +485,41 @@ fn render_service_picker(
     let rows = services
         .iter()
         .map(|service| {
-            let direction = service_direction_label(state, service);
+            let route = service_route_label(state, service);
             if wide {
                 let snapshot = service_operating_snapshot(state, service.id);
-                let (state_label, state_style) = if snapshot.active_trains > 0 {
-                    ("LIVE", theme::success())
-                } else {
-                    ("IDLE", theme::secondary())
-                };
+                let (state_label, state_style) = service_state_label(&snapshot);
                 Row::new(vec![
                     Cell::from(service.name.clone()),
-                    Cell::from(direction),
+                    Cell::from(route),
                     Cell::from(state_label).style(state_style),
+                    Cell::from(snapshot.assigned_trains.to_string()),
                     Cell::from(snapshot.active_trains.to_string()),
                     Cell::from(snapshot.waiting_passengers.to_string()),
                 ])
             } else {
-                Row::new([service.name.clone(), direction])
+                Row::new([service.name.clone(), route])
             }
         })
         .collect::<Vec<_>>();
 
     let (header, widths) = if wide {
         (
-            Row::new(["Service", "Direction", "State", "Trains", "Waiting"])
+            Row::new(["Service", "Route", "State", "Fleet", "Active", "Waiting"])
                 .style(theme::table_header())
                 .bottom_margin(1),
             vec![
-                Constraint::Length(10),
-                Constraint::Min(16),
-                Constraint::Length(7),
-                Constraint::Length(7),
+                Constraint::Length(9),
+                Constraint::Min(15),
                 Constraint::Length(8),
+                Constraint::Length(5),
+                Constraint::Length(6),
+                Constraint::Length(7),
             ],
         )
     } else {
         (
-            Row::new(["Service", "Direction"])
+            Row::new(["Service", "Route"])
                 .style(theme::table_header())
                 .bottom_margin(1),
             vec![Constraint::Length(10), Constraint::Min(16)],
@@ -623,16 +622,8 @@ fn service_details(
         })
         .sum::<u64>();
     let snapshot = service_operating_snapshot(state, service_id);
-    let state_label = if snapshot.active_trains > 0 {
-        "IN SERVICE"
-    } else {
-        "IDLE"
-    };
-    let state_style = if snapshot.active_trains > 0 {
-        theme::success()
-    } else {
-        theme::secondary()
-    };
+    let directional_demand = service_directional_demand(state, service);
+    let (state_label, state_style) = service_state_label(&snapshot);
     let origin = service
         .origin_station_id()
         .map(|station_id| station_label(state, station_id))
@@ -649,18 +640,63 @@ fn service_details(
     } else {
         inspector_section(&mut lines, "STATUS", dense);
         lines.push(labelled_line_styled("State", state_label, state_style));
+        lines.push(labelled_line(
+            "Fleet",
+            &format!(
+                "{} assigned · {} ready",
+                snapshot.assigned_trains, snapshot.runnable_assigned_trains
+            ),
+        ));
     }
 
     inspector_section(&mut lines, "ROUTE", dense);
     lines.push(labelled_line(
-        "Direction",
-        &truncate_display(&format!("{origin} → {destination}"), value_width),
+        "Pattern",
+        &truncate_display(&service_route_label(state, service), value_width),
     ));
     if !tight {
         lines.push(labelled_line("Distance", &format::distance(distance)));
         lines.push(labelled_line(
             "Stops",
             &service.stop_station_ids.len().to_string(),
+        ));
+    }
+
+    inspector_section(&mut lines, "TRAIN NUMBERS", dense);
+    if density == ServiceInspectorDensity::Full {
+        lines.push(Line::from(format!(
+            "{}  {} → {}",
+            service.forward_train_number, origin, destination
+        )));
+        if let Some(reverse_train_number) = service.reverse_train_number {
+            lines.push(Line::from(format!(
+                "{}  {} → {}",
+                reverse_train_number, destination, origin
+            )));
+        }
+    } else {
+        let numbers = service
+            .reverse_train_number
+            .map(|reverse| format!("{} / {reverse}", service.forward_train_number))
+            .unwrap_or_else(|| service.forward_train_number.to_string());
+        lines.push(labelled_line("Numbers", &numbers));
+    }
+
+    inspector_section(&mut lines, "DEMAND", dense);
+    lines.push(labelled_line(
+        &truncate_display(&format!("→ {destination}"), 15),
+        &format!(
+            "{} · +{}/h",
+            directional_demand.forward_waiting, directional_demand.forward_rate_per_hour
+        ),
+    ));
+    if service.direction_mode == ServiceDirectionMode::BothDirections {
+        lines.push(labelled_line(
+            &truncate_display(&format!("→ {origin}"), 15),
+            &format!(
+                "{} · +{}/h",
+                directional_demand.reverse_waiting, directional_demand.reverse_rate_per_hour
+            ),
         ));
     }
 
@@ -687,11 +723,40 @@ fn service_details(
         "Next arrival",
         &truncate_display(&next_arrival, value_width),
     ));
+    if snapshot.active_trains > 0 {
+        let onboard = if snapshot.total_capacity > 0 {
+            let percent = u64::from(snapshot.onboard_passengers).saturating_mul(100)
+                / u64::from(snapshot.total_capacity);
+            format!(
+                "{} / {} · {}%",
+                snapshot.onboard_passengers, snapshot.total_capacity, percent
+            )
+        } else {
+            snapshot.onboard_passengers.to_string()
+        };
+        lines.push(labelled_line("On board", &onboard));
+        if !tight {
+            lines.push(labelled_line(
+                "Carried",
+                &snapshot.passengers_carried.to_string(),
+            ));
+        }
+    }
 
-    if snapshot.active_trains > 0 && !tight {
-        inspector_section(&mut lines, "RUNNING TRAINS", dense);
-        let visible_trains = if dense { 1 } else { 2 };
-        for train in snapshot.running_trains.iter().take(visible_trains) {
+    if density == ServiceInspectorDensity::Full && snapshot.assigned_trains > 0 {
+        inspector_section(&mut lines, "ASSIGNED FLEET", false);
+        lines.extend(service_assigned_fleet_lines(state, service, width, 3));
+        if snapshot.assigned_trains > 3 {
+            lines.push(Line::styled(
+                format!("… +{} more assigned", snapshot.assigned_trains - 3),
+                theme::secondary(),
+            ));
+        }
+    }
+
+    if density == ServiceInspectorDensity::Full && snapshot.active_trains > 0 {
+        inspector_section(&mut lines, "RUNNING TRAINS", false);
+        for train in snapshot.running_trains.iter().take(2) {
             lines.push(Line::styled(
                 truncate_display(&format!("{}  {}", train.label, train.current_leg), width),
                 theme::primary_value(),
@@ -715,44 +780,10 @@ fn service_details(
             };
             lines.push(Line::styled(format!("  {load}"), theme::secondary()));
         }
-        if snapshot.running_trains.len() > visible_trains {
+        if snapshot.running_trains.len() > 2 {
             lines.push(Line::styled(
-                format!(
-                    "… +{} more running",
-                    snapshot.running_trains.len() - visible_trains
-                ),
+                format!("… +{} more running", snapshot.running_trains.len() - 2),
                 theme::secondary(),
-            ));
-        }
-    }
-
-    inspector_section(&mut lines, "PASSENGERS", dense);
-    let waiting = format!(
-        "{} · +{}/h",
-        snapshot.waiting_passengers, snapshot.arrival_rate_per_hour
-    );
-    if !tight || snapshot.active_trains == 0 {
-        lines.push(labelled_line(
-            "Waiting",
-            &truncate_display(&waiting, value_width),
-        ));
-    }
-    if snapshot.active_trains > 0 || !dense {
-        let onboard = if snapshot.total_capacity > 0 {
-            let percent = u64::from(snapshot.onboard_passengers).saturating_mul(100)
-                / u64::from(snapshot.total_capacity);
-            format!(
-                "{} / {} · {}%",
-                snapshot.onboard_passengers, snapshot.total_capacity, percent
-            )
-        } else {
-            snapshot.onboard_passengers.to_string()
-        };
-        lines.push(labelled_line("On board", &onboard));
-        if !tight {
-            lines.push(labelled_line(
-                "Carried",
-                &snapshot.passengers_carried.to_string(),
             ));
         }
     }
@@ -790,7 +821,10 @@ fn service_details(
         ));
     }
 
-    if density == ServiceInspectorDensity::Full && snapshot.active_trains == 0 {
+    if density == ServiceInspectorDensity::Full
+        && snapshot.active_trains == 0
+        && snapshot.assigned_trains == 0
+    {
         inspector_section(&mut lines, "STOP PATTERN", false);
         const MAX_VISIBLE_STOPS: usize = 6;
         lines.extend(
@@ -821,6 +855,81 @@ fn service_details(
     lines
 }
 
+fn service_state_label(
+    snapshot: &ServiceOperatingSnapshot,
+) -> (&'static str, ratatui::style::Style) {
+    if snapshot.active_trains > 0 {
+        ("LIVE", theme::success())
+    } else if snapshot.runnable_assigned_trains > 0 {
+        ("READY", theme::success())
+    } else if snapshot.assigned_trains > 0 {
+        ("POSITION", theme::warning())
+    } else {
+        ("IDLE", theme::secondary())
+    }
+}
+
+fn service_assigned_fleet_lines(
+    state: &GameState,
+    service: &PassengerService,
+    width: usize,
+    limit: usize,
+) -> Vec<Line<'static>> {
+    state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .filter(|train| state.player_company.fleet.assigned_service_id(train.id) == Some(service.id))
+        .take(limit)
+        .map(|train| {
+            let label = train
+                .nickname
+                .as_ref()
+                .map(|nickname| nickname.as_str().to_owned())
+                .unwrap_or_else(|| format!("Train {:02}", train.id.get()));
+            let (status, detail, style) = match train.status {
+                TrainStatus::Ready { at } if service_accepts_departure(service, at) => (
+                    "READY",
+                    station_label(state, at),
+                    theme::success(),
+                ),
+                TrainStatus::Ready { at } => (
+                    "POSITION",
+                    station_label(state, at),
+                    theme::warning(),
+                ),
+                TrainStatus::Travelling { journey_id } => {
+                    let destination = state
+                        .active_journeys
+                        .iter()
+                        .find(|journey| journey.id == journey_id)
+                        .map(|journey| {
+                            format!("→ {}", station_label(state, journey.destination_station_id))
+                        })
+                        .unwrap_or_else(|| "Journey in progress".into());
+                    ("RUNNING", destination, theme::primary_value())
+                }
+            };
+            Line::from(vec![
+                Span::styled(
+                    truncate_display(&label, width.saturating_sub(18).max(8)),
+                    theme::primary_value(),
+                ),
+                Span::raw("  "),
+                Span::styled(status.to_owned(), style),
+                Span::styled(format!(" · {detail}"), theme::secondary()),
+            ])
+        })
+        .collect()
+}
+
+fn service_accepts_departure(service: &PassengerService, station_id: RailStationId) -> bool {
+    service.origin_station_id() == Some(station_id)
+        || (service.direction_mode == ServiceDirectionMode::BothDirections
+            && service.destination_station_id() == Some(station_id))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RunningTrainSnapshot {
     label: String,
@@ -834,8 +943,9 @@ struct RunningTrainSnapshot {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ServiceOperatingSnapshot {
     active_trains: usize,
+    assigned_trains: usize,
+    runnable_assigned_trains: usize,
     waiting_passengers: u32,
-    arrival_rate_per_hour: u32,
     onboard_passengers: u32,
     total_capacity: u32,
     passengers_carried: u32,
@@ -859,9 +969,20 @@ fn service_operating_snapshot(
     };
 
     let mut snapshot = ServiceOperatingSnapshot::default();
-    let (waiting, arrival_rate) = service_waiting_demand(state, service);
-    snapshot.waiting_passengers = waiting;
-    snapshot.arrival_rate_per_hour = arrival_rate;
+    snapshot.waiting_passengers = service_waiting_demand(state, service);
+
+    for train in &state.player_company.fleet.trains {
+        if state.player_company.fleet.assigned_service_id(train.id) != Some(service_id) {
+            continue;
+        }
+        snapshot.assigned_trains = snapshot.assigned_trains.saturating_add(1);
+        if let TrainStatus::Ready { at } = train.status
+            && service_accepts_departure(service, at)
+        {
+            snapshot.runnable_assigned_trains =
+                snapshot.runnable_assigned_trains.saturating_add(1);
+        }
+    }
 
     for journey in state
         .active_journeys
@@ -937,33 +1058,68 @@ fn service_operating_snapshot(
     snapshot
 }
 
-fn service_waiting_demand(state: &GameState, service: &PassengerService) -> (u32, u32) {
-    let mut waiting = 0_u32;
-    let mut arrival_rate = 0_u32;
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ServiceDirectionalDemandSnapshot {
+    forward_waiting: u32,
+    forward_rate_per_hour: u32,
+    reverse_waiting: u32,
+    reverse_rate_per_hour: u32,
+}
+
+fn service_directional_demand(
+    state: &GameState,
+    service: &PassengerService,
+) -> ServiceDirectionalDemandSnapshot {
+    let mut snapshot = ServiceDirectionalDemandSnapshot::default();
 
     for (origin_index, origin_station_id) in service.stop_station_ids.iter().enumerate() {
         for (destination_index, destination_station_id) in
             service.stop_station_ids.iter().enumerate()
         {
-            let travels_forward = destination_index > origin_index;
-            let travels_reverse = service.direction_mode == ServiceDirectionMode::BothDirections
-                && destination_index < origin_index;
-            if !travels_forward && !travels_reverse {
+            let direction = if destination_index > origin_index {
+                Some(1)
+            } else if service.direction_mode == ServiceDirectionMode::BothDirections
+                && destination_index < origin_index
+            {
+                Some(-1)
+            } else {
+                None
+            };
+            let Some(direction) = direction else {
                 continue;
-            }
+            };
 
-            if let Some(demand) = state.origin_destination_demand.iter().find(|demand| {
+            let Some(demand) = state.origin_destination_demand.iter().find(|demand| {
                 demand.origin_station_id == *origin_station_id
                     && demand.destination_station_id == *destination_station_id
-            }) {
-                waiting = waiting.saturating_add(demand.waiting_passengers);
-                arrival_rate = arrival_rate
-                    .saturating_add(effective_arrival_rate_per_hour(state, demand));
+            }) else {
+                continue;
+            };
+            let rate = effective_arrival_rate_per_hour(state, demand);
+            if direction > 0 {
+                snapshot.forward_waiting = snapshot
+                    .forward_waiting
+                    .saturating_add(demand.waiting_passengers);
+                snapshot.forward_rate_per_hour =
+                    snapshot.forward_rate_per_hour.saturating_add(rate);
+            } else {
+                snapshot.reverse_waiting = snapshot
+                    .reverse_waiting
+                    .saturating_add(demand.waiting_passengers);
+                snapshot.reverse_rate_per_hour =
+                    snapshot.reverse_rate_per_hour.saturating_add(rate);
             }
         }
     }
 
-    (waiting, arrival_rate)
+    snapshot
+}
+
+fn service_waiting_demand(state: &GameState, service: &PassengerService) -> u32 {
+    let directional = service_directional_demand(state, service);
+    directional
+        .forward_waiting
+        .saturating_add(directional.reverse_waiting)
 }
 
 fn service_journey_direction(
@@ -1087,8 +1243,20 @@ fn render_delete_confirmation(
     );
 }
 
-fn service_direction_label(state: &GameState, service: &crate::model::PassengerService) -> String {
-    stop_direction_label(state, &service.stop_station_ids)
+fn service_route_label(state: &GameState, service: &PassengerService) -> String {
+    let origin = service
+        .origin_station_id()
+        .map(|station_id| station_label(state, station_id))
+        .unwrap_or_else(|| "Unknown".into());
+    let destination = service
+        .destination_station_id()
+        .map(|station_id| station_label(state, station_id))
+        .unwrap_or_else(|| "Unknown".into());
+    let arrow = match service.direction_mode {
+        ServiceDirectionMode::BothDirections => "↔",
+        ServiceDirectionMode::ForwardOnly => "→",
+    };
+    format!("{origin} {arrow} {destination}")
 }
 
 fn stop_direction_label(state: &GameState, stop_station_ids: &[RailStationId]) -> String {
