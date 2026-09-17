@@ -23,6 +23,7 @@ pub use network::{
     MapFocus, MapSelections, SettlementSelection, StationSelection, render_dashboard,
 };
 use operational::{MapDirection, operational_layout, render_operational_map};
+pub(crate) use operational::render_service_route_preview;
 #[cfg(test)]
 use operational::{
     focus_rank, journey_route_segments, map_place_label, place_link_distance_label,
