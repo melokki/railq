@@ -83,6 +83,44 @@ pub(super) fn pending_dispatch(
     }
 }
 
+pub(super) fn pending_positioning(
+    state: &GameState,
+    train_id: TrainId,
+    service_id: ServiceId,
+    destination_station_id: RailStationId,
+) -> PendingAction {
+    let model: String = state
+        .player_company
+        .fleet
+        .trains
+        .iter()
+        .find(|train| train.id == train_id)
+        .map_or_else(
+            || "unknown model".into(),
+            |train| {
+                model_for_train(train)
+                    .map(|model| model.name().to_owned())
+                    .unwrap_or_else(|| format!("unknown model ({})", train.model_id.as_str()))
+            },
+        );
+    let service_name = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+        .map(|service| service.display_name())
+        .unwrap_or_else(|| format!("Service {}", service_id.get()));
+    let destination = arrival_station_label(state, destination_station_id);
+
+    PendingAction {
+        label: format!("Empty positioning · Train {:02} ({model})", train_id.get()),
+        details: vec![format!(
+            "Positioned empty to {destination} for {service_name}. No passengers were carried and no fare revenue was earned; operating costs were paid at departure."
+        )],
+        funds_before: state.player_company.funds,
+    }
+}
+
 pub(super) fn pending_purchase(
     state: &GameState,
     catalogue_index: usize,
