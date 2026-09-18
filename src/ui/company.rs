@@ -27,8 +27,8 @@ use analytics::{
 use crate::{
     catalog::train_catalogue,
     model::{
-        GameState, JourneyId, JourneyReceipt, Money, RailStationId, ServiceDirectionMode,
-        ServiceId, VehicleKeeperMark,
+        GameState, JourneyId, JourneyPurpose, JourneyReceipt, Money, RailStationId,
+        ServiceDirectionMode, ServiceId, VehicleKeeperMark,
     },
     sim::finance::{
         FinancialEvaluation, FinancialStatus, RecoveryJourney, RecoveryOption,
@@ -111,9 +111,9 @@ pub fn render_vkm_editor(frame: &mut Frame, area: Rect, editor: &VkmEditor, stat
         card,
         "Edit Vehicle Keeper Mark",
         modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
             modal::ModalShortcut::enabled("Enter", modal::ModalAction::Save),
             modal::ModalShortcut::enabled("Backspace", modal::ModalAction::Erase),
-            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ]),
     );
 
@@ -423,22 +423,22 @@ impl CompanyWorkspace {
     ) -> Vec<CompanyShortcut> {
         if self.vkm_editor.is_some() {
             return vec![
+                CompanyShortcut::enabled("Esc", "Cancel"),
                 CompanyShortcut::enabled("Enter", "Save"),
                 CompanyShortcut::enabled("Backspace", "Delete"),
-                CompanyShortcut::enabled("Esc", "Cancel"),
             ];
         }
 
         if self.recovery_review_open {
-            let mut items = vec![CompanyShortcut::enabled(
+            let mut items = vec![CompanyShortcut::enabled("Esc", "Back")];
+            items.push(CompanyShortcut::enabled(
                 if compact { "↑↓" } else { "↑↓/JK" },
                 "Route",
-            )];
+            ));
             if wide {
                 items.push(CompanyShortcut::enabled("PgUp/PgDn", "Page"));
             }
             items.push(CompanyShortcut::enabled("Enter", "Review"));
-            items.push(CompanyShortcut::enabled("Esc", "Back"));
             return items;
         }
 
@@ -673,13 +673,7 @@ impl CompanyWorkspace {
 
     /// Renders the Company operational dashboard with workspace-owned receipt selection.
     pub fn render_dashboard(&mut self, frame: &mut Frame, area: Rect, state: &GameState) {
-        render_dashboard(
-            frame,
-            area,
-            state,
-            &mut self.receipt_selection,
-            self.receipt_details_open,
-        );
+        render_dashboard(frame, area, state);
     }
 
     /// Renders whichever Company-owned focused workflow currently has input.
@@ -709,18 +703,11 @@ impl CompanyWorkspace {
 /// Renders the Company workspace as one operational dashboard. Wide layouts
 /// group status, Fleet, operations, identity, financial performance, and recent
 /// activity inside one focused shell; full Journey history is a separate browser.
-pub fn render_dashboard(
-    frame: &mut Frame,
-    area: Rect,
-    state: &GameState,
-    selection: &mut ReceiptSelection,
-    _receipt_details_open: bool,
-) {
-    selection.synchronize(state);
+pub fn render_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
     if area.width >= 100 && area.height >= 20 {
-        render_wide_dashboard(frame, area, state, selection);
+        render_wide_dashboard(frame, area, state);
     } else if area.width >= 76 && area.height >= 12 {
-        render_compact_dashboard(frame, area, state, selection);
+        render_compact_dashboard(frame, area, state);
     } else {
         render_tiny_dashboard(frame, area, state);
     }
@@ -739,16 +726,16 @@ pub fn render_recovery_review(
     let compact = card.width < 76;
     let footer = if compact {
         modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
             modal::ModalShortcut::enabled("↑↓", modal::ModalAction::Route),
             modal::ModalShortcut::enabled("Enter", modal::ModalAction::Review),
-            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ])
     } else {
         modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
             modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Route),
             modal::ModalShortcut::enabled("PgUp/PgDn", modal::ModalAction::Page),
             modal::ModalShortcut::enabled("Enter", modal::ModalAction::Review),
-            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Cancel),
         ])
     };
     let modal_areas = modal::render_shell(frame, card, "Financial Recovery", footer);
@@ -807,7 +794,7 @@ pub fn render_receipt_modal(
         || "Journey Receipt".to_owned(),
         |receipt| format!("Journey Receipt · J{:02}", receipt.journey_id.get()),
     );
-    let card = modal::centered_rect(area, 76, 18);
+    let card = modal::centered_rect(area, 76, 23);
     let modal_areas = modal::render_shell(
         frame,
         card,
@@ -1075,12 +1062,7 @@ fn recovery_destination_label(destination: RecoveryDestination) -> &'static str 
     }
 }
 
-fn render_wide_dashboard(
-    frame: &mut Frame,
-    area: Rect,
-    state: &GameState,
-    _selection: &mut ReceiptSelection,
-) {
+fn render_wide_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
     let evaluation = evaluate_financial_recovery(state);
 
     // Company is an executive dashboard first and a ledger second. Keep the
@@ -1455,11 +1437,6 @@ fn render_recent_performance(frame: &mut Frame, area: Rect, state: &GameState) {
                 "RECENT PERFORMANCE · LAST {} {journey_label}",
                 recent.journey_count
             )),
-            dashboard_line(
-                "Completed",
-                recent.journey_count.to_string(),
-                theme::primary_value(),
-            ),
             dashboard_line("Passengers", passengers, theme::primary_value()),
             dashboard_line(
                 "Revenue",
@@ -1472,6 +1449,11 @@ fn render_recent_performance(frame: &mut Frame, area: Rect, state: &GameState) {
                 result_style(recent.result_cents),
             ),
             dashboard_line("Outcomes", outcomes, theme::primary_value()),
+            dashboard_line(
+                "Old → new",
+                recent_outcome_sequence(state),
+                theme::primary_value(),
+            ),
         ],
     );
 }
@@ -1664,12 +1646,7 @@ fn render_dashboard_section(frame: &mut Frame, area: Rect, lines: Vec<Line<'stat
     );
 }
 
-fn render_compact_dashboard(
-    frame: &mut Frame,
-    area: Rect,
-    state: &GameState,
-    _selection: &mut ReceiptSelection,
-) {
+fn render_compact_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
     let evaluation = evaluate_financial_recovery(state);
     let shell = components::panel_block("Company", true);
     let shell_inner = shell.inner(area);
@@ -2135,6 +2112,31 @@ fn receipt_detail_lines(state: &GameState, receipt: Option<&JourneyReceipt>) -> 
                 ),
                 Line::from(""),
             ];
+
+            if receipt.service_code.is_some() || receipt.purpose.is_some() {
+                lines.push(section_heading("SERVICE"));
+                lines.extend([
+                    financial_line(
+                        "Service",
+                        receipt.service_code.clone().unwrap_or_else(|| "—".into()),
+                        theme::primary_value(),
+                    ),
+                    financial_line(
+                        "Purpose",
+                        receipt
+                            .purpose
+                            .map_or_else(|| "—".into(), journey_purpose_label),
+                        theme::primary_value(),
+                    ),
+                    financial_line(
+                        "Journey time",
+                        receipt_journey_time_label(receipt),
+                        theme::primary_value(),
+                    ),
+                    Line::from(""),
+                ]);
+            }
+
             if receipt_has_operating_context(receipt) {
                 lines.push(section_heading("JOURNEY"));
                 lines.extend([
@@ -2188,6 +2190,55 @@ fn receipt_detail_lines(state: &GameState, receipt: Option<&JourneyReceipt>) -> 
             theme::secondary(),
         )],
     }
+}
+
+fn journey_purpose_label(purpose: JourneyPurpose) -> String {
+    match purpose {
+        JourneyPurpose::RevenueService => "Revenue service".into(),
+        JourneyPurpose::Positioning => "Positioning".into(),
+    }
+}
+
+fn receipt_journey_time_label(receipt: &JourneyReceipt) -> String {
+    let (Some(departed_at), Some(completed_at)) = (receipt.departed_at, receipt.completed_at) else {
+        return "—".into();
+    };
+    let seconds = completed_at
+        .unix_seconds()
+        .saturating_sub(departed_at.unix_seconds())
+        .max(0) as u64;
+    duration_label(seconds)
+}
+
+fn duration_label(seconds: u64) -> String {
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3_599 => format!("{}m {}s", seconds / 60, seconds % 60),
+        _ => format!("{}h {}m", seconds / 3_600, (seconds % 3_600) / 60),
+    }
+}
+
+fn recent_outcome_sequence(state: &GameState) -> String {
+    let receipts = &state.financials.recent_journey_receipts;
+    let start = receipts.len().saturating_sub(RECENT_JOURNEY_WINDOW);
+    receipts[start..]
+        .iter()
+        .map(|receipt| {
+            let result = receipt_result_cents(
+                receipt.revenue,
+                receipt.infrastructure_access_fee,
+                receipt.fuel_cost,
+            );
+            if result > 0 {
+                "+"
+            } else if result < 0 {
+                "−"
+            } else {
+                "="
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn section_heading(title: &str) -> Line<'static> {
@@ -2736,8 +2787,10 @@ mod tests {
         );
 
         let shortcuts = workspace.shortcuts(&state, false, true);
-        assert_eq!(shortcuts[0].key, "Enter");
-        assert_eq!(shortcuts[0].action, "Save");
+        assert_eq!(shortcuts[0].key, "Esc");
+        assert_eq!(shortcuts[0].action, "Cancel");
+        assert_eq!(shortcuts[1].key, "Enter");
+        assert_eq!(shortcuts[1].action, "Save");
         assert!(workspace.help_lines(&state)[0].contains("Company VKM"));
     }
 }
