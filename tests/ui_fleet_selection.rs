@@ -69,7 +69,7 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     assert!(wide.contains("CAPABILITY"));
     assert!(wide.contains("IDENTITY"));
     assert!(wide.contains("TRAVELLING"));
-    assert!(wide.contains("Remaining"));
+    assert!(wide.contains("next arrival in"));
     let travelling_row = wide
         .lines()
         .find(|line| line.contains("Train 01"))
@@ -144,11 +144,12 @@ fn fleet_footer_owns_actions_and_mutes_unavailable_train_actions() {
 
     press(&mut shell, &state, KeyCode::Down);
     let ready = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(ready.contains("[A] Assign"));
     let (row, column) = ready
         .lines()
         .enumerate()
         .find_map(|(row, line)| line.find("[D] Dispatch").map(|column| (row, column)))
-        .expect("READY Train exposes Dispatch in the footer");
+        .expect("unassigned READY Train keeps Dispatch visible in the footer");
     assert_eq!(
         capture_rendered_cell_colors(
             &shell,
@@ -158,7 +159,7 @@ fn fleet_footer_owns_actions_and_mutes_unavailable_train_actions() {
             u16::try_from(column).unwrap(),
             u16::try_from(row).unwrap(),
         ),
-        Some((theme::ACCENT, theme::PANEL)),
+        Some((theme::SECONDARY, theme::PANEL)),
     );
 }
 
@@ -183,15 +184,9 @@ fn fleet_inspector_surfaces_state_specific_information() {
     assert!(travelling.contains("PASSENGERS"));
     assert!(travelling.contains("On board"));
     assert!(travelling.contains("Load"));
-    assert!(travelling.contains("Carried"));
-    assert!(travelling.contains("Departed"));
     assert!(travelling.contains("ETA"));
     assert!(travelling.contains("Leg progress"));
     assert!(travelling.contains("COMMERCIAL"));
-    assert!(travelling.contains("Expected revenue"));
-    assert!(travelling.contains("Access fee"));
-    assert!(travelling.contains("Fuel cost"));
-    assert!(travelling.contains("Operating cost"));
     assert!(travelling.contains("Expected result"));
     assert!(travelling.contains("CAPABILITY"));
     assert!(travelling.contains("IDENTITY"));
@@ -203,6 +198,8 @@ fn fleet_inspector_surfaces_state_specific_information() {
     assert!(ready.contains("READY"));
     assert!(ready.contains("OPERATIONS"));
     assert!(ready.contains("Assignment required"));
+    assert!(ready.contains("Next action"));
+    assert!(ready.contains("Assign Passenger Service"));
     assert!(ready.contains("ASSIGNMENT"));
     assert!(ready.contains("CAPABILITY"));
     assert!(ready.contains("IDENTITY"));
@@ -250,7 +247,8 @@ fn fleet_browser_states_missing_details_explicitly_and_captures_task_evidence()
     let mut empty_shell = Shell::new();
     press(&mut empty_shell, &empty, KeyCode::Char('2'));
     let empty_render = capture_rendered_buffer(&empty_shell, &empty, 80, 24);
-    assert!(empty_render.contains("No Trains in the Fleet"));
+    assert!(empty_render.contains("No rolling stock"));
+    assert!(empty_render.contains("[3] Open Market"));
     Ok(())
 }
 

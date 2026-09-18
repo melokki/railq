@@ -28,8 +28,28 @@ fn empty_fleet_only_points_to_buy_when_a_catalogue_train_is_affordable() {
     let mut shell = Shell::new();
     press(&mut shell, &state, KeyCode::Char('2'));
     let affordable = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(affordable.contains("Purchase your first Train from the Market."));
-    assert!(affordable.contains("[3] Market"));
+    assert!(affordable.contains("No rolling stock"));
+    assert!(affordable.contains("[3] Open Market"));
+    assert!(affordable.contains("Purchase your first passenger Train"));
+}
+
+#[test]
+fn empty_fleet_without_a_delivery_station_points_to_authority() {
+    let mut state = create_new_game(42, "Blocked Fleet", STARTED_AT);
+    state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .clear();
+    let mut shell = Shell::new();
+    press(&mut shell, &state, KeyCode::Char('2'));
+
+    let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(rendered.contains("No rolling stock"));
+    assert!(rendered.contains("Authority must open a Rail Station"));
+    assert!(rendered.contains("[5] Authority"));
+    assert!(!rendered.contains("[3] Open Market"));
 }
 
 #[test]
@@ -45,7 +65,8 @@ fn all_travelling_fleet_shows_nearest_arrival_and_empty_queue_explains_dispatch(
     let mut shell = Shell::new();
     press(&mut shell, &state, KeyCode::Char('2'));
     let fleet = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(fleet.contains("Next useful action · wait for"), "{fleet}");
+    assert!(fleet.contains("FLEET IN SERVICE"), "{fleet}");
+    assert!(fleet.contains("next arrival in"));
     assert!(fleet.contains("ETA"));
     fs::create_dir_all(EVIDENCE_DIR)?;
     fs::write(
