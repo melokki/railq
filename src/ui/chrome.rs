@@ -279,18 +279,16 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             })
             .collect()
     } else if shell.active_view == View::Bulletin {
-        let mut items = vec![FooterShortcut::enabled(
-            if compact { "↑↓" } else { "↑↓/JK" },
-            "Item",
-        )];
-        if wide {
-            items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
-        }
-        items.push(FooterShortcut::enabled(
-            "F",
-            format!("Filter · {}", shell.bulletin_workspace.filter_label()),
-        ));
-        items
+        shell
+            .bulletin_workspace
+            .shortcuts(state, compact, wide)
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect()
     } else if shell.active_view == View::BuyTrains {
         shell
             .market_workspace
@@ -467,15 +465,7 @@ pub(super) fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
             lines.extend(shell.authority_workspace.help_lines());
         }
         View::Bulletin => {
-            lines.extend([
-                "Current · Railway Bulletin".into(),
-                "↑↓ / jk Select development".into(),
-                "PgUp / PgDn Scroll history".into(),
-                "f Cycle Local / Authority / Construction / Network filters".into(),
-                String::new(),
-                "The Bulletin records significant world developments, not routine Train movements."
-                    .into(),
-            ]);
+            lines.extend(shell.bulletin_workspace.help_lines());
         }
     }
 

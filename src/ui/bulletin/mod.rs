@@ -6,6 +6,7 @@
 
 mod dashboard;
 mod detail;
+mod filter_bar;
 mod format;
 mod header;
 mod layout;
@@ -47,13 +48,38 @@ impl BulletinFilter {
         }
     }
 
-    const fn matches(self, category: BulletinCategory) -> bool {
+    pub(super) const fn matches(self, category: BulletinCategory) -> bool {
         match self {
             Self::All => true,
             Self::Local => matches!(category, BulletinCategory::Local),
             Self::Authority => matches!(category, BulletinCategory::Authority),
             Self::Construction => matches!(category, BulletinCategory::Construction),
             Self::Network => matches!(category, BulletinCategory::Network),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BulletinShortcut {
+    pub key: String,
+    pub action: String,
+    pub enabled: bool,
+}
+
+impl BulletinShortcut {
+    fn enabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: true,
+        }
+    }
+
+    fn disabled(key: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            action: action.into(),
+            enabled: false,
         }
     }
 }
@@ -115,6 +141,50 @@ impl BulletinWorkspace {
         dashboard::render(frame, area, state, now, self);
     }
 
+    /// Returns the contextual footer actions for the Bulletin workspace.
+    pub fn shortcuts(
+        &mut self,
+        state: &GameState,
+        compact: bool,
+        wide: bool,
+    ) -> Vec<BulletinShortcut> {
+        self.synchronize(state);
+        let visible_count = visible_entries(state, self.filter).len();
+        let development = if visible_count == 0 {
+            BulletinShortcut::disabled(
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Development",
+            )
+        } else {
+            BulletinShortcut::enabled(
+                if compact { "↑↓" } else { "↑↓/JK" },
+                "Development",
+            )
+        };
+        let mut items = vec![development];
+        if wide && self.has_multiple_pages(state) {
+            items.push(BulletinShortcut::enabled("PgUp/PgDn", "Page"));
+        }
+        items.push(BulletinShortcut::enabled(
+            "F",
+            format!("View · {}", self.filter_label()),
+        ));
+        items
+    }
+
+    /// Returns help content for the Bulletin workspace.
+    pub fn help_lines(&self) -> Vec<String> {
+        vec![
+            "Current · Railway Bulletin".into(),
+            "↑↓ / jk Select development".into(),
+            "PgUp / PgDn Page through the development log".into(),
+            "f Cycle view: All / Local / Authority / Construction / Network".into(),
+            String::new(),
+            "The Bulletin records significant world developments, not routine Train movements."
+                .into(),
+        ]
+    }
+
     pub const fn filter_label(&self) -> &'static str {
         self.filter.label()
     }
@@ -129,6 +199,10 @@ impl BulletinWorkspace {
 
     pub(super) fn set_page_size(&mut self, page_size: usize) {
         self.page_size = page_size;
+    }
+
+    fn has_multiple_pages(&self, state: &GameState) -> bool {
+        self.page_size >= 2 && visible_entries(state, self.filter).len() > self.page_size
     }
 
     pub(super) fn synchronize(&mut self, state: &GameState) {

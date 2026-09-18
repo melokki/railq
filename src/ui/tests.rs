@@ -109,6 +109,45 @@ fn bulletin_badge_tracks_unread_entries_and_opening_preserves_the_visit_boundary
 }
 
 #[test]
+fn bulletin_shows_category_counts_and_contextual_view_controls() {
+    let mut shell = Shell::new();
+    let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+    state.region.bulletin = vec![
+        BulletinEntry {
+            occurred_at: UtcSeconds::from_unix_seconds(0),
+            category: BulletinCategory::Local,
+            headline: "Local development".into(),
+            detail: "Local detail".into(),
+        },
+        BulletinEntry {
+            occurred_at: UtcSeconds::from_unix_seconds(0),
+            category: BulletinCategory::Network,
+            headline: "Network development".into(),
+            detail: "Network detail".into(),
+        },
+    ];
+
+    shell.handle_key(
+        KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE),
+        &state,
+    );
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(rendered.contains("[ALL 2]"));
+    assert!(rendered.contains("LOCAL 1"));
+    assert!(rendered.contains("NETWORK 1"));
+    assert!(rendered.contains("Development"));
+    assert!(rendered.contains("View · All"));
+
+    shell.handle_key(
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
+        &state,
+    );
+    let filtered = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(filtered.contains("[LOCAL 1]"));
+    assert!(filtered.contains("View · Local"));
+}
+
+#[test]
 fn map_world_details_explains_the_region_registration_identity() {
     let mut shell = Shell::new();
     let state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));

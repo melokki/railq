@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::{
-    BulletinWorkspace, detail, header,
+    BulletinWorkspace, detail, filter_bar, header,
     layout::{BulletinLayout, compact_areas, wide_areas},
     log,
 };
@@ -28,12 +28,14 @@ pub(super) fn render(
         BulletinLayout::Wide => {
             let areas = wide_areas(inner);
             header::render(frame, areas.briefing, state, now, workspace);
+            filter_bar::render(frame, areas.filters, state, workspace);
             log::render(frame, areas.log, state, now, workspace);
             detail::render(frame, areas.detail, state, now, workspace);
         }
         BulletinLayout::Compact => {
             let areas = compact_areas(inner);
             header::render_compact(frame, areas.briefing, state, workspace);
+            filter_bar::render(frame, areas.filters, state, workspace);
             log::render(frame, areas.log, state, now, workspace);
             detail::render(frame, areas.detail, state, now, workspace);
         }

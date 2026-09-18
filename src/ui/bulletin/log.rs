@@ -65,7 +65,7 @@ pub(super) fn render(
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(
-                    "No Bulletin items in this category yet.",
+                    "No developments in this view yet.",
                     theme::secondary(),
                 ),
                 Line::styled(

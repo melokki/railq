@@ -24,33 +24,44 @@ impl BulletinLayout {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BulletinAreas {
     pub briefing: Rect,
+    pub filters: Rect,
     pub log: Rect,
     pub detail: Rect,
 }
 
 pub(super) fn wide_areas(area: Rect) -> BulletinAreas {
-    let [briefing, body] = Layout::vertical([Constraint::Length(8), Constraint::Fill(1)])
-        .spacing(1)
-        .areas(area);
+    let [briefing, filters, body] = Layout::vertical([
+        Constraint::Length(8),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .spacing(1)
+    .areas(area);
     let [log, detail] = Layout::horizontal([Constraint::Percentage(60), Constraint::Fill(1)])
         .spacing(2)
         .areas(body);
     BulletinAreas {
         briefing,
+        filters,
         log,
         detail,
     }
 }
 
 pub(super) fn compact_areas(area: Rect) -> BulletinAreas {
-    let [briefing, body] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)])
-        .spacing(1)
-        .areas(area);
+    let [briefing, filters, body] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .spacing(1)
+    .areas(area);
     let [log, detail] = Layout::horizontal([Constraint::Percentage(56), Constraint::Fill(1)])
         .spacing(1)
         .areas(body);
     BulletinAreas {
         briefing,
+        filters,
         log,
         detail,
     }
@@ -81,6 +92,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let areas = wide_areas(area);
         assert_eq!(areas.briefing.height, 8);
+        assert_eq!(areas.filters.height, 1);
         assert!(areas.log.height > 0);
         assert!(areas.detail.height > 0);
     }
@@ -90,6 +102,7 @@ mod tests {
         let area = Rect::new(0, 0, 90, 20);
         let areas = compact_areas(area);
         assert_eq!(areas.briefing.height, 2);
+        assert_eq!(areas.filters.height, 1);
         assert_eq!(areas.log.y, areas.detail.y);
         assert_eq!(areas.log.height, areas.detail.height);
         assert!(areas.log.width > areas.detail.width);
