@@ -1380,11 +1380,6 @@ fn render_train_inspector(
         }
         (TrainStatus::Travelling { .. }, Some(journey)) => {
             inspector_section(&mut lines, "JOURNEY", dense_detail);
-            lines.push(labelled_line_styled(
-                "State",
-                train_status_label(train),
-                train_status_style(train),
-            ));
             lines.push(labelled_line(
                 "Current leg",
                 &journey_leg_label(state, journey),
@@ -1407,14 +1402,17 @@ fn render_train_inspector(
             ));
             lines.push(journey_progress_line(journey, now, details_area.width));
 
-            inspector_section(&mut lines, "SERVICE", true);
             if let Some(service) = state
                 .player_company
                 .passenger_services
                 .iter()
                 .find(|service| service.id == journey.service_id)
             {
-                lines.push(labelled_line("Service", &service.display_name()));
+                inspector_section(
+                    &mut lines,
+                    &format!("SERVICE · {}", service.display_name()),
+                    dense_detail,
+                );
                 if !dense_detail {
                     lines.push(labelled_line(
                         "Route",
@@ -1426,19 +1424,24 @@ fn render_train_inspector(
                     ));
                 }
             } else {
+                inspector_section(&mut lines, "SERVICE", dense_detail);
                 lines.push(labelled_line(
                     "Service",
                     &format!("Missing service {}", journey.service_id.get()),
                 ));
             }
 
-            inspector_section(&mut lines, "PASSENGERS", true);
+            inspector_section(&mut lines, "PASSENGERS", dense_detail);
             let onboard = journey.onboard_passengers();
             lines.push(labelled_line(
                 "On board",
-                &format!("{} / {}", onboard, train_capacity(train)),
+                &format!(
+                    "{} / {} · {} load",
+                    onboard,
+                    train_capacity(train),
+                    format_load(train, onboard)
+                ),
             ));
-            lines.push(labelled_line("Load", &format_load(train, onboard)));
             if !dense_detail {
                 lines.push(labelled_line(
                     "Carried",
@@ -1446,7 +1449,7 @@ fn render_train_inspector(
                 ));
             }
 
-            inspector_section(&mut lines, "COMMERCIAL", true);
+            inspector_section(&mut lines, "COMMERCIAL", dense_detail);
             if dense_detail {
                 match journey_expected_result(journey) {
                     Some(result) => lines.push(labelled_line_styled(
@@ -1484,7 +1487,7 @@ fn render_train_inspector(
                 }
             }
 
-            inspector_section(&mut lines, "CAPABILITY", true);
+            inspector_section(&mut lines, "CAPABILITY", dense_detail);
             if dense_detail {
                 lines.push(Line::from(vec![
                     Span::styled(format!("{:<18}", "Technical"), theme::secondary()),
@@ -1497,8 +1500,10 @@ fn render_train_inspector(
                 ]));
             } else {
                 lines.push(labelled_line("Top speed", &format_speed(train)));
-                lines.push(labelled_line("Propulsion", &format_propulsion(train)));
-                lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
+                lines.push(labelled_line(
+                    "Propulsion",
+                    &format!("{} · {}", format_propulsion(train), format_fuel_rate(train)),
+                ));
             }
         }
         (TrainStatus::Travelling { journey_id }, None) => {

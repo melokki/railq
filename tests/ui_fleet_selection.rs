@@ -182,7 +182,7 @@ fn fleet_inspector_surfaces_state_specific_information() {
     assert!(travelling.contains("SERVICE"));
     assert!(travelling.contains("PASSENGERS"));
     assert!(travelling.contains("On board"));
-    assert!(travelling.contains("Load"));
+    assert!(travelling.contains("% load"));
     assert!(travelling.contains("ETA"));
     assert!(travelling.contains("Leg progress"));
     assert!(travelling.contains("COMMERCIAL"));

@@ -43,7 +43,7 @@ pub(super) fn render_overview(
         ("PROCUREMENT READY", theme::success())
     };
     let selected = selected_train
-        .map(|train| format!(" · Selected {}", train.name()))
+        .map(|train| format!(" · selected {}", train.name()))
         .unwrap_or_default();
 
     frame.render_widget(
@@ -51,7 +51,7 @@ pub(super) fn render_overview(
             Span::styled(status, status_style.bold()),
             Span::styled(
                 format!(
-                    " · {} models · {within_funds} within funds · Fleet {fleet_size} trains{selected}",
+                    " · {} models · {within_funds} within funds · fleet {fleet_size} trains{selected}",
                     catalogue.len()
                 ),
                 theme::secondary(),

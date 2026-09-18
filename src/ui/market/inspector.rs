@@ -21,9 +21,9 @@ use crate::{
 };
 
 use super::{
-    CatalogueOwnership, catalogue_ownership, delivery_station_ids, format_money,
-    format_money_per_kilometre, format_speed_kmh, funds_after_purchase_display,
-    horizontal_inset, low_reserve, reserve_after_sample_display, sample_trip,
+    delivery_station_ids, format_money, format_money_per_kilometre, format_speed_kmh,
+    funds_after_purchase_display, horizontal_inset, low_reserve, reserve_after_sample_display,
+    sample_trip,
 };
 
 pub(super) fn render_catalogue_inspector(
@@ -55,7 +55,6 @@ pub(super) fn render_catalogue_inspector(
     };
 
     let dense = !wide || inner.height < 24;
-    let ownership = catalogue_ownership(state, train);
     let (status, status_style) = purchase_status(state, train);
 
     let mut lines = vec![
@@ -82,7 +81,7 @@ pub(super) fn render_catalogue_inspector(
     }
 
     inspector_section(&mut lines, "ACQUISITION", dense);
-    if !dense {
+    if !dense && status != "READY TO ORDER" {
         lines.push(labelled_line_styled("Order status", status, status_style));
     }
     lines.push(labelled_line(
@@ -100,7 +99,6 @@ pub(super) fn render_catalogue_inspector(
         append_operating_profile(&mut lines, state, train, false);
         append_registration(&mut lines, state, train, false);
     }
-    append_fleet_presence(&mut lines, ownership, dense);
 
     frame.render_widget(
         Paragraph::new(lines)
@@ -186,30 +184,6 @@ fn append_registration(
     }
     lines.push(labelled_line("Keeper mark", &keeper_mark));
     lines.push(labelled_line("Official EVN", "Assigned on purchase"));
-}
-
-fn append_fleet_presence(
-    lines: &mut Vec<Line<'static>>,
-    ownership: CatalogueOwnership,
-    dense: bool,
-) {
-    inspector_section(lines, "FLEET PRESENCE", dense);
-    lines.push(labelled_line("Owned", &ownership.owned.to_string()));
-    if dense {
-        lines.push(labelled_line(
-            "Availability",
-            &format!(
-                "{} ready · {} travelling",
-                ownership.ready, ownership.travelling
-            ),
-        ));
-    } else {
-        lines.push(labelled_line("Ready", &ownership.ready.to_string()));
-        lines.push(labelled_line(
-            "Travelling",
-            &ownership.travelling.to_string(),
-        ));
-    }
 }
 
 fn inspector_section(lines: &mut Vec<Line<'static>>, title: &str, dense: bool) {

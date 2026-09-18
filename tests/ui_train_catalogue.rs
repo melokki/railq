@@ -89,7 +89,6 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "OPERATING PROFILE",
         "FLEET PRESENCE",
         "REGISTRATION",
-        "READY TO ORDER",
         "70 seats",
         "118.8 km/h",
         "Diesel",
@@ -114,12 +113,18 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     let registration = wide
         .find("REGISTRATION")
         .expect("registration section is visible");
-    let fleet_presence = wide
-        .find("FLEET PRESENCE")
-        .expect("fleet presence section is visible");
     assert!(
-        acquisition < operating && operating < registration && registration < fleet_presence,
-        "the Market inspector should lead with the purchase decision while keeping EVN details visible before secondary fleet statistics"
+        acquisition < operating && operating < registration,
+        "the Market inspector should lead with the purchase decision while keeping EVN details visible"
+    );
+    assert_eq!(
+        wide.matches("FLEET PRESENCE").count(),
+        1,
+        "fleet presence belongs in the Market KPI row rather than being repeated in the inspector"
+    );
+    assert!(
+        !wide.contains("READY TO ORDER"),
+        "normal purchase readiness is already communicated by the workspace summary"
     );
     assert!(
         !wide.contains("Train Market ·"),
@@ -384,9 +389,14 @@ fn market_inspector_summarizes_owned_units_for_the_selected_model() {
     );
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(rendered.contains("FLEET PRESENCE"));
-    assert!(rendered.contains("Owned"));
-    assert!(rendered.contains("Ready"));
-    assert!(rendered.contains("Travelling"));
+    assert!(rendered.contains("1 owned"));
+    assert!(rendered.contains("1 ready"));
+    assert!(rendered.contains("0 travelling"));
+    assert_eq!(
+        rendered.matches("FLEET PRESENCE").count(),
+        1,
+        "ownership should be summarized once in the KPI row"
+    );
 }
 
 #[test]
