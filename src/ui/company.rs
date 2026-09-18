@@ -731,7 +731,7 @@ impl CompanyWorkspace {
                     self.recovery_review_open = false;
                     CompanyWorkspaceAction::Navigate(RecoveryDestination::Map)
                 }
-                KeyCode::Char('2' | 't' | 'T') => {
+                KeyCode::Char('2') => {
                     self.recovery_review_open = false;
                     CompanyWorkspaceAction::Navigate(RecoveryDestination::Fleet)
                 }

@@ -32,6 +32,33 @@ pub fn panel_block(title: &str, focused: bool) -> Block<'_> {
         .style(theme::panel())
 }
 
+/// Standard compact dashboard metric used by management workspaces.
+///
+/// Keeping the hierarchy here prevents Fleet and Market from drifting into
+/// subtly different card spacing, alignment, or value emphasis.
+pub fn render_metric_card(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    value: String,
+    subtitle: String,
+    context: String,
+) {
+    let block = panel_block(title, false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(value, theme::primary_value().bold()),
+            Line::styled(subtitle, theme::secondary()),
+            Line::styled(context, theme::secondary()),
+        ])
+        .alignment(Alignment::Center)
+        .style(theme::panel()),
+        inner,
+    );
+}
+
 /// Standard section heading used inside inspectors and detail surfaces.
 pub fn section_heading(label: &str) -> Line<'static> {
     Line::styled(label.to_owned(), theme::table_header())

@@ -48,22 +48,27 @@ fn operating_fleet() -> railq::model::GameState {
 fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     let mut state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
 
     let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(wide.contains("Fleet"));
+    assert!(wide.contains("FLEET AVAILABLE"));
+    assert!(wide.contains("AVAILABILITY"));
+    assert!(wide.contains("ALLOCATION"));
+    assert!(wide.contains("LOAD"));
+    assert!(wide.contains("ASSET VALUE"));
+    assert!(wide.contains("ROLLING STOCK"));
+    assert!(wide.contains("SELECTED TRAIN"));
     assert!(wide.contains("Train"));
     assert!(wide.contains("EVN"));
     assert!(wide.contains("Helvetra R70"));
-    assert!(wide.contains("Propulsion"));
     assert!(wide.contains("Diesel"));
     assert!(wide.contains("JOURNEY"));
     assert!(wide.contains("Current leg"));
     assert!(wide.contains("SERVICE"));
-    assert!(wide.contains("CAPACITY"));
-    assert!(wide.contains("PERFORMANCE"));
+    assert!(wide.contains("CAPABILITY"));
     assert!(wide.contains("TRAVELLING"));
-    assert!(wide.contains("Remaining"));
+    assert!(wide.contains("next arrival in"));
     let travelling_row = wide
         .lines()
         .find(|line| line.contains("Train 01"))
@@ -110,7 +115,7 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
 fn fleet_footer_owns_actions_and_mutes_unavailable_train_actions() {
     let state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
 
     let travelling = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(travelling.contains("[R] Rename"));
@@ -138,11 +143,12 @@ fn fleet_footer_owns_actions_and_mutes_unavailable_train_actions() {
 
     press(&mut shell, &state, KeyCode::Down);
     let ready = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(ready.contains("[A] Assign"));
     let (row, column) = ready
         .lines()
         .enumerate()
         .find_map(|(row, line)| line.find("[D] Dispatch").map(|column| (row, column)))
-        .expect("READY Train exposes Dispatch in the footer");
+        .expect("unassigned READY Train keeps Dispatch visible in the footer");
     assert_eq!(
         capture_rendered_cell_colors(
             &shell,
@@ -152,7 +158,7 @@ fn fleet_footer_owns_actions_and_mutes_unavailable_train_actions() {
             u16::try_from(column).unwrap(),
             u16::try_from(row).unwrap(),
         ),
-        Some((theme::ACCENT, theme::PANEL)),
+        Some((theme::SECONDARY, theme::PANEL)),
     );
 }
 
@@ -160,44 +166,43 @@ fn fleet_footer_owns_actions_and_mutes_unavailable_train_actions() {
 fn fleet_inspector_surfaces_state_specific_information() {
     let state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
 
     let travelling = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     let selected_train = &state.player_company.fleet.trains[0];
-    let registration = selected_train.evn.marking(
-        &state.region.railway_registration.mark,
-        &state.player_company.vehicle_keeper_mark,
-    );
-    assert!(travelling.contains(&registration));
-    assert!(travelling.contains("STATUS"));
+    assert!(travelling.contains(&selected_train.evn.formatted()));
+    assert!(travelling.contains(&format!(
+        "{}-{}",
+        state.region.railway_registration.mark,
+        state.player_company.vehicle_keeper_mark.as_str(),
+    )));
+    assert!(travelling.contains("SELECTED TRAIN"));
     assert!(travelling.contains("TRAVELLING"));
     assert!(travelling.contains("JOURNEY"));
     assert!(travelling.contains("SERVICE"));
     assert!(travelling.contains("PASSENGERS"));
     assert!(travelling.contains("On board"));
-    assert!(travelling.contains("Load"));
-    assert!(travelling.contains("Carried"));
-    assert!(travelling.contains("Departed"));
+    assert!(travelling.contains("% load"));
     assert!(travelling.contains("ETA"));
     assert!(travelling.contains("Leg progress"));
     assert!(travelling.contains("COMMERCIAL"));
-    assert!(travelling.contains("Expected revenue"));
-    assert!(travelling.contains("Access fee"));
-    assert!(travelling.contains("Fuel cost"));
-    assert!(travelling.contains("Operating cost"));
     assert!(travelling.contains("Expected result"));
-    assert!(!travelling.contains("VALUE"));
+    assert!(travelling.contains("CAPABILITY"));
+    assert!(travelling.contains("EVN"));
+    assert!(!travelling.contains("ASSET VALUE"));
 
     press(&mut shell, &state, KeyCode::Down);
     let ready = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(ready.contains("READY"));
-    assert!(ready.contains("LOCATION"));
-    assert!(ready.contains("Ready for dispatch"));
-    assert!(ready.contains("CAPACITY"));
-    assert!(ready.contains("PERFORMANCE"));
-    assert!(ready.contains("VALUE"));
+    assert!(ready.contains("OPERATIONS"));
+    assert!(ready.contains("Assignment required"));
+    assert!(ready.contains("Next action"));
+    assert!(ready.contains("Assign Passenger Service"));
+    assert!(ready.contains("ASSIGNMENT"));
+    assert!(ready.contains("CAPABILITY"));
+    assert!(ready.contains("ASSET VALUE"));
+    assert!(ready.contains("EVN"));
     assert!(!ready.contains("JOURNEY"));
-    assert!(!ready.contains("SERVICE"));
 }
 
 #[test]
@@ -205,7 +210,7 @@ fn fleet_browser_states_missing_details_explicitly_and_captures_task_evidence()
 -> Result<(), Box<dyn Error>> {
     let state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
     for _ in 0..9 {
         press(&mut shell, &state, KeyCode::Down);
     }
@@ -230,16 +235,17 @@ fn fleet_browser_states_missing_details_explicitly_and_captures_task_evidence()
         at: RailStationId::new(99),
     };
     let mut missing_shell = Shell::new();
-    press(&mut missing_shell, &missing, KeyCode::Char('t'));
+    press(&mut missing_shell, &missing, KeyCode::Char('2'));
     let missing_render = capture_rendered_buffer(&missing_shell, &missing, 120, 40);
     assert!(missing_render.contains("Unknown model (missing-model)"));
     assert!(missing_render.contains("Missing Rail Station 99"));
 
     let empty = create_new_game(42, "Empty Fleet Passenger", STARTED_AT);
     let mut empty_shell = Shell::new();
-    press(&mut empty_shell, &empty, KeyCode::Char('t'));
+    press(&mut empty_shell, &empty, KeyCode::Char('2'));
     let empty_render = capture_rendered_buffer(&empty_shell, &empty, 80, 24);
-    assert!(empty_render.contains("No Trains in the Fleet"));
+    assert!(empty_render.contains("No rolling stock"));
+    assert!(empty_render.contains("[3] Open Market"));
     Ok(())
 }
 
@@ -253,7 +259,7 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
             + (journey.arrives_at.unix_seconds() - journey.departed_at.unix_seconds()) / 2,
     );
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
     let _ = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
     press(&mut shell, &state, KeyCode::Enter);
@@ -307,7 +313,7 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
 fn fleet_rename_uses_the_shared_focused_modal_treatment() {
     let state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
     press(&mut shell, &state, KeyCode::Char('r'));
 
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
@@ -325,7 +331,7 @@ fn fleet_rename_uses_the_shared_focused_modal_treatment() {
 fn fleet_focus_respects_the_visible_workspace_and_s_reviews_the_selected_ready_train() {
     let mut state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
 
     let _ = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     press(&mut shell, &state, KeyCode::Tab);
@@ -369,7 +375,7 @@ fn resale_review_has_complete_themed_evidence_at_normal_and_compact_sizes()
 -> Result<(), Box<dyn Error>> {
     let state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
     press(&mut shell, &state, KeyCode::Down);
     press(&mut shell, &state, KeyCode::Char('s'));
 
@@ -420,7 +426,7 @@ fn resale_review_has_complete_themed_evidence_at_normal_and_compact_sizes()
 fn resale_review_explains_travelling_and_stale_selected_train_without_a_false_success() {
     let mut state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
 
     press(&mut shell, &state, KeyCode::Char('s'));
     let travelling = capture_rendered_buffer(&shell, &state, 120, 40);

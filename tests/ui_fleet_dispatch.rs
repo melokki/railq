@@ -59,7 +59,7 @@ fn fleet_d_opens_the_shared_dispatch_modal_with_the_selected_train_focused()
     fs::create_dir_all(EVIDENCE_DIR)?;
 
     assert_eq!(
-        shell.handle_key(key(KeyCode::Char('t')), &state),
+        shell.handle_key(key(KeyCode::Char('2')), &state),
         ShellAction::Continue
     );
     assert_eq!(
@@ -132,7 +132,7 @@ fn fleet_d_explains_why_a_travelling_train_is_unavailable_and_refreshes_eligibil
     let mut shell = Shell::new();
 
     assert_eq!(
-        shell.handle_key(key(KeyCode::Char('t')), &state),
+        shell.handle_key(key(KeyCode::Char('2')), &state),
         ShellAction::Continue
     );
     assert_eq!(
@@ -165,7 +165,7 @@ fn fleet_d_explains_why_a_travelling_train_is_unavailable_and_refreshes_eligibil
 
     let mut unavailable_shell = Shell::new();
     assert_eq!(
-        unavailable_shell.handle_key(key(KeyCode::Char('t')), &state),
+        unavailable_shell.handle_key(key(KeyCode::Char('2')), &state),
         ShellAction::Continue
     );
     assert_eq!(
@@ -193,7 +193,7 @@ fn fleet_dispatch_commits_through_the_existing_saved_manual_dispatch_transaction
     let mut shell = Shell::new();
 
     assert_eq!(
-        shell.handle_key(key(KeyCode::Char('t')), app.state()),
+        shell.handle_key(key(KeyCode::Char('2')), app.state()),
         ShellAction::Continue
     );
     assert_eq!(

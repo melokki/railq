@@ -370,7 +370,7 @@ pub(super) fn tab_label(view: View, compact: bool, bulletin_unread: u64) -> Stri
         (View::Company, true) => "Co",
         (View::Authority, true) => "Auth",
         (View::Bulletin, true) => "News",
-        (View::Trains, false) => "Trains",
+        (View::Trains, false) => "Fleet",
         (View::BuyTrains, false) => "Market",
         _ => view.label(),
     };
@@ -401,8 +401,8 @@ pub(super) const HELP_PAGE_STEP: usize = 5;
 pub(super) fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     let mut lines = vec![
         "Navigation".into(),
-        "1 Map   2 Trains   3 Market   4 Company   5 Authority   6 Bulletin".into(),
-        "t also switches to Trains; Market, Company, Authority, and Bulletin use 3 / 4 / 5 / 6".into(),
+        "1 Map   2 Fleet   3 Market   4 Company   5 Authority   6 Bulletin".into(),
+        "Primary workspaces use number keys only; letter keys remain available for contextual actions.".into(),
         String::new(),
     ];
 

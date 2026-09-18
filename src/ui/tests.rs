@@ -17,7 +17,7 @@ use super::{
 };
 
 #[test]
-fn routes_the_six_primary_views_by_number_and_keeps_train_alias() {
+fn routes_the_six_primary_views_by_number_only() {
     let mut shell = Shell::new();
     let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
@@ -28,7 +28,6 @@ fn routes_the_six_primary_views_by_number_and_keeps_train_alias() {
         ('1', View::Map),
         ('5', View::Authority),
         ('6', View::Bulletin),
-        ('t', View::Trains),
     ] {
         assert_eq!(
             shell.handle_key(
@@ -40,21 +39,17 @@ fn routes_the_six_primary_views_by_number_and_keeps_train_alias() {
         assert_eq!(shell.active_view(), expected_view);
     }
 
-    shell.handle_key(
-        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
-        &state,
-    );
-    assert_eq!(shell.active_view(), View::BuyTrains);
-
-    shell.handle_key(
-        KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
-        &state,
-    );
-    shell.handle_key(
-        KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
-        &state,
-    );
-    assert_eq!(shell.active_view(), View::Trains);
+    let mut number_only_shell = Shell::new();
+    for key in ['t', 'T', 'b', 'B', 'f', 'F', 'm', 'M'] {
+        assert_eq!(
+            number_only_shell.handle_key(
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                &state,
+            ),
+            ShellAction::Continue
+        );
+        assert_eq!(number_only_shell.active_view(), View::Map);
+    }
 }
 
 #[test]
@@ -463,7 +458,7 @@ fn control_room_shell_reports_company_status_with_adaptive_tabs_and_semantic_sur
     assert!(wide.contains("Fleet 0 ready · 1 travelling"));
     assert!(wide.contains("Next arrival"));
     assert!(wide.contains("1 Map"));
-    assert!(wide.contains("2 Trains"));
+    assert!(wide.contains("2 Fleet"));
     assert!(wide.contains("q Quit"));
 
     let compact = capture_rendered_buffer(&shell, &state, 80, 24);
@@ -515,7 +510,7 @@ fn fleet_table_marks_the_selected_train_with_the_accent_surface() {
     purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
     let mut shell = Shell::new();
     shell.handle_key(
-        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
         &state,
     );
     shell.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &state);
@@ -593,7 +588,7 @@ fn fleet_resale_routes_only_a_confirmed_ready_train_to_the_application_boundary(
     let press =
         |shell: &mut Shell, key| shell.handle_key(KeyEvent::new(key, KeyModifiers::NONE), &state);
 
-    assert_eq!(press(&mut shell, KeyCode::Char('t')), ShellAction::Continue);
+    assert_eq!(press(&mut shell, KeyCode::Char('2')), ShellAction::Continue);
     assert_eq!(press(&mut shell, KeyCode::Char('s')), ShellAction::Continue);
     assert_eq!(
         press(&mut shell, KeyCode::Enter),
@@ -617,7 +612,7 @@ fn help_is_contextual_and_points_a_new_company_to_the_market() {
     let help = super::help_lines(&shell, &state).join("\n");
     for instruction in [
         "1 Map",
-        "2 Trains",
+        "2 Fleet",
         "3 Market",
         "4 Company",
         "Current · Map",
@@ -640,7 +635,7 @@ fn help_changes_with_the_active_workspace() {
         &state,
     );
     let trains_help = super::help_lines(&shell, &state).join("\n");
-    assert!(trains_help.contains("Current · Trains"));
+    assert!(trains_help.contains("Current · Fleet"));
     assert!(trains_help.contains("d Dispatch selected READY Train"));
     assert!(trains_help.contains("r Rename selected Train"));
 
@@ -673,7 +668,7 @@ fn bankruptcy_blocks_normal_actions_but_allows_exit_and_confirmed_safe_restart()
 
     assert_eq!(
         shell.handle_key(
-            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
             &state
         ),
         ShellAction::Continue

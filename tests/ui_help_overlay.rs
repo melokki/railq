@@ -59,7 +59,7 @@ fn help_isolates_input_and_restores_the_pending_purchase_proposal() {
     let mut shell = Shell::new();
 
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Char('b')),
+        press(&mut shell, &state, KeyCode::Char('3')),
         ShellAction::Continue
     );
     assert_eq!(
