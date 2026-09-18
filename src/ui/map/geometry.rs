@@ -12,6 +12,9 @@ use crate::ui::theme;
 pub(super) enum MapInk {
     Empty,
     Rail,
+    RailElectric,
+    RailPlanned,
+    RailConstruction,
     RailAccent,
     RailLabel,
     Connected,
@@ -20,6 +23,8 @@ pub(super) enum MapInk {
     Selected,
     Cursor,
     Ready,
+    ProjectPlanned,
+    ProjectConstruction,
     Train,
 }
 
@@ -68,25 +73,25 @@ pub(super) fn can_place_text(grid: &[Vec<MapCell>], x: i32, y: i32, text: &str) 
 
 pub(super) fn draw_orthogonal_rail(
     masks: &mut [Vec<u8>],
-    accents: &mut [Vec<bool>],
+    inks: &mut [Vec<MapInk>],
     doubles: &mut [Vec<bool>],
     start: (i32, i32),
     end: (i32, i32),
-    accent: bool,
+    ink: MapInk,
     double_track: bool,
 ) {
     let corner = (end.0, start.1);
-    draw_segment(masks, accents, doubles, start, corner, accent, double_track);
-    draw_segment(masks, accents, doubles, corner, end, accent, double_track);
+    draw_segment(masks, inks, doubles, start, corner, ink, double_track);
+    draw_segment(masks, inks, doubles, corner, end, ink, double_track);
 }
 
 fn draw_segment(
     masks: &mut [Vec<u8>],
-    accents: &mut [Vec<bool>],
+    inks: &mut [Vec<MapInk>],
     doubles: &mut [Vec<bool>],
     start: (i32, i32),
     end: (i32, i32),
-    accent: bool,
+    ink: MapInk,
     double_track: bool,
 ) {
     let (mut x, mut y) = start;
@@ -100,7 +105,7 @@ fn draw_segment(
         } else {
             (x, y - 1)
         };
-        add_rail_connection(masks, accents, doubles, (x, y), next, accent, double_track);
+        add_rail_connection(masks, inks, doubles, (x, y), next, ink, double_track);
         x = next.0;
         y = next.1;
     }
@@ -108,11 +113,11 @@ fn draw_segment(
 
 fn add_rail_connection(
     masks: &mut [Vec<u8>],
-    accents: &mut [Vec<bool>],
+    inks: &mut [Vec<MapInk>],
     doubles: &mut [Vec<bool>],
     from: (i32, i32),
     to: (i32, i32),
-    accent: bool,
+    ink: MapInk,
     double_track: bool,
 ) {
     let (from_bit, to_bit) = match (to.0 - from.0, to.1 - from.1) {
@@ -122,25 +127,17 @@ fn add_rail_connection(
         (0, -1) => (RAIL_UP, RAIL_DOWN),
         _ => return,
     };
-    add_rail_bit(
-        masks,
-        accents,
-        doubles,
-        from,
-        from_bit,
-        accent,
-        double_track,
-    );
-    add_rail_bit(masks, accents, doubles, to, to_bit, accent, double_track);
+    add_rail_bit(masks, inks, doubles, from, from_bit, ink, double_track);
+    add_rail_bit(masks, inks, doubles, to, to_bit, ink, double_track);
 }
 
 fn add_rail_bit(
     masks: &mut [Vec<u8>],
-    accents: &mut [Vec<bool>],
+    inks: &mut [Vec<MapInk>],
     doubles: &mut [Vec<bool>],
     (x, y): (i32, i32),
     bit: u8,
-    accent: bool,
+    ink: MapInk,
     double_track: bool,
 ) {
     let (Ok(x), Ok(y)) = (usize::try_from(x), usize::try_from(y)) else {
@@ -153,10 +150,10 @@ fn add_rail_bit(
         return;
     };
     *mask |= bit;
-    if accent {
-        if let Some(row) = accents.get_mut(y) {
-            if let Some(value) = row.get_mut(x) {
-                *value = true;
+    if let Some(row) = inks.get_mut(y) {
+        if let Some(value) = row.get_mut(x) {
+            if rail_ink_priority(ink) >= rail_ink_priority(*value) {
+                *value = ink;
             }
         }
     }
@@ -166,6 +163,17 @@ fn add_rail_bit(
                 *value = true;
             }
         }
+    }
+}
+
+fn rail_ink_priority(ink: MapInk) -> u8 {
+    match ink {
+        MapInk::Rail => 0,
+        MapInk::RailElectric => 1,
+        MapInk::RailPlanned => 2,
+        MapInk::RailConstruction => 3,
+        MapInk::RailAccent => 4,
+        _ => 0,
     }
 }
 
@@ -259,6 +267,9 @@ pub(super) fn map_ink_style(ink: MapInk) -> Style {
     match ink {
         MapInk::Empty => theme::panel(),
         MapInk::Rail => theme::secondary().add_modifier(Modifier::DIM),
+        MapInk::RailElectric => theme::success().add_modifier(Modifier::DIM),
+        MapInk::RailPlanned => theme::warning().add_modifier(Modifier::DIM),
+        MapInk::RailConstruction => theme::warning().add_modifier(Modifier::BOLD),
         MapInk::RailAccent => theme::focused_title(),
         MapInk::RailLabel => theme::focused_border(),
         MapInk::Connected => theme::secondary().add_modifier(Modifier::DIM),
@@ -267,6 +278,8 @@ pub(super) fn map_ink_style(ink: MapInk) -> Style {
         MapInk::Selected => theme::focused_title(),
         MapInk::Cursor => theme::warning().add_modifier(Modifier::BOLD),
         MapInk::Ready => theme::success().add_modifier(Modifier::BOLD),
+        MapInk::ProjectPlanned => theme::warning().add_modifier(Modifier::DIM),
+        MapInk::ProjectConstruction => theme::warning().add_modifier(Modifier::BOLD),
         MapInk::Train => theme::warning().add_modifier(Modifier::BOLD),
     }
 }

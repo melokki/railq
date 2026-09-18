@@ -52,6 +52,7 @@ fn map_overview_integrates_registration_without_crowding_the_map_border() {
     assert!(rendered.contains("stations"));
     assert!(rendered.contains("rail links"));
     assert!(rendered.contains("services"));
+    assert!(rendered.contains("projects"));
     assert!(rendered.contains(&format!("registration {registration}")));
     assert!(!rendered.contains("Registration ·"));
     let selected_station = state
@@ -154,4 +155,30 @@ fn map_footer_contains_actions_without_repeating_header_status() -> Result<(), B
     assert!(rendered.contains("│ [?] Help [Q] Quit"));
     assert!(!rendered.contains("Dispatch · 1 ready"));
     Ok(())
+}
+
+#[test]
+fn map_wide_legend_explains_infrastructure_visual_states() {
+    let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let shell = Shell::new();
+    let rendered = capture_rendered_buffer(&shell, &state, 180, 50);
+
+    assert!(rendered.contains("single"));
+    assert!(rendered.contains("double"));
+    assert!(rendered.contains("electric"));
+    assert!(rendered.contains("planned"));
+    assert!(rendered.contains("works"));
+}
+
+#[test]
+fn map_station_inspector_summarizes_physical_infrastructure() {
+    let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let shell = Shell::new();
+    let rendered = capture_rendered_buffer(&shell, &state, 160, 50);
+
+    assert!(rendered.contains("INFRASTRUCTURE"));
+    assert!(rendered.contains("Connections"));
+    assert!(rendered.contains("Track"));
+    assert!(rendered.contains("Electrified"));
+    assert!(rendered.contains("Speed limit"));
 }

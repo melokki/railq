@@ -24,8 +24,9 @@ use super::network::{format_population, panel_block, ready_trains, station_name}
 use super::shared::{format_distance, format_duration, remaining_seconds};
 use crate::{
     model::{
-        GameState, Journey, PassengerService, RailLineId, RailStationId, ServiceDirectionMode,
-        SettlementId, TrainStatus, UtcSeconds,
+        Electrification, GameState, InfrastructureProject, InfrastructureProjectKind,
+        InfrastructureProjectStatus, Journey, PassengerService, RailLineId, RailStationId,
+        ServiceDirectionMode, SettlementId, TrainStatus, UtcSeconds,
     },
     sim::{
         authority::{
@@ -66,6 +67,13 @@ pub(super) struct OperationalPlace {
     pub(super) y: i32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InfrastructureVisualState {
+    Open,
+    Planned,
+    Construction,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct OperationalLine {
     rail_line_id: RailLineId,
@@ -73,6 +81,8 @@ struct OperationalLine {
     second_settlement_id: SettlementId,
     distance_metres: u64,
     track_count: u8,
+    electrified: bool,
+    visual_state: InfrastructureVisualState,
 }
 
 /// Renders one persistent operational map containing both connected and
@@ -121,6 +131,13 @@ fn render_network_overview(frame: &mut Frame, area: Rect, state: &GameState) {
     let station_count = network.rail_stations.len();
     let link_count = network.rail_lines.len();
     let service_count = state.player_company.passenger_services.len();
+    let project_count = state
+        .region
+        .rail_authority
+        .infrastructure_projects
+        .iter()
+        .filter(|project| project_visual_state(project.status).is_some())
+        .count();
     let registration = format!(
         "{} {}",
         state.region.railway_registration.display_code(),
@@ -137,7 +154,7 @@ fn render_network_overview(frame: &mut Frame, area: Rect, state: &GameState) {
 
     let summary = if area.width >= 96 {
         format!(
-            " · {station_count} stations · {link_count} rail links · {service_count} services · registration {registration}"
+            " · {station_count} stations · {link_count} rail links · {service_count} services · {project_count} projects · registration {registration}"
         )
     } else if area.width >= 68 {
         format!(
@@ -197,9 +214,33 @@ fn operational_network_block(width: u16) -> Block<'static> {
         .style(theme::panel());
 
     // Marker meanings are spatial information, so the map keeps only this
-    // compact legend. The selected location is already identified by its map
-    // marker/label and by the inspector when one is visible.
-    if width >= 82 {
+    // compact legend. Wide maps also explain infrastructure lifecycle and
+    // electrification without consuming a separate panel.
+    if width >= 110 {
+        block = block.title_bottom(
+            Line::from(vec![
+                Span::styled(" ● ", theme::primary_value()),
+                Span::styled("station", theme::secondary()),
+                Span::styled("   ◉ ", theme::success()),
+                Span::styled("ready", theme::secondary()),
+                Span::styled("   ○ ", theme::secondary()),
+                Span::styled("settlement", theme::secondary()),
+                Span::styled("   ─ ", theme::secondary()),
+                Span::styled("single", theme::secondary()),
+                Span::styled("   ═ ", theme::secondary()),
+                Span::styled("double", theme::secondary()),
+                Span::styled("   ─ ", theme::success()),
+                Span::styled("electric", theme::secondary()),
+                Span::styled("   ─ ", theme::warning()),
+                Span::styled("planned", theme::secondary()),
+                Span::styled("   ━ ", theme::warning().bold()),
+                Span::styled("works", theme::secondary()),
+                Span::styled("   ▶ ", theme::warning()),
+                Span::styled("train ", theme::secondary()),
+            ])
+            .right_aligned(),
+        );
+    } else if width >= 82 {
         block = block.title_bottom(
             Line::from(vec![
                 Span::styled(" ● ", theme::primary_value()),
@@ -277,6 +318,37 @@ fn render_location_inspector(
             .collect::<Vec<_>>();
         station_services.sort_by(|left, right| left.name.cmp(&right.name));
         let service_count = station_services.len();
+        let incident_lines = state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_lines
+            .iter()
+            .filter(|line| {
+                line.first_station_id == station.id || line.second_station_id == station.id
+            })
+            .collect::<Vec<_>>();
+        let single_track_count = incident_lines
+            .iter()
+            .filter(|line| line.track_count.tracks() == 1)
+            .count();
+        let double_track_count = incident_lines
+            .iter()
+            .filter(|line| line.track_count.tracks() >= 2)
+            .count();
+        let electrified_count = incident_lines
+            .iter()
+            .filter(|line| line.electrification == Electrification::Electric)
+            .count();
+        let min_speed = incident_lines
+            .iter()
+            .map(|line| line.speed_limit.kilometres_per_hour())
+            .min();
+        let max_speed = incident_lines
+            .iter()
+            .map(|line| line.speed_limit.kilometres_per_hour())
+            .max();
+        let (planned_projects, construction_projects) = station_project_counts(state, station.id);
 
         let mut demand = state
             .origin_destination_demand
@@ -385,6 +457,32 @@ fn render_location_inspector(
                     ));
                 }
             }
+
+            if area.height >= 34 {
+                lines.push(Line::from(""));
+                lines.push(inspector_section("INFRASTRUCTURE"));
+                lines.push(inspector_metric("Connections", &incident_lines.len().to_string()));
+                lines.push(inspector_metric(
+                    "Track",
+                    &format!("{single_track_count} single · {double_track_count} double"),
+                ));
+                lines.push(inspector_metric(
+                    "Electrified",
+                    &format!("{electrified_count} / {} links", incident_lines.len()),
+                ));
+                lines.push(inspector_metric(
+                    "Speed limit",
+                    &infrastructure_speed_range(min_speed, max_speed),
+                ));
+                if planned_projects > 0 || construction_projects > 0 {
+                    lines.push(inspector_metric(
+                        "Projects",
+                        &format!(
+                            "{planned_projects} planned · {construction_projects} works"
+                        ),
+                    ));
+                }
+            }
         }
 
         ("Station", lines)
@@ -405,10 +503,16 @@ fn render_location_inspector(
                 )
             },
         );
+        let connection_project = connection_project_status(state, settlement.id);
 
         if compact {
             lines.push(Line::from(""));
-            lines.push(inspector_metric("Rail access", "No station"));
+            lines.push(inspector_metric(
+                "Rail access",
+                connection_project
+                    .map(connection_project_summary)
+                    .unwrap_or("No station"),
+            ));
             if let Some(maturity) = council_signal {
                 lines.push(inspector_metric(
                     "Council case",
@@ -424,31 +528,43 @@ fn render_location_inspector(
         } else {
             lines.push(Line::from(""));
             lines.push(inspector_section("RAIL ACCESS"));
-            lines.push(Line::styled("No rail station", theme::primary_value()));
-            lines.push(Line::styled(
-                "Passenger services require a connection to the rail network.",
-                theme::secondary(),
-            ));
-
-            if let Some(maturity) = council_signal {
-                lines.push(Line::from(""));
-                lines.push(inspector_section("COUNCIL CONNECTION CASE"));
-                lines.push(inspector_metric(
-                    "Nearby adoption",
-                    &market_maturity_summary(maturity),
-                ));
-                lines.push(inspector_metric(
-                    "Request threshold",
-                    &market_maturity_percent(COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS),
-                ));
+            if let Some(status) = connection_project {
                 lines.push(Line::styled(
-                    if maturity >= COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS {
-                        "Local rail success is strong enough for a council connection request."
-                    } else {
-                        "Nearby rail use must grow before the council can request a connection."
-                    },
+                    connection_project_summary(status),
+                    project_status_style(status),
+                ));
+                lines.push(inspector_metric("Project", project_status_label(status)));
+                lines.push(Line::styled(
+                    "Passenger services become available when the connection opens.",
                     theme::secondary(),
                 ));
+            } else {
+                lines.push(Line::styled("No rail station", theme::primary_value()));
+                lines.push(Line::styled(
+                    "Passenger services require a connection to the rail network.",
+                    theme::secondary(),
+                ));
+
+                if let Some(maturity) = council_signal {
+                    lines.push(Line::from(""));
+                    lines.push(inspector_section("COUNCIL CONNECTION CASE"));
+                    lines.push(inspector_metric(
+                        "Nearby adoption",
+                        &market_maturity_summary(maturity),
+                    ));
+                    lines.push(inspector_metric(
+                        "Request threshold",
+                        &market_maturity_percent(COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS),
+                    ));
+                    lines.push(Line::styled(
+                        if maturity >= COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS {
+                            "Local rail success is strong enough for a council connection request."
+                        } else {
+                            "Nearby rail use must grow before the council can request a connection."
+                        },
+                        theme::secondary(),
+                    ));
+                }
             }
         }
 
@@ -583,6 +699,125 @@ fn market_maturity_label(basis_points: u16) -> &'static str {
     }
 }
 
+fn infrastructure_speed_range(min_speed: Option<u16>, max_speed: Option<u16>) -> String {
+    match (min_speed, max_speed) {
+        (Some(minimum), Some(maximum)) if minimum != maximum => {
+            format!("{minimum}–{maximum} km/h")
+        }
+        (Some(speed), _) => format!("{speed} km/h"),
+        _ => "—".into(),
+    }
+}
+
+fn station_project_counts(state: &GameState, station_id: RailStationId) -> (usize, usize) {
+    let mut planned = 0_usize;
+    let mut construction = 0_usize;
+    for project in &state.region.rail_authority.infrastructure_projects {
+        let Some(visual_state) = project_visual_state(project.status) else {
+            continue;
+        };
+        if !project_affects_station(state, project, station_id) {
+            continue;
+        }
+        match visual_state {
+            InfrastructureVisualState::Planned => planned = planned.saturating_add(1),
+            InfrastructureVisualState::Construction => {
+                construction = construction.saturating_add(1)
+            }
+            InfrastructureVisualState::Open => {}
+        }
+    }
+    (planned, construction)
+}
+
+fn project_affects_station(
+    state: &GameState,
+    project: &InfrastructureProject,
+    station_id: RailStationId,
+) -> bool {
+    match &project.kind {
+        InfrastructureProjectKind::NewLine { planned_lines, .. } => planned_lines.iter().any(|line| {
+            line.first_station_id == station_id || line.second_station_id == station_id
+        }),
+        InfrastructureProjectKind::SpeedUpgrade { rail_line_ids, .. }
+        | InfrastructureProjectKind::DoubleTracking { rail_line_ids, .. }
+        | InfrastructureProjectKind::Electrification { rail_line_ids }
+        | InfrastructureProjectKind::Renewal { rail_line_ids } => state
+            .region
+            .rail_authority
+            .rail_network
+            .rail_lines
+            .iter()
+            .any(|line| {
+                rail_line_ids.contains(&line.id)
+                    && (line.first_station_id == station_id
+                        || line.second_station_id == station_id)
+            }),
+        InfrastructureProjectKind::StationUpgrade { rail_station_ids } => {
+            rail_station_ids.contains(&station_id)
+        }
+    }
+}
+
+fn connection_project_status(
+    state: &GameState,
+    settlement_id: SettlementId,
+) -> Option<InfrastructureProjectStatus> {
+    state
+        .region
+        .rail_authority
+        .infrastructure_projects
+        .iter()
+        .filter(|project| project_visual_state(project.status).is_some())
+        .filter(|project| {
+            matches!(
+                &project.kind,
+                InfrastructureProjectKind::NewLine { planned_stations, .. }
+                    if planned_stations
+                        .iter()
+                        .any(|station| station.settlement_id == settlement_id)
+            )
+        })
+        .max_by_key(|project| {
+            project_visual_state(project.status)
+                .map(infrastructure_visual_priority)
+                .unwrap_or(0)
+        })
+        .map(|project| project.status)
+}
+
+fn connection_project_summary(status: InfrastructureProjectStatus) -> &'static str {
+    match project_visual_state(status) {
+        Some(InfrastructureVisualState::Construction) => "Station under construction",
+        Some(InfrastructureVisualState::Planned) => "Connection planned",
+        Some(InfrastructureVisualState::Open) | None => "No station",
+    }
+}
+
+fn project_status_label(status: InfrastructureProjectStatus) -> &'static str {
+    match status {
+        InfrastructureProjectStatus::Proposed => "PROPOSED",
+        InfrastructureProjectStatus::Approved => "APPROVED",
+        InfrastructureProjectStatus::Funding => "FUNDING",
+        InfrastructureProjectStatus::Scheduled => "SCHEDULED",
+        InfrastructureProjectStatus::Construction => "CONSTRUCTION",
+        InfrastructureProjectStatus::Requested => "REQUESTED",
+        InfrastructureProjectStatus::UnderReview => "UNDER REVIEW",
+        InfrastructureProjectStatus::Deferred => "DEFERRED",
+        InfrastructureProjectStatus::Rejected => "REJECTED",
+        InfrastructureProjectStatus::Open => "OPEN",
+        InfrastructureProjectStatus::Cancelled => "CANCELLED",
+    }
+}
+
+fn project_status_style(status: InfrastructureProjectStatus) -> ratatui::style::Style {
+    match project_visual_state(status) {
+        Some(InfrastructureVisualState::Construction) => theme::warning().bold(),
+        Some(InfrastructureVisualState::Planned) => theme::warning(),
+        Some(InfrastructureVisualState::Open) | None => theme::primary_value(),
+    }
+}
+
 fn truncate_label(value: &str, max_chars: usize) -> String {
     let mut characters = value.chars();
     let prefix = characters.by_ref().take(max_chars).collect::<String>();
@@ -632,7 +867,8 @@ pub(super) fn operational_layout(state: &GameState) -> Option<OperationalLayout>
         })
         .collect::<Vec<_>>();
 
-    let lines = network
+    let project_line_states = project_line_visual_states(state);
+    let mut lines = network
         .rail_lines
         .iter()
         .filter_map(|line| {
@@ -644,11 +880,163 @@ pub(super) fn operational_layout(state: &GameState) -> Option<OperationalLayout>
                 second_settlement_id: second.settlement_id,
                 distance_metres: line.distance.metres(),
                 track_count: line.track_count.tracks(),
+                electrified: line.electrification == Electrification::Electric,
+                visual_state: project_line_states
+                    .get(&line.id)
+                    .copied()
+                    .unwrap_or(InfrastructureVisualState::Open),
             })
         })
-        .collect();
+        .collect::<Vec<_>>();
+
+    let mut station_settlements = station_by_id
+        .iter()
+        .map(|(station_id, station)| (*station_id, station.settlement_id))
+        .collect::<BTreeMap<_, _>>();
+    for project in &state.region.rail_authority.infrastructure_projects {
+        let Some(visual_state) = project_visual_state(project.status) else {
+            continue;
+        };
+        let InfrastructureProjectKind::NewLine {
+            planned_stations,
+            planned_lines,
+        } = &project.kind
+        else {
+            continue;
+        };
+
+        for station in planned_stations {
+            station_settlements.insert(station.id, station.settlement_id);
+        }
+        for line in planned_lines {
+            let (Some(first_settlement_id), Some(second_settlement_id)) = (
+                station_settlements.get(&line.first_station_id).copied(),
+                station_settlements.get(&line.second_station_id).copied(),
+            ) else {
+                continue;
+            };
+            lines.push(OperationalLine {
+                rail_line_id: line.id,
+                first_settlement_id,
+                second_settlement_id,
+                distance_metres: line.distance.metres(),
+                track_count: line.track_count.tracks(),
+                electrified: line.electrification == Electrification::Electric,
+                visual_state,
+            });
+        }
+    }
 
     Some(OperationalLayout { places, lines })
+}
+
+fn project_visual_state(status: InfrastructureProjectStatus) -> Option<InfrastructureVisualState> {
+    match status {
+        InfrastructureProjectStatus::Proposed
+        | InfrastructureProjectStatus::Approved
+        | InfrastructureProjectStatus::Funding
+        | InfrastructureProjectStatus::Scheduled => Some(InfrastructureVisualState::Planned),
+        InfrastructureProjectStatus::Construction => Some(InfrastructureVisualState::Construction),
+        InfrastructureProjectStatus::Requested
+        | InfrastructureProjectStatus::UnderReview
+        | InfrastructureProjectStatus::Deferred
+        | InfrastructureProjectStatus::Rejected
+        | InfrastructureProjectStatus::Open
+        | InfrastructureProjectStatus::Cancelled => None,
+    }
+}
+
+fn project_line_visual_states(
+    state: &GameState,
+) -> BTreeMap<RailLineId, InfrastructureVisualState> {
+    let mut result = BTreeMap::new();
+    for project in &state.region.rail_authority.infrastructure_projects {
+        let Some(visual_state) = project_visual_state(project.status) else {
+            continue;
+        };
+        let Some(line_ids) = project_existing_line_ids(project) else {
+            continue;
+        };
+        for rail_line_id in line_ids {
+            let current = result
+                .get(rail_line_id)
+                .copied()
+                .unwrap_or(InfrastructureVisualState::Open);
+            if infrastructure_visual_priority(visual_state) > infrastructure_visual_priority(current) {
+                result.insert(*rail_line_id, visual_state);
+            }
+        }
+    }
+    result
+}
+
+fn project_existing_line_ids(project: &InfrastructureProject) -> Option<&[RailLineId]> {
+    match &project.kind {
+        InfrastructureProjectKind::SpeedUpgrade { rail_line_ids, .. }
+        | InfrastructureProjectKind::DoubleTracking { rail_line_ids, .. }
+        | InfrastructureProjectKind::Electrification { rail_line_ids }
+        | InfrastructureProjectKind::Renewal { rail_line_ids } => Some(rail_line_ids),
+        InfrastructureProjectKind::NewLine { .. }
+        | InfrastructureProjectKind::StationUpgrade { .. } => None,
+    }
+}
+
+fn infrastructure_visual_priority(state: InfrastructureVisualState) -> u8 {
+    match state {
+        InfrastructureVisualState::Open => 0,
+        InfrastructureVisualState::Planned => 1,
+        InfrastructureVisualState::Construction => 2,
+    }
+}
+
+fn settlement_project_visual_state(
+    state: &GameState,
+    settlement_id: SettlementId,
+    station_id: Option<RailStationId>,
+) -> Option<InfrastructureVisualState> {
+    let mut strongest = None;
+    for project in &state.region.rail_authority.infrastructure_projects {
+        let Some(visual_state) = project_visual_state(project.status) else {
+            continue;
+        };
+        let affects_location = match &project.kind {
+            InfrastructureProjectKind::NewLine {
+                planned_stations,
+                planned_lines,
+            } => {
+                planned_stations
+                    .iter()
+                    .any(|planned| planned.settlement_id == settlement_id)
+                    || station_id.is_some_and(|station_id| {
+                        planned_lines.iter().any(|line| {
+                            line.first_station_id == station_id
+                                || line.second_station_id == station_id
+                        })
+                    })
+            }
+            InfrastructureProjectKind::StationUpgrade { rail_station_ids } => {
+                station_id.is_some_and(|station_id| rail_station_ids.contains(&station_id))
+            }
+            InfrastructureProjectKind::SpeedUpgrade { .. }
+            | InfrastructureProjectKind::DoubleTracking { .. }
+            | InfrastructureProjectKind::Electrification { .. }
+            | InfrastructureProjectKind::Renewal { .. } => false,
+        };
+        if !affects_location {
+            continue;
+        }
+        let replace = match strongest {
+            Some(current) => {
+                infrastructure_visual_priority(visual_state)
+                    > infrastructure_visual_priority(current)
+            }
+            None => true,
+        };
+        if replace {
+            strongest = Some(visual_state);
+        }
+    }
+    strongest
 }
 
 #[derive(Clone, Debug, Default)]
@@ -703,7 +1091,15 @@ fn service_preview_layout(
     }
 
     if focus.is_empty() {
-        return layout.clone();
+        return OperationalLayout {
+            places: layout.places.clone(),
+            lines: layout
+                .lines
+                .iter()
+                .filter(|line| line.visual_state == InfrastructureVisualState::Open)
+                .copied()
+                .collect(),
+        };
     }
 
     let highlighted_settlement_id = overlay
@@ -716,7 +1112,11 @@ fn service_preview_layout(
         .collect::<BTreeMap<_, _>>();
 
     let mut context_candidates = BTreeSet::new();
-    for line in &layout.lines {
+    for line in layout
+        .lines
+        .iter()
+        .filter(|line| line.visual_state == InfrastructureVisualState::Open)
+    {
         if focus.contains(&line.first_settlement_id) && !focus.contains(&line.second_settlement_id)
         {
             context_candidates.insert(line.second_settlement_id);
@@ -761,7 +1161,8 @@ fn service_preview_layout(
         .lines
         .iter()
         .filter(|line| {
-            visible.contains(&line.first_settlement_id)
+            line.visual_state == InfrastructureVisualState::Open
+                && visible.contains(&line.first_settlement_id)
                 && visible.contains(&line.second_settlement_id)
         })
         .copied()
@@ -870,7 +1271,7 @@ fn render_map_rows_with_overlay(
     let height = usize::from(height);
     let mut grid = vec![vec![MapCell::default(); width]; height];
     let mut rail_mask = vec![vec![0_u8; width]; height];
-    let mut rail_accent = vec![vec![false; width]; height];
+    let mut rail_ink = vec![vec![MapInk::Rail; width]; height];
     let mut rail_double = vec![vec![false; width]; height];
 
     let min_x = layout.places.iter().map(|place| place.x).min().unwrap_or(0) - 2;
@@ -930,13 +1331,23 @@ fn render_map_rows_with_overlay(
             },
             |overlay| overlay.route_line_ids.contains(&line.rail_line_id),
         );
+        let ink = if accent {
+            MapInk::RailAccent
+        } else {
+            match line.visual_state {
+                InfrastructureVisualState::Construction => MapInk::RailConstruction,
+                InfrastructureVisualState::Planned => MapInk::RailPlanned,
+                InfrastructureVisualState::Open if line.electrified => MapInk::RailElectric,
+                InfrastructureVisualState::Open => MapInk::Rail,
+            }
+        };
         draw_orthogonal_rail(
             &mut rail_mask,
-            &mut rail_accent,
+            &mut rail_ink,
             &mut rail_double,
             start,
             end,
-            accent,
+            ink,
             line.track_count >= 2,
         );
     }
@@ -944,13 +1355,14 @@ fn render_map_rows_with_overlay(
     for y in 0..height {
         for x in 0..width {
             if rail_mask[y][x] != 0 {
+                let ink = rail_ink[y][x];
                 grid[y][x] = MapCell {
-                    ch: rail_glyph(rail_mask[y][x], rail_accent[y][x], rail_double[y][x]),
-                    ink: if rail_accent[y][x] {
-                        MapInk::RailAccent
-                    } else {
-                        MapInk::Rail
-                    },
+                    ch: rail_glyph(
+                        rail_mask[y][x],
+                        matches!(ink, MapInk::RailAccent | MapInk::RailConstruction),
+                        rail_double[y][x],
+                    ),
+                    ink,
                 };
             }
         }
@@ -981,6 +1393,12 @@ fn render_map_rows_with_overlay(
         let preview_last_stop = overlay
             .and_then(|overlay| overlay.stop_order.values().copied().max())
             .is_some_and(|last_stop| preview_stop_order == Some(last_stop));
+        let project_visual_state = overlay
+            .is_none()
+            .then(|| {
+                settlement_project_visual_state(state, place.settlement_id, place.station_id)
+            })
+            .flatten();
         let (marker, ink) = if preview_cursor {
             ('◆', MapInk::Cursor)
         } else if preview_stop_order == Some(1) {
@@ -991,8 +1409,12 @@ fn render_map_rows_with_overlay(
             ('●', MapInk::Selected)
         } else if selected == Some(place.settlement_id) {
             ('◆', MapInk::Selected)
+        } else if project_visual_state == Some(InfrastructureVisualState::Construction) {
+            ('◆', MapInk::ProjectConstruction)
         } else if overlay.is_none() && is_ready_station {
             ('◉', MapInk::Ready)
+        } else if project_visual_state == Some(InfrastructureVisualState::Planned) {
+            ('◇', MapInk::ProjectPlanned)
         } else if overlay.is_some() && place.station_id.is_some() {
             ('●', MapInk::Unconnected)
         } else if place.station_id.is_some() {
@@ -1069,12 +1491,24 @@ fn render_map_rows_with_overlay(
         let label = map_place_label(place, selected);
         let preferred_direction =
             preferred_label_direction(place, &label, &layout.places, &place_positions, selected);
+        let project_visual_state = overlay
+            .is_none()
+            .then(|| {
+                settlement_project_visual_state(state, place.settlement_id, place.station_id)
+            })
+            .flatten();
         let ink = if preview_cursor {
             MapInk::Cursor
         } else if stop_number.is_some() {
             MapInk::Selected
         } else if overlay.is_some() {
             MapInk::Unconnected
+        } else if selected == Some(place.settlement_id) {
+            MapInk::Selected
+        } else if project_visual_state == Some(InfrastructureVisualState::Construction) {
+            MapInk::ProjectConstruction
+        } else if project_visual_state == Some(InfrastructureVisualState::Planned) {
+            MapInk::ProjectPlanned
         } else {
             place_ink(place, selected, &adjacent)
         };
