@@ -22,7 +22,7 @@ use super::{
         new_line_route_label, project_next, project_scope, relative_time,
     },
     programme::{render_programme_pipeline, render_projects, stage_label, stage_style},
-    project::render_selected_project,
+    project::{preferred_project_detail_height, render_selected_project},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,17 +84,17 @@ fn render_wide(
     render_authority_metrics(frame, metrics_area, state, now, snapshot);
     render_programme_pipeline(frame, pipeline_area, snapshot.programme);
 
-    const PROJECT_DETAIL_HEIGHT: u16 = 19;
     const MIN_PROGRAMME_HEIGHT: u16 = 7;
+    let project_detail_height = preferred_project_detail_height(state, now, selection);
 
     if body_area.height
-        >= PROJECT_DETAIL_HEIGHT
+        >= project_detail_height
             .saturating_add(MIN_PROGRAMME_HEIGHT)
             .saturating_add(1)
     {
         let [projects_area, project_area] = Layout::vertical([
             Constraint::Fill(1),
-            Constraint::Length(PROJECT_DETAIL_HEIGHT),
+            Constraint::Length(project_detail_height),
         ])
         .spacing(1)
         .areas(body_area);
@@ -132,16 +132,7 @@ fn render_authority_overview(
     } else {
         theme::success()
     };
-    let mut programme_lines = vec![Line::from(vec![
-        Span::styled(programme_state, programme_style.bold()),
-        Span::styled(
-            format!(
-                " · {} building · {} funding · {} open",
-                snapshot.active_construction, snapshot.programme.funding, snapshot.programme.open
-            ),
-            theme::secondary(),
-        ),
-    ])];
+    let mut programme_lines = vec![Line::styled(programme_state, programme_style.bold())];
     programme_lines.push(next_network_change_line(state, now, snapshot));
     render_dashboard_section(frame, programme_area, programme_lines);
 

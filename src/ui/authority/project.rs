@@ -40,6 +40,25 @@ use super::{
     programme::{stage_label, stage_style},
 };
 
+
+pub(super) fn preferred_project_detail_height(
+    state: &GameState,
+    now: UtcSeconds,
+    selection: &mut ProjectSelection,
+) -> u16 {
+    let Some((_, project)) = selection.selected_project(state) else {
+        return 8;
+    };
+
+    let content_lines = project_context_lines(state, project)
+        .len()
+        .max(stage_focus_lines(state, now, project).len());
+    let content_height = u16::try_from(content_lines).unwrap_or(u16::MAX);
+
+    // Border (2) + header (2) + two gaps (2) + milestones (1).
+    content_height.saturating_add(7).clamp(14, 20)
+}
+
 pub(super) fn render_selected_project(
     frame: &mut Frame,
     area: Rect,
@@ -205,19 +224,25 @@ fn render_project_context(
     state: &GameState,
     project: &InfrastructureProject,
 ) {
+    frame.render_widget(
+        Paragraph::new(project_context_lines(state, project))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn project_context_lines(
+    state: &GameState,
+    project: &InfrastructureProject,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     append_development_case(&mut lines, state, project);
     if !lines.is_empty() {
         lines.push(Line::from(""));
     }
     append_infrastructure_scope(&mut lines, state, project);
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(theme::panel())
-            .wrap(Wrap { trim: true }),
-        area,
-    );
+    lines
 }
 
 fn append_development_case(
@@ -348,6 +373,19 @@ fn render_stage_focus(
     now: UtcSeconds,
     project: &InfrastructureProject,
 ) {
+    frame.render_widget(
+        Paragraph::new(stage_focus_lines(state, now, project))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn stage_focus_lines(
+    state: &GameState,
+    now: UtcSeconds,
+    project: &InfrastructureProject,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match project.status {
         InfrastructureProjectStatus::Requested
@@ -374,13 +412,7 @@ fn render_stage_focus(
             append_cancelled_focus(&mut lines, now, project);
         }
     }
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(theme::panel())
-            .wrap(Wrap { trim: true }),
-        area,
-    );
+    lines
 }
 
 fn append_decision_focus(

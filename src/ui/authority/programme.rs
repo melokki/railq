@@ -242,11 +242,35 @@ pub(super) fn render_projects(
 
     let table = Table::new(rows, widths)
         .header(header)
+        .column_spacing(if compact { 1 } else { 2 })
         .block(panel_block("Programme", false))
         .row_highlight_style(theme::selected_row())
         .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(table, area, &mut selection.table_state);
+
+    if let Some(history_index) = first_history_row.filter(|index| *index > 0) {
+        let history_is_visible = selection.table_state.offset() == 0
+            && history_index < selection.page_size
+            && area.height > 4;
+        if history_is_visible {
+            let separator_y = area
+                .y
+                .saturating_add(2)
+                .saturating_add(u16::try_from(history_index).unwrap_or(u16::MAX));
+            if separator_y < area.bottom().saturating_sub(1) {
+                frame.render_widget(
+                    Paragraph::new(Line::styled("OPENED / HISTORY", theme::secondary())),
+                    Rect::new(
+                        area.x.saturating_add(4),
+                        separator_y,
+                        area.width.saturating_sub(8),
+                        1,
+                    ),
+                );
+            }
+        }
+    }
 }
 
 fn programme_next(state: &GameState, project: &InfrastructureProject, now: UtcSeconds) -> String {
