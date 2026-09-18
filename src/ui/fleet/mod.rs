@@ -16,6 +16,7 @@ use ratatui::{
 };
 
 mod assignment;
+mod dashboard;
 
 use assignment::{ServiceAssignmentAction, ServiceAssignmentFlow};
 
@@ -1046,8 +1047,18 @@ fn render_wide_dashboard(
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
+    let [overview_area, metrics_area, fleet_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(5),
+        Constraint::Fill(1),
+    ])
+    .spacing(1)
+    .areas(shell_inner);
+    dashboard::render_overview(frame, overview_area, state);
+    dashboard::render_metrics(frame, metrics_area, state, now);
+
     let [list_area, inspector_area] =
-        Layout::horizontal([Constraint::Min(48), Constraint::Length(44)]).areas(shell_inner);
+        Layout::horizontal([Constraint::Min(48), Constraint::Length(44)]).areas(fleet_area);
     let list_area = horizontal_inset(list_area, 1);
     let visible_items = usize::from(list_area.height.saturating_sub(2)).max(1);
     selection.set_page_size(visible_items);

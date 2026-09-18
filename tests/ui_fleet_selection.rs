@@ -52,6 +52,11 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
 
     let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(wide.contains("Fleet"));
+    assert!(wide.contains("FLEET AVAILABLE"));
+    assert!(wide.contains("AVAILABILITY"));
+    assert!(wide.contains("ALLOCATION"));
+    assert!(wide.contains("SEAT CAPACITY"));
+    assert!(wide.contains("ASSET VALUE"));
     assert!(wide.contains("Train"));
     assert!(wide.contains("EVN"));
     assert!(wide.contains("Helvetra R70"));
