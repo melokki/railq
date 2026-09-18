@@ -51,7 +51,7 @@ pub fn render_metric_card(
         Paragraph::new(vec![
             Line::styled(value, theme::primary_value().bold()),
             Line::styled(subtitle, theme::secondary()),
-            Line::styled(context, theme::hint()),
+            Line::styled(context, theme::secondary()),
         ])
         .alignment(Alignment::Center)
         .style(theme::panel()),

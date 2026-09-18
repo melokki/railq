@@ -12,7 +12,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, LineGauge, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
 
 mod assignment;
@@ -1294,9 +1294,7 @@ fn render_train_inspector(
     };
 
     let journey = journey_for_train(train, state);
-    let gauge_height = if journey.is_some() { 1 } else { 0 };
-    let [details_area, progress_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(gauge_height)]).areas(inner);
+    let details_area = inner;
     // A short-but-wide terminal still needs the operational facts to fit. In
     // that case use the same dense hierarchy as the compact detail page.
     let dense_detail = compact_detail || details_area.height < 30;
@@ -1306,15 +1304,11 @@ fn render_train_inspector(
         lines.push(section_heading("SELECTED TRAIN"));
         lines.push(Line::styled(title.clone(), theme::focused_title()));
         lines.push(Line::styled(fields.model.clone(), theme::primary_value()));
-        lines.push(selected_train_summary(state, train, journey));
     } else {
-        lines.push(Line::from(vec![
-            Span::styled(fields.model.clone(), theme::primary_value()),
-            Span::styled(" · ", theme::secondary()),
-            Span::styled(train.evn.formatted(), theme::secondary()),
-        ]));
-        lines.push(selected_train_summary(state, train, journey));
+        lines.push(Line::styled(fields.model.clone(), theme::primary_value()));
     }
+    lines.push(selected_train_identity_line(state, train));
+    lines.push(selected_train_summary(state, train, journey));
 
     match (&train.status, journey) {
         (TrainStatus::Ready { at }, _) => {
@@ -1370,17 +1364,6 @@ fn render_train_inspector(
                 lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
             }
 
-            inspector_section(&mut lines, "IDENTITY", dense_detail);
-            lines.push(labelled_line("EVN", &train.evn.formatted()));
-            lines.push(labelled_line(
-                "Keeper mark",
-                &format!(
-                    "{}-{}",
-                    state.region.railway_registration.mark,
-                    state.player_company.vehicle_keeper_mark.as_str(),
-                ),
-            ));
-
             inspector_section(&mut lines, "ASSET VALUE", dense_detail);
             if !dense_detail {
                 lines.push(labelled_line(
@@ -1422,16 +1405,9 @@ fn render_train_inspector(
                 "ETA",
                 &format!("in {}", format_duration(remaining_seconds(journey, now))),
             ));
-            lines.push(labelled_line(
-                "Leg progress",
-                &format!(
-                    "{}% · {} elapsed",
-                    journey_progress_percent(journey, now),
-                    format_duration(elapsed_seconds(journey, now)),
-                ),
-            ));
+            lines.push(journey_progress_line(journey, now, details_area.width));
 
-            inspector_section(&mut lines, "SERVICE", dense_detail);
+            inspector_section(&mut lines, "SERVICE", true);
             if let Some(service) = state
                 .player_company
                 .passenger_services
@@ -1456,7 +1432,7 @@ fn render_train_inspector(
                 ));
             }
 
-            inspector_section(&mut lines, "PASSENGERS", dense_detail);
+            inspector_section(&mut lines, "PASSENGERS", true);
             let onboard = journey.onboard_passengers();
             lines.push(labelled_line(
                 "On board",
@@ -1470,7 +1446,7 @@ fn render_train_inspector(
                 ));
             }
 
-            inspector_section(&mut lines, "COMMERCIAL", dense_detail);
+            inspector_section(&mut lines, "COMMERCIAL", true);
             if dense_detail {
                 match journey_expected_result(journey) {
                     Some(result) => lines.push(labelled_line_styled(
@@ -1508,7 +1484,7 @@ fn render_train_inspector(
                 }
             }
 
-            inspector_section(&mut lines, "CAPABILITY", dense_detail);
+            inspector_section(&mut lines, "CAPABILITY", true);
             if dense_detail {
                 lines.push(Line::from(vec![
                     Span::styled(format!("{:<18}", "Technical"), theme::secondary()),
@@ -1524,17 +1500,6 @@ fn render_train_inspector(
                 lines.push(labelled_line("Propulsion", &format_propulsion(train)));
                 lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
             }
-
-            inspector_section(&mut lines, "IDENTITY", dense_detail);
-            lines.push(labelled_line("EVN", &train.evn.formatted()));
-            lines.push(labelled_line(
-                "Keeper mark",
-                &format!(
-                    "{}-{}",
-                    state.region.railway_registration.mark,
-                    state.player_company.vehicle_keeper_mark.as_str(),
-                ),
-            ));
         }
         (TrainStatus::Travelling { journey_id }, None) => {
             inspector_section(&mut lines, "OPERATIONS", dense_detail);
@@ -1565,17 +1530,6 @@ fn render_train_inspector(
                 lines.push(labelled_line("Propulsion", &format_propulsion(train)));
                 lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
             }
-
-            inspector_section(&mut lines, "IDENTITY", dense_detail);
-            lines.push(labelled_line("EVN", &train.evn.formatted()));
-            lines.push(labelled_line(
-                "Keeper mark",
-                &format!(
-                    "{}-{}",
-                    state.region.railway_registration.mark,
-                    state.player_company.vehicle_keeper_mark.as_str(),
-                ),
-            ));
         }
     }
 
@@ -1586,17 +1540,44 @@ fn render_train_inspector(
         details_area,
     );
 
-    if let Some(journey) = journey {
-        let percent = journey_progress_percent(journey, now).min(100);
-        frame.render_widget(
-            LineGauge::default()
-                .ratio(percent as f64 / 100.0)
-                .label(journey_progress_label(state, journey, percent))
-                .filled_style(Style::default().fg(theme::ACCENT).bg(theme::PANEL))
-                .unfilled_style(Style::default().fg(theme::SECONDARY).bg(theme::PANEL)),
-            progress_area,
-        );
+}
+
+fn selected_train_identity_line(state: &GameState, train: &Train) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("EVN ", theme::secondary()),
+        Span::styled(train.evn.formatted(), theme::primary_value()),
+        Span::styled(" · ", theme::secondary()),
+        Span::styled(
+            format!(
+                "{}-{}",
+                state.region.railway_registration.mark,
+                state.player_company.vehicle_keeper_mark.as_str(),
+            ),
+            theme::secondary(),
+        ),
+    ])
+}
+
+fn journey_progress_line(journey: &Journey, now: UtcSeconds, width: u16) -> Line<'static> {
+    let percent = journey_progress_percent(journey, now).min(100);
+    let available = width.saturating_sub(24);
+    let bar_width = usize::from(available.min(16));
+    let mut spans = vec![Span::styled(format!("{:<18}", "Leg progress"), theme::secondary())];
+
+    if bar_width >= 4 {
+        let filled = (bar_width.saturating_mul(percent as usize).saturating_add(99) / 100)
+            .min(bar_width);
+        spans.push(Span::styled("━".repeat(filled), theme::focused_border()));
+        spans.push(Span::styled(
+            "─".repeat(bar_width.saturating_sub(filled)),
+            theme::secondary(),
+        ));
+        spans.push(Span::styled(format!(" {percent}%"), theme::primary_value()));
+    } else {
+        spans.push(Span::styled(format!("{percent}%"), theme::primary_value()));
     }
+
+    Line::from(spans)
 }
 
 fn selected_train_summary(
@@ -1663,17 +1644,6 @@ fn journey_leg_label(state: &GameState, journey: &Journey) -> String {
         station_label_or_missing(state, from),
         station_label_or_missing(state, to),
     )
-}
-
-fn journey_progress_label(state: &GameState, journey: &Journey, percent: u64) -> String {
-    journey_next_stop_station_id(state, journey)
-        .map(|station_id| {
-            format!(
-                "{percent}% · {}",
-                station_label_or_missing(state, station_id),
-            )
-        })
-        .unwrap_or_else(|| format!("Leg {percent}%"))
 }
 
 fn train_status_label(train: &Train) -> &'static str {

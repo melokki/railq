@@ -55,7 +55,7 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     assert!(wide.contains("FLEET AVAILABLE"));
     assert!(wide.contains("AVAILABILITY"));
     assert!(wide.contains("ALLOCATION"));
-    assert!(wide.contains("SEAT CAPACITY"));
+    assert!(wide.contains("LOAD"));
     assert!(wide.contains("ASSET VALUE"));
     assert!(wide.contains("ROLLING STOCK"));
     assert!(wide.contains("SELECTED TRAIN"));
@@ -67,7 +67,6 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     assert!(wide.contains("Current leg"));
     assert!(wide.contains("SERVICE"));
     assert!(wide.contains("CAPABILITY"));
-    assert!(wide.contains("IDENTITY"));
     assert!(wide.contains("TRAVELLING"));
     assert!(wide.contains("next arrival in"));
     let travelling_row = wide
@@ -189,7 +188,6 @@ fn fleet_inspector_surfaces_state_specific_information() {
     assert!(travelling.contains("COMMERCIAL"));
     assert!(travelling.contains("Expected result"));
     assert!(travelling.contains("CAPABILITY"));
-    assert!(travelling.contains("IDENTITY"));
     assert!(travelling.contains("EVN"));
     assert!(!travelling.contains("ASSET VALUE"));
 
@@ -202,7 +200,6 @@ fn fleet_inspector_surfaces_state_specific_information() {
     assert!(ready.contains("Assign Passenger Service"));
     assert!(ready.contains("ASSIGNMENT"));
     assert!(ready.contains("CAPABILITY"));
-    assert!(ready.contains("IDENTITY"));
     assert!(ready.contains("ASSET VALUE"));
     assert!(ready.contains("EVN"));
     assert!(!ready.contains("JOURNEY"));

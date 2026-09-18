@@ -125,8 +125,8 @@ pub(super) fn render_metrics(
     );
 
     let sample_context = sample_trip(state, train)
-        .map(|sample| format!("{} sample departure", format_money(sample.departure_cost)))
-        .unwrap_or_else(|| "sample departure unavailable".into());
+        .map(|sample| format!("{} benchmark trip", format_money(sample.departure_cost)))
+        .unwrap_or_else(|| "benchmark trip unavailable".into());
     components::render_metric_card(
         frame,
         operating_area,

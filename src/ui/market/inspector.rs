@@ -125,22 +125,20 @@ fn append_operating_profile(
         ),
     ));
     if let Some(sample) = sample_trip(state, train) {
-        lines.push(labelled_line(
-            "Sample route",
-            &format!("{} · {}", sample.route, sample.distance),
-        ));
+        lines.push(labelled_line("Benchmark", &sample.route));
+        lines.push(labelled_line("Distance", &sample.distance));
         if !dense {
             lines.push(labelled_line(
-                "Departure cost",
+                "Trip cost",
                 &format_money(sample.departure_cost),
             ));
             lines.push(labelled_line(
-                "After sample",
+                "Cash after trip",
                 &reserve_after_sample_display(state, train, &sample),
             ));
         }
     } else if !dense {
-        lines.push(labelled_line("Sample route", "Unavailable"));
+        lines.push(labelled_line("Benchmark", "Unavailable"));
     }
 }
 
@@ -236,7 +234,7 @@ fn purchase_status_hint(state: &GameState, train: &TrainModel) -> Option<Line<'s
     }
     if low_reserve(state, train) {
         return Some(Line::styled(
-            "Purchase leaves less cash than the sample departure requires.",
+            "Purchase leaves less cash than the benchmark trip requires.",
             theme::warning(),
         ));
     }

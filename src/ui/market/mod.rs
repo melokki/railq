@@ -706,10 +706,11 @@ fn render_purchase_review(
             financial_lines.extend([
                 Line::from(""),
                 Line::styled("RESERVE CHECK", theme::secondary()),
-                review_value("Sample route", &format!("{} · {}", sample.route, sample.distance)),
-                review_value("Departure cost", &format_money(sample.departure_cost)),
+                review_value("Benchmark", &sample.route),
+                review_value("Distance", &sample.distance),
+                review_value("Trip cost", &format_money(sample.departure_cost)),
                 review_value(
-                    "After sample",
+                    "Cash after trip",
                     &reserve_after_sample_display(state, train, &sample),
                 ),
             ]);
@@ -717,7 +718,7 @@ fn render_purchase_review(
         financial_lines.push(Line::from(""));
         financial_lines.push(if low_reserve(state, train) {
             Line::styled(
-                "LOW RESERVE · sample departure is not covered.",
+                "LOW RESERVE · benchmark trip is not covered.",
                 theme::warning(),
             )
         } else {
@@ -743,7 +744,7 @@ fn render_purchase_review(
         ));
         if low_reserve(state, train) {
             lines.push(Line::styled(
-                "LOW RESERVE · sample departure is not covered.",
+                "LOW RESERVE · benchmark trip is not covered.",
                 theme::warning(),
             ));
         } else {
@@ -909,7 +910,7 @@ fn render_purchase_review_text(
     if low_reserve(state, train) {
         writeln!(
             output,
-            "LOW RESERVE: funds after purchase cannot cover this sample departure cost."
+            "LOW RESERVE: funds after purchase cannot cover this benchmark trip cost."
         )
         .expect("writing to a String cannot fail");
     }
@@ -1491,7 +1492,7 @@ fn sample_trip(state: &GameState, train: &TrainModel) -> Option<SampleTrip> {
     let departure_cost = access_fee.checked_add(fuel_cost).ok()?;
     Some(SampleTrip {
         route: format!(
-            "{} -> {}",
+            "{} → {}",
             station_label(state, line.first_station_id),
             station_label(state, line.second_station_id)
         ),

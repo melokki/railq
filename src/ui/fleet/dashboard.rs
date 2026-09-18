@@ -94,24 +94,43 @@ pub(super) fn render_metrics(
         format!("{unassigned} unassigned"),
     );
 
-    let (capacity, capacity_context) = match fleet_capacity(state) {
-        Some(capacity) => {
-            let average = capacity / u64::try_from(total).unwrap_or(1).max(1);
-            (
-                format!("{capacity} seats"),
-                format!("{average} avg / train"),
-            )
-        }
-        None => ("Unavailable".into(), "catalogue data incomplete".into()),
-    };
-    components::render_metric_card(
-        frame,
-        capacity_area,
-        "SEAT CAPACITY",
-        capacity,
-        "owned capacity".into(),
-        capacity_context,
-    );
+    if let Some((onboard, active_capacity, active_trains)) = active_fleet_load(state) {
+        let occupancy = if active_capacity == 0 {
+            0
+        } else {
+            onboard.saturating_mul(100) / active_capacity
+        };
+        components::render_metric_card(
+            frame,
+            capacity_area,
+            "LOAD",
+            format!("{onboard} / {active_capacity}"),
+            format!("{occupancy}% occupied"),
+            format!(
+                "{active_trains} {} in service",
+                plural(active_trains, "train", "trains")
+            ),
+        );
+    } else {
+        let (capacity, capacity_context) = match fleet_capacity(state) {
+            Some(capacity) => {
+                let average = capacity / u64::try_from(total).unwrap_or(1).max(1);
+                (
+                    format!("{capacity} seats"),
+                    format!("{average} avg / train"),
+                )
+            }
+            None => ("Unavailable".into(), "catalogue data incomplete".into()),
+        };
+        components::render_metric_card(
+            frame,
+            capacity_area,
+            "SEAT CAPACITY",
+            capacity,
+            "owned capacity".into(),
+            capacity_context,
+        );
+    }
 
     let (resale_value, acquisition_value) = fleet_values(state);
     components::render_metric_card(
@@ -163,6 +182,27 @@ fn assigned_service_count(state: &GameState) -> usize {
             })
         })
         .count()
+}
+
+fn active_fleet_load(state: &GameState) -> Option<(u64, u64, usize)> {
+    let mut onboard = 0_u64;
+    let mut capacity = 0_u64;
+    let mut trains = 0_usize;
+
+    for journey in &state.active_journeys {
+        let train = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == journey.train_id)?;
+        let seats = u64::from(model_for_train(train)?.passenger_capacity().passengers());
+        onboard = onboard.saturating_add(u64::from(journey.onboard_passengers()));
+        capacity = capacity.saturating_add(seats);
+        trains = trains.saturating_add(1);
+    }
+
+    (trains > 0).then_some((onboard, capacity, trains))
 }
 
 fn fleet_capacity(state: &GameState) -> Option<u64> {
