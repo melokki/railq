@@ -645,7 +645,7 @@ fn render_purchase_review(
 
     let rejection_rows = u16::from(rejection.is_some());
     let [summary_area, review_area, rejection_area] = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(3),
         Constraint::Min(5),
         Constraint::Length(rejection_rows),
     ])
@@ -657,6 +657,7 @@ fn render_purchase_review(
         state,
         train,
         "TRAIN ✓   DELIVERY ✓   REVIEW ●",
+        false,
     );
 
     if review_area.width >= 78 && review_area.height >= 9 {
@@ -705,7 +706,7 @@ fn render_purchase_review(
         if let Some(sample) = sample_trip(state, train) {
             financial_lines.extend([
                 Line::from(""),
-                Line::styled("RESERVE CHECK", theme::secondary()),
+                Line::styled("OPERATING RESERVE", theme::secondary()),
                 review_value("Benchmark", &sample.route),
                 review_value("Distance", &sample.distance),
                 review_value("Trip cost", &format_money(sample.departure_cost)),
@@ -718,11 +719,11 @@ fn render_purchase_review(
         financial_lines.push(Line::from(""));
         financial_lines.push(if low_reserve(state, train) {
             Line::styled(
-                "LOW RESERVE · benchmark trip is not covered.",
+                "LOW RESERVE · operating reserve not covered.",
                 theme::warning(),
             )
         } else {
-            Line::styled("READY TO PURCHASE · reserve remains covered.", theme::success())
+            Line::styled("READY TO PURCHASE · operating reserve covered.", theme::success())
         });
         frame.render_widget(
             Paragraph::new(financial_lines)
@@ -744,7 +745,7 @@ fn render_purchase_review(
         ));
         if low_reserve(state, train) {
             lines.push(Line::styled(
-                "LOW RESERVE · benchmark trip is not covered.",
+                "LOW RESERVE · operating reserve not covered.",
                 theme::warning(),
             ));
         } else {
@@ -778,31 +779,36 @@ fn render_purchase_workflow_summary(
     state: &GameState,
     train: &TrainModel,
     step: &'static str,
+    show_financial_preview: bool,
 ) {
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(step, theme::focused_title()),
-            Line::from(vec![
-                Span::styled(train.name().to_owned(), theme::focused_title()),
-                Span::styled(
-                    format!(
-                        "   {} seats · {} · {}",
-                        train.passenger_capacity().passengers(),
-                        format_speed_kmh(train),
-                        train.propulsion_label()
-                    ),
-                    theme::secondary(),
+    let mut lines = vec![
+        Line::styled(step, theme::focused_title()),
+        Line::from(vec![
+            Span::styled(train.name().to_owned(), theme::focused_title()),
+            Span::styled(
+                format!(
+                    "   {} seats · {} · {}",
+                    train.passenger_capacity().passengers(),
+                    format_speed_kmh(train),
+                    train.propulsion_label()
                 ),
-            ]),
-            Line::from(vec![
-                Span::styled("Purchase ", theme::secondary()),
-                Span::styled(format_money(train.purchase_price()), theme::primary_value()),
-                Span::styled("   Cash after ", theme::secondary()),
-                Span::styled(funds_after_purchase(state, train), theme::primary_value()),
-            ]),
-        ])
-        .style(theme::panel())
-        .wrap(Wrap { trim: true }),
+                theme::secondary(),
+            ),
+        ]),
+    ];
+    if show_financial_preview {
+        lines.push(Line::from(vec![
+            Span::styled("Purchase ", theme::secondary()),
+            Span::styled(format_money(train.purchase_price()), theme::primary_value()),
+            Span::styled("   Cash after ", theme::secondary()),
+            Span::styled(funds_after_purchase(state, train), theme::primary_value()),
+        ]));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
         area,
     );
 }
@@ -829,7 +835,7 @@ fn compact_purchase_confirmation_lines(
     ];
     if let Some(sample) = sample_trip(state, train) {
         lines.push(review_value(
-            "Reserve sample",
+            "Operating reserve",
             &format!("{} · {}", sample.route, format_money(sample.departure_cost)),
         ));
     }
@@ -1315,6 +1321,7 @@ fn render_delivery_chooser(
         state,
         train,
         "TRAIN ✓   DELIVERY ●   REVIEW ○",
+        true,
     );
 
     let wide = body_area.width >= 78 && body_area.height >= 8;
@@ -1372,7 +1379,7 @@ fn render_delivery_chooser(
                 review_value("Keeper mark", &keeper_mark),
                 review_value("Official EVN", "Assigned on purchase"),
             ])
-            .block(panel_block("Order", false))
+            .block(panel_block("Order Preview", false))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
             order_area,
