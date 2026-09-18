@@ -6,6 +6,8 @@
 
 use std::fmt::Write;
 
+mod dashboard;
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
@@ -876,9 +878,9 @@ pub fn render(state: &GameState) -> String {
 
 /// Renders the selectable catalogue and focused model inspector.
 ///
-/// Market is a single workspace: the catalogue answers “which model?” and
-/// the inspector answers “what am I buying?”. Purchase actions stay in the
-/// global footer rather than being repeated inside the content panels.
+/// Market is a single procurement workspace: the overview answers “what does
+/// this choice mean?”, the catalogue answers “which model?”, and the inspector
+/// owns the deeper specification. Purchase actions stay in the global footer.
 pub fn render_dashboard(
     frame: &mut Frame,
     area: Rect,
@@ -905,76 +907,65 @@ pub fn render_dashboard(
         return;
     }
 
+    let selected_train = selection
+        .selected_catalogue_index(state)
+        .and_then(|index| catalogue.get(index));
+
     let shell = panel_block("Market", true);
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
-    let wide = area.width >= 96 && area.height >= 18;
+    let show_metrics = shell_inner.width >= 88 && shell_inner.height >= 18;
+    let (overview_area, metrics_area, market_area) = if show_metrics {
+        let [overview_area, metrics_area, market_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(5),
+            Constraint::Fill(1),
+        ])
+        .spacing(1)
+        .areas(shell_inner);
+        (overview_area, Some(metrics_area), market_area)
+    } else {
+        let [overview_area, market_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)])
+                .spacing(1)
+                .areas(shell_inner);
+        (overview_area, None, market_area)
+    };
+    dashboard::render_overview(frame, overview_area, state, selected_train);
+    if let Some(metrics_area) = metrics_area {
+        dashboard::render_metrics(frame, metrics_area, state, selected_train);
+    }
+
+    let wide = market_area.width >= 96 && market_area.height >= 12;
     let (catalogue_area, inspector_area) = if wide {
         let [catalogue_area, inspector_area] =
-            Layout::horizontal([Constraint::Min(42), Constraint::Length(48)]).areas(shell_inner);
+            Layout::horizontal([Constraint::Min(42), Constraint::Length(48)]).areas(market_area);
         (horizontal_inset(catalogue_area, 1), inspector_area)
     } else {
-        let catalogue_height = shell_inner.height.min(4);
+        let catalogue_height = market_area.height.min(5);
         let [catalogue_area, inspector_area] =
             Layout::vertical([Constraint::Length(catalogue_height), Constraint::Min(8)])
-                .areas(shell_inner);
+                .areas(market_area);
         (horizontal_inset(catalogue_area, 1), inspector_area)
     };
 
-    selection.set_page_size(usize::from(catalogue_area.height.saturating_sub(2)).max(1));
+    let [catalogue_heading_area, catalogue_table_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(catalogue_area);
+    frame.render_widget(
+        Paragraph::new(Line::styled("CATALOGUE", theme::secondary())).style(theme::panel()),
+        catalogue_heading_area,
+    );
+
+    selection.set_page_size(usize::from(catalogue_table_area.height.saturating_sub(2)).max(1));
     selection.synchronize(state);
 
     let owned_count = |train: &TrainModel| catalogue_ownership(state, train).owned;
 
-    // Use the catalogue width for comparison data rather than stretching only
-    // Model and Price across a large pane. The inspector still owns the full
-    // details; the list surfaces only the fields useful when comparing models.
-    let (rows, widths, headers) = if catalogue_area.width >= 96 {
-        (
-            catalogue
-                .iter()
-                .map(|train| {
-                    let (status, status_style) = purchase_status(state, train);
-                    Row::new(vec![
-                        Cell::from(train.name().to_owned()),
-                        right_cell(train.passenger_capacity().passengers().to_string()),
-                        right_cell(format_speed_kmh(train)),
-                        Cell::from(train.propulsion_label()),
-                        right_cell(format!(
-                            "{}/km",
-                            format_money_per_kilometre(
-                                train.fuel_cost_per_kilometre().cents_per_kilometre()
-                            )
-                        )),
-                        right_cell(owned_count(train).to_string()),
-                        Cell::from(status).style(status_style),
-                        right_cell(format_money(train.purchase_price())),
-                    ])
-                })
-                .collect::<Vec<_>>(),
-            vec![
-                Constraint::Min(16),
-                Constraint::Length(7),
-                Constraint::Length(11),
-                Constraint::Length(11),
-                Constraint::Length(10),
-                Constraint::Length(7),
-                Constraint::Length(12),
-                Constraint::Length(13),
-            ],
-            vec![
-                "Model",
-                "Seats",
-                "Top speed",
-                "Propulsion",
-                "Fuel/km",
-                "Owned",
-                "Status",
-                "Price",
-            ],
-        )
-    } else if catalogue_area.width >= 82 {
+    // Keep the catalogue focused on comparisons. Normal affordability is not
+    // repeated row-by-row; exceptional purchase states are communicated by
+    // price styling and the selected-model overview/inspector.
+    let (rows, widths, headers) = if catalogue_table_area.width >= 82 {
         (
             catalogue
                 .iter()
@@ -991,7 +982,7 @@ pub fn render_dashboard(
                             )
                         )),
                         right_cell(owned_count(train).to_string()),
-                        right_cell(format_money(train.purchase_price())),
+                        purchase_price_cell(state, train),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1014,7 +1005,7 @@ pub fn render_dashboard(
                 "Price",
             ],
         )
-    } else if catalogue_area.width >= 66 {
+    } else if catalogue_table_area.width >= 66 {
         (
             catalogue
                 .iter()
@@ -1030,7 +1021,7 @@ pub fn render_dashboard(
                             )
                         )),
                         right_cell(owned_count(train).to_string()),
-                        right_cell(format_money(train.purchase_price())),
+                        purchase_price_cell(state, train),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1044,7 +1035,7 @@ pub fn render_dashboard(
             ],
             vec!["Model", "Seats", "Top speed", "Fuel/km", "Owned", "Price"],
         )
-    } else if catalogue_area.width >= 58 {
+    } else if catalogue_table_area.width >= 58 {
         (
             catalogue
                 .iter()
@@ -1053,7 +1044,7 @@ pub fn render_dashboard(
                         Cell::from(train.name().to_owned()),
                         right_cell(train.passenger_capacity().passengers().to_string()),
                         right_cell(format_speed_kmh(train)),
-                        right_cell(format_money(train.purchase_price())),
+                        purchase_price_cell(state, train),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1072,7 +1063,7 @@ pub fn render_dashboard(
                 .map(|train| {
                     Row::new(vec![
                         Cell::from(train.name().to_owned()),
-                        right_cell(format_money(train.purchase_price())),
+                        purchase_price_cell(state, train),
                     ])
                 })
                 .collect::<Vec<_>>(),
@@ -1091,11 +1082,8 @@ pub fn render_dashboard(
         .row_highlight_style(theme::selected_row())
         .highlight_symbol("› ")
         .highlight_spacing(HighlightSpacing::Always);
-    frame.render_stateful_widget(table, catalogue_area, &mut selection.table_state);
+    frame.render_stateful_widget(table, catalogue_table_area, &mut selection.table_state);
 
-    let selected_train = selection
-        .selected_catalogue_index(state)
-        .and_then(|index| catalogue.get(index));
     render_catalogue_inspector(frame, inspector_area, state, selected_train, wide, true);
 }
 
@@ -1114,6 +1102,17 @@ fn catalogue_header_row(headers: Vec<&str>) -> Row<'static> {
 
 fn right_cell(value: impl Into<String>) -> Cell<'static> {
     Cell::from(Text::from(value.into()).right_aligned())
+}
+
+fn purchase_price_cell(state: &GameState, train: &TrainModel) -> Cell<'static> {
+    let cell = right_cell(format_money(train.purchase_price()));
+    if state.player_company.funds < train.purchase_price() {
+        cell.style(theme::error())
+    } else if delivery_station_ids(state).is_empty() || low_reserve(state, train) {
+        cell.style(theme::warning())
+    } else {
+        cell
+    }
 }
 
 fn render_catalogue_inspector(
