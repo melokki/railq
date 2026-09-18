@@ -1196,17 +1196,17 @@ pub fn render_service_performance_browser(
                 "Service",
                 "Status",
                 "Runs",
-                "Pos",
+                "Positioning",
                 "Boardings",
                 "Revenue",
                 "Costs",
                 "Result",
             ]),
             vec![
-                Constraint::Fill(3),
+                Constraint::Fill(1),
                 Constraint::Length(11),
                 Constraint::Length(6),
-                Constraint::Length(5),
+                Constraint::Length(11),
                 Constraint::Length(10),
                 Constraint::Length(13),
                 Constraint::Length(13),
@@ -1490,13 +1490,25 @@ fn render_wide_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
+    let overview_height = match &evaluation {
+        Ok(evaluation) if evaluation.status == FinancialStatus::Operating => 1,
+        _ => 2,
+    };
+    let (attention, requires_attention) = attention_lines(state, &evaluation);
+    let attention_height = if requires_attention {
+        attention.len().saturating_add(1).min(4) as u16
+    } else {
+        1
+    };
+
     if shell_inner.height >= 32 {
-        let [overview_area, metrics_area, operations_area, services_area, history_area] =
+        let [overview_area, metrics_area, operations_area, services_area, attention_area, history_area] =
             Layout::vertical([
-                Constraint::Length(2),
+                Constraint::Length(overview_height),
                 Constraint::Length(5),
                 Constraint::Length(8),
-                Constraint::Length(9),
+                Constraint::Length(8),
+                Constraint::Length(attention_height),
                 Constraint::Fill(1),
             ])
             .spacing(1)
@@ -1506,48 +1518,26 @@ fn render_wide_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
         render_key_metrics(frame, metrics_area, state);
         render_operating_summary(frame, operations_area, state);
         render_service_performance(frame, services_area, state);
-        render_dashboard_activity(frame, history_area, state, &evaluation);
+        render_attention_panel(frame, attention_area, state, &evaluation);
+        render_recent_activity(frame, history_area, state, true);
     } else {
         // Preserve a useful Recent Activity area on shorter terminals.
-        let [overview_area, metrics_area, operations_area, history_area] = Layout::vertical([
-            Constraint::Length(2),
-            Constraint::Length(5),
-            Constraint::Length(8),
-            Constraint::Fill(1),
-        ])
-        .spacing(1)
-        .areas(shell_inner);
+        let [overview_area, metrics_area, operations_area, attention_area, history_area] =
+            Layout::vertical([
+                Constraint::Length(overview_height),
+                Constraint::Length(5),
+                Constraint::Length(8),
+                Constraint::Length(1),
+                Constraint::Fill(1),
+            ])
+            .spacing(1)
+            .areas(shell_inner);
 
         render_company_overview(frame, overview_area, state, &evaluation);
         render_key_metrics(frame, metrics_area, state);
         render_operating_summary(frame, operations_area, state);
-        render_dashboard_activity(frame, history_area, state, &evaluation);
-    }
-}
-
-fn render_dashboard_activity(
-    frame: &mut Frame,
-    area: Rect,
-    state: &GameState,
-    evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
-) {
-    let (_, requires_attention) = attention_lines(state, evaluation);
-    if requires_attention {
-        let [receipts_area, attention_area] =
-            Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
-                .spacing(2)
-                .areas(area);
-        render_recent_activity(frame, receipts_area, state, true);
-        render_attention_panel(frame, attention_area, state, evaluation);
-    } else {
-        let [receipts_area, attention_area] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(2),
-        ])
-        .spacing(1)
-        .areas(area);
-        render_recent_activity(frame, receipts_area, state, true);
-        render_attention_panel(frame, attention_area, state, evaluation);
+        render_attention_panel(frame, attention_area, state, &evaluation);
+        render_recent_activity(frame, history_area, state, true);
     }
 }
 
@@ -1563,6 +1553,13 @@ fn render_company_overview(
             .areas(area);
 
     let status_lines = match evaluation {
+        Ok(evaluation) if evaluation.status == FinancialStatus::Operating => vec![Line::from(vec![
+            Span::styled(
+                status_label(evaluation.status),
+                status_style(Some(evaluation.status)).bold(),
+            ),
+            Span::styled(" · Working capital healthy", theme::secondary()),
+        ])],
         Ok(evaluation) => vec![
             Line::styled(
                 status_label(evaluation.status),
@@ -1581,24 +1578,23 @@ fn render_company_overview(
     render_dashboard_section(frame, status_area, status_lines);
 
     let registration = &state.region.railway_registration;
-    render_dashboard_section(
-        frame,
-        identity_area,
-        vec![
-            Line::from(vec![
-                Span::styled(
-                    state.player_company.vehicle_keeper_mark.as_str().to_owned(),
-                    theme::primary_value().bold(),
-                ),
-                Span::styled("  ·  Rail ", theme::secondary()),
-                Span::styled(
-                    format!("{} · {}", registration.display_code(), registration.mark),
-                    theme::primary_value(),
-                ),
-            ]),
-            Line::styled(state.region.name.clone(), theme::secondary()),
-        ],
-    );
+    let mut identity = vec![Line::from(vec![
+        Span::styled(
+            state.player_company.vehicle_keeper_mark.as_str().to_owned(),
+            theme::primary_value().bold(),
+        ),
+        Span::styled(" · Rail ", theme::secondary()),
+        Span::styled(
+            format!("{} · {}", registration.display_code(), registration.mark),
+            theme::primary_value(),
+        ),
+        Span::styled(" · ", theme::secondary()),
+        Span::styled(state.region.name.clone(), theme::secondary()),
+    ])];
+    if area.height > 1 {
+        identity.push(Line::styled(state.player_company.name.clone(), theme::hint()));
+    }
+    render_dashboard_section(frame, identity_area, identity);
 }
 
 fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
@@ -1653,7 +1649,12 @@ fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
     } else {
         recent.passengers_carried.map_or_else(
             || "boardings unavailable".into(),
-            |passengers| format!("{passengers} boardings"),
+            |passengers| {
+                format!(
+                    "{passengers} {}",
+                    if passengers == 1 { "boarding" } else { "boardings" }
+                )
+            },
         )
     };
     render_key_metric_card(
@@ -1725,13 +1726,17 @@ fn recent_window_label(journey_count: usize) -> String {
 }
 
 fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
-    let [operations_area, trend_area, lifetime_area] = Layout::horizontal([
-        Constraint::Fill(5),
-        Constraint::Fill(5),
-        Constraint::Length(24),
+    let [main_area, lifetime_area] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    let [operations_area, trend_area] = Layout::horizontal([
+        Constraint::Length(42),
+        Constraint::Fill(1),
     ])
     .spacing(2)
-    .areas(area);
+    .areas(main_area);
 
     let trains = &state.player_company.fleet.trains;
     let defined_services = state.player_company.passenger_services.len();
@@ -1788,32 +1793,29 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
     render_recent_result_chart(frame, trend_area, state);
 
     let lifetime_result = operating_result_cents(state);
-    render_dashboard_section(
-        frame,
-        lifetime_area,
-        vec![
-            section_heading("LIFETIME"),
-            dashboard_line(
-                "Revenue",
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("LIFETIME  ", theme::secondary().bold()),
+            Span::styled("Revenue ", theme::secondary()),
+            Span::styled(
                 format_money(state.financials.operating_revenue),
                 theme::primary_value(),
             ),
-            dashboard_line(
-                "Costs",
+            Span::styled("  ·  Costs ", theme::secondary()),
+            Span::styled(
                 format_cents(operating_costs_cents(state)),
                 theme::primary_value(),
             ),
-            dashboard_line(
-                "Result",
+            Span::styled("  ·  Result ", theme::secondary()),
+            Span::styled(
                 format_signed_cents(lifetime_result),
                 result_style(lifetime_result),
             ),
-            dashboard_line(
-                "Margin",
-                operating_margin_label(state),
-                result_style(lifetime_result),
-            ),
-        ],
+            Span::styled("  ·  Margin ", theme::secondary()),
+            Span::styled(operating_margin_label(state), result_style(lifetime_result)),
+        ]))
+        .style(theme::panel()),
+        lifetime_area,
     );
 }
 
@@ -1885,10 +1887,15 @@ fn render_recent_result_chart(frame: &mut Frame, area: Rect, state: &GameState) 
         .journey_count
         .saturating_sub(recent.profitable_journeys + recent.loss_making_journeys);
     let mut summary = format!(
-        "{} total · {} profitable · {} loss-making",
+        "{} total · {} profitable · {} {}",
         format_signed_cents(recent.result_cents),
         recent.profitable_journeys,
-        recent.loss_making_journeys
+        recent.loss_making_journeys,
+        if recent.loss_making_journeys == 1 {
+            "loss"
+        } else {
+            "losses"
+        }
     );
     if break_even > 0 {
         write!(summary, " · {break_even} break-even").ok();
@@ -1966,15 +1973,22 @@ fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) 
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
     let visible_rows = usize::from(table_area.height.saturating_sub(2)).max(1);
     let shown_services = summary.services.len().min(visible_rows);
-    let mut heading = if recent_journeys == 0 {
-        "SERVICE PERFORMANCE · NO RECENT JOURNEYS".to_owned()
-    } else if summary.unattributed_journeys > 0 {
-        format!(
-            "SERVICE PERFORMANCE · {}/{} JOURNEYS ATTRIBUTED",
-            summary.attributed_journeys, recent_journeys
-        )
+    let mut heading = if summary.attributed_journeys == 0 {
+        if recent_journeys == 0 {
+            "SERVICE PERFORMANCE · NO RECENT JOURNEYS".to_owned()
+        } else {
+            "SERVICE PERFORMANCE · WAITING FOR SERVICE DATA".to_owned()
+        }
     } else {
-        format!("SERVICE PERFORMANCE · RECENT {recent_journeys} JOURNEYS")
+        format!(
+            "SERVICE PERFORMANCE · {} RECENT {}",
+            summary.attributed_journeys,
+            if summary.attributed_journeys == 1 {
+                "JOURNEY"
+            } else {
+                "JOURNEYS"
+            }
+        )
     };
     if shown_services < summary.services.len() {
         heading.push_str(&format!(
@@ -2000,9 +2014,9 @@ fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) 
         return;
     }
 
+    let full = table_area.width >= 118;
     let rows = summary.services.iter().take(visible_rows).map(|service| {
-        let journey_count = service.journey_count();
-        let has_recent_activity = journey_count > 0;
+        let has_recent_activity = service.journey_count() > 0;
         let boardings = if service.revenue_journeys == 0 {
             "—".into()
         } else {
@@ -2010,64 +2024,91 @@ fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) 
                 .passengers_carried
                 .map_or_else(|| "—".into(), |passengers| passengers.to_string())
         };
-        let status = service_operating_status_label(state, service.service_id);
-        Row::new([
+        let result = if has_recent_activity {
+            Cell::from(format_signed_cents(service.result_cents))
+                .style(result_style(service.result_cents))
+        } else {
+            Cell::from("—").style(theme::secondary())
+        };
+        let mut cells = vec![
             Cell::from(service_performance_label(
                 state,
                 service.service_id,
                 &service.service_code,
             )),
-            Cell::from(status).style(service_operating_status_style(state, service.service_id)),
+            Cell::from(service_operating_status_label(state, service.service_id))
+                .style(service_operating_status_style(state, service.service_id)),
             Cell::from(service.revenue_journeys.to_string()),
-            Cell::from(service.positioning_journeys.to_string()),
-            Cell::from(boardings),
-            Cell::from(if has_recent_activity {
-                format_cents(service.revenue_cents)
-            } else {
-                "—".into()
-            }),
-            Cell::from(if has_recent_activity {
-                format_cents(service.operating_costs_cents)
-            } else {
-                "—".into()
-            }),
-            if has_recent_activity {
-                Cell::from(format_signed_cents(service.result_cents))
-                    .style(result_style(service.result_cents))
-            } else {
-                Cell::from("—").style(theme::secondary())
-            },
-        ])
+        ];
+        if full {
+            cells.extend([
+                Cell::from(service.positioning_journeys.to_string()),
+                Cell::from(boardings),
+                Cell::from(if has_recent_activity {
+                    format_cents(service.revenue_cents)
+                } else {
+                    "—".into()
+                }),
+                Cell::from(if has_recent_activity {
+                    format_cents(service.operating_costs_cents)
+                } else {
+                    "—".into()
+                }),
+                result,
+            ]);
+        } else {
+            cells.extend([Cell::from(boardings), result]);
+        }
+        Row::new(cells)
     });
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Fill(3),
-            Constraint::Length(11),
-            Constraint::Length(6),
-            Constraint::Length(5),
-            Constraint::Length(10),
-            Constraint::Length(13),
-            Constraint::Length(13),
-            Constraint::Length(13),
-        ],
-    )
-    .header(
-        Row::new([
-            "Service",
-            "Status",
-            "Runs",
-            "Pos",
-            "Boardings",
-            "Revenue",
-            "Costs",
-            "Result",
-        ])
-        .style(theme::table_header())
-        .bottom_margin(1),
-    )
-    .style(theme::panel());
-    frame.render_widget(table, table_area);
+
+    let (header, widths) = if full {
+        (
+            Row::new([
+                "Service",
+                "Status",
+                "Runs",
+                "Positioning",
+                "Boardings",
+                "Revenue",
+                "Costs",
+                "Result",
+            ]),
+            vec![
+                Constraint::Length(34),
+                Constraint::Length(11),
+                Constraint::Length(6),
+                Constraint::Length(11),
+                Constraint::Length(10),
+                Constraint::Length(13),
+                Constraint::Length(13),
+                Constraint::Length(13),
+            ],
+        )
+    } else {
+        (
+            Row::new(["Service", "Status", "Runs", "Boardings", "Result"]),
+            vec![
+                Constraint::Fill(1),
+                Constraint::Length(11),
+                Constraint::Length(6),
+                Constraint::Length(10),
+                Constraint::Length(13),
+            ],
+        )
+    };
+    let table = Table::new(rows, widths)
+        .header(header.style(theme::table_header()).bottom_margin(1))
+        .style(theme::panel());
+    let render_area = if full {
+        Rect {
+            width: table_area.width.min(118),
+            ..table_area
+        }
+    } else {
+        table_area
+    };
+    frame.render_widget(table, render_area);
 }
 
 fn service_performance_label(state: &GameState, service_id: ServiceId, service_code: &str) -> String {
@@ -2314,7 +2355,7 @@ fn render_recent_activity(frame: &mut Frame, area: Rect, state: &GameState, wide
         return;
     }
 
-    let detailed = wide && content_area.width >= 74;
+    let detailed = wide && content_area.width >= 110;
     let rows = receipts.iter().rev().take(RECENT_ACTIVITY_LIMIT).map(|receipt| {
         let result = receipt_result_cents(
             receipt.revenue,
@@ -2344,8 +2385,8 @@ fn render_recent_activity(frame: &mut Frame, area: Rect, state: &GameState, wide
             vec![
                 Constraint::Length(11),
                 Constraint::Length(9),
-                Constraint::Fill(3),
-                Constraint::Fill(2),
+                Constraint::Length(32),
+                Constraint::Length(26),
                 Constraint::Length(10),
                 Constraint::Length(14),
             ],
@@ -2363,7 +2404,15 @@ fn render_recent_activity(frame: &mut Frame, area: Rect, state: &GameState, wide
     let table = Table::new(rows, widths)
         .header(header.style(theme::table_header()).bottom_margin(1))
         .style(theme::panel());
-    frame.render_widget(table, content_area);
+    let table_area = if detailed {
+        Rect {
+            width: content_area.width.min(110),
+            ..content_area
+        }
+    } else {
+        content_area
+    };
+    frame.render_widget(table, table_area);
 }
 
 fn render_receipt_history_table(
@@ -2418,7 +2467,7 @@ fn render_receipt_history_table(
                 "Route",
                 "Train",
                 "Boardings",
-                "Seats",
+                "Capacity",
                 "Completed",
                 "Result",
             ]),
@@ -2427,7 +2476,7 @@ fn render_receipt_history_table(
                 Constraint::Fill(3),
                 Constraint::Fill(2),
                 Constraint::Length(10),
-                Constraint::Length(7),
+                Constraint::Length(10),
                 Constraint::Length(11),
                 Constraint::Length(14),
             ],
@@ -2580,14 +2629,25 @@ fn render_attention_panel(
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
 ) {
+    let (lines, _) = attention_lines(state, evaluation);
+    if area.height <= 1 {
+        let mut spans = vec![Span::styled("ATTENTION  ", theme::secondary().bold())];
+        if let Some(line) = lines.into_iter().next() {
+            spans.extend(line.spans);
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(theme::panel()),
+            area,
+        );
+        return;
+    }
+
     let [heading_area, content_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
     frame.render_widget(
         Paragraph::new(section_heading("ATTENTION")).style(theme::panel()),
         heading_area,
     );
-
-    let (lines, _) = attention_lines(state, evaluation);
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::panel())

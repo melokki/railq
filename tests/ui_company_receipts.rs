@@ -82,7 +82,7 @@ fn dashboard_keeps_history_out_of_the_main_view_and_history_preserves_selection(
     assert!(history.contains("Journey History · 18 receipts"));
     assert!(history.contains("J18"));
     assert!(history.contains("Boardings"));
-    assert!(history.contains("Seats"));
+    assert!(history.contains("Capacity"));
     assert!(history.contains("[Esc] close"));
     assert!(history.contains("[Enter] inspect"));
     assert!(history.contains("[↑↓/JK] scroll"));
@@ -200,10 +200,10 @@ fn wide_dashboard_aggregates_recent_service_performance() {
     let mut shell = company_shell(&state);
     let dashboard = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
-    assert!(dashboard.contains("SERVICE PERFORMANCE · RECENT 2 JOURNEYS"));
+    assert!(dashboard.contains("SERVICE PERFORMANCE · 2 RECENT JOURNEYS"));
     assert!(dashboard.contains("Service"));
     assert!(dashboard.contains("Runs"));
-    assert!(dashboard.contains("Pos"));
+    assert!(dashboard.contains("Positioning"));
     assert!(dashboard.contains("R1 ·"));
     assert!(dashboard.contains("$100.00"));
     assert!(dashboard.contains("$20.00"));

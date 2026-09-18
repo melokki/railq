@@ -98,13 +98,8 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
             assert!(rendered.contains(funds), "{slug} should show funds {funds}");
             if columns >= 100 {
                 assert!(
-                    rendered.contains("Company Funds"),
-                    "{slug} should show Company Funds in the wide shell header"
-                );
-            } else {
-                assert!(
-                    rendered.contains("Funds"),
-                    "{slug} should show funds in the shell header"
+                    rendered.contains("Cash"),
+                    "{slug} should label available cash in the wide shell header"
                 );
             }
             assert!(
@@ -129,11 +124,11 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                     "{slug} should show network coverage"
                 );
                 assert!(
-                    rendered.contains("Travelling"),
+                    rendered.contains("Running"),
                     "{slug} should show live Journey count"
                 );
                 assert!(
-                    rendered.contains("In transit"),
+                    rendered.contains("pending revenue"),
                     "{slug} should distinguish booked uncredited revenue from cash"
                 );
                 assert!(
@@ -145,20 +140,20 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                     "{slug} should show compact Company identity"
                 );
                 assert!(
-                    rendered.contains("RECENT PERFORMANCE · LAST 1 JOURNEY"),
-                    "{slug} should show a dedicated recent-performance panel"
+                    rendered.contains("RECENT JOURNEY RESULTS"),
+                    "{slug} should show the recent result chart"
                 );
                 assert!(
-                    rendered.contains("Completed"),
-                    "{slug} should show recent completed Journey count"
+                    rendered.contains("RECENT RESULT"),
+                    "{slug} should show recent result as a primary KPI"
                 );
                 assert!(
-                    rendered.contains("Outcomes"),
-                    "{slug} should show recent profitable/loss-making outcomes"
+                    rendered.contains("RECENT REVENUE"),
+                    "{slug} should show recent revenue as a primary KPI"
                 );
                 let financial_row = rendered
                     .lines()
-                    .position(|line| line.contains("OPERATING RESULT"))
+                    .position(|line| line.contains("RECENT RESULT"))
                     .expect("wide Company dashboard should show KPI cards");
                 let operations_row = rendered
                     .lines()
@@ -169,19 +164,19 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                     "{slug} should prioritize KPI cards before operating footprint"
                 );
                 assert!(
-                    rendered.contains("1 recent"),
-                    "{slug} should contextualize lifetime KPIs with the latest completed Journey"
+                    rendered.contains("last journey"),
+                    "{slug} should label the recent KPI window"
                 );
                 let recent_outcome_mix = if slug == "profitable" {
-                    "1+ / 0-"
+                    "1 profitable · 0 losses"
                 } else {
-                    "0+ / 1-"
+                    "0 profitable · 1 loss"
                 };
                 assert!(
                     rendered.contains(recent_outcome_mix),
                     "{slug} should summarize recent profitable/loss-making Journeys"
                 );
-                let recent_passengers = if slug == "profitable" { "10 pax" } else { "1 pax" };
+                let recent_passengers = if slug == "profitable" { "10 boardings" } else { "1 boarding" };
                 assert!(
                     rendered.contains(recent_passengers),
                     "{slug} should summarize recent passenger boardings"
@@ -202,6 +197,7 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
             assert!(
                 rendered.contains("Operating costs")
                     || rendered.contains("OPERATING COSTS")
+                    || rendered.contains("RECENT COSTS")
                     || rendered.contains("Total costs"),
                 "{slug} should show the operating cost total"
             );
@@ -209,24 +205,8 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                 rendered.contains("$5.50"),
                 "{slug} should show the combined operating costs"
             );
-            if columns >= 100 {
-                assert!(
-                    rendered.contains("COST MIX"),
-                    "{slug} should show the cost mix"
-                );
-                assert!(
-                    rendered.contains("Access"),
-                    "{slug} should show access fees"
-                );
-                assert!(
-                    rendered.contains("$1.00"),
-                    "{slug} should show access fee amount"
-                );
-                assert!(rendered.contains("Fuel"), "{slug} should show fuel costs");
-                assert!(rendered.contains("$4.50"), "{slug} should show fuel amount");
-            }
             assert!(
-                rendered.contains("Operating result") || rendered.contains("OPERATING RESULT"),
+                rendered.contains("Operating result") || rendered.contains("OPERATING RESULT") || rendered.contains("RECENT RESULT"),
                 "{slug} should label the operating result"
             );
             assert!(
@@ -293,11 +273,11 @@ fn wide_dashboard_separates_live_revenue_exposure_from_settled_performance() {
     let shell = company_shell(&state);
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
-    assert!(rendered.contains("Travelling"));
-    assert!(rendered.contains("1 train · 10 pax"));
-    assert!(rendered.contains("In transit"));
+    assert!(rendered.contains("Running"));
+    assert!(rendered.contains("1 train · 10 aboard"));
+    assert!(rendered.contains("pending revenue"));
     assert!(rendered.contains("$10.00"));
-    assert!(rendered.contains("RECENT PERFORMANCE"));
+    assert!(rendered.contains("RECENT JOURNEY RESULTS"));
     assert!(rendered.contains("No completed Journeys yet."));
 }
 
