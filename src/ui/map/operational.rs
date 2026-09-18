@@ -252,9 +252,10 @@ fn render_location_inspector(
         .find(|station| station.settlement_id == settlement.id);
     let compact = area.height < 18;
 
-    // The inspector owns facts about the selected location. Connectivity and
-    // route geometry stay on the map; keyboard actions stay in the footer.
-    let lines = if let Some(station) = station {
+    // The inspector follows the same hierarchy as the other redesigned
+    // workspaces: selection identity first, then operational sections. Map
+    // geometry and keyboard actions remain outside the inspector.
+    let (panel_title, lines) = if let Some(station) = station {
         let ready_count = ready_trains(state, station.id).len();
         let arriving = state
             .active_journeys
@@ -309,30 +310,38 @@ fn render_location_inspector(
         };
 
         let mut lines = vec![
-            inspector_metric("Station", &format!("{:02}", station.id.get())),
-            inspector_metric("Population", &format_population(settlement.population)),
+            inspector_selection_heading("SELECTED STATION"),
+            Line::styled(settlement.name.clone(), theme::focused_title()),
+            inspector_identity_line(
+                &format!("Station {:02}", station.id.get()),
+                &format!("Population {}", format_population(settlement.population)),
+            ),
         ];
 
         if compact {
-            lines.push(inspector_metric("Ready here", &ready_count.to_string()));
-            lines.push(inspector_metric("Arriving", &arriving_summary));
+            lines.push(Line::from(""));
+            lines.push(inspector_compact_pair(
+                "Ready",
+                &ready_count.to_string(),
+                "Inbound",
+                &arriving_summary,
+            ));
             lines.push(inspector_metric("Services", &service_count.to_string()));
+            lines.push(inspector_compact_pair(
+                "Waiting",
+                &format_population(u64::from(waiting_total)),
+                "Demand",
+                &format!("+{arrival_rate_total}/h"),
+            ));
             lines.push(inspector_metric(
                 "Rail adoption",
                 &market_maturity_summary(average_maturity_basis_points),
             ));
-            lines.push(inspector_metric(
-                "Demand",
-                &format!(
-                    "{} · +{arrival_rate_total}/h",
-                    format_population(u64::from(waiting_total))
-                ),
-            ));
         } else {
             lines.push(Line::from(""));
-            lines.push(inspector_section("OPERATIONS"));
-            lines.push(inspector_metric("Ready here", &ready_count.to_string()));
-            lines.push(inspector_metric("Arriving", &arriving_summary));
+            lines.push(inspector_section("TRAFFIC"));
+            lines.push(inspector_metric("Ready trains", &ready_count.to_string()));
+            lines.push(inspector_metric("Inbound", &arriving_summary));
             lines.push(inspector_metric("Services", &service_count.to_string()));
 
             lines.push(Line::from(""));
@@ -352,7 +361,7 @@ fn render_location_inspector(
 
             if !demand.is_empty() && area.height >= 24 {
                 lines.push(Line::from(""));
-                lines.push(inspector_section("TOP MARKETS"));
+                lines.push(inspector_section("PASSENGER MARKETS"));
                 for (name, waiting, per_hour, maturity) in demand.into_iter().take(3) {
                     lines.push(inspector_destination_line(
                         &name, waiting, per_hour, maturity,
@@ -361,12 +370,16 @@ fn render_location_inspector(
             }
         }
 
-        lines
+        ("Station", lines)
     } else {
-        let mut lines = vec![inspector_metric(
-            "Population",
-            &format_population(settlement.population),
-        )];
+        let mut lines = vec![
+            inspector_selection_heading("SELECTED SETTLEMENT"),
+            Line::styled(settlement.name.clone(), theme::focused_title()),
+            Line::styled(
+                format!("Population {}", format_population(settlement.population)),
+                theme::secondary(),
+            ),
+        ];
         let council_signal = nearest_connection_station_id(&state.region, settlement.id).map(
             |connection_station_id| {
                 local_rail_success_basis_points(
@@ -377,6 +390,7 @@ fn render_location_inspector(
         );
 
         if compact {
+            lines.push(Line::from(""));
             lines.push(inspector_metric("Rail access", "No station"));
             if let Some(maturity) = council_signal {
                 lines.push(inspector_metric(
@@ -421,16 +435,43 @@ fn render_location_inspector(
             }
         }
 
-        lines
+        ("Settlement", lines)
     };
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel_block(&settlement.name, false))
+            .block(panel_block(panel_title, false))
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn inspector_selection_heading(label: &str) -> Line<'static> {
+    Line::styled(label.to_owned(), theme::secondary().bold())
+}
+
+fn inspector_identity_line(first: &str, second: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(first.to_owned(), theme::primary_value()),
+        Span::styled(" · ", theme::secondary()),
+        Span::styled(second.to_owned(), theme::secondary()),
+    ])
+}
+
+fn inspector_compact_pair(
+    first_label: &str,
+    first_value: &str,
+    second_label: &str,
+    second_value: &str,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{first_label} "), theme::secondary()),
+        Span::styled(first_value.to_owned(), theme::primary_value()),
+        Span::styled(" · ", theme::secondary()),
+        Span::styled(format!("{second_label} "), theme::secondary()),
+        Span::styled(second_value.to_owned(), theme::primary_value()),
+    ])
 }
 
 fn inspector_section(label: &str) -> Line<'static> {

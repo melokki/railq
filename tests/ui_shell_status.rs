@@ -100,18 +100,23 @@ fn map_overview_status_tracks_operating_state() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn map_station_inspector_uses_operational_sections_without_embedded_shortcuts() {
+fn map_station_inspector_uses_selected_station_hierarchy_without_embedded_shortcuts() {
     let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
     let shell = Shell::new();
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
-    assert!(rendered.contains("OPERATIONS"));
-    assert!(rendered.contains("Ready here"));
-    assert!(rendered.contains("Arriving"));
+    assert!(rendered.contains("SELECTED STATION"));
+    assert!(rendered.contains("Station 01"));
+    assert!(rendered.contains("Population"));
+    assert!(rendered.contains("TRAFFIC"));
+    assert!(rendered.contains("Ready trains"));
+    assert!(rendered.contains("Inbound"));
     assert!(rendered.contains("Services"));
     assert!(rendered.contains("PASSENGERS"));
     assert!(rendered.contains("Waiting"));
     assert!(rendered.contains("Arrival rate"));
+    assert!(rendered.contains("PASSENGER MARKETS"));
+    assert!(!rendered.contains("TOP MARKETS"));
     assert!(!rendered.contains("DIRECT LINKS"));
     assert!(!rendered.contains("Direct links"));
     assert!(!rendered.contains("d Dispatch · all READY Trains"));
@@ -128,7 +133,7 @@ fn map_station_inspector_surfaces_the_next_arrival() -> Result<(), Box<dyn Error
     let shell = Shell::new();
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
-    assert!(rendered.contains("Arriving"));
+    assert!(rendered.contains("Inbound"));
     assert!(rendered.contains("1 · next"));
     Ok(())
 }
