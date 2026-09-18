@@ -17,7 +17,7 @@ use super::{
 };
 
 #[test]
-fn routes_the_six_primary_views_by_number_and_keeps_remaining_letter_aliases() {
+fn routes_the_six_primary_views_by_number_and_keeps_train_market_aliases() {
     let mut shell = Shell::new();
     let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
@@ -30,7 +30,6 @@ fn routes_the_six_primary_views_by_number_and_keeps_remaining_letter_aliases() {
         ('6', View::Bulletin),
         ('t', View::Trains),
         ('b', View::BuyTrains),
-        ('a', View::Authority),
     ] {
         assert_eq!(
             shell.handle_key(
@@ -41,6 +40,12 @@ fn routes_the_six_primary_views_by_number_and_keeps_remaining_letter_aliases() {
         );
         assert_eq!(shell.active_view(), expected_view);
     }
+
+    shell.handle_key(
+        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        &state,
+    );
+    assert_eq!(shell.active_view(), View::BuyTrains);
 
     shell.handle_key(
         KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),

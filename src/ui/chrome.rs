@@ -395,7 +395,7 @@ pub(super) fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     let mut lines = vec![
         "Navigation".into(),
         "1 Map   2 Trains   3 Market   4 Company   5 Authority   6 Bulletin".into(),
-        "t / b / a also switch workspaces; Company uses 4".into(),
+        "t / b also switch to Trains / Market; Company and Authority use 4 / 5".into(),
         String::new(),
     ];
 
