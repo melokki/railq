@@ -1726,17 +1726,13 @@ fn recent_window_label(journey_count: usize) -> String {
 }
 
 fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
-    let [main_area, lifetime_area] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    let [operations_area, trend_area] = Layout::horizontal([
-        Constraint::Length(42),
-        Constraint::Fill(1),
+    let [operations_area, trend_area, lifetime_area] = Layout::horizontal([
+        Constraint::Fill(5),
+        Constraint::Fill(5),
+        Constraint::Length(24),
     ])
     .spacing(2)
-    .areas(main_area);
+    .areas(area);
 
     let trains = &state.player_company.fleet.trains;
     let defined_services = state.player_company.passenger_services.len();
@@ -1793,29 +1789,32 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
     render_recent_result_chart(frame, trend_area, state);
 
     let lifetime_result = operating_result_cents(state);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("LIFETIME  ", theme::secondary().bold()),
-            Span::styled("Revenue ", theme::secondary()),
-            Span::styled(
+    render_dashboard_section(
+        frame,
+        lifetime_area,
+        vec![
+            section_heading("LIFETIME"),
+            dashboard_line(
+                "Revenue",
                 format_money(state.financials.operating_revenue),
                 theme::primary_value(),
             ),
-            Span::styled("  ·  Costs ", theme::secondary()),
-            Span::styled(
+            dashboard_line(
+                "Costs",
                 format_cents(operating_costs_cents(state)),
                 theme::primary_value(),
             ),
-            Span::styled("  ·  Result ", theme::secondary()),
-            Span::styled(
+            dashboard_line(
+                "Result",
                 format_signed_cents(lifetime_result),
                 result_style(lifetime_result),
             ),
-            Span::styled("  ·  Margin ", theme::secondary()),
-            Span::styled(operating_margin_label(state), result_style(lifetime_result)),
-        ]))
-        .style(theme::panel()),
-        lifetime_area,
+            dashboard_line(
+                "Margin",
+                operating_margin_label(state),
+                result_style(lifetime_result),
+            ),
+        ],
     );
 }
 
@@ -1887,8 +1886,9 @@ fn render_recent_result_chart(frame: &mut Frame, area: Rect, state: &GameState) 
         .journey_count
         .saturating_sub(recent.profitable_journeys + recent.loss_making_journeys);
     let mut summary = format!(
-        "{} total · {} profitable · {} {}",
-        format_signed_cents(recent.result_cents),
+        "{} {} · {} profitable · {} {}",
+        recent.journey_count,
+        if recent.journey_count == 1 { "journey" } else { "journeys" },
         recent.profitable_journeys,
         recent.loss_making_journeys,
         if recent.loss_making_journeys == 1 {

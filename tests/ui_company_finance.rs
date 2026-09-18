@@ -268,6 +268,25 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
 }
 
 #[test]
+fn wide_dashboard_balances_operations_trend_and_lifetime_on_one_row() {
+    let state = finance_fixture(10);
+    let shell = company_shell(&state);
+    let rendered = capture_rendered_buffer(&shell, &state, 160, 40);
+
+    let (operations_x, operations_y) = text_position(&rendered, "OPERATIONS")
+        .expect("wide Company dashboard should show Operations");
+    let (trend_x, trend_y) = text_position(&rendered, "RECENT JOURNEY RESULTS")
+        .expect("wide Company dashboard should show the recent result chart");
+    let (lifetime_x, lifetime_y) = text_position(&rendered, "LIFETIME")
+        .expect("wide Company dashboard should show Lifetime summary");
+
+    assert_eq!(operations_y, trend_y);
+    assert_eq!(trend_y, lifetime_y);
+    assert!(operations_x < trend_x);
+    assert!(trend_x < lifetime_x);
+}
+
+#[test]
 fn wide_dashboard_separates_live_revenue_exposure_from_settled_performance() {
     let state = journey_fixture(10, false);
     let shell = company_shell(&state);
