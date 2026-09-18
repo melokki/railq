@@ -418,6 +418,7 @@ impl Shell {
 
         if self.company_workspace.recovery_review_open()
             || self.company_workspace.receipt_browser_open()
+            || self.company_workspace.service_performance_browser_open()
         {
             return self.handle_company_key(key, state);
         }

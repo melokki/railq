@@ -46,8 +46,18 @@ pub(super) struct ServicePerformance {
     pub(super) positioning_journeys: usize,
     pub(super) passengers_carried: Option<u64>,
     pub(super) revenue_cents: i128,
+    pub(super) access_fees_cents: i128,
+    pub(super) fuel_costs_cents: i128,
     pub(super) operating_costs_cents: i128,
     pub(super) result_cents: i128,
+    pub(super) best_result_cents: Option<i128>,
+    pub(super) worst_result_cents: Option<i128>,
+}
+
+impl ServicePerformance {
+    pub(super) fn journey_count(&self) -> usize {
+        self.revenue_journeys + self.positioning_journeys
+    }
 }
 
 /// Service attribution coverage for the recent Journey window.
@@ -89,16 +99,34 @@ impl ServicePerformanceSummary {
                 positioning_journeys: 0,
                 passengers_carried: Some(0),
                 revenue_cents: 0,
+                access_fees_cents: 0,
+                fuel_costs_cents: 0,
                 operating_costs_cents: 0,
                 result_cents: 0,
+                best_result_cents: None,
+                worst_result_cents: None,
             });
 
             let revenue_cents = i128::from(receipt.revenue.cents());
-            let operating_costs_cents = i128::from(receipt.infrastructure_access_fee.cents())
-                + i128::from(receipt.fuel_cost.cents());
+            let access_fees_cents = i128::from(receipt.infrastructure_access_fee.cents());
+            let fuel_costs_cents = i128::from(receipt.fuel_cost.cents());
+            let operating_costs_cents = access_fees_cents + fuel_costs_cents;
+            let result_cents = revenue_cents - operating_costs_cents;
             performance.revenue_cents += revenue_cents;
+            performance.access_fees_cents += access_fees_cents;
+            performance.fuel_costs_cents += fuel_costs_cents;
             performance.operating_costs_cents += operating_costs_cents;
-            performance.result_cents += revenue_cents - operating_costs_cents;
+            performance.result_cents += result_cents;
+            performance.best_result_cents = Some(
+                performance
+                    .best_result_cents
+                    .map_or(result_cents, |best| best.max(result_cents)),
+            );
+            performance.worst_result_cents = Some(
+                performance
+                    .worst_result_cents
+                    .map_or(result_cents, |worst| worst.min(result_cents)),
+            );
 
             match purpose {
                 JourneyPurpose::RevenueService => {
@@ -325,8 +353,12 @@ mod tests {
         assert_eq!(r1.positioning_journeys, 1);
         assert_eq!(r1.passengers_carried, Some(80));
         assert_eq!(r1.revenue_cents, 20_000);
+        assert_eq!(r1.access_fees_cents, 2_500);
+        assert_eq!(r1.fuel_costs_cents, 1_250);
         assert_eq!(r1.operating_costs_cents, 3_750);
         assert_eq!(r1.result_cents, 16_250);
+        assert_eq!(r1.best_result_cents, Some(17_000));
+        assert_eq!(r1.worst_result_cents, Some(-750));
     }
 
     #[test]

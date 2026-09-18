@@ -21,7 +21,7 @@ use ratatui::{
 
 use analytics::{
     ActiveJourneyExposure, RECENT_JOURNEY_WINDOW, RecentJourneyPerformance,
-    ServicePerformanceSummary,
+    ServicePerformance, ServicePerformanceSummary,
 };
 
 use crate::{
@@ -238,6 +238,95 @@ pub struct ReceiptSelection {
     page_size: usize,
 }
 
+/// Persistent selection for the recent per-Service performance browser.
+///
+/// The selected Service is retained by ID so newly settled Journeys can reorder
+/// the summary without silently moving the Player to another Service.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ServicePerformanceSelection {
+    selected_service_id: Option<ServiceId>,
+    table_state: TableState,
+    page_size: usize,
+}
+
+impl ServicePerformanceSelection {
+    pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
+        let summary = ServicePerformanceSummary::from_state(state);
+        self.synchronize_summary(&summary);
+        let Some(selected) = self.table_state.selected() else {
+            return;
+        };
+        let count = summary.services.len();
+        let page_size = self.page_size.max(1);
+        let next = match key {
+            KeyCode::Up | KeyCode::Char('k') => selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                selected.saturating_add(1).min(count.saturating_sub(1))
+            }
+            KeyCode::PageUp => selected.saturating_sub(page_size),
+            KeyCode::PageDown => selected
+                .saturating_add(page_size)
+                .min(count.saturating_sub(1)),
+            _ => selected,
+        };
+        self.select_index(&summary, next);
+    }
+
+    fn synchronize(&mut self, state: &GameState) {
+        let summary = ServicePerformanceSummary::from_state(state);
+        self.synchronize_summary(&summary);
+    }
+
+    fn synchronize_summary(&mut self, summary: &ServicePerformanceSummary) {
+        let previous_index = self.table_state.selected().unwrap_or(0);
+        let selected = self
+            .selected_service_id
+            .and_then(|service_id| {
+                summary
+                    .services
+                    .iter()
+                    .position(|service| service.service_id == service_id)
+            })
+            .or_else(|| {
+                (!summary.services.is_empty())
+                    .then_some(previous_index.min(summary.services.len().saturating_sub(1)))
+            });
+        self.selected_service_id =
+            selected.and_then(|index| summary.services.get(index).map(|service| service.service_id));
+        if selected.is_none() {
+            *self.table_state.offset_mut() = 0;
+        }
+        self.table_state.select(selected);
+    }
+
+    fn select_index(&mut self, summary: &ServicePerformanceSummary, index: usize) {
+        let Some(service) = summary.services.get(index) else {
+            return;
+        };
+        self.selected_service_id = Some(service.service_id);
+        self.table_state.select(Some(index));
+    }
+
+    fn selected_service(&mut self, state: &GameState) -> Option<ServicePerformance> {
+        let summary = ServicePerformanceSummary::from_state(state);
+        self.synchronize_summary(&summary);
+        self.selected_service_id.and_then(|service_id| {
+            summary
+                .services
+                .into_iter()
+                .find(|service| service.service_id == service_id)
+        })
+    }
+
+    fn has_selection(&mut self, state: &GameState) -> bool {
+        self.selected_service(state).is_some()
+    }
+
+    fn set_page_size(&mut self, page_size: usize) {
+        self.page_size = page_size.max(1);
+    }
+}
+
 impl ReceiptSelection {
     /// Moves the retained-receipt selection without changing the saved game.
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
@@ -372,6 +461,9 @@ pub struct CompanyWorkspace {
     receipt_selection: ReceiptSelection,
     receipt_history_open: bool,
     receipt_details_open: bool,
+    service_performance_selection: ServicePerformanceSelection,
+    service_performance_open: bool,
+    service_performance_details_open: bool,
     recovery_selection: RecoverySelection,
     recovery_review_open: bool,
     vkm_editor: Option<VkmEditor>,
@@ -382,6 +474,8 @@ impl CompanyWorkspace {
     pub fn activate(&mut self) {
         self.receipt_history_open = false;
         self.receipt_details_open = false;
+        self.service_performance_open = false;
+        self.service_performance_details_open = false;
         self.recovery_review_open = false;
         self.vkm_editor = None;
     }
@@ -397,6 +491,8 @@ impl CompanyWorkspace {
             || self.recovery_review_open
             || self.receipt_history_open
             || self.receipt_details_open
+            || self.service_performance_open
+            || self.service_performance_details_open
     }
 
     /// Returns whether the VKM editor must receive text input before global shortcuts.
@@ -412,6 +508,11 @@ impl CompanyWorkspace {
     /// Returns whether receipt history/detail owns navigation until it is closed.
     pub fn receipt_browser_open(&self) -> bool {
         self.receipt_history_open || self.receipt_details_open
+    }
+
+    /// Returns whether Service performance browsing owns navigation until closed.
+    pub fn service_performance_browser_open(&self) -> bool {
+        self.service_performance_open || self.service_performance_details_open
     }
 
     /// Returns contextual footer actions for the currently focused Company state.
@@ -461,7 +562,27 @@ impl CompanyWorkspace {
             return items;
         }
 
+        if self.service_performance_details_open {
+            return vec![CompanyShortcut::enabled("Esc", "Back")];
+        }
+
+        if self.service_performance_open {
+            let mut items = vec![CompanyShortcut::enabled("Esc", "Back")];
+            if !ServicePerformanceSummary::from_state(state).services.is_empty() {
+                items.push(CompanyShortcut::enabled(
+                    if compact { "↑↓" } else { "↑↓/JK" },
+                    "Service",
+                ));
+                if wide {
+                    items.push(CompanyShortcut::enabled("PgUp/PgDn", "Page"));
+                }
+                items.push(CompanyShortcut::enabled("Enter", "Inspect"));
+            }
+            return items;
+        }
+
         let mut items = vec![CompanyShortcut::enabled("H", "History")];
+        items.push(CompanyShortcut::enabled("S", "Service performance"));
         items.push(CompanyShortcut::enabled("V", "Edit VKM"));
 
         let recovery_available =
@@ -523,9 +644,34 @@ impl CompanyWorkspace {
             return lines;
         }
 
+        if self.service_performance_details_open {
+            return vec![
+                "Current · Service Performance Detail".into(),
+                "Esc Back to Service performance".into(),
+            ];
+        }
+
+        if self.service_performance_open {
+            let mut lines = vec![
+                "Current · Service Performance".into(),
+                "Esc Back to Company dashboard".into(),
+            ];
+            if ServicePerformanceSummary::from_state(state).services.is_empty() {
+                lines.push("No attributable recent Service Journeys yet".into());
+            } else {
+                lines.extend([
+                    "↑↓ / jk Select Service".into(),
+                    "PgUp / PgDn Scroll Services".into(),
+                    "Enter Inspect Service".into(),
+                ]);
+            }
+            return lines;
+        }
+
         let mut lines = vec![
             "Current · Company".into(),
             "h Open Journey history".into(),
+            "s Open Service performance".into(),
             "v Edit Company VKM".into(),
         ];
         if state.financials.recent_journey_receipts.is_empty() {
@@ -603,6 +749,42 @@ impl CompanyWorkspace {
             };
         }
 
+        if self.service_performance_details_open {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.service_performance_details_open = false;
+                    CompanyWorkspaceAction::Continue
+                }
+                _ => CompanyWorkspaceAction::Continue,
+            };
+        }
+
+        if self.service_performance_open {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.service_performance_open = false;
+                    CompanyWorkspaceAction::Continue
+                }
+                KeyCode::Enter => {
+                    if self.service_performance_selection.has_selection(state) {
+                        self.service_performance_details_open = true;
+                        CompanyWorkspaceAction::ClearNotice
+                    } else {
+                        CompanyWorkspaceAction::Continue
+                    }
+                }
+                KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Char('j' | 'J' | 'k' | 'K') => {
+                    self.service_performance_selection.handle_key(key.code, state);
+                    CompanyWorkspaceAction::Continue
+                }
+                _ => CompanyWorkspaceAction::Continue,
+            };
+        }
+
         if self.receipt_details_open {
             return match key.code {
                 KeyCode::Esc => {
@@ -643,13 +825,26 @@ impl CompanyWorkspace {
             KeyCode::Char('h' | 'H') => {
                 self.receipt_history_open = true;
                 self.receipt_details_open = false;
+                self.service_performance_open = false;
+                self.service_performance_details_open = false;
                 self.recovery_review_open = false;
+                CompanyWorkspaceAction::ClearNotice
+            }
+            KeyCode::Char('s' | 'S') => {
+                self.service_performance_open = true;
+                self.service_performance_details_open = false;
+                self.receipt_history_open = false;
+                self.receipt_details_open = false;
+                self.recovery_review_open = false;
+                self.service_performance_selection.synchronize(state);
                 CompanyWorkspaceAction::ClearNotice
             }
             KeyCode::Char('v' | 'V') => {
                 self.vkm_editor = Some(VkmEditor::start(state));
                 self.receipt_history_open = false;
                 self.receipt_details_open = false;
+                self.service_performance_open = false;
+                self.service_performance_details_open = false;
                 self.recovery_review_open = false;
                 CompanyWorkspaceAction::ClearNotice
             }
@@ -662,6 +857,8 @@ impl CompanyWorkspace {
                     self.recovery_review_open = true;
                     self.receipt_history_open = false;
                     self.receipt_details_open = false;
+                    self.service_performance_open = false;
+                    self.service_performance_details_open = false;
                     CompanyWorkspaceAction::ClearNotice
                 } else {
                     CompanyWorkspaceAction::Continue
@@ -682,6 +879,20 @@ impl CompanyWorkspace {
             render_vkm_editor(frame, area, editor, state);
         } else if self.recovery_review_open {
             render_recovery_review(frame, area, state, &mut self.recovery_selection);
+        } else if self.service_performance_details_open {
+            render_service_performance_detail(
+                frame,
+                area,
+                state,
+                &mut self.service_performance_selection,
+            );
+        } else if self.service_performance_open {
+            render_service_performance_browser(
+                frame,
+                area,
+                state,
+                &mut self.service_performance_selection,
+            );
         } else if self.receipt_details_open {
             render_receipt_modal(frame, area, state, &mut self.receipt_selection);
         } else if self.receipt_history_open {
@@ -849,6 +1060,179 @@ pub fn render_receipt_history(
     let modal_areas = modal::render_shell(frame, card, &title, footer);
     selection.synchronize(state);
     render_receipt_history_table(frame, modal_areas.body, state, selection, !compact);
+}
+
+/// Renders the recent per-Service summary as a focused, selectable browser.
+pub fn render_service_performance_browser(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut ServicePerformanceSelection,
+) {
+    let summary = ServicePerformanceSummary::from_state(state);
+    let card = modal::workflow_rect(area);
+    let compact = card.width < 84;
+    let footer = if summary.services.is_empty() {
+        modal::shortcut_line(&[modal::ModalShortcut::enabled(
+            "Esc",
+            modal::ModalAction::Close,
+        )])
+    } else if compact {
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Close),
+            modal::ModalShortcut::enabled("↑↓", modal::ModalAction::Scroll),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Inspect),
+        ])
+    } else {
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Close),
+            modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Scroll),
+            modal::ModalShortcut::enabled("PgUp/PgDn", modal::ModalAction::Page),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Inspect),
+        ])
+    };
+    let recent_journeys = summary.attributed_journeys + summary.unattributed_journeys;
+    let title = if recent_journeys == 0 {
+        "Service Performance".to_owned()
+    } else {
+        format!("Service Performance · recent {recent_journeys} Journeys")
+    };
+    let modal_areas = modal::render_shell(frame, card, &title, footer);
+    selection.synchronize_summary(&summary);
+
+    if summary.services.is_empty() {
+        let message = if summary.unattributed_journeys > 0 {
+            "Recent receipts predate Service telemetry. New completed Journeys will populate Service performance."
+        } else {
+            "No completed Service activity yet. Revenue runs and positioning moves will appear here after they finish."
+        };
+        frame.render_widget(
+            Paragraph::new(message)
+                .style(theme::secondary())
+                .wrap(Wrap { trim: true }),
+            modal_areas.body,
+        );
+        return;
+    }
+
+    let note_height = if summary.unattributed_journeys > 0 { 1 } else { 0 };
+    let [table_area, note_area] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(note_height),
+    ])
+    .areas(modal_areas.body);
+    let visible_rows = usize::from(table_area.height.saturating_sub(2)).max(1);
+    selection.set_page_size(visible_rows);
+
+    let rows = summary.services.iter().map(|service| {
+        if compact {
+            Row::new([
+                Cell::from(service_performance_label(
+                    state,
+                    service.service_id,
+                    &service.service_code,
+                )),
+                Cell::from(service.journey_count().to_string()),
+                Cell::from(format_signed_cents(service.result_cents))
+                    .style(result_style(service.result_cents)),
+            ])
+        } else {
+            Row::new([
+                Cell::from(service_performance_label(
+                    state,
+                    service.service_id,
+                    &service.service_code,
+                )),
+                Cell::from(service.revenue_journeys.to_string()),
+                Cell::from(service.positioning_journeys.to_string()),
+                Cell::from(
+                    service
+                        .passengers_carried
+                        .map_or_else(|| "—".into(), |passengers| passengers.to_string()),
+                ),
+                Cell::from(format_cents(service.revenue_cents)),
+                Cell::from(format_cents(service.operating_costs_cents)),
+                Cell::from(format_signed_cents(service.result_cents))
+                    .style(result_style(service.result_cents)),
+            ])
+        }
+    });
+    let (header, widths) = if compact {
+        (
+            Row::new(["Service", "Journeys", "Result"]),
+            vec![
+                Constraint::Fill(1),
+                Constraint::Length(9),
+                Constraint::Length(13),
+            ],
+        )
+    } else {
+        (
+            Row::new(["Service", "Runs", "Pos", "Pax", "Revenue", "Costs", "Result"]),
+            vec![
+                Constraint::Fill(3),
+                Constraint::Length(6),
+                Constraint::Length(5),
+                Constraint::Length(9),
+                Constraint::Length(13),
+                Constraint::Length(13),
+                Constraint::Length(13),
+            ],
+        )
+    };
+    let table = Table::new(rows, widths)
+        .header(header.style(theme::table_header()).bottom_margin(1))
+        .style(theme::panel())
+        .row_highlight_style(theme::selected_row())
+        .highlight_symbol(theme::SELECTION_MARKER)
+        .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, table_area, &mut selection.table_state);
+
+    if summary.unattributed_journeys > 0 {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{} recent {} excluded because Service telemetry is unavailable.",
+                summary.unattributed_journeys,
+                if summary.unattributed_journeys == 1 {
+                    "receipt"
+                } else {
+                    "receipts"
+                }
+            ))
+            .style(theme::hint()),
+            note_area,
+        );
+    }
+}
+
+/// Renders one Service's recent operating and financial performance.
+pub fn render_service_performance_detail(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut ServicePerformanceSelection,
+) {
+    let service = selection.selected_service(state);
+    let title = service.as_ref().map_or_else(
+        || "Service Performance".to_owned(),
+        |service| format!("Service Performance · {}", service.service_code),
+    );
+    let card = modal::centered_rect(area, 80, 24);
+    let modal_areas = modal::render_shell(
+        frame,
+        card,
+        &title,
+        modal::shortcut_line(&[modal::ModalShortcut::enabled(
+            "Esc",
+            modal::ModalAction::Close,
+        )]),
+    );
+    frame.render_widget(
+        Paragraph::new(service_performance_detail_lines(state, service.as_ref()))
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        modal_areas.body,
+    );
 }
 
 fn recovery_evaluation(state: &GameState) -> Option<FinancialEvaluation> {
@@ -2093,6 +2477,107 @@ fn render_compact_summary(
     );
 }
 
+fn service_performance_detail_lines(
+    state: &GameState,
+    service: Option<&ServicePerformance>,
+) -> Vec<Line<'static>> {
+    let Some(service) = service else {
+        return vec![Line::styled(
+            "The selected Service is no longer present in the recent performance window.",
+            theme::secondary(),
+        )];
+    };
+
+    let journey_count = service.journey_count();
+    let average_result = if journey_count == 0 {
+        None
+    } else {
+        Some(service.result_cents / i128::try_from(journey_count).unwrap_or(1))
+    };
+    let passengers = service
+        .passengers_carried
+        .map_or_else(|| "—".into(), |passengers| passengers.to_string());
+
+    vec![
+        Line::styled(
+            service_performance_label(state, service.service_id, &service.service_code),
+            theme::title(),
+        ),
+        Line::styled(
+            format!(
+                "Calculated from this Service's Journeys inside the latest {RECENT_JOURNEY_WINDOW} completed-Journey window."
+            ),
+            theme::secondary(),
+        ),
+        Line::from(""),
+        section_heading("OPERATIONS"),
+        financial_line(
+            "Revenue runs",
+            service.revenue_journeys.to_string(),
+            theme::primary_value(),
+        ),
+        financial_line(
+            "Positioning moves",
+            service.positioning_journeys.to_string(),
+            theme::primary_value(),
+        ),
+        financial_line("Passengers", passengers, theme::primary_value()),
+        Line::from(""),
+        section_heading("FINANCIAL"),
+        financial_line(
+            "Revenue",
+            format_cents(service.revenue_cents),
+            theme::primary_value(),
+        ),
+        financial_line(
+            "Access fees",
+            format_cents(service.access_fees_cents),
+            theme::primary_value(),
+        ),
+        financial_line(
+            "Fuel",
+            format_cents(service.fuel_costs_cents),
+            theme::primary_value(),
+        ),
+        financial_line(
+            "Operating costs",
+            format_cents(service.operating_costs_cents),
+            theme::primary_value(),
+        ),
+        financial_line(
+            "Result",
+            format_signed_cents(service.result_cents),
+            result_style(service.result_cents),
+        ),
+        financial_line(
+            "Margin",
+            margin_label(service.result_cents, service.revenue_cents),
+            result_style(service.result_cents),
+        ),
+        Line::from(""),
+        section_heading("JOURNEY RESULTS"),
+        financial_line(
+            "Best Journey",
+            service
+                .best_result_cents
+                .map_or_else(|| "—".into(), format_signed_cents),
+            result_style(service.best_result_cents.unwrap_or_default()),
+        ),
+        financial_line(
+            "Worst Journey",
+            service
+                .worst_result_cents
+                .map_or_else(|| "—".into(), format_signed_cents),
+            result_style(service.worst_result_cents.unwrap_or_default()),
+        ),
+        financial_line(
+            "Average / Journey",
+            average_result.map_or_else(|| "—".into(), format_signed_cents),
+            result_style(average_result.unwrap_or_default()),
+        ),
+    ]
+}
+
 fn receipt_detail_lines(state: &GameState, receipt: Option<&JourneyReceipt>) -> Vec<Line<'static>> {
     match receipt {
         Some(receipt) => {
@@ -2792,5 +3277,39 @@ mod tests {
         assert_eq!(shortcuts[1].key, "Enter");
         assert_eq!(shortcuts[1].action, "Save");
         assert!(workspace.help_lines(&state)[0].contains("Company VKM"));
+    }
+
+    #[test]
+    fn company_workspace_drills_into_recent_service_performance() {
+        let mut state = create_new_game(42, "Alden Passenger", STARTED_AT);
+        let train_id = purchase_train(&mut state, 0, ORIGIN).unwrap();
+        let service_id = find_or_create_service(&mut state, ORIGIN, DESTINATION).unwrap();
+        dispatch_journey(&mut state, train_id, service_id, STARTED_AT).unwrap();
+        let arrives_at = state.active_journeys[0].arrives_at;
+        advance_time(&mut state, arrives_at).unwrap();
+
+        let mut workspace = CompanyWorkspace::default();
+        assert_eq!(
+            workspace.handle_key(
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+                &state,
+            ),
+            super::CompanyWorkspaceAction::ClearNotice
+        );
+        assert!(workspace.service_performance_browser_open());
+        assert!(workspace.help_lines(&state)[0].contains("Service Performance"));
+        assert_eq!(workspace.shortcuts(&state, false, true)[0].key, "Esc");
+
+        assert_eq!(
+            workspace.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state),
+            super::CompanyWorkspaceAction::ClearNotice
+        );
+        assert!(workspace.service_performance_details_open);
+
+        workspace.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state);
+        assert!(workspace.service_performance_open);
+        assert!(!workspace.service_performance_details_open);
+        workspace.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state);
+        assert!(!workspace.service_performance_browser_open());
     }
 }
