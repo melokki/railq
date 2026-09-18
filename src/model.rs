@@ -37,10 +37,8 @@ mod authority;
 
 pub use authority::{
     InfrastructureAccessDiscount, InfrastructureProject, InfrastructureProjectFunding,
-    InfrastructureProjectKind,
-    InfrastructureProjectStatus, InfrastructureProjectTimeline, PROVISIONAL_CONSTRUCTION_CAPACITY,
-    PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE,
-    PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT,
+    InfrastructureProjectKind, InfrastructureProjectStatus, InfrastructureProjectTimeline,
+    PROVISIONAL_CONSTRUCTION_CAPACITY, PROVISIONAL_MAINTENANCE_RESERVE_PER_TRACK_KILOMETRE,
     PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS,
     PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS,
     PROVISIONAL_OPERATOR_CONTRIBUTION_CAP_PERCENT,

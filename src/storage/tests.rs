@@ -146,8 +146,6 @@ fn sqlite_round_trips_infrastructure_access_discount() {
             estimated_cost: Money::from_cents(1_000),
             authority_committed: Money::from_cents(900),
             operator_contributed: Money::from_cents(100),
-            access_fee_credit_awarded: Money::from_cents(115),
-            access_fee_credit_remaining: Money::from_cents(60),
             access_fee_discount: Some(InfrastructureAccessDiscount {
                 basis_points: 5_000,
                 expires_at: UtcSeconds::from_unix_seconds(691_200),
@@ -384,8 +382,6 @@ fn validation_allows_open_project_to_keep_historical_authority_commitment() {
             estimated_cost: historical_commitment,
             authority_committed: historical_commitment,
             operator_contributed: Money::ZERO,
-            access_fee_credit_awarded: Money::ZERO,
-            access_fee_credit_remaining: Money::ZERO,
             access_fee_discount: None,
         },
     }];
@@ -1952,6 +1948,10 @@ fn v37_migration_converts_remaining_access_credit_into_temporary_discount() {
     let connection = Connection::open(&path).unwrap();
     let v37_schema = SCHEMA
         .replace(
+            "    operator_contributed_cents INTEGER NOT NULL DEFAULT 0 CHECK (operator_contributed_cents >= 0),\n",
+            "    operator_contributed_cents INTEGER NOT NULL DEFAULT 0 CHECK (operator_contributed_cents >= 0),\n    access_fee_credit_awarded_cents INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_credit_awarded_cents >= 0),\n    access_fee_credit_remaining_cents INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_credit_remaining_cents >= 0),\n",
+        )
+        .replace(
             "    access_fee_discount_basis_points INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_discount_basis_points BETWEEN 0 AND 10000),\n",
             "",
         )
@@ -1989,4 +1989,66 @@ fn v37_migration_converts_remaining_access_credit_into_temporary_discount() {
 
     assert_eq!(version, SAVE_VERSION);
     assert_eq!(discount, (5_000, Some(8 * 86_400)));
+}
+
+#[test]
+fn v38_migration_removes_legacy_access_credit_columns_without_losing_discount() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    let v38_schema = SCHEMA.replace(
+        "    operator_contributed_cents INTEGER NOT NULL DEFAULT 0 CHECK (operator_contributed_cents >= 0),\n",
+        "    operator_contributed_cents INTEGER NOT NULL DEFAULT 0 CHECK (operator_contributed_cents >= 0),\n    access_fee_credit_awarded_cents INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_credit_awarded_cents >= 0),\n    access_fee_credit_remaining_cents INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_credit_remaining_cents >= 0),\n",
+    );
+    connection.execute_batch(&v38_schema).unwrap();
+    connection
+        .execute_batch(
+            "INSERT INTO game_meta(singleton, world_seed, last_processed_at)
+             VALUES(1, '42', 100000);
+             INSERT INTO infrastructure_projects(
+                 id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
+                 operator_contributed_cents, access_fee_credit_awarded_cents,
+                 access_fee_credit_remaining_cents, access_fee_discount_basis_points,
+                 access_fee_discount_expires_at, requested_at, completed_at
+             ) VALUES(
+                 '00000004-0000-4000-8000-000000000001', 0, 'renewal', 'open',
+                 1000, 900, 100, 115, 60, 5000, 691200, 1000, 5000
+             );
+             PRAGMA user_version = 38;",
+        )
+        .unwrap();
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    let discount: (i64, Option<i64>) = connection
+        .query_row(
+            "SELECT access_fee_discount_basis_points, access_fee_discount_expires_at
+             FROM infrastructure_projects WHERE sequence = 0",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let columns: Vec<String> = connection
+        .prepare("PRAGMA table_info(infrastructure_projects)")
+        .unwrap()
+        .query_map([], |row| row.get(1))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    assert_eq!(version, SAVE_VERSION);
+    assert_eq!(discount, (5_000, Some(691_200)));
+    assert!(
+        !columns
+            .iter()
+            .any(|column| column == "access_fee_credit_awarded_cents")
+    );
+    assert!(
+        !columns
+            .iter()
+            .any(|column| column == "access_fee_credit_remaining_cents")
+    );
 }

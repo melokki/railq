@@ -540,7 +540,7 @@ fn quote_infrastructure_access_discount(
             .infrastructure_projects
             .iter()
             .filter(|project| project.status == InfrastructureProjectStatus::Open)
-            .filter(|project| project.access_credit_covers_line(*rail_line_id))
+            .filter(|project| project.access_discount_covers_line(*rail_line_id))
             .filter_map(|project| project.funding.access_fee_discount)
             .filter(|discount| discount.is_active_at(quoted_at))
             .map(|discount| discount.basis_points)
@@ -556,11 +556,10 @@ fn quote_infrastructure_access_discount(
                 operation: "infrastructure access discount",
             })?
             / BASIS_POINTS_PER_WHOLE;
-        let discount_cents = i64::try_from(discount_cents).map_err(|_| {
-            CalculationError::Overflow {
+        let discount_cents =
+            i64::try_from(discount_cents).map_err(|_| CalculationError::Overflow {
                 operation: "infrastructure access discount",
-            }
-        })?;
+            })?;
         total_discount = total_discount.checked_add(Money::from_cents(discount_cents))?;
     }
 
@@ -1131,8 +1130,6 @@ mod tests {
                     estimated_cost: Money::from_cents(1_000),
                     authority_committed: Money::from_cents(900),
                     operator_contributed: Money::from_cents(100),
-                    access_fee_credit_awarded: Money::from_cents(115),
-                    access_fee_credit_remaining: Money::from_cents(115),
                     access_fee_discount: Some(crate::model::InfrastructureAccessDiscount {
                         basis_points: 5_000,
                         expires_at: UtcSeconds::from_unix_seconds(2_000),
@@ -1147,7 +1144,10 @@ mod tests {
             quote.infrastructure_access_fee_before_discount,
             Money::from_cents(8)
         );
-        assert_eq!(quote.infrastructure_access_fee_discount, Money::from_cents(2));
+        assert_eq!(
+            quote.infrastructure_access_fee_discount,
+            Money::from_cents(2)
+        );
         assert_eq!(quote.infrastructure_access_fee, Money::from_cents(6));
     }
 
@@ -1181,8 +1181,6 @@ mod tests {
                     estimated_cost: Money::from_cents(1_000),
                     authority_committed: Money::from_cents(900),
                     operator_contributed: Money::from_cents(100),
-                    access_fee_credit_awarded: Money::from_cents(115),
-                    access_fee_credit_remaining: Money::from_cents(115),
                     access_fee_discount: Some(crate::model::InfrastructureAccessDiscount {
                         basis_points: 5_000,
                         expires_at: UtcSeconds::from_unix_seconds(2_000),

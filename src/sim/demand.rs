@@ -786,8 +786,6 @@ mod tests {
                     estimated_cost: Money::ZERO,
                     authority_committed: Money::ZERO,
                     operator_contributed: Money::ZERO,
-                    access_fee_credit_awarded: Money::ZERO,
-                    access_fee_credit_remaining: Money::ZERO,
                     access_fee_discount: None,
                 },
             });
@@ -856,8 +854,6 @@ mod tests {
                     estimated_cost: Money::ZERO,
                     authority_committed: Money::ZERO,
                     operator_contributed: Money::ZERO,
-                    access_fee_credit_awarded: Money::ZERO,
-                    access_fee_credit_remaining: Money::ZERO,
                     access_fee_discount: None,
                 },
             });

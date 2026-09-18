@@ -996,8 +996,9 @@ pub(crate) fn open_completed_infrastructure_projects(
 
         let target_name = project_target_settlement_name(region, index);
         let project = &mut region.rail_authority.infrastructure_projects[index];
-        project.funding.award_operator_access_credit()?;
-        project.funding.activate_operator_access_discount(completion)?;
+        project
+            .funding
+            .activate_operator_access_discount(completion)?;
         project.status = InfrastructureProjectStatus::Open;
         project.timeline.completed_at = Some(completion);
         push_bulletin(
@@ -1521,8 +1522,6 @@ fn project_from_candidate(
             estimated_cost: candidate.estimated_cost,
             authority_committed: Money::ZERO,
             operator_contributed: Money::ZERO,
-            access_fee_credit_awarded: Money::ZERO,
-            access_fee_credit_remaining: Money::ZERO,
             access_fee_discount: None,
         },
     }

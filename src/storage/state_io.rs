@@ -470,12 +470,11 @@ fn insert_infrastructure_project(
         .execute(
             "INSERT INTO infrastructure_projects(
                  id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
-                 operator_contributed_cents, access_fee_credit_awarded_cents, access_fee_credit_remaining_cents,
-                 access_fee_discount_basis_points, access_fee_discount_expires_at,
+                 operator_contributed_cents, access_fee_discount_basis_points, access_fee_discount_expires_at,
                  requested_at, review_started_at, proposed_at, approved_at, funding_completed_at, scheduled_start_at,
                  construction_started_at, planned_completion_at, completed_at, deferred_at, cancelled_at,
                  reconsideration_count, target_speed_limit_kmh, target_track_count
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 project.id.to_string(),
                 i64::try_from(sequence).unwrap_or(i64::MAX),
@@ -484,8 +483,6 @@ fn insert_infrastructure_project(
                 project.funding.estimated_cost.cents(),
                 project.funding.authority_committed.cents(),
                 project.funding.operator_contributed.cents(),
-                project.funding.access_fee_credit_awarded.cents(),
-                project.funding.access_fee_credit_remaining.cents(),
                 project
                     .funding
                     .access_fee_discount
@@ -622,8 +619,7 @@ fn load_infrastructure_projects(
     let rows = query_all(
         connection,
         "SELECT id, kind, status, estimated_cost_cents, authority_committed_cents,
-                operator_contributed_cents, access_fee_credit_awarded_cents, access_fee_credit_remaining_cents,
-                access_fee_discount_basis_points, access_fee_discount_expires_at,
+                operator_contributed_cents, access_fee_discount_basis_points, access_fee_discount_expires_at,
                 requested_at, review_started_at, proposed_at, approved_at, funding_completed_at, scheduled_start_at,
                 construction_started_at, planned_completion_at, completed_at, deferred_at, cancelled_at,
                 reconsideration_count, target_speed_limit_kmh, target_track_count
@@ -645,8 +641,8 @@ fn load_infrastructure_projects(
                 kind: row.get(1)?,
                 status: row.get(2)?,
                 funding: {
-                    let discount_basis_points = row.get::<_, i64>(8)?;
-                    let discount_expires_at = row.get::<_, Option<i64>>(9)?;
+                    let discount_basis_points = row.get::<_, i64>(6)?;
+                    let discount_expires_at = row.get::<_, Option<i64>>(7)?;
                     let access_fee_discount = match (discount_basis_points, discount_expires_at) {
                         (0, None) => None,
                         (basis_points, Some(expires_at)) => Some(InfrastructureAccessDiscount {
@@ -660,28 +656,26 @@ fn load_infrastructure_projects(
                         estimated_cost: Money::from_cents(row.get(3)?),
                         authority_committed: Money::from_cents(row.get(4)?),
                         operator_contributed: Money::from_cents(row.get(5)?),
-                        access_fee_credit_awarded: Money::from_cents(row.get(6)?),
-                        access_fee_credit_remaining: Money::from_cents(row.get(7)?),
                         access_fee_discount,
                     }
                 },
                 timeline: InfrastructureProjectTimeline {
-                    requested_at: UtcSeconds::from_unix_seconds(row.get(10)?),
-                    review_started_at: timestamp(11)?,
-                    proposed_at: timestamp(12)?,
-                    approved_at: timestamp(13)?,
-                    funding_completed_at: timestamp(14)?,
-                    scheduled_start_at: timestamp(15)?,
-                    construction_started_at: timestamp(16)?,
-                    planned_completion_at: timestamp(17)?,
-                    completed_at: timestamp(18)?,
-                    deferred_at: timestamp(19)?,
-                    cancelled_at: timestamp(20)?,
-                    reconsideration_count: u8::try_from(row.get::<_, i64>(21)?)
+                    requested_at: UtcSeconds::from_unix_seconds(row.get(8)?),
+                    review_started_at: timestamp(9)?,
+                    proposed_at: timestamp(10)?,
+                    approved_at: timestamp(11)?,
+                    funding_completed_at: timestamp(12)?,
+                    scheduled_start_at: timestamp(13)?,
+                    construction_started_at: timestamp(14)?,
+                    planned_completion_at: timestamp(15)?,
+                    completed_at: timestamp(16)?,
+                    deferred_at: timestamp(17)?,
+                    cancelled_at: timestamp(18)?,
+                    reconsideration_count: u8::try_from(row.get::<_, i64>(19)?)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 },
-                target_speed_limit_kmh: row.get(22)?,
-                target_track_count: row.get(23)?,
+                target_speed_limit_kmh: row.get(20)?,
+                target_track_count: row.get(21)?,
             })
         },
     )?;

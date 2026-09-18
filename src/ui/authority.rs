@@ -775,7 +775,10 @@ fn render_project_inspector(
     if let Some(discount) = project.funding.access_fee_discount {
         let percent = u32::from(discount.basis_points) / 100;
         let status = if discount.is_active_at(now) {
-            format!("{percent}% · expires {}", format_project_timestamp(discount.expires_at, now))
+            format!(
+                "{percent}% · expires {}",
+                format_project_timestamp(discount.expires_at, now)
+            )
         } else {
             format!("{percent}% · expired")
         };

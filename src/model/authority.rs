@@ -55,10 +55,6 @@ pub struct InfrastructureProjectTimeline {
 /// can reserve part or all of the estimated cost from its investment budget.
 pub const PROVISIONAL_OPERATOR_CONTRIBUTION_CAP_PERCENT: u64 = 20;
 pub const PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT: u64 = 10;
-/// Legacy access-fee credit granted when an operator-funded project opens.
-/// Kept temporarily so v37 saves and the existing journey-charging path remain
-/// compatible while the contribution benefit moves to a time-limited discount.
-pub const PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT: u64 = 115;
 /// Access-fee reduction granted on infrastructure helped by the operator.
 pub const PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS: u16 = 5_000;
 /// Number of Authority fiscal days for which the contribution discount applies.
@@ -85,10 +81,6 @@ pub struct InfrastructureProjectFunding {
     pub authority_committed: Money,
     #[serde(default)]
     pub operator_contributed: Money,
-    #[serde(default)]
-    pub access_fee_credit_awarded: Money,
-    #[serde(default)]
-    pub access_fee_credit_remaining: Money,
     #[serde(default)]
     pub access_fee_discount: Option<InfrastructureAccessDiscount>,
 }
@@ -146,30 +138,7 @@ impl InfrastructureProjectFunding {
             .min(company_funds))
     }
 
-    pub fn operator_access_credit_value(&self) -> Result<Money, CalculationError> {
-        let cents = i128::from(self.operator_contributed.cents())
-            .checked_mul(i128::from(PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT))
-            .ok_or(CalculationError::Overflow {
-                operation: "operator infrastructure access credit",
-            })?
-            / 100;
-        let cents = i64::try_from(cents).map_err(|_| CalculationError::Overflow {
-            operation: "operator infrastructure access credit",
-        })?;
-        Ok(Money::from_cents(cents))
-    }
-
-    pub fn award_operator_access_credit(&mut self) -> Result<Money, CalculationError> {
-        if self.access_fee_credit_awarded > Money::ZERO {
-            return Ok(self.access_fee_credit_awarded);
-        }
-        let credit = self.operator_access_credit_value()?;
-        self.access_fee_credit_awarded = credit;
-        self.access_fee_credit_remaining = credit;
-        Ok(credit)
-    }
-
-    /// Activates the replacement contribution benefit when the project opens.
+    /// Activates the operator contribution benefit when the project opens.
     ///
     /// Expiry follows the Authority's current UTC fiscal-day calendar: a project
     /// opening part-way through a day receives the remainder of that fiscal day
@@ -187,8 +156,8 @@ impl InfrastructureProjectFunding {
         }
 
         let first_midnight = next_utc_midnight_after(opened_at)?;
-        let remaining_full_days = PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS
-            .saturating_sub(1);
+        let remaining_full_days =
+            PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS.saturating_sub(1);
         let expires_at = first_midnight.checked_add(DurationSeconds::from_seconds(
             remaining_full_days.saturating_mul(24 * 60 * 60),
         ))?;
@@ -344,8 +313,8 @@ impl InfrastructureProject {
         self.kind.conflicts_with(&other.kind)
     }
 
-    /// Whether an access-fee credit earned by this project applies to one Rail Line.
-    pub fn access_credit_covers_line(&self, rail_line_id: RailLineId) -> bool {
+    /// Whether an access-fee discount earned by this project applies to one Rail Line.
+    pub fn access_discount_covers_line(&self, rail_line_id: RailLineId) -> bool {
         match &self.kind {
             InfrastructureProjectKind::NewLine { planned_lines, .. } => {
                 planned_lines.iter().any(|line| line.id == rail_line_id)

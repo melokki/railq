@@ -12,9 +12,7 @@ use crate::{
         CalculationError, GameState, Journey, JourneyId, JourneyPassengerGroup, JourneyPurpose,
         Money, RailStationId, ServiceId, TrainId, TrainStatus, UtcSeconds,
     },
-    sim::economy::{
-        EconomyError, quote_journey_at, quote_positioning_journey_at,
-    },
+    sim::economy::{EconomyError, quote_journey_at, quote_positioning_journey_at},
 };
 
 /// Why a manual Journey cannot depart.
