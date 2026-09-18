@@ -761,7 +761,7 @@ fn render_milestones(
         push_milestone(&mut milestones, "Funded", value, now);
     }
     if let Some(value) = project.timeline.construction_started_at {
-        push_milestone(&mut milestones, "Build", value, now);
+        push_milestone(&mut milestones, "Started", value, now);
     }
     if let Some(value) = project.timeline.completed_at {
         push_milestone(&mut milestones, "Open", value, now);

@@ -21,7 +21,7 @@ use super::{
     format::{
         new_line_route_label, project_next, project_scope, relative_time,
     },
-    programme::{render_programme_pipeline, render_projects, stage_label, stage_style},
+    programme::{render_development_programme, stage_label, stage_style},
     project::{preferred_project_detail_height, render_selected_project},
 };
 
@@ -71,10 +71,9 @@ fn render_wide(
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
-    let [overview_area, metrics_area, pipeline_area, body_area] = Layout::vertical([
+    let [overview_area, metrics_area, body_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(6),
-        Constraint::Length(2),
         Constraint::Fill(1),
     ])
     .spacing(1)
@@ -82,7 +81,6 @@ fn render_wide(
 
     render_authority_overview(frame, overview_area, state, now, snapshot);
     render_authority_metrics(frame, metrics_area, state, now, snapshot);
-    render_programme_pipeline(frame, pipeline_area, snapshot.programme);
 
     const MIN_PROGRAMME_HEIGHT: u16 = 7;
     let project_detail_height = preferred_project_detail_height(state, now, selection);
@@ -98,14 +96,30 @@ fn render_wide(
         ])
         .spacing(1)
         .areas(body_area);
-        render_projects(frame, projects_area, state, now, selection, false);
+        render_development_programme(
+            frame,
+            projects_area,
+            state,
+            now,
+            selection,
+            false,
+            snapshot.programme,
+        );
         render_selected_project(frame, project_area, state, now, selection);
     } else {
         let [projects_area, project_area] =
             Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
                 .spacing(1)
                 .areas(body_area);
-        render_projects(frame, projects_area, state, now, selection, false);
+        render_development_programme(
+            frame,
+            projects_area,
+            state,
+            now,
+            selection,
+            false,
+            snapshot.programme,
+        );
         render_selected_project(frame, project_area, state, now, selection);
     }
 }
@@ -397,29 +411,41 @@ fn render_compact(
     frame.render_widget(shell, area);
 
     if inner.height >= 20 {
-        let [summary_area, pipeline_area, projects_area, inspector_area] = Layout::vertical([
+        let [summary_area, projects_area, inspector_area] = Layout::vertical([
             Constraint::Length(4),
-            Constraint::Length(2),
-            Constraint::Length(7),
+            Constraint::Length(10),
             Constraint::Fill(1),
         ])
         .spacing(1)
         .areas(inner);
         render_compact_summary(frame, summary_area, state, now, snapshot);
-        render_programme_pipeline(frame, pipeline_area, snapshot.programme);
-        render_projects(frame, projects_area, state, now, selection, true);
+        render_development_programme(
+            frame,
+            projects_area,
+            state,
+            now,
+            selection,
+            true,
+            snapshot.programme,
+        );
         render_selected_project(frame, inspector_area, state, now, selection);
     } else {
-        let [summary_area, pipeline_area, projects_area] = Layout::vertical([
+        let [summary_area, projects_area] = Layout::vertical([
             Constraint::Length(4),
-            Constraint::Length(2),
             Constraint::Fill(1),
         ])
         .spacing(1)
         .areas(inner);
         render_compact_summary(frame, summary_area, state, now, snapshot);
-        render_programme_pipeline(frame, pipeline_area, snapshot.programme);
-        render_projects(frame, projects_area, state, now, selection, true);
+        render_development_programme(
+            frame,
+            projects_area,
+            state,
+            now,
+            selection,
+            true,
+            snapshot.programme,
+        );
     }
 }
 

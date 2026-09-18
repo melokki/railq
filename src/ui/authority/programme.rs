@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Rect},
+    layout::{Constraint, Layout, Rect},
     text::{Line, Span, Text},
     widgets::{Cell, HighlightSpacing, Paragraph, Row, Table},
 };
@@ -90,12 +90,13 @@ fn closed_at(project: &InfrastructureProject) -> Option<UtcSeconds> {
         .or(project.timeline.completed_at)
 }
 
-pub(super) fn render_programme_pipeline(
+fn render_programme_pipeline(
     frame: &mut Frame,
     area: Rect,
     counts: ProgrammeCounts,
 ) {
     let mut lifecycle = vec![
+        Span::styled("PIPELINE  ", theme::table_header()),
         stage_count_span("PLANNING", counts.planning, ProgrammeStage::Planning),
         separator_span(),
         stage_count_span("FUNDING", counts.funding, ProgrammeStage::Funding),
@@ -116,11 +117,7 @@ pub(super) fn render_programme_pipeline(
     }
 
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled("DEVELOPMENT PIPELINE", theme::table_header()),
-            Line::from(lifecycle),
-        ])
-        .style(theme::panel()),
+        Paragraph::new(Line::from(lifecycle)).style(theme::panel()),
         area,
     );
 }
@@ -133,14 +130,30 @@ fn separator_span() -> Span<'static> {
     Span::styled("  →  ", theme::secondary())
 }
 
-pub(super) fn render_projects(
+pub(super) fn render_development_programme(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
     now: UtcSeconds,
     selection: &mut ProjectSelection,
     compact: bool,
+    counts: ProgrammeCounts,
 ) {
+    let block = panel_block("Development Programme", false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let [pipeline_area, table_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(inner);
+    render_programme_pipeline(frame, pipeline_area, counts);
+
     let projects = &state.region.rail_authority.infrastructure_projects;
     if projects.is_empty() {
         frame.render_widget(
@@ -151,14 +164,13 @@ pub(super) fn render_projects(
                     theme::secondary(),
                 ),
             ])
-            .block(panel_block("Development Programme", false))
             .style(theme::panel()),
-            area,
+            table_area,
         );
         return;
     }
 
-    let inner_height = area.height.saturating_sub(3);
+    let inner_height = table_area.height.saturating_sub(1);
     selection.set_page_size(usize::from(inner_height).max(1));
     selection.synchronize(state);
     let order = ordered_project_indices(state);
@@ -243,28 +255,28 @@ pub(super) fn render_projects(
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(if compact { 1 } else { 2 })
-        .block(panel_block("Programme", false))
         .row_highlight_style(theme::selected_row())
         .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
-    frame.render_stateful_widget(table, area, &mut selection.table_state);
+    frame.render_stateful_widget(table, table_area, &mut selection.table_state);
 
     if let Some(history_index) = first_history_row.filter(|index| *index > 0) {
         let history_is_visible = selection.table_state.offset() == 0
             && history_index < selection.page_size
-            && area.height > 4;
+            && table_area.height > 2;
         if history_is_visible {
-            let separator_y = area
+            let separator_y = table_area
                 .y
-                .saturating_add(2)
+                .saturating_add(1)
                 .saturating_add(u16::try_from(history_index).unwrap_or(u16::MAX));
-            if separator_y < area.bottom().saturating_sub(1) {
+            if separator_y < table_area.bottom() {
+                let history_label = format!("HISTORY · {} OPENED", counts.open);
                 frame.render_widget(
-                    Paragraph::new(Line::styled("OPENED / HISTORY", theme::secondary())),
+                    Paragraph::new(Line::styled(history_label, theme::secondary())),
                     Rect::new(
-                        area.x.saturating_add(4),
+                        table_area.x.saturating_add(3),
                         separator_y,
-                        area.width.saturating_sub(8),
+                        table_area.width.saturating_sub(6),
                         1,
                     ),
                 );
