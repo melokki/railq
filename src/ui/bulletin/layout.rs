@@ -43,10 +43,10 @@ pub(super) fn wide_areas(area: Rect) -> BulletinAreas {
 }
 
 pub(super) fn compact_areas(area: Rect) -> BulletinAreas {
-    let [briefing, body] = Layout::vertical([Constraint::Length(6), Constraint::Fill(1)])
+    let [briefing, body] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)])
         .spacing(1)
         .areas(area);
-    let [log, detail] = Layout::vertical([Constraint::Percentage(55), Constraint::Fill(1)])
+    let [log, detail] = Layout::horizontal([Constraint::Percentage(56), Constraint::Fill(1)])
         .spacing(1)
         .areas(body);
     BulletinAreas {
@@ -83,5 +83,15 @@ mod tests {
         assert_eq!(areas.briefing.height, 8);
         assert!(areas.log.height > 0);
         assert!(areas.detail.height > 0);
+    }
+
+    #[test]
+    fn compact_layout_keeps_log_and_detail_side_by_side() {
+        let area = Rect::new(0, 0, 90, 20);
+        let areas = compact_areas(area);
+        assert_eq!(areas.briefing.height, 2);
+        assert_eq!(areas.log.y, areas.detail.y);
+        assert_eq!(areas.log.height, areas.detail.height);
+        assert!(areas.log.width > areas.detail.width);
     }
 }

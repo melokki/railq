@@ -39,6 +39,15 @@ pub(super) fn render(
     render_lead_development(frame, lead_area, state, now, workspace);
 }
 
+pub(super) fn render_compact(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    workspace: &BulletinWorkspace,
+) {
+    render_overview(frame, area, state, workspace);
+}
+
 fn render_overview(
     frame: &mut Frame,
     area: Rect,

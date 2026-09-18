@@ -107,7 +107,7 @@ pub(super) fn render(
                 entry,
                 is_new,
                 ..
-            } => ListItem::new(development_line(entry, now, is_new)),
+            } => ListItem::new(development_line(entry, now, is_new, body_area.width)),
         })
         .collect::<Vec<_>>();
 
@@ -166,14 +166,21 @@ fn development_group(
     }
 }
 
-fn development_line(entry: &BulletinEntry, now: UtcSeconds, is_new: bool) -> Line<'static> {
+fn development_line(
+    entry: &BulletinEntry,
+    now: UtcSeconds,
+    is_new: bool,
+    width: u16,
+) -> Line<'static> {
+    let (time_width, category_width): (usize, usize) =
+        if width < 50 { (8, 13) } else { (10, 14) };
     Line::from(vec![
         Span::styled(
-            format!("{:<10}", relative_time(entry.occurred_at, now)),
+            format!("{:<time_width$}", relative_time(entry.occurred_at, now)),
             theme::secondary(),
         ),
         Span::styled(
-            format!("{:<14}", category_label(entry.category)),
+            format!("{:<category_width$}", category_label(entry.category)),
             category_style(entry.category),
         ),
         Span::styled(

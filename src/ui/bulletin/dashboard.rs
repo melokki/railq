@@ -1,14 +1,10 @@
 //! Unified Bulletin workspace shell and responsive composition.
 
-use ratatui::{
-    Frame,
-    layout::Rect,
-    widgets::{Paragraph, Wrap},
-};
+use ratatui::{Frame, layout::Rect};
 
 use crate::{
     model::{GameState, UtcSeconds},
-    ui::{components::panel_block, theme},
+    ui::components::panel_block,
 };
 
 use super::{
@@ -37,19 +33,12 @@ pub(super) fn render(
         }
         BulletinLayout::Compact => {
             let areas = compact_areas(inner);
-            header::render(frame, areas.briefing, state, now, workspace);
+            header::render_compact(frame, areas.briefing, state, workspace);
             log::render(frame, areas.log, state, now, workspace);
             detail::render(frame, areas.detail, state, now, workspace);
         }
         BulletinLayout::Tiny => {
-            frame.render_widget(
-                Paragraph::new(
-                    "Railway Bulletin\n\nOpen this workspace in a larger terminal to inspect regional developments.",
-                )
-                .style(theme::panel())
-                .wrap(Wrap { trim: true }),
-                inner,
-            );
+            detail::render_tiny(frame, inner, state, now, workspace);
         }
     }
 }
