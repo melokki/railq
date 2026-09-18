@@ -1127,6 +1127,7 @@ pub fn render_service_performance_browser(
     selection.set_page_size(visible_rows);
 
     let rows = summary.services.iter().map(|service| {
+        let has_recent_activity = service.journey_count() > 0;
         if compact {
             Row::new([
                 Cell::from(service_performance_label(
@@ -1134,9 +1135,14 @@ pub fn render_service_performance_browser(
                     service.service_id,
                     &service.service_code,
                 )),
-                Cell::from(service.journey_count().to_string()),
-                Cell::from(format_signed_cents(service.result_cents))
-                    .style(result_style(service.result_cents)),
+                Cell::from(service_operating_status_label(state, service.service_id))
+                    .style(service_operating_status_style(state, service.service_id)),
+                if has_recent_activity {
+                    Cell::from(format_signed_cents(service.result_cents))
+                        .style(result_style(service.result_cents))
+                } else {
+                    Cell::from("—").style(theme::secondary())
+                },
             ])
         } else {
             Row::new([
@@ -1145,37 +1151,63 @@ pub fn render_service_performance_browser(
                     service.service_id,
                     &service.service_code,
                 )),
+                Cell::from(service_operating_status_label(state, service.service_id))
+                    .style(service_operating_status_style(state, service.service_id)),
                 Cell::from(service.revenue_journeys.to_string()),
                 Cell::from(service.positioning_journeys.to_string()),
-                Cell::from(
+                Cell::from(if service.revenue_journeys == 0 {
+                    "—".into()
+                } else {
                     service
                         .passengers_carried
-                        .map_or_else(|| "—".into(), |passengers| passengers.to_string()),
-                ),
-                Cell::from(format_cents(service.revenue_cents)),
-                Cell::from(format_cents(service.operating_costs_cents)),
-                Cell::from(format_signed_cents(service.result_cents))
-                    .style(result_style(service.result_cents)),
+                        .map_or_else(|| "—".into(), |passengers| passengers.to_string())
+                }),
+                Cell::from(if has_recent_activity {
+                    format_cents(service.revenue_cents)
+                } else {
+                    "—".into()
+                }),
+                Cell::from(if has_recent_activity {
+                    format_cents(service.operating_costs_cents)
+                } else {
+                    "—".into()
+                }),
+                if has_recent_activity {
+                    Cell::from(format_signed_cents(service.result_cents))
+                        .style(result_style(service.result_cents))
+                } else {
+                    Cell::from("—").style(theme::secondary())
+                },
             ])
         }
     });
     let (header, widths) = if compact {
         (
-            Row::new(["Service", "Journeys", "Result"]),
+            Row::new(["Service", "Status", "Result"]),
             vec![
                 Constraint::Fill(1),
-                Constraint::Length(9),
+                Constraint::Length(11),
                 Constraint::Length(13),
             ],
         )
     } else {
         (
-            Row::new(["Service", "Runs", "Pos", "Pax", "Revenue", "Costs", "Result"]),
+            Row::new([
+                "Service",
+                "Status",
+                "Runs",
+                "Pos",
+                "Boardings",
+                "Revenue",
+                "Costs",
+                "Result",
+            ]),
             vec![
                 Constraint::Fill(3),
+                Constraint::Length(11),
                 Constraint::Length(6),
                 Constraint::Length(5),
-                Constraint::Length(9),
+                Constraint::Length(10),
                 Constraint::Length(13),
                 Constraint::Length(13),
                 Constraint::Length(13),
@@ -1464,7 +1496,7 @@ fn render_wide_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
                 Constraint::Length(2),
                 Constraint::Length(5),
                 Constraint::Length(8),
-                Constraint::Length(7),
+                Constraint::Length(9),
                 Constraint::Fill(1),
             ])
             .spacing(1)
@@ -1499,12 +1531,24 @@ fn render_dashboard_activity(
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
 ) {
-    let [receipts_area, attention_area] =
-        Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
-            .spacing(2)
-            .areas(area);
-    render_recent_activity(frame, receipts_area, state, true);
-    render_attention_panel(frame, attention_area, state, evaluation);
+    let (_, requires_attention) = attention_lines(state, evaluation);
+    if requires_attention {
+        let [receipts_area, attention_area] =
+            Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
+                .spacing(2)
+                .areas(area);
+        render_recent_activity(frame, receipts_area, state, true);
+        render_attention_panel(frame, attention_area, state, evaluation);
+    } else {
+        let [receipts_area, attention_area] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(2),
+        ])
+        .spacing(1)
+        .areas(area);
+        render_recent_activity(frame, receipts_area, state, true);
+        render_attention_panel(frame, attention_area, state, evaluation);
+    }
 }
 
 fn render_company_overview(
@@ -1691,7 +1735,7 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
 
     let trains = &state.player_company.fleet.trains;
     let defined_services = state.player_company.passenger_services.len();
-    let active_services = active_service_count(state);
+    let running_services = running_service_count(state);
     let served_settlements = served_settlement_count(state);
     let connected_settlements = connected_settlement_count(state);
     let active = ActiveJourneyExposure::from_state(state);
@@ -1712,8 +1756,8 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
             ),
             dashboard_line(
                 "Services",
-                format!("{active_services} / {defined_services} active"),
-                if active_services > 0 {
+                format!("{running_services} / {defined_services} running"),
+                if running_services > 0 {
                     theme::success()
                 } else {
                     theme::primary_value()
@@ -1918,17 +1962,17 @@ fn format_compact_chart_cents(cents: i128) -> String {
 fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) {
     let summary = ServicePerformanceSummary::from_state(state);
     let recent_journeys = summary.attributed_journeys + summary.unattributed_journeys;
-    let has_legacy_note = summary.unattributed_journeys > 0;
-    let [heading_area, table_area, note_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(if has_legacy_note { 1 } else { 0 }),
-    ])
-    .areas(area);
+    let [heading_area, table_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
     let visible_rows = usize::from(table_area.height.saturating_sub(2)).max(1);
     let shown_services = summary.services.len().min(visible_rows);
     let mut heading = if recent_journeys == 0 {
-        "SERVICE PERFORMANCE".to_owned()
+        "SERVICE PERFORMANCE · NO RECENT JOURNEYS".to_owned()
+    } else if summary.unattributed_journeys > 0 {
+        format!(
+            "SERVICE PERFORMANCE · {}/{} JOURNEYS ATTRIBUTED",
+            summary.attributed_journeys, recent_journeys
+        )
     } else {
         format!("SERVICE PERFORMANCE · RECENT {recent_journeys} JOURNEYS")
     };
@@ -1945,74 +1989,85 @@ fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) 
     );
 
     if summary.services.is_empty() {
-        let message = if summary.unattributed_journeys > 0 {
-            "Recent receipts do not contain Service telemetry. New completed Journeys will populate per-Service performance."
-        } else {
-            "No completed Service activity yet. Revenue runs and positioning moves will appear here after they finish."
-        };
         frame.render_widget(
-            Paragraph::new(message)
-                .style(theme::secondary())
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(
+                "No passenger Services are defined yet. Create a Service to begin operating the network.",
+            )
+            .style(theme::secondary())
+            .wrap(Wrap { trim: true }),
             table_area,
         );
-    } else {
-        let rows = summary
-            .services
-            .iter()
-            .take(visible_rows)
-            .map(|service| {
-                Row::new([
-                    Cell::from(service_performance_label(
-                        state,
-                        service.service_id,
-                        &service.service_code,
-                    )),
-                    Cell::from(service.revenue_journeys.to_string()),
-                    Cell::from(service.positioning_journeys.to_string()),
-                    Cell::from(
-                        service
-                            .passengers_carried
-                            .map_or_else(|| "—".into(), |passengers| passengers.to_string()),
-                    ),
-                    Cell::from(format_cents(service.revenue_cents)),
-                    Cell::from(format_cents(service.operating_costs_cents)),
-                    Cell::from(format_signed_cents(service.result_cents))
-                        .style(result_style(service.result_cents)),
-                ])
-            });
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Fill(3),
-                Constraint::Length(6),
-                Constraint::Length(5),
-                Constraint::Length(9),
-                Constraint::Length(13),
-                Constraint::Length(13),
-                Constraint::Length(13),
-            ],
-        )
-        .header(
-            Row::new(["Service", "Runs", "Pos", "Pax", "Revenue", "Costs", "Result"])
-                .style(theme::table_header())
-                .bottom_margin(1),
-        )
-        .style(theme::panel());
-        frame.render_widget(table, table_area);
+        return;
     }
 
-    if has_legacy_note {
-        let excluded = summary.unattributed_journeys;
-        frame.render_widget(
-            Paragraph::new(format!(
-                "{excluded} recent {} excluded because Service telemetry is unavailable.",
-                if excluded == 1 { "receipt" } else { "receipts" }
-            ))
-            .style(theme::hint()),
-            note_area,
-        );
-    }
+    let rows = summary.services.iter().take(visible_rows).map(|service| {
+        let journey_count = service.journey_count();
+        let has_recent_activity = journey_count > 0;
+        let boardings = if service.revenue_journeys == 0 {
+            "—".into()
+        } else {
+            service
+                .passengers_carried
+                .map_or_else(|| "—".into(), |passengers| passengers.to_string())
+        };
+        let status = service_operating_status_label(state, service.service_id);
+        Row::new([
+            Cell::from(service_performance_label(
+                state,
+                service.service_id,
+                &service.service_code,
+            )),
+            Cell::from(status).style(service_operating_status_style(state, service.service_id)),
+            Cell::from(service.revenue_journeys.to_string()),
+            Cell::from(service.positioning_journeys.to_string()),
+            Cell::from(boardings),
+            Cell::from(if has_recent_activity {
+                format_cents(service.revenue_cents)
+            } else {
+                "—".into()
+            }),
+            Cell::from(if has_recent_activity {
+                format_cents(service.operating_costs_cents)
+            } else {
+                "—".into()
+            }),
+            if has_recent_activity {
+                Cell::from(format_signed_cents(service.result_cents))
+                    .style(result_style(service.result_cents))
+            } else {
+                Cell::from("—").style(theme::secondary())
+            },
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Fill(3),
+            Constraint::Length(11),
+            Constraint::Length(6),
+            Constraint::Length(5),
+            Constraint::Length(10),
+            Constraint::Length(13),
+            Constraint::Length(13),
+            Constraint::Length(13),
+        ],
+    )
+    .header(
+        Row::new([
+            "Service",
+            "Status",
+            "Runs",
+            "Pos",
+            "Boardings",
+            "Revenue",
+            "Costs",
+            "Result",
+        ])
+        .style(theme::table_header())
+        .bottom_margin(1),
+    )
+    .style(theme::panel());
+    frame.render_widget(table, table_area);
 }
 
 fn service_performance_label(state: &GameState, service_id: ServiceId, service_code: &str) -> String {
@@ -2042,17 +2097,57 @@ fn service_performance_label(state: &GameState, service_id: ServiceId, service_c
     )
 }
 
-fn active_service_count(state: &GameState) -> usize {
+fn service_running_journey_count(state: &GameState, service_id: ServiceId) -> usize {
+    state
+        .active_journeys
+        .iter()
+        .filter(|journey| journey.service_id == service_id)
+        .count()
+}
+
+fn service_assigned_train_count(state: &GameState, service_id: ServiceId) -> usize {
+    state
+        .player_company
+        .fleet
+        .service_assignments
+        .values()
+        .filter(|&&assigned_service_id| assigned_service_id == service_id)
+        .count()
+}
+
+fn service_operating_status_label(state: &GameState, service_id: ServiceId) -> &'static str {
+    let is_current = state
+        .player_company
+        .passenger_services
+        .iter()
+        .any(|service| service.id == service_id);
+    if !is_current {
+        return "REMOVED";
+    }
+    if service_running_journey_count(state, service_id) > 0 {
+        "RUNNING"
+    } else if service_assigned_train_count(state, service_id) > 0 {
+        "ASSIGNED"
+    } else {
+        "UNASSIGNED"
+    }
+}
+
+fn service_operating_status_style(state: &GameState, service_id: ServiceId) -> Style {
+    match service_operating_status_label(state, service_id) {
+        "RUNNING" => theme::success(),
+        "UNASSIGNED" => theme::warning(),
+        "REMOVED" => theme::secondary(),
+        _ => theme::primary_value(),
+    }
+}
+
+fn running_service_count(state: &GameState) -> usize {
     state
         .player_company
         .passenger_services
         .iter()
-        .filter(|service| {
-            state
-                .active_journeys
-                .iter()
-                .any(|journey| journey.service_id == service.id)
-        })
+        .filter(|service| service_running_journey_count(state, service.id) > 0)
         .count()
 }
 
@@ -2113,7 +2208,12 @@ fn render_compact_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
         Layout::horizontal([Constraint::Percentage(46), Constraint::Fill(1)])
             .spacing(2)
             .areas(shell_inner);
-    let attention_height = if right_area.height >= 17 { 7 } else { 5 };
+    let (_, requires_attention) = attention_lines(state, &evaluation);
+    let attention_height = if requires_attention {
+        if right_area.height >= 17 { 7 } else { 5 }
+    } else {
+        2
+    };
     let [attention_area, history_area] = Layout::vertical([
         Constraint::Length(attention_height),
         Constraint::Fill(1),
@@ -2341,19 +2441,10 @@ fn render_receipt_history_table(
     frame.render_stateful_widget(table, area, &mut selection.table_state);
 }
 
-fn render_attention_panel(
-    frame: &mut Frame,
-    area: Rect,
+fn attention_lines(
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
-) {
-    let [heading_area, content_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-    frame.render_widget(
-        Paragraph::new(section_heading("ATTENTION")).style(theme::panel()),
-        heading_area,
-    );
-
+) -> (Vec<Line<'static>>, bool) {
     let recent = RecentJourneyPerformance::from_state(state);
     let services = ServicePerformanceSummary::from_state(state);
     let mut lines = Vec::new();
@@ -2397,6 +2488,23 @@ fn render_attention_panel(
         Ok(_) => {}
     }
 
+    for service in state
+        .player_company
+        .passenger_services
+        .iter()
+        .filter(|service| {
+            service_running_journey_count(state, service.id) == 0
+                && service_assigned_train_count(state, service.id) == 0
+        })
+        .take(ATTENTION_SERVICE_LIMIT)
+    {
+        has_warning = true;
+        lines.push(Line::styled(
+            format!("[!] {} has no Train assigned.", service.name),
+            theme::warning(),
+        ));
+    }
+
     if recent.journey_count == 0 {
         if state.player_company.passenger_services.is_empty() {
             lines.push(Line::styled(
@@ -2429,11 +2537,11 @@ fn render_attention_panel(
     for service in services
         .services
         .iter()
-        .filter(|service| service.result_cents < 0)
+        .filter(|service| service.journey_count() > 0 && service.result_cents < 0)
         .take(ATTENTION_SERVICE_LIMIT)
     {
         has_warning = true;
-        let journeys = service.revenue_journeys + service.positioning_journeys;
+        let journeys = service.journey_count();
         lines.push(Line::styled(
             format!(
                 "[!] {}: {} across {} recent {}.",
@@ -2453,6 +2561,23 @@ fn render_attention_panel(
         ));
     }
 
+    (lines, has_warning)
+}
+
+fn render_attention_panel(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
+) {
+    let [heading_area, content_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(section_heading("ATTENTION")).style(theme::panel()),
+        heading_area,
+    );
+
+    let (lines, _) = attention_lines(state, evaluation);
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::panel())
@@ -2492,9 +2617,9 @@ fn render_compact_summary(
         dashboard_line(
             "Services",
             format!(
-                "{} · {} active",
+                "{} defined · {} running",
                 state.player_company.passenger_services.len(),
-                active_service_count(state),
+                running_service_count(state),
             ),
             theme::primary_value(),
         ),

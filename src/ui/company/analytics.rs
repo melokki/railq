@@ -73,7 +73,59 @@ pub(super) struct ServicePerformanceSummary {
 
 impl ServicePerformanceSummary {
     pub(super) fn from_state(state: &GameState) -> Self {
-        Self::from_receipts(&state.financials.recent_journey_receipts)
+        let mut summary = Self::from_receipts(&state.financials.recent_journey_receipts);
+
+        // The dashboard is also an operating overview, so current Services must
+        // remain visible even when they have no completed Journey in the recent
+        // analytics window. Historical Services removed from the timetable are
+        // retained after current Services so their settled performance is not
+        // silently discarded.
+        for service in &state.player_company.passenger_services {
+            if let Some(performance) = summary
+                .services
+                .iter_mut()
+                .find(|performance| performance.service_id == service.id)
+            {
+                performance.service_code = service.name.clone();
+                continue;
+            }
+
+            summary.services.push(ServicePerformance {
+                service_id: service.id,
+                service_code: service.name.clone(),
+                revenue_journeys: 0,
+                positioning_journeys: 0,
+                passengers_carried: Some(0),
+                revenue_cents: 0,
+                access_fees_cents: 0,
+                fuel_costs_cents: 0,
+                operating_costs_cents: 0,
+                result_cents: 0,
+                best_result_cents: None,
+                worst_result_cents: None,
+            });
+        }
+
+        summary.services.sort_by(|left, right| {
+            let left_index = state
+                .player_company
+                .passenger_services
+                .iter()
+                .position(|service| service.id == left.service_id)
+                .unwrap_or(usize::MAX);
+            let right_index = state
+                .player_company
+                .passenger_services
+                .iter()
+                .position(|service| service.id == right.service_id)
+                .unwrap_or(usize::MAX);
+            left_index
+                .cmp(&right_index)
+                .then_with(|| left.service_code.cmp(&right.service_code))
+                .then_with(|| left.service_id.cmp(&right.service_id))
+        });
+
+        summary
     }
 
     fn from_receipts(receipts: &[JourneyReceipt]) -> Self {
@@ -376,6 +428,37 @@ mod tests {
         assert_eq!(summary.unattributed_journeys, 1);
         assert_eq!(summary.services.len(), 1);
         assert_eq!(summary.services[0].result_cents, 10_500);
+    }
+
+    #[test]
+    fn service_performance_keeps_defined_services_without_recent_activity() {
+        use crate::{
+            model::{RailStationId, UtcSeconds},
+            sim::{services::find_or_create_service, world::create_new_game},
+        };
+
+        let mut state = create_new_game(
+            42,
+            "Service Dashboard Test",
+            UtcSeconds::from_unix_seconds(1_700_000_000),
+        );
+        let service_id = find_or_create_service(
+            &mut state,
+            RailStationId::new(1),
+            RailStationId::new(2),
+        )
+        .expect("service exists");
+
+        let summary = ServicePerformanceSummary::from_state(&state);
+        let service = summary
+            .services
+            .iter()
+            .find(|service| service.service_id == service_id)
+            .expect("defined Service remains visible");
+
+        assert_eq!(service.journey_count(), 0);
+        assert_eq!(service.result_cents, 0);
+        assert_eq!(summary.attributed_journeys, 0);
     }
 
     #[test]
