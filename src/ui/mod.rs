@@ -353,7 +353,7 @@ impl Shell {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
-                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B'
+                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T'
                 )
             );
             if navigation_key {
@@ -442,7 +442,7 @@ impl Shell {
                 let action = self.fleet_workspace.handle_key(key, state);
                 return self.handle_fleet_workspace_action(action, state);
             }
-            KeyCode::Char('3' | 'b' | 'B') => {
+            KeyCode::Char('3') => {
                 self.active_view = View::BuyTrains;
                 self.service_workspace.close();
             }

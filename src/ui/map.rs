@@ -141,7 +141,7 @@ impl MapWorkspace {
                 WorldDetailsKeyAction::Closed
             }
             KeyCode::Char(
-                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A'
+                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'c' | 'C' | 'a' | 'A'
                 | 'u' | 'U',
             ) => {
                 self.world_details_visible = false;
@@ -168,7 +168,7 @@ impl MapWorkspace {
                 MovementsKeyAction::Closed
             }
             KeyCode::Char(
-                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C' | 'a' | 'A'
+                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'c' | 'C' | 'a' | 'A'
                 | 'u' | 'U',
             ) => {
                 self.movements_visible = false;

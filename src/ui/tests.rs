@@ -17,7 +17,7 @@ use super::{
 };
 
 #[test]
-fn routes_the_six_primary_views_by_number_and_keeps_train_market_aliases() {
+fn routes_the_six_primary_views_by_number_and_keeps_train_alias() {
     let mut shell = Shell::new();
     let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
@@ -29,7 +29,6 @@ fn routes_the_six_primary_views_by_number_and_keeps_train_market_aliases() {
         ('5', View::Authority),
         ('6', View::Bulletin),
         ('t', View::Trains),
-        ('b', View::BuyTrains),
     ] {
         assert_eq!(
             shell.handle_key(
@@ -59,14 +58,14 @@ fn routes_the_six_primary_views_by_number_and_keeps_train_market_aliases() {
 }
 
 #[test]
-fn bulletin_has_no_letter_alias_so_u_remains_available_for_contextual_actions() {
+fn bulletin_uses_only_number_navigation_and_b_remains_available_for_contextual_actions() {
     let mut shell = Shell::new();
     let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
     assert_eq!(shell.active_view(), View::Map);
     assert_eq!(
         shell.handle_key(
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
             &state
         ),
         ShellAction::Continue
@@ -503,7 +502,7 @@ fn buy_trains_routes_only_an_explicit_confirmation_to_the_application_boundary()
     let press =
         |shell: &mut Shell, key| shell.handle_key(KeyEvent::new(key, KeyModifiers::NONE), &state);
 
-    assert_eq!(press(&mut shell, KeyCode::Char('b')), ShellAction::Continue);
+    assert_eq!(press(&mut shell, KeyCode::Char('3')), ShellAction::Continue);
     assert_eq!(press(&mut shell, KeyCode::Down), ShellAction::Continue);
     assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
     assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
