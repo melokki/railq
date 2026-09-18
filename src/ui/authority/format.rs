@@ -22,21 +22,6 @@ pub(super) fn money_line(label: &str, value: Money) -> Line<'static> {
     ])
 }
 
-pub(super) fn status_count_line(
-    projects: &[InfrastructureProject],
-    status: InfrastructureProjectStatus,
-    label: &str,
-) -> Line<'static> {
-    let count = projects
-        .iter()
-        .filter(|project| project.status == status)
-        .count();
-    Line::from(vec![
-        Span::styled(format!("{label}  "), theme::secondary()),
-        Span::styled(count.to_string(), theme::primary_value()),
-    ])
-}
-
 pub(super) fn project_scope(state: &GameState, project: &InfrastructureProject) -> String {
     match &project.kind {
         InfrastructureProjectKind::NewLine {

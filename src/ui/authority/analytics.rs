@@ -4,7 +4,9 @@
 //! smaller programme lifecycle for dashboard summaries without changing game
 //! state or lifecycle rules.
 
-use crate::model::{GameState, InfrastructureProjectStatus, Money, UtcSeconds};
+use crate::model::{
+    GameState, InfrastructureProjectId, InfrastructureProjectStatus, Money, UtcSeconds,
+};
 
 /// Player-facing lifecycle used by the Authority dashboard.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,6 +72,34 @@ impl ProgrammeCounts {
     }
 }
 
+/// Earliest in-progress project that will materially change the rail network.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NextNetworkChange {
+    pub(super) project_id: InfrastructureProjectId,
+    pub(super) opens_at: UtcSeconds,
+}
+
+impl NextNetworkChange {
+    fn from_state(state: &GameState) -> Option<Self> {
+        state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .iter()
+            .filter(|project| project.status == InfrastructureProjectStatus::Construction)
+            .filter_map(|project| {
+                project
+                    .timeline
+                    .planned_completion_at
+                    .map(|opens_at| Self {
+                        project_id: project.id,
+                        opens_at,
+                    })
+            })
+            .min_by_key(|change| change.opens_at)
+    }
+}
+
 /// Stable presentation snapshot consumed by Authority dashboard renderers.
 ///
 /// Keeping these derivations outside Ratatui rendering gives later redesign
@@ -90,6 +120,7 @@ pub(super) struct AuthorityDashboardSnapshot {
     pub(super) active_construction: u32,
     pub(super) free_construction: u32,
     pub(super) programme: ProgrammeCounts,
+    pub(super) next_network_change: Option<NextNetworkChange>,
 }
 
 impl AuthorityDashboardSnapshot {
@@ -111,6 +142,7 @@ impl AuthorityDashboardSnapshot {
             active_construction: authority.active_construction_count(),
             free_construction: authority.construction_slots_remaining(),
             programme: ProgrammeCounts::from_state(state),
+            next_network_change: NextNetworkChange::from_state(state),
         }
     }
 }

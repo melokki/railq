@@ -4,7 +4,8 @@ use std::fmt::Write;
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
+    style::Style,
     text::{Line, Span, Text},
     widgets::{Cell, HighlightSpacing, Paragraph, Row, Table, Wrap},
 };
@@ -31,7 +32,7 @@ use super::{
         difficulty_label, duration_line, electrification_label, format_project_timestamp,
         funding_percent, maturity_label, maturity_percent, money_line, new_line_route_label,
         progress_line, project_next, project_scope, project_status, relative_time, schedule_line,
-        settlement_name, short_uuid, status_count_line, status_style, timestamp_line, value_line,
+        settlement_name, short_uuid, status_style, timestamp_line, value_line,
     },
 };
 
@@ -61,14 +62,21 @@ fn render_wide(
     now: UtcSeconds,
     selection: &mut ProjectSelection,
 ) {
-    let [summary_area, body_area] =
-        Layout::vertical([Constraint::Length(10), Constraint::Fill(1)]).areas(area);
-    let [finance_area, programme_area] =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
-            .spacing(1)
-            .areas(summary_area);
-    render_finances(frame, finance_area, state, now);
-    render_programme(frame, programme_area, state);
+    let snapshot = AuthorityDashboardSnapshot::from_state(state);
+    let shell = panel_block("Authority", true);
+    let shell_inner = shell.inner(area);
+    frame.render_widget(shell, area);
+
+    let [overview_area, metrics_area, body_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(6),
+        Constraint::Fill(1),
+    ])
+    .spacing(1)
+    .areas(shell_inner);
+
+    render_authority_overview(frame, overview_area, state, now, snapshot);
+    render_authority_metrics(frame, metrics_area, state, now, snapshot);
 
     let [projects_area, inspector_area] =
         Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
@@ -76,6 +84,254 @@ fn render_wide(
             .areas(body_area);
     render_projects(frame, projects_area, state, now, selection, false);
     render_project_inspector(frame, inspector_area, state, now, selection);
+}
+
+fn render_authority_overview(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    now: UtcSeconds,
+    snapshot: AuthorityDashboardSnapshot,
+) {
+    let [programme_area, identity_area] =
+        Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
+            .spacing(2)
+            .areas(area);
+
+    let programme_state = if snapshot.programme.pipeline() == 0 {
+        "PROGRAMME QUIET"
+    } else {
+        "PROGRAMME ACTIVE"
+    };
+    let programme_style = if snapshot.programme.pipeline() == 0 {
+        theme::secondary()
+    } else {
+        theme::success()
+    };
+    let mut programme_lines = vec![Line::from(vec![
+        Span::styled(programme_state, programme_style.bold()),
+        Span::styled(
+            format!(
+                " · {} building · {} funding · {} open",
+                snapshot.active_construction, snapshot.programme.funding, snapshot.programme.open
+            ),
+            theme::secondary(),
+        ),
+    ])];
+    programme_lines.push(next_network_change_line(state, now, snapshot));
+    render_dashboard_section(frame, programme_area, programme_lines);
+
+    let identity_lines = vec![
+        Line::styled(state.region.rail_authority.name.clone(), theme::title()),
+        Line::from(vec![
+            Span::styled(state.region.name.clone(), theme::secondary()),
+            Span::styled(" · public infrastructure programme", theme::hint()),
+        ]),
+    ];
+    render_dashboard_section(frame, identity_area, identity_lines);
+}
+
+fn render_authority_metrics(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    now: UtcSeconds,
+    snapshot: AuthorityDashboardSnapshot,
+) {
+    let [investment_area, delivery_area, network_area] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+    ])
+    .spacing(1)
+    .areas(area);
+
+    let available = snapshot
+        .available_investment
+        .map(ui_format::money)
+        .unwrap_or_else(|| "—".into());
+    let next_allocation = snapshot.next_fiscal_period_at.map_or_else(
+        || "Next allocation pending".into(),
+        |timestamp| {
+            format!(
+                "+{} {}",
+                ui_format::money(snapshot.public_allocation),
+                relative_time(timestamp, now)
+            )
+        },
+    );
+    render_metric_card(
+        frame,
+        investment_area,
+        "INVESTMENT CAPACITY",
+        available,
+        "available to invest".into(),
+        format!("Treasury {}", ui_format::money(snapshot.treasury)),
+        next_allocation,
+        theme::success(),
+    );
+
+    let capacity_full = snapshot.free_construction == 0 && snapshot.construction_capacity > 0;
+    let capacity_context = if capacity_full {
+        "CAPACITY FULL".into()
+    } else {
+        format!("{} slots free", snapshot.free_construction)
+    };
+    let next_release = snapshot.next_network_change.map_or_else(
+        || "No active opening scheduled".into(),
+        |change| format!("Next release {}", relative_time(change.opens_at, now)),
+    );
+    render_metric_card(
+        frame,
+        delivery_area,
+        "DELIVERY CAPACITY",
+        format!(
+            "{} / {}",
+            snapshot.reserved_construction, snapshot.construction_capacity
+        ),
+        "construction slots reserved".into(),
+        capacity_context,
+        next_release,
+        if capacity_full {
+            theme::warning()
+        } else {
+            theme::primary_value()
+        },
+    );
+
+    let network_context = snapshot
+        .next_network_change
+        .and_then(|change| project_by_id(state, change.project_id))
+        .map(network_change_footprint)
+        .unwrap_or_else(|| "No network addition underway".into());
+    render_metric_card(
+        frame,
+        network_area,
+        "NETWORK",
+        format!("{} stations", snapshot.station_count),
+        format!("{} segments in service", snapshot.segment_count),
+        network_context,
+        format!("{} projects in pipeline", snapshot.programme.pipeline()),
+        theme::primary_value(),
+    );
+}
+
+fn render_metric_card(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    value: String,
+    subtitle: String,
+    context: String,
+    secondary_context: String,
+    value_style: Style,
+) {
+    let block = panel_block(title, false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(value, value_style.bold()),
+            Line::styled(subtitle, theme::secondary()),
+            Line::styled(context, theme::secondary()),
+            Line::styled(secondary_context, theme::hint()),
+        ])
+        .alignment(Alignment::Center)
+        .style(theme::panel()),
+        inner,
+    );
+}
+
+fn next_network_change_line(
+    state: &GameState,
+    now: UtcSeconds,
+    snapshot: AuthorityDashboardSnapshot,
+) -> Line<'static> {
+    let Some(change) = snapshot.next_network_change else {
+        return Line::from(vec![
+            Span::styled("NEXT NETWORK CHANGE  ", theme::table_header()),
+            Span::styled("No opening currently scheduled", theme::secondary()),
+        ]);
+    };
+    let Some(project) = project_by_id(state, change.project_id) else {
+        return Line::from(vec![
+            Span::styled("NEXT NETWORK CHANGE  ", theme::table_header()),
+            Span::styled("Opening details unavailable", theme::secondary()),
+        ]);
+    };
+
+    Line::from(vec![
+        Span::styled("NEXT NETWORK CHANGE  ", theme::table_header()),
+        Span::styled(network_change_label(state, project), theme::primary_value().bold()),
+        Span::styled(
+            format!(" · opens {}", relative_time(change.opens_at, now)),
+            theme::secondary(),
+        ),
+    ])
+}
+
+fn project_by_id(
+    state: &GameState,
+    project_id: crate::model::InfrastructureProjectId,
+) -> Option<&InfrastructureProject> {
+    state
+        .region
+        .rail_authority
+        .infrastructure_projects
+        .iter()
+        .find(|project| project.id == project_id)
+}
+
+fn network_change_label(state: &GameState, project: &InfrastructureProject) -> String {
+    match &project.kind {
+        InfrastructureProjectKind::NewLine {
+            planned_stations,
+            planned_lines,
+        } => new_line_route_label(state, planned_stations, planned_lines)
+            .unwrap_or_else(|| project_scope(state, project)),
+        _ => project_scope(state, project),
+    }
+}
+
+fn network_change_footprint(project: &InfrastructureProject) -> String {
+    match &project.kind {
+        InfrastructureProjectKind::NewLine {
+            planned_stations,
+            planned_lines,
+        } => {
+            let metres = planned_lines.iter().fold(0_u64, |total, line| {
+                total.saturating_add(line.distance.metres())
+            });
+            format!(
+                "+{} {} · +{} underway",
+                planned_stations.len(),
+                if planned_stations.len() == 1 {
+                    "station"
+                } else {
+                    "stations"
+                },
+                ui_format::distance(metres)
+            )
+        }
+        InfrastructureProjectKind::SpeedUpgrade { rail_line_ids, .. }
+        | InfrastructureProjectKind::DoubleTracking { rail_line_ids, .. }
+        | InfrastructureProjectKind::Electrification { rail_line_ids }
+        | InfrastructureProjectKind::Renewal { rail_line_ids } => {
+            format!("{} segment(s) being upgraded", rail_line_ids.len())
+        }
+        InfrastructureProjectKind::StationUpgrade { rail_station_ids } => {
+            format!("{} station(s) being upgraded", rail_station_ids.len())
+        }
+    }
+}
+
+fn render_dashboard_section(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 fn render_compact(
@@ -136,68 +392,6 @@ fn render_finances(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSec
     frame.render_widget(
         Paragraph::new(lines)
             .block(panel_block("Infrastructure Finances", false))
-            .style(theme::panel()),
-        area,
-    );
-}
-
-fn render_programme(frame: &mut Frame, area: Rect, state: &GameState) {
-    let projects = &state.region.rail_authority.infrastructure_projects;
-    let snapshot = AuthorityDashboardSnapshot::from_state(state);
-    let active = snapshot.active_construction;
-    let reserved = snapshot.reserved_construction;
-    let open = snapshot.programme.open;
-    let pipeline = snapshot.programme.pipeline();
-
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Network  ", theme::secondary()),
-            Span::styled(
-                format!(
-                    "{} stations · {} segments",
-                    snapshot.station_count,
-                    snapshot.segment_count
-                ),
-                theme::primary_value(),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Projects  ", theme::secondary()),
-            Span::styled(
-                format!("{} pipeline · {open} open", pipeline),
-                theme::primary_value(),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Construction slots  ", theme::secondary()),
-            Span::styled(
-                format!(
-                    "{reserved}/{} reserved · {active} active · {} free",
-                    snapshot.construction_capacity,
-                    snapshot.free_construction
-                ),
-                if snapshot.free_construction == 0 {
-                    theme::warning()
-                } else {
-                    theme::primary_value()
-                },
-            ),
-        ]),
-        status_count_line(projects, InfrastructureProjectStatus::Funding, "Funding"),
-        status_count_line(
-            projects,
-            InfrastructureProjectStatus::Scheduled,
-            "Scheduled",
-        ),
-        status_count_line(
-            projects,
-            InfrastructureProjectStatus::Construction,
-            "Construction",
-        ),
-    ];
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(panel_block("Development Programme", false))
             .style(theme::panel()),
         area,
     );
