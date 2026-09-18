@@ -163,12 +163,24 @@ pub(super) fn render_projects(
     selection.synchronize(state);
     let order = ordered_project_indices(state);
 
+    let first_history_row = order.iter().position(|source_index| {
+        matches!(
+            ProgrammeStage::from_status(projects[*source_index].status),
+            ProgrammeStage::Open | ProgrammeStage::Closed
+        )
+    });
+    let separator_after = first_history_row.and_then(|position| position.checked_sub(1));
+    if separator_after.is_some() {
+        selection.set_page_size(usize::from(inner_height.saturating_sub(1)).max(1));
+    }
+
     let rows = order
         .iter()
-        .map(|source_index| {
+        .enumerate()
+        .map(|(display_index, source_index)| {
             let project = &projects[*source_index];
             let stage = ProgrammeStage::from_status(project.status);
-            if compact {
+            let row = if compact {
                 Row::new(vec![
                     Cell::from(format!("{:02}", source_index + 1)),
                     Cell::from(project_scope(state, project)),
@@ -186,6 +198,12 @@ pub(super) fn render_projects(
                     Cell::from(stage_progress(project, now)),
                     Cell::from(programme_next(state, project, now)),
                 ])
+            };
+
+            if separator_after == Some(display_index) {
+                row.bottom_margin(1)
+            } else {
+                row
             }
         })
         .collect::<Vec<_>>();
@@ -240,7 +258,7 @@ fn programme_next(state: &GameState, project: &InfrastructureProject, now: UtcSe
     }
 }
 
-fn stage_label(stage: ProgrammeStage) -> &'static str {
+pub(super) fn stage_label(stage: ProgrammeStage) -> &'static str {
     match stage {
         ProgrammeStage::Planning => "PLANNING",
         ProgrammeStage::Funding => "FUNDING",
@@ -252,7 +270,7 @@ fn stage_label(stage: ProgrammeStage) -> &'static str {
     }
 }
 
-fn stage_style(stage: ProgrammeStage) -> ratatui::style::Style {
+pub(super) fn stage_style(stage: ProgrammeStage) -> ratatui::style::Style {
     match stage {
         ProgrammeStage::Open => theme::success(),
         ProgrammeStage::Funding

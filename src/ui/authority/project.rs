@@ -30,12 +30,14 @@ use crate::{
 
 use super::{
     ProjectSelection,
+    analytics::ProgrammeStage,
     format::{
         access_discount_label, construction_remaining_duration, deferred_next, difficulty_label,
         electrification_label, format_project_timestamp, maturity_label, maturity_percent,
         new_line_route_label, project_next, project_scope, project_status, relative_time,
-        settlement_name, short_uuid, status_style,
+        settlement_name, status_style,
     },
+    programme::{stage_label, stage_style},
 };
 
 pub(super) fn render_selected_project(
@@ -81,7 +83,7 @@ pub(super) fn render_selected_project(
     let [header_area, content_area, milestones_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Fill(1),
-        Constraint::Length(2),
+        Constraint::Length(1),
     ])
     .spacing(1)
     .areas(inner);
@@ -121,11 +123,14 @@ fn render_project_summary(
             format!("PROJECT {:02} · {}", index + 1, project_heading(state, project)),
             theme::title(),
         ),
-        Line::from(vec![
-            Span::styled(project_status(project.status), status_style(project.status).bold()),
-            Span::styled(" · ", theme::secondary()),
-            Span::styled(project_next(state, project, now), theme::primary_value()),
-        ]),
+        Line::from({
+            let stage = ProgrammeStage::from_status(project.status);
+            vec![
+                Span::styled(stage_label(stage), stage_style(stage).bold()),
+                Span::styled(" · ", theme::secondary()),
+                Span::styled(project_next(state, project, now), theme::primary_value()),
+            ]
+        }),
     ];
     if area.height >= 3 {
         lines.push(Line::from(vec![
@@ -164,24 +169,18 @@ fn render_project_header(
     let heading = project_heading(state, project);
     frame.render_widget(
         Paragraph::new(vec![
+            Line::styled(
+                format!("PROJECT {:02} · {heading}", index + 1),
+                theme::title(),
+            ),
             Line::from({
-                let mut spans = vec![Span::styled(
-                    format!("PROJECT {:02} · {heading}", index + 1),
-                    theme::title(),
-                )];
-                if area.width >= 72 {
-                    spans.push(Span::styled(
-                        format!("  {}", short_uuid(project.id)),
-                        theme::secondary(),
-                    ));
-                }
-                spans
+                let stage = ProgrammeStage::from_status(project.status);
+                vec![
+                    Span::styled(stage_label(stage), stage_style(stage).bold()),
+                    Span::styled(" · ", theme::secondary()),
+                    Span::styled(project_next(state, project, now), theme::primary_value()),
+                ]
             }),
-            Line::from(vec![
-                Span::styled(project_status(project.status), status_style(project.status).bold()),
-                Span::styled(" · ", theme::secondary()),
-                Span::styled(project_next(state, project, now), theme::primary_value()),
-            ]),
         ])
         .style(theme::panel())
         .wrap(Wrap { trim: true }),

@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
@@ -17,12 +17,11 @@ use crate::{
 
 use super::{
     ProjectSelection,
-    analytics::AuthorityDashboardSnapshot,
+    analytics::{AuthorityDashboardSnapshot, ProgrammeStage},
     format::{
-        new_line_route_label, project_next, project_scope, project_status, relative_time,
-        status_style,
+        new_line_route_label, project_next, project_scope, relative_time,
     },
-    programme::{render_programme_pipeline, render_projects},
+    programme::{render_programme_pipeline, render_projects, stage_label, stage_style},
     project::render_selected_project,
 };
 
@@ -85,21 +84,17 @@ fn render_wide(
     render_authority_metrics(frame, metrics_area, state, now, snapshot);
     render_programme_pipeline(frame, pipeline_area, snapshot.programme);
 
-    let visible_rows = u16::try_from(
-        state
-            .region
-            .rail_authority
-            .infrastructure_projects
-            .len(),
-    )
-    .unwrap_or(7)
-    .min(7);
-    let projects_height = visible_rows.saturating_add(3).clamp(6, 10);
+    const PROJECT_DETAIL_HEIGHT: u16 = 19;
+    const MIN_PROGRAMME_HEIGHT: u16 = 7;
 
-    if body_area.height >= projects_height.saturating_add(9) {
+    if body_area.height
+        >= PROJECT_DETAIL_HEIGHT
+            .saturating_add(MIN_PROGRAMME_HEIGHT)
+            .saturating_add(1)
+    {
         let [projects_area, project_area] = Layout::vertical([
-            Constraint::Length(projects_height),
             Constraint::Fill(1),
+            Constraint::Length(PROJECT_DETAIL_HEIGHT),
         ])
         .spacing(1)
         .areas(body_area);
@@ -151,15 +146,18 @@ fn render_authority_overview(
     render_dashboard_section(frame, programme_area, programme_lines);
 
     let fiscal_context = snapshot.next_fiscal_period_at.map_or_else(
-        || "allocation schedule pending".into(),
-        |timestamp| format!("next allocation {}", relative_time(timestamp, now)),
+        || "Next allocation schedule pending".into(),
+        |timestamp| {
+            format!(
+                "Next allocation +{} · {}",
+                ui_format::money(snapshot.public_allocation),
+                relative_time(timestamp, now)
+            )
+        },
     );
     let identity_lines = vec![
         Line::styled(state.region.rail_authority.name.clone(), theme::title()),
-        Line::from(vec![
-            Span::styled(state.region.name.clone(), theme::secondary()),
-            Span::styled(format!(" · {fiscal_context}"), theme::hint()),
-        ]),
+        Line::styled(fiscal_context, theme::secondary()),
     ];
     render_dashboard_section(frame, identity_area, identity_lines);
 }
@@ -218,7 +216,7 @@ fn render_authority_metrics(
             "{} / {}",
             snapshot.reserved_construction, snapshot.construction_capacity
         ),
-        "construction slots reserved".into(),
+        "slots occupied".into(),
         capacity_context,
         next_release,
         if capacity_full {
@@ -240,7 +238,7 @@ fn render_authority_metrics(
         format!("{} stations", snapshot.station_count),
         format!("{} segments in service", snapshot.segment_count),
         network_context,
-        format!("{} projects in pipeline", snapshot.programme.pipeline()),
+        project_count_label(snapshot.programme.pipeline(), "project", "projects", "in pipeline"),
         theme::primary_value(),
     );
 }
@@ -265,10 +263,14 @@ fn render_metric_card(
             Line::styled(context, theme::secondary()),
             Line::styled(secondary_context, theme::hint()),
         ])
-        .alignment(Alignment::Center)
         .style(theme::panel()),
         inner,
     );
+}
+
+fn project_count_label(count: usize, singular: &str, plural: &str, suffix: &str) -> String {
+    let noun = if count == 1 { singular } else { plural };
+    format!("{count} {noun} {suffix}")
 }
 
 fn next_network_change_line(
@@ -527,8 +529,9 @@ fn render_tiny(
             Span::styled(format!("PROJECT {:02}  ", index + 1), theme::table_header()),
             Span::styled(project_scope(state, project), theme::primary_value()),
         ]));
+        let stage = ProgrammeStage::from_status(project.status);
         lines.push(Line::from(vec![
-            Span::styled(project_status(project.status), status_style(project.status)),
+            Span::styled(stage_label(stage), stage_style(stage)),
             Span::styled(" · ", theme::secondary()),
             Span::styled(project_next(state, project, now), theme::secondary()),
         ]));
@@ -584,7 +587,7 @@ pub fn render_text(state: &GameState, now: UtcSeconds) -> String {
     .expect("writing to String cannot fail");
     writeln!(
         output,
-        "Construction slots: {}/{} reserved",
+        "Construction slots: {}/{} occupied",
         authority.reserved_construction_count(),
         authority.construction_capacity
     )
@@ -595,7 +598,7 @@ pub fn render_text(state: &GameState, now: UtcSeconds) -> String {
             output,
             "{:02}  {:<14}  {}  {}",
             index + 1,
-            project_status(project.status),
+            stage_label(ProgrammeStage::from_status(project.status)),
             project_scope(state, project),
             project_next(state, project, now)
         )

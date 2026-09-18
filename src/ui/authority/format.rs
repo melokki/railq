@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use crate::{
     model::{
         ConstructionDifficulty, Electrification, GameState, InfrastructureAccessDiscount,
-        InfrastructureProject, InfrastructureProjectId, InfrastructureProjectKind,
+        InfrastructureProject, InfrastructureProjectKind,
         InfrastructureProjectStatus, Money, UtcSeconds,
     },
     sim::authority::{
@@ -289,25 +289,6 @@ pub(super) fn maturity_label(basis_points: u16) -> &'static str {
     }
 }
 
-pub(super) fn value_line(label: &str, value: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label}  "), theme::secondary()),
-        Span::styled(value.to_string(), theme::primary_value()),
-    ])
-}
-
-pub(super) fn schedule_line(label: &str, timestamp: UtcSeconds, now: UtcSeconds) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label}  "), theme::secondary()),
-        Span::styled(
-            format_project_timestamp(timestamp, now),
-            theme::primary_value(),
-        ),
-        Span::styled(" · ", theme::secondary()),
-        Span::styled(relative_time(timestamp, now), theme::primary_value()),
-    ])
-}
-
 pub(crate) fn access_discount_label(
     discount: InfrastructureAccessDiscount,
     now: UtcSeconds,
@@ -418,10 +399,6 @@ pub(super) fn compact_duration(seconds: u64) -> String {
     } else {
         format!("{days}d {hours}h")
     }
-}
-
-pub(super) fn short_uuid(id: InfrastructureProjectId) -> String {
-    id.to_string().chars().take(8).collect()
 }
 
 pub(super) fn electrification_label(value: Electrification) -> &'static str {
