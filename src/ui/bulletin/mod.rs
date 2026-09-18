@@ -7,6 +7,7 @@
 mod dashboard;
 mod detail;
 mod format;
+mod header;
 mod layout;
 mod log;
 

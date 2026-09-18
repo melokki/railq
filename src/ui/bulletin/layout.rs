@@ -23,34 +23,34 @@ impl BulletinLayout {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BulletinAreas {
-    pub summary: Rect,
+    pub briefing: Rect,
     pub log: Rect,
     pub detail: Rect,
 }
 
 pub(super) fn wide_areas(area: Rect) -> BulletinAreas {
-    let [summary, body] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)])
+    let [briefing, body] = Layout::vertical([Constraint::Length(8), Constraint::Fill(1)])
         .spacing(1)
         .areas(area);
     let [log, detail] = Layout::horizontal([Constraint::Percentage(60), Constraint::Fill(1)])
         .spacing(2)
         .areas(body);
     BulletinAreas {
-        summary,
+        briefing,
         log,
         detail,
     }
 }
 
 pub(super) fn compact_areas(area: Rect) -> BulletinAreas {
-    let [summary, body] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)])
+    let [briefing, body] = Layout::vertical([Constraint::Length(6), Constraint::Fill(1)])
         .spacing(1)
         .areas(area);
     let [log, detail] = Layout::vertical([Constraint::Percentage(55), Constraint::Fill(1)])
         .spacing(1)
         .areas(body);
     BulletinAreas {
-        summary,
+        briefing,
         log,
         detail,
     }
@@ -74,5 +74,14 @@ mod tests {
             BulletinLayout::from_rect(Rect::new(0, 0, 75, 20)),
             BulletinLayout::Tiny
         );
+    }
+
+    #[test]
+    fn wide_layout_reserves_space_for_the_briefing() {
+        let area = Rect::new(0, 0, 120, 40);
+        let areas = wide_areas(area);
+        assert_eq!(areas.briefing.height, 8);
+        assert!(areas.log.height > 0);
+        assert!(areas.detail.height > 0);
     }
 }
