@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 use crate::{
-    model::{GameState, TrainStatus, UtcSeconds},
+    model::{GameState, Journey, JourneyPurpose, TrainStatus, UtcSeconds},
     ui::{format, modal, theme},
 };
 
@@ -28,7 +28,7 @@ pub(crate) fn render_movements_overlay(
     now: UtcSeconds,
     workspace: &mut MapWorkspace,
 ) {
-    let card = modal::centered_rect(area, 112, 28);
+    let card = modal::centered_rect(area, 118, 30);
 
     let mut journeys = state.active_journeys.iter().collect::<Vec<_>>();
     journeys.sort_by_key(|journey| (journey.arrives_at, journey.train_id));
@@ -45,6 +45,8 @@ pub(crate) fn render_movements_overlay(
         .collect::<Vec<_>>();
     ready_trains.sort_by_key(|(train, station_id)| (station_name(state, *station_id), train.id));
 
+    let running_count = journeys.len();
+    let ready_count = ready_trains.len();
     let ready_height = if ready_trains.is_empty() {
         3
     } else {
@@ -52,15 +54,18 @@ pub(crate) fn render_movements_overlay(
     };
 
     // The focused modal body is the card height minus borders, separator, and
-    // footer. Table headers consume two rows because they include a bottom
-    // margin. Scroll only the rows that cannot fit, first live movements and
-    // then READY trains, so both sections remain visible and predictable.
+    // footer. Reserve a compact summary block plus the READY section, then scroll
+    // only the rows that cannot fit. Running movements consume scroll first so the
+    // READY section remains stable at the bottom of the modal.
     let body_height = card.height.saturating_sub(4);
-    let movements_height = body_height.saturating_sub(ready_height.saturating_add(1));
+    let summary_height = 2;
+    let movements_height = body_height
+        .saturating_sub(summary_height)
+        .saturating_sub(ready_height.saturating_add(1));
     let movement_capacity = if journeys.is_empty() {
         0
     } else {
-        usize::from(movements_height.saturating_sub(2))
+        usize::from(movements_height.saturating_sub(3))
     };
     let ready_capacity = if ready_trains.is_empty() {
         0
@@ -81,64 +86,137 @@ pub(crate) fn render_movements_overlay(
         modal::ModalShortcut::enabled("Esc", modal::ModalAction::Close),
         modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Scroll),
     ]);
-    let modal_areas = modal::render_shell(frame, card, "Movements", footer);
-    let [movements_area, separator_area, ready_area] = Layout::vertical([
+    let modal_areas = modal::render_shell(frame, card, "Network Movements", footer);
+    let [summary_area, movements_area, separator_area, ready_area] = Layout::vertical([
+        Constraint::Length(summary_height),
         Constraint::Min(6),
         Constraint::Length(1),
         Constraint::Length(ready_height),
     ])
     .areas(modal_areas.body);
 
+    render_operating_summary(frame, summary_area, running_count, ready_count);
+    render_running_trains(
+        frame,
+        movements_area,
+        state,
+        now,
+        journeys,
+        movement_offset,
+        running_count,
+    );
+
+    modal::render_horizontal_separator(frame, separator_area);
+    render_ready_trains(frame, ready_area, state, ready_trains, ready_offset);
+}
+
+fn render_operating_summary(
+    frame: &mut Frame,
+    area: Rect,
+    running_count: usize,
+    ready_count: usize,
+) {
+    let operating = running_count > 0;
+    let status = if operating {
+        "LIVE OPERATIONS"
+    } else {
+        "NETWORK IDLE"
+    };
+    let status_style = if operating {
+        theme::success()
+    } else {
+        theme::secondary()
+    };
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                format!("{status} · {running_count} running · {ready_count} ready"),
+                status_style,
+            ),
+            Line::from(""),
+        ])
+        .style(theme::panel()),
+        area,
+    );
+}
+
+fn render_running_trains(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    now: UtcSeconds,
+    journeys: Vec<&Journey>,
+    scroll_offset: usize,
+    running_count: usize,
+) {
     if journeys.is_empty() {
         frame.render_widget(
             Paragraph::new(vec![
-                Line::styled("LIVE MOVEMENTS", theme::focused_title()),
+                Line::styled("RUNNING TRAINS · 0", theme::secondary()),
                 Line::from(""),
                 Line::from("No trains are currently travelling."),
             ])
             .style(theme::panel()),
-            movements_area,
+            area,
         );
-    } else {
-        let rows = journeys.into_iter().skip(movement_offset).map(|journey| {
-            let next_stop = journey_next_stop_station_id(state, journey)
-                .map(|station_id| station_name(state, station_id))
-                .unwrap_or_else(|| "—".into());
-            Row::new([
-                Cell::from(format::clock_time(journey.arrives_at)),
-                Cell::from(format!("T{:02}", journey.train_id.get())),
-                Cell::from(format!(
-                    "{} → {}",
-                    station_name(state, journey.origin_station_id),
-                    station_name(state, journey.destination_station_id),
-                )),
-                Cell::from(next_stop),
-                Cell::from(format_eta(remaining_seconds(journey, now))),
-            ])
-        });
-
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Length(8),
-                Constraint::Length(7),
-                Constraint::Percentage(38),
-                Constraint::Percentage(28),
-                Constraint::Length(9),
-            ],
-        )
-        .header(
-            Row::new(["ARRIVAL", "TRAIN", "SERVICE", "NEXT STOP", "ETA"])
-                .style(theme::table_header())
-                .bottom_margin(1),
-        )
-        .style(theme::panel());
-
-        frame.render_widget(table, movements_area);
+        return;
     }
 
-    modal::render_horizontal_separator(frame, separator_area);
-    render_ready_trains(frame, ready_area, state, ready_trains, ready_offset);
+    let [heading_area, table_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            format!("RUNNING TRAINS · {running_count}"),
+            theme::focused_title(),
+        ))
+        .style(theme::panel()),
+        heading_area,
+    );
+
+    let rows = journeys.into_iter().skip(scroll_offset).map(|journey| {
+        let next_stop_id = journey_next_stop_station_id(state, journey);
+        let next_stop = next_stop_id
+            .map(|station_id| station_name(state, station_id))
+            .unwrap_or_else(|| "—".into());
+        let current_leg = current_leg_label(state, journey, next_stop_id);
+
+        Row::new([
+            Cell::from(format!("T{:02}", journey.train_id.get())),
+            Cell::from(service_label(state, journey)),
+            Cell::from(current_leg),
+            Cell::from(next_stop),
+            Cell::from(format::clock_time(journey.arrives_at)),
+            Cell::from(format::duration(remaining_seconds(journey, now))),
+        ])
+    });
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(8),
+            Constraint::Length(12),
+            Constraint::Percentage(32),
+            Constraint::Percentage(22),
+            Constraint::Length(9),
+            Constraint::Length(12),
+        ],
+    )
+    .header(
+        Row::new([
+            "TRAIN",
+            "SERVICE",
+            "CURRENT LEG",
+            "NEXT STOP",
+            "ARRIVES",
+            "TIME LEFT",
+        ])
+        .style(theme::table_header())
+        .bottom_margin(1),
+    )
+    .style(theme::panel());
+
+    frame.render_widget(table, table_area);
 }
 
 fn render_ready_trains(
@@ -176,39 +254,77 @@ fn render_ready_trains(
         .into_iter()
         .skip(scroll_offset)
         .map(|(train, station_id)| {
+            let service = state
+                .player_company
+                .fleet
+                .assigned_service_id(train.id)
+                .and_then(|service_id| {
+                    state
+                        .player_company
+                        .passenger_services
+                        .iter()
+                        .find(|service| service.id == service_id)
+                })
+                .map(|service| service.name.clone())
+                .unwrap_or_else(|| "Unassigned".into());
+
             Row::new([
                 Cell::from(format!("T{:02}", train.id.get())),
                 Cell::from(station_name(state, station_id)),
+                Cell::from(service),
             ])
         });
-    let table = Table::new(rows, [Constraint::Length(10), Constraint::Min(1)])
-        .header(
-            Row::new(["TRAIN", "LOCATION"])
-                .style(theme::table_header())
-                .bottom_margin(1),
-        )
-        .style(theme::panel());
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),
+            Constraint::Percentage(55),
+            Constraint::Min(12),
+        ],
+    )
+    .header(
+        Row::new(["TRAIN", "LOCATION", "SERVICE"])
+            .style(theme::table_header())
+            .bottom_margin(1),
+    )
+    .style(theme::panel());
     frame.render_widget(table, table_area);
 }
 
-fn format_eta(seconds: u64) -> String {
-    let hours = seconds / 3_600;
-    let minutes = (seconds % 3_600) / 60;
-    let seconds = seconds % 60;
-    if hours == 0 {
-        format!("{minutes:02}:{seconds:02}")
+fn service_label(state: &GameState, journey: &Journey) -> String {
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)
+        .map(|service| service.name.clone())
+        .unwrap_or_else(|| "Unknown".into());
+
+    if journey.purpose == JourneyPurpose::Positioning {
+        format!("{service} · POS")
     } else {
-        format!("{hours}:{minutes:02}:{seconds:02}")
+        service
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::format_eta;
+fn current_leg_label(
+    state: &GameState,
+    journey: &Journey,
+    next_stop_id: Option<crate::model::RailStationId>,
+) -> String {
+    let current_station_id = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)
+        .and_then(|service| service.stop_station_ids.get(journey.current_stop_index))
+        .copied()
+        .unwrap_or(journey.origin_station_id);
+    let next_station_id = next_stop_id.unwrap_or(journey.destination_station_id);
 
-    #[test]
-    fn eta_uses_departure_board_clock_notation() {
-        assert_eq!(format_eta(78), "01:18");
-        assert_eq!(format_eta(3_723), "1:02:03");
-    }
+    format!(
+        "{} → {}",
+        station_name(state, current_station_id),
+        station_name(state, next_station_id),
+    )
 }

@@ -235,16 +235,19 @@ fn map_movements_overlay_shows_service_route_and_next_stop() {
             .clone()
     };
 
-    assert!(rendered.contains("Movements"));
-    assert!(rendered.contains("ARRIVAL"));
-    assert!(rendered.contains("SERVICE"));
+    assert!(rendered.contains("Network Movements"));
+    assert!(rendered.contains("LIVE OPERATIONS · 1 running · 0 ready"));
+    assert!(rendered.contains("RUNNING TRAINS · 1"));
+    assert!(rendered.contains("CURRENT LEG"));
     assert!(rendered.contains("NEXT STOP"));
-    assert!(rendered.contains("ETA"));
+    assert!(rendered.contains("ARRIVES"));
+    assert!(rendered.contains("TIME LEFT"));
     assert!(rendered.contains(&format!("T{:02}", train_id.get())));
+    assert!(rendered.contains("R1"));
     assert!(rendered.contains(&format!(
         "{} → {}",
         station_name(stops[0]),
-        station_name(stops[2])
+        station_name(stops[1])
     )));
     assert!(rendered.contains(&station_name(stops[1])));
     assert!(rendered.contains("[M/Esc] close"));
@@ -289,9 +292,12 @@ fn map_movements_overlay_lists_ready_trains_and_their_locations() {
         .unwrap()
         .name;
 
+    assert!(rendered.contains("NETWORK IDLE · 0 running · 1 ready"));
     assert!(rendered.contains("No trains are currently travelling."));
     assert!(rendered.contains("READY TRAINS · 1"));
     assert!(rendered.contains("LOCATION"));
+    assert!(rendered.contains("SERVICE"));
+    assert!(rendered.contains("Unassigned"));
     assert!(rendered.contains(&format!("T{:02}", train_id.get())));
     assert!(rendered.contains(station_name));
 }
