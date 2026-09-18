@@ -1284,14 +1284,14 @@ fn inspector_section(lines: &mut Vec<Line<'static>>, title: &str, dense: bool) {
 
 fn labelled_line(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label:<16}"), theme::secondary()),
+        Span::styled(format!("{label:<17}"), theme::secondary()),
         Span::raw(value.to_owned()),
     ])
 }
 
 fn labelled_line_styled(label: &str, value: &str, style: ratatui::style::Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label:<16}"), theme::secondary()),
+        Span::styled(format!("{label:<17}"), theme::secondary()),
         Span::styled(value.to_owned(), style),
     ])
 }

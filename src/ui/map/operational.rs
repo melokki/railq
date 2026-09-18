@@ -217,7 +217,7 @@ fn operational_network_block(width: u16) -> Block<'static> {
     // labels. Keep the current selection visible in every legend density; it is
     // the primary keyboard focus and therefore more important than background
     // settlement state on constrained terminals.
-    if width >= 122 {
+    if width >= 130 {
         block = block.title_bottom(
             Line::from(vec![
                 Span::styled(" ◆ ", theme::focused_title()),
@@ -237,7 +237,7 @@ fn operational_network_block(width: u16) -> Block<'static> {
                 Span::styled("   ─ ", theme::warning()),
                 Span::styled("planned", theme::secondary()),
                 Span::styled("   ━ ", theme::warning().bold()),
-                Span::styled("works", theme::secondary()),
+                Span::styled("construction", theme::secondary()),
                 Span::styled("   ▶ ", theme::warning()),
                 Span::styled("train ", theme::secondary()),
             ])
@@ -302,7 +302,7 @@ fn render_location_inspector(
     // The inspector follows the same hierarchy as the other redesigned
     // workspaces: selection identity first, then operational sections. Map
     // geometry and keyboard actions remain outside the inspector.
-    let (panel_title, lines) = if let Some(station) = station {
+    let lines = if let Some(station) = station {
         let ready_count = ready_trains(state, station.id).len();
         let arriving = state
             .active_journeys
@@ -481,14 +481,14 @@ fn render_location_inspector(
                     lines.push(inspector_metric(
                         "Projects",
                         &format!(
-                            "{planned_projects} planned · {construction_projects} works"
+                            "{planned_projects} planned · {construction_projects} under construction"
                         ),
                     ));
                 }
             }
         }
 
-        ("Station", lines)
+        lines
     } else {
         let mut lines = vec![
             inspector_selection_heading("SELECTED SETTLEMENT"),
@@ -571,16 +571,23 @@ fn render_location_inspector(
             }
         }
 
-        ("Settlement", lines)
+        lines
     };
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel_block(panel_title, false))
+            .block(inspector_panel_block())
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn inspector_panel_block() -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::border())
+        .style(theme::panel())
 }
 
 fn inspector_selection_heading(label: &str) -> Line<'static> {
@@ -1911,12 +1918,11 @@ pub(super) fn focus_rank(
     }
 }
 
-pub(super) fn map_place_label(place: &OperationalPlace, selected: Option<SettlementId>) -> String {
-    if selected == Some(place.settlement_id) {
-        place.name.to_uppercase()
-    } else {
-        place.name.clone()
-    }
+pub(super) fn map_place_label(place: &OperationalPlace, _selected: Option<SettlementId>) -> String {
+    // Selection is already communicated by the diamond marker and focused ink.
+    // Keeping the canonical station name avoids a wider all-caps label stealing
+    // horizontal space from nearby stations on dense parts of the network.
+    place.name.clone()
 }
 
 pub(super) fn place_link_distance_label(
@@ -2037,12 +2043,34 @@ fn try_place_map_label(
 ) -> bool {
     let Some((x, y)) = label_candidates(marker_x, marker_y, text, preferred_direction)
         .into_iter()
-        .find(|(x, y)| can_place_text(grid, *x, *y, text))
+        .find(|(x, y)| can_place_map_label(grid, *x, *y, text))
     else {
         return false;
     };
     put_text(grid, x, y, text, ink);
     true
+}
+
+fn can_place_map_label(grid: &[Vec<MapCell>], x: i32, y: i32, text: &str) -> bool {
+    if !can_place_text(grid, x, y, text) {
+        return false;
+    }
+
+    let Ok(row_index) = usize::try_from(y) else {
+        return false;
+    };
+    let Some(row) = grid.get(row_index) else {
+        return false;
+    };
+    let Ok(start_x) = usize::try_from(x) else {
+        return false;
+    };
+    let text_width = text.chars().count();
+    let end_x = start_x.saturating_add(text_width);
+
+    let left_clear = start_x == 0 || row[start_x - 1].ink == MapInk::Empty;
+    let right_clear = end_x >= row.len() || row[end_x].ink == MapInk::Empty;
+    left_clear && right_clear
 }
 
 fn try_place_service_preview_label(
