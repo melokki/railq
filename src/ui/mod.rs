@@ -446,7 +446,7 @@ impl Shell {
                 self.active_view = View::BuyTrains;
                 self.service_workspace.close();
             }
-            KeyCode::Char('5' | 'a' | 'A') => {
+            KeyCode::Char('5') => {
                 self.active_view = View::Authority;
                 self.service_workspace.close();
             }
