@@ -10,6 +10,7 @@ use crate::{
         fleet::purchase_train,
         journeys::dispatch_journey,
         services::{assign_train_to_service, find_or_create_service},
+        time::advance_time,
         world::create_new_game,
     },
     storage::{legacy::decode_legacy_game_state, migrations::ensure_schema},
@@ -114,6 +115,28 @@ fn sqlite_round_trips_all_current_operating_state() {
     slot.save(&state).unwrap();
 
     assert_eq!(slot.load().unwrap(), Some(state));
+}
+
+#[test]
+fn sqlite_round_trips_journey_receipt_service_telemetry() {
+    let directory = TestDirectory::new();
+    let slot = SaveSlot::open(directory.save_path()).unwrap();
+    let mut state = active_game();
+    let service_id = state.player_company.passenger_services[0].id;
+    let arrives_at = state.active_journeys[0].arrives_at;
+
+    advance_time(&mut state, arrives_at).unwrap();
+
+    let receipt = state.financials.recent_journey_receipts[0].clone();
+    assert_eq!(receipt.service_id, Some(service_id));
+    assert_eq!(receipt.service_code.as_deref(), Some("R1"));
+    assert_eq!(receipt.purpose, Some(JourneyPurpose::RevenueService));
+    assert_eq!(receipt.departed_at, Some(UtcSeconds::from_unix_seconds(1_000)));
+
+    slot.save(&state).unwrap();
+    let loaded = slot.load().unwrap().unwrap();
+
+    assert_eq!(loaded.financials.recent_journey_receipts, vec![receipt]);
 }
 
 #[test]
@@ -2051,4 +2074,54 @@ fn v38_migration_removes_legacy_access_credit_columns_without_losing_discount() 
             .iter()
             .any(|column| column == "access_fee_credit_remaining_cents")
     );
+}
+
+#[test]
+fn v39_migration_adds_journey_service_telemetry_without_inventing_history() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE active_journeys (
+                 id TEXT PRIMARY KEY,
+                 departed_at INTEGER NOT NULL,
+                 arrives_at INTEGER NOT NULL
+             );
+             CREATE TABLE journey_receipts (
+                 journey_id TEXT PRIMARY KEY,
+                 revenue_cents INTEGER NOT NULL,
+                 infrastructure_access_fee_cents INTEGER NOT NULL,
+                 fuel_cost_cents INTEGER NOT NULL,
+                 completed_at INTEGER
+             );
+             INSERT INTO active_journeys VALUES('00000007-0000-4000-8000-000000000001', 1000, 2000);
+             INSERT INTO journey_receipts VALUES('00000007-0000-4000-8000-000000000002', 5000, 400, 600, 3000);
+             PRAGMA user_version = 39;",
+        )
+        .unwrap();
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    let active_started_at: Option<i64> = connection
+        .query_row(
+            "SELECT started_at FROM active_journeys LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let receipt_telemetry: (Option<String>, Option<String>, Option<String>, Option<i64>) = connection
+        .query_row(
+            "SELECT service_id, service_code, purpose, departed_at FROM journey_receipts LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+
+    assert_eq!(version, SAVE_VERSION);
+    assert_eq!(active_started_at, None);
+    assert_eq!(receipt_telemetry, (None, None, None, None));
 }

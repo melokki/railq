@@ -89,6 +89,7 @@ fn migrate_one_version(
         36 => migrate_v36_to_v37(connection, path),
         37 => migrate_v37_to_v38(connection, path),
         38 => migrate_v38_to_v39(connection, path),
+        39 => migrate_v39_to_v40(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -3038,4 +3039,66 @@ fn migrate_v38_to_v39(connection: &Connection, path: &Path) -> Result<(), SaveSl
     };
     let _ = connection.execute_batch("PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;");
     result
+}
+
+fn migrate_v39_to_v40(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v39 to v40 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let active_started_at: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('active_journeys') WHERE name = 'started_at'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| db_error("inspect Journey start telemetry in", path, source))?;
+        if active_started_at == 0 {
+            connection
+                .execute("ALTER TABLE active_journeys ADD COLUMN started_at INTEGER", [])
+                .map_err(|source| db_error("add Journey start telemetry to", path, source))?;
+        }
+
+        for (column, definition) in [
+            ("service_id", "service_id TEXT"),
+            ("service_code", "service_code TEXT"),
+            (
+                "purpose",
+                "purpose TEXT CHECK (purpose IS NULL OR purpose IN ('revenue', 'positioning'))",
+            ),
+            ("departed_at", "departed_at INTEGER"),
+        ] {
+            let exists: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('journey_receipts') WHERE name = ?1",
+                    [column],
+                    |row| row.get(0),
+                )
+                .map_err(|source| db_error("inspect Journey receipt telemetry in", path, source))?;
+            if exists == 0 {
+                connection
+                    .execute(
+                        &format!("ALTER TABLE journey_receipts ADD COLUMN {definition}"),
+                        [],
+                    )
+                    .map_err(|source| db_error("add Journey receipt telemetry to", path, source))?;
+            }
+        }
+
+        connection
+            .pragma_update(None, "user_version", 40_u32)
+            .map_err(|source| db_error("write v40 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v39 to v40 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
 }

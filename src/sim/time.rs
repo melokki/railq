@@ -329,6 +329,10 @@ fn process_stop_arrival(
             passengers_carried: Some(journey_snapshot.passengers_carried),
             passenger_capacity: Some(capacity),
             completed_at: Some(journey_snapshot.arrives_at),
+            service_id: Some(journey_snapshot.service_id),
+            service_code: Some(service.name.clone()),
+            purpose: Some(journey_snapshot.purpose),
+            departed_at: journey_snapshot.started_at,
         };
         state.financials.recent_journey_receipts.push(receipt);
         state.active_journeys.remove(journey_index);
@@ -493,6 +497,16 @@ fn process_positioning_arrival(
         },
     )?;
 
+    let service_code = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)
+        .map(|service| service.name.clone())
+        .ok_or(AdvanceTimeError::ServiceNotFound {
+            service_id: journey.service_id,
+        })?;
+
     state.player_company.fleet.trains[train_index].status = TrainStatus::Ready {
         at: journey.destination_station_id,
     };
@@ -511,6 +525,10 @@ fn process_positioning_arrival(
             passengers_carried: Some(0),
             passenger_capacity: Some(train_model.passenger_capacity().passengers()),
             completed_at: Some(journey.arrives_at),
+            service_id: Some(journey.service_id),
+            service_code: Some(service_code),
+            purpose: Some(journey.purpose),
+            departed_at: journey.started_at,
         });
     state.active_journeys.remove(journey_index);
 
@@ -552,7 +570,9 @@ fn next_stop_index(current: usize, direction: i32, stop_count: usize) -> Option<
 mod tests {
     use crate::{
         catalog::model_for_train,
-        model::{MarketMaturity, Money, RailStationId, TrainStatus, UtcSeconds},
+        model::{
+            JourneyPurpose, MarketMaturity, Money, RailStationId, TrainStatus, UtcSeconds,
+        },
         sim::{
             economy::quote_journey,
             fleet::purchase_train,
@@ -602,6 +622,8 @@ mod tests {
     #[test]
     fn arrival_credits_revenue_once_and_releases_the_train() {
         let (mut state, _, journey_id, quote) = dispatched_game();
+        let service_id = state.player_company.passenger_services[0].id;
+        let service_code = state.player_company.passenger_services[0].name.clone();
         let arrives_at = state.active_journeys[0].arrives_at;
         let funds_before_arrival = state.player_company.funds;
         let maturity_before_arrival = state
@@ -648,6 +670,10 @@ mod tests {
             Some(train_model.passenger_capacity().passengers())
         );
         assert_eq!(receipt.completed_at, Some(arrives_at));
+        assert_eq!(receipt.service_id, Some(service_id));
+        assert_eq!(receipt.service_code.as_deref(), Some(service_code.as_str()));
+        assert_eq!(receipt.purpose, Some(JourneyPurpose::RevenueService));
+        assert_eq!(receipt.departed_at, Some(DEPARTED_AT));
         let maturity_after_arrival = state
             .origin_destination_demand
             .iter()
@@ -795,6 +821,8 @@ mod tests {
         let journey = &state.active_journeys[0];
         assert_eq!(journey.id, journey_id);
         assert_eq!(journey.current_stop_index, 1);
+        assert_eq!(journey.started_at, Some(DEPARTED_AT));
+        assert_eq!(journey.departed_at, first_arrival);
         assert_eq!(journey.passengers_carried, 45);
         assert_eq!(journey.onboard_passengers(), 35);
         assert!(journey.credited_revenue > Money::ZERO);
@@ -822,6 +850,9 @@ mod tests {
         let receipt = state.financials.recent_journey_receipts.last().unwrap();
         assert_eq!(receipt.journey_id, journey_id);
         assert_eq!(receipt.passengers_carried, Some(45));
+        assert_eq!(receipt.service_id, Some(service_id));
+        assert_eq!(receipt.purpose, Some(JourneyPurpose::RevenueService));
+        assert_eq!(receipt.departed_at, Some(DEPARTED_AT));
         assert!(receipt.revenue > Money::ZERO);
     }
 

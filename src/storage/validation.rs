@@ -863,6 +863,46 @@ fn validate_financials(state: &GameState) -> Result<(), SaveValidationError> {
                 });
             }
         }
+
+        let service_fields_present = [
+            receipt.service_id.is_some(),
+            receipt.service_code.is_some(),
+            receipt.purpose.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        if service_fields_present != 0 && service_fields_present != 3 {
+            return Err(SaveValidationError::InvalidValue {
+                field: "Journey receipt Service context",
+            });
+        }
+        if service_fields_present == 3 {
+            let service_id = receipt
+                .service_id
+                .expect("complete receipt Service context has Passenger Service ID");
+            let service_code = receipt
+                .service_code
+                .as_deref()
+                .expect("complete receipt Service context has Service code");
+            if !service_id.is_v4() || service_code.trim().is_empty() {
+                return Err(SaveValidationError::InvalidValue {
+                    field: "Journey receipt Service context",
+                });
+            }
+        }
+        if let Some(departed_at) = receipt.departed_at {
+            let Some(completed_at) = receipt.completed_at else {
+                return Err(SaveValidationError::InvalidValue {
+                    field: "Journey receipt departure timestamp",
+                });
+            };
+            if departed_at > completed_at {
+                return Err(SaveValidationError::InvalidValue {
+                    field: "Journey receipt departure timestamp",
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -1054,6 +1094,9 @@ fn validate_journey(
             || journey.infrastructure_access_fee < Money::ZERO
             || journey.fuel_cost.cents() <= 0
             || journey.current_stop_index != 0
+            || journey
+                .started_at
+                .is_some_and(|started_at| started_at > journey.departed_at)
             || journey.arrives_at <= journey.departed_at
         {
             return Err(SaveValidationError::ImpossibleState {
@@ -1111,6 +1154,9 @@ fn validate_journey(
         || journey.operating_revenue.cents() < 0
         || journey.credited_revenue.cents() < 0
         || journey.credited_revenue > journey.operating_revenue
+        || journey
+            .started_at
+            .is_some_and(|started_at| started_at > journey.departed_at)
         || journey.arrives_at <= journey.departed_at
     {
         return Err(SaveValidationError::ImpossibleState {

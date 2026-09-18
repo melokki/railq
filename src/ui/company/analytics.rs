@@ -124,6 +124,10 @@ mod tests {
             passengers_carried: passengers,
             passenger_capacity: None,
             completed_at: None,
+            service_id: None,
+            service_code: None,
+            purpose: None,
+            departed_at: None,
         }
     }
 

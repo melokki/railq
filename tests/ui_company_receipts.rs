@@ -28,6 +28,10 @@ fn receipt(id: u64) -> JourneyReceipt {
         passengers_carried: None,
         passenger_capacity: None,
         completed_at: None,
+        service_id: None,
+        service_code: None,
+        purpose: None,
+        departed_at: None,
     }
 }
 
