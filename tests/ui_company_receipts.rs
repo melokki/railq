@@ -4,7 +4,10 @@ use std::{error::Error, fs, path::Path};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use railq::{
-    model::{GameState, JourneyId, JourneyReceipt, Money, UtcSeconds},
+    model::{
+        GameState, JourneyId, JourneyPurpose, JourneyReceipt, Money, PassengerService,
+        ServiceDirectionMode, ServiceId, UtcSeconds,
+    },
     sim::world::create_new_game,
     ui::{
         Shell, ShellAction, capture_rendered_buffer_mut,
@@ -150,6 +153,59 @@ fn dashboard_keeps_history_out_of_the_main_view_and_history_preserves_selection(
     assert!(compact_history.contains("[↑↓] scroll"));
     fs::write(evidence_dir.join("history-80x24.txt"), compact_history)?;
     Ok(())
+}
+
+#[test]
+fn wide_dashboard_aggregates_recent_service_performance() {
+    let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let station_ids = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .take(2)
+        .map(|station| station.id)
+        .collect::<Vec<_>>();
+    assert_eq!(station_ids.len(), 2);
+    let service_id = ServiceId::new(99);
+    state.player_company.passenger_services.push(PassengerService {
+        id: service_id,
+        name: "R1".into(),
+        custom_name: None,
+        direction_mode: ServiceDirectionMode::BothDirections,
+        forward_train_number: 101,
+        reverse_train_number: Some(102),
+        stop_station_ids: station_ids.clone(),
+        rail_line_ids: Vec::new(),
+    });
+
+    let mut revenue = receipt(1);
+    revenue.passengers_carried = Some(80);
+    revenue.service_id = Some(service_id);
+    revenue.service_code = Some("R1".into());
+    revenue.purpose = Some(JourneyPurpose::RevenueService);
+    let mut positioning = receipt(2);
+    positioning.revenue = Money::ZERO;
+    positioning.infrastructure_access_fee = Money::from_cents(500);
+    positioning.fuel_cost = Money::from_cents(250);
+    positioning.passengers_carried = Some(0);
+    positioning.service_id = Some(service_id);
+    positioning.service_code = Some("R1".into());
+    positioning.purpose = Some(JourneyPurpose::Positioning);
+    state.financials.recent_journey_receipts = vec![revenue, positioning];
+
+    let mut shell = company_shell(&state);
+    let dashboard = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+
+    assert!(dashboard.contains("SERVICE PERFORMANCE · RECENT 2 JOURNEYS"));
+    assert!(dashboard.contains("Service"));
+    assert!(dashboard.contains("Runs"));
+    assert!(dashboard.contains("Pos"));
+    assert!(dashboard.contains("R1 ·"));
+    assert!(dashboard.contains("$100.00"));
+    assert!(dashboard.contains("$20.00"));
+    assert!(dashboard.contains("+$80.00"));
 }
 
 #[test]

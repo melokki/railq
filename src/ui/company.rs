@@ -19,11 +19,17 @@ use ratatui::{
     },
 };
 
-use analytics::{ActiveJourneyExposure, RECENT_JOURNEY_WINDOW, RecentJourneyPerformance};
+use analytics::{
+    ActiveJourneyExposure, RECENT_JOURNEY_WINDOW, RecentJourneyPerformance,
+    ServicePerformanceSummary,
+};
 
 use crate::{
     catalog::train_catalogue,
-    model::{GameState, JourneyId, JourneyReceipt, Money, RailStationId, VehicleKeeperMark},
+    model::{
+        GameState, JourneyId, JourneyReceipt, Money, RailStationId, ServiceDirectionMode,
+        ServiceId, VehicleKeeperMark,
+    },
     sim::finance::{
         FinancialEvaluation, FinancialStatus, RecoveryJourney, RecoveryOption,
         evaluate_financial_recovery,
@@ -1083,19 +1089,47 @@ fn render_wide_dashboard(
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
-    let [overview_area, metrics_area, operations_area, history_area] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Length(5),
-        Constraint::Length(7),
-        Constraint::Fill(1),
-    ])
-    .spacing(1)
-    .areas(shell_inner);
+    if shell_inner.height >= 32 {
+        let [overview_area, metrics_area, operations_area, services_area, history_area] =
+            Layout::vertical([
+                Constraint::Length(2),
+                Constraint::Length(5),
+                Constraint::Length(6),
+                Constraint::Length(7),
+                Constraint::Fill(1),
+            ])
+            .spacing(1)
+            .areas(shell_inner);
 
-    render_company_overview(frame, overview_area, state, &evaluation);
-    render_key_metrics(frame, metrics_area, state);
-    render_operating_summary(frame, operations_area, state);
+        render_company_overview(frame, overview_area, state, &evaluation);
+        render_key_metrics(frame, metrics_area, state);
+        render_operating_summary(frame, operations_area, state);
+        render_service_performance(frame, services_area, state);
+        render_dashboard_activity(frame, history_area, state, &evaluation);
+    } else {
+        // Preserve a useful Recent Activity area on shorter terminals.
+        let [overview_area, metrics_area, operations_area, history_area] = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Length(5),
+            Constraint::Length(6),
+            Constraint::Fill(1),
+        ])
+        .spacing(1)
+        .areas(shell_inner);
 
+        render_company_overview(frame, overview_area, state, &evaluation);
+        render_key_metrics(frame, metrics_area, state);
+        render_operating_summary(frame, operations_area, state);
+        render_dashboard_activity(frame, history_area, state, &evaluation);
+    }
+}
+
+fn render_dashboard_activity(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
+) {
     let recovery_relevant = evaluation.as_ref().map_or(true, |evaluation| {
         evaluation.status != FinancialStatus::Operating
     });
@@ -1103,11 +1137,11 @@ fn render_wide_dashboard(
         let [receipts_area, recovery_area] =
             Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
                 .spacing(2)
-                .areas(history_area);
+                .areas(area);
         render_recent_activity(frame, receipts_area, state, true);
-        render_recovery_panel(frame, recovery_area, state, &evaluation);
+        render_recovery_panel(frame, recovery_area, state, evaluation);
     } else {
-        render_recent_activity(frame, history_area, state, true);
+        render_recent_activity(frame, area, state, true);
     }
 }
 
@@ -1422,6 +1456,133 @@ fn render_recent_performance(frame: &mut Frame, area: Rect, state: &GameState) {
             dashboard_line("Outcomes", outcomes, theme::primary_value()),
         ],
     );
+}
+
+fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) {
+    let summary = ServicePerformanceSummary::from_state(state);
+    let recent_journeys = summary.attributed_journeys + summary.unattributed_journeys;
+    let has_legacy_note = summary.unattributed_journeys > 0;
+    let [heading_area, table_area, note_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(if has_legacy_note { 1 } else { 0 }),
+    ])
+    .areas(area);
+    let visible_rows = usize::from(table_area.height.saturating_sub(2)).max(1);
+    let shown_services = summary.services.len().min(visible_rows);
+    let mut heading = if recent_journeys == 0 {
+        "SERVICE PERFORMANCE".to_owned()
+    } else {
+        format!("SERVICE PERFORMANCE · RECENT {recent_journeys} JOURNEYS")
+    };
+    if shown_services < summary.services.len() {
+        heading.push_str(&format!(
+            " · SHOWING {shown_services}/{} SERVICES",
+            summary.services.len()
+        ));
+    }
+
+    frame.render_widget(
+        Paragraph::new(section_heading(&heading)).style(theme::panel()),
+        heading_area,
+    );
+
+    if summary.services.is_empty() {
+        let message = if summary.unattributed_journeys > 0 {
+            "Recent receipts do not contain Service telemetry. New completed Journeys will populate per-Service performance."
+        } else {
+            "No completed Service activity yet. Revenue runs and positioning moves will appear here after they finish."
+        };
+        frame.render_widget(
+            Paragraph::new(message)
+                .style(theme::secondary())
+                .wrap(Wrap { trim: true }),
+            table_area,
+        );
+    } else {
+        let rows = summary
+            .services
+            .iter()
+            .take(visible_rows)
+            .map(|service| {
+                Row::new([
+                    Cell::from(service_performance_label(
+                        state,
+                        service.service_id,
+                        &service.service_code,
+                    )),
+                    Cell::from(service.revenue_journeys.to_string()),
+                    Cell::from(service.positioning_journeys.to_string()),
+                    Cell::from(
+                        service
+                            .passengers_carried
+                            .map_or_else(|| "—".into(), |passengers| passengers.to_string()),
+                    ),
+                    Cell::from(format_cents(service.revenue_cents)),
+                    Cell::from(format_cents(service.operating_costs_cents)),
+                    Cell::from(format_signed_cents(service.result_cents))
+                        .style(result_style(service.result_cents)),
+                ])
+            });
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Fill(3),
+                Constraint::Length(6),
+                Constraint::Length(5),
+                Constraint::Length(9),
+                Constraint::Length(13),
+                Constraint::Length(13),
+                Constraint::Length(13),
+            ],
+        )
+        .header(
+            Row::new(["Service", "Runs", "Pos", "Pax", "Revenue", "Costs", "Result"])
+                .style(theme::table_header())
+                .bottom_margin(1),
+        )
+        .style(theme::panel());
+        frame.render_widget(table, table_area);
+    }
+
+    if has_legacy_note {
+        let excluded = summary.unattributed_journeys;
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{excluded} recent {} excluded because Service telemetry is unavailable.",
+                if excluded == 1 { "receipt" } else { "receipts" }
+            ))
+            .style(theme::hint()),
+            note_area,
+        );
+    }
+}
+
+fn service_performance_label(state: &GameState, service_id: ServiceId, service_code: &str) -> String {
+    let Some(service) = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+    else {
+        return format!("{service_code} · removed");
+    };
+    let (Some(origin), Some(destination)) = (
+        service.origin_station_id(),
+        service.destination_station_id(),
+    ) else {
+        return service_code.to_owned();
+    };
+    let separator = if service.direction_mode == ServiceDirectionMode::BothDirections {
+        "↔"
+    } else {
+        "→"
+    };
+    format!(
+        "{service_code} · {} {separator} {}",
+        station_label(state, origin),
+        station_label(state, destination)
+    )
 }
 
 fn active_service_count(state: &GameState) -> usize {
