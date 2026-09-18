@@ -1614,7 +1614,7 @@ fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
         cash_area,
         "CASH",
         format_money(state.player_company.funds),
-        "available".into(),
+        "cash on hand".into(),
         format!(
             "{} pending revenue",
             format_cents(active.revenue_in_transit_cents)
@@ -1735,7 +1735,6 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
     .areas(area);
 
     let trains = &state.player_company.fleet.trains;
-    let defined_services = state.player_company.passenger_services.len();
     let running_services = running_service_count(state);
     let served_settlements = served_settlement_count(state);
     let connected_settlements = connected_settlement_count(state);
@@ -1757,7 +1756,7 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
             ),
             dashboard_line(
                 "Services",
-                format!("{running_services} / {defined_services} running"),
+                service_operating_summary_label(state),
                 if running_services > 0 {
                     theme::success()
                 } else {
@@ -1794,22 +1793,22 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
         lifetime_area,
         vec![
             section_heading("LIFETIME"),
-            dashboard_line(
+            compact_dashboard_line(
                 "Revenue",
                 format_money(state.financials.operating_revenue),
                 theme::primary_value(),
             ),
-            dashboard_line(
+            compact_dashboard_line(
                 "Costs",
                 format_cents(operating_costs_cents(state)),
                 theme::primary_value(),
             ),
-            dashboard_line(
+            compact_dashboard_line(
                 "Result",
                 format_signed_cents(lifetime_result),
                 result_style(lifetime_result),
             ),
-            dashboard_line(
+            compact_dashboard_line(
                 "Margin",
                 operating_margin_label(state),
                 result_style(lifetime_result),
@@ -2014,7 +2013,12 @@ fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) 
         return;
     }
 
-    let full = table_area.width >= 118;
+    let show_positioning = summary
+        .services
+        .iter()
+        .any(|service| service.positioning_journeys > 0);
+    let full_width = if show_positioning { 118 } else { 107 };
+    let full = table_area.width >= full_width;
     let rows = summary.services.iter().take(visible_rows).map(|service| {
         let has_recent_activity = service.journey_count() > 0;
         let boardings = if service.revenue_journeys == 0 {
@@ -2041,8 +2045,10 @@ fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) 
             Cell::from(service.revenue_journeys.to_string()),
         ];
         if full {
+            if show_positioning {
+                cells.push(Cell::from(service.positioning_journeys.to_string()));
+            }
             cells.extend([
-                Cell::from(service.positioning_journeys.to_string()),
                 Cell::from(boardings),
                 Cell::from(if has_recent_activity {
                     format_cents(service.revenue_cents)
@@ -2062,7 +2068,7 @@ fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) 
         Row::new(cells)
     });
 
-    let (header, widths) = if full {
+    let (header, widths, render_width) = if full && show_positioning {
         (
             Row::new([
                 "Service",
@@ -2084,6 +2090,29 @@ fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) 
                 Constraint::Length(13),
                 Constraint::Length(13),
             ],
+            118,
+        )
+    } else if full {
+        (
+            Row::new([
+                "Service",
+                "Status",
+                "Runs",
+                "Boardings",
+                "Revenue",
+                "Costs",
+                "Result",
+            ]),
+            vec![
+                Constraint::Length(34),
+                Constraint::Length(11),
+                Constraint::Length(6),
+                Constraint::Length(10),
+                Constraint::Length(13),
+                Constraint::Length(13),
+                Constraint::Length(13),
+            ],
+            107,
         )
     } else {
         (
@@ -2095,6 +2124,7 @@ fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) 
                 Constraint::Length(10),
                 Constraint::Length(13),
             ],
+            table_area.width,
         )
     };
     let table = Table::new(rows, widths)
@@ -2102,7 +2132,7 @@ fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) 
         .style(theme::panel());
     let render_area = if full {
         Rect {
-            width: table_area.width.min(118),
+            width: table_area.width.min(render_width),
             ..table_area
         }
     } else {
@@ -2181,6 +2211,31 @@ fn service_operating_status_style(state: &GameState, service_id: ServiceId) -> S
         "REMOVED" => theme::secondary(),
         _ => theme::primary_value(),
     }
+}
+
+fn service_operating_summary_label(state: &GameState) -> String {
+    let mut running = 0;
+    let mut assigned = 0;
+    let mut unassigned = 0;
+
+    for service in &state.player_company.passenger_services {
+        if service_running_journey_count(state, service.id) > 0 {
+            running += 1;
+        } else if service_assigned_train_count(state, service.id) > 0 {
+            assigned += 1;
+        } else {
+            unassigned += 1;
+        }
+    }
+
+    let mut parts = vec![format!("{running} running")];
+    if assigned > 0 {
+        parts.push(format!("{assigned} assigned"));
+    }
+    if unassigned > 0 {
+        parts.push(format!("{unassigned} unassigned"));
+    }
+    parts.join(" · ")
 }
 
 fn running_service_count(state: &GameState) -> usize {
@@ -2365,7 +2420,7 @@ fn render_recent_activity(frame: &mut Frame, area: Rect, state: &GameState, wide
         if detailed {
             Row::new([
                 Cell::from(receipt_age_label(state, receipt)),
-                Cell::from(journey_reference_label(receipt.journey_id)),
+                Cell::from(receipt_service_label(receipt)),
                 Cell::from(receipt_route_label(state, receipt)),
                 Cell::from(receipt_train_label(receipt)),
                 Cell::from(receipt_boardings_label(receipt)),
@@ -2381,7 +2436,14 @@ fn render_recent_activity(frame: &mut Frame, area: Rect, state: &GameState, wide
     });
     let (header, widths) = if detailed {
         (
-            Row::new(["Completed", "ID", "Route", "Train", "Boardings", "Result"]),
+            Row::new([
+                "Completed",
+                "Service",
+                "Route",
+                "Train",
+                "Boardings",
+                "Result",
+            ]),
             vec![
                 Constraint::Length(11),
                 Constraint::Length(9),
@@ -2992,6 +3054,13 @@ fn dashboard_line(label: &str, value: String, value_style: Style) -> Line<'stati
     ])
 }
 
+fn compact_dashboard_line(label: &str, value: String, value_style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<8}"), theme::secondary()),
+        Span::styled(value, value_style),
+    ])
+}
+
 fn financial_line(label: &str, value: String, value_style: Style) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label:<20}"), theme::secondary()),
@@ -3412,6 +3481,13 @@ fn journey_reference_label(journey_id: JourneyId) -> String {
     } else {
         format!("J{:08}", suffix % DISPLAY_MODULUS)
     }
+}
+
+fn receipt_service_label(receipt: &JourneyReceipt) -> String {
+    receipt
+        .service_code
+        .clone()
+        .unwrap_or_else(|| "—".into())
 }
 
 fn receipt_train_label(receipt: &JourneyReceipt) -> String {

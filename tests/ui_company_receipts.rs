@@ -67,8 +67,19 @@ fn dashboard_keeps_history_out_of_the_main_view_and_history_preserves_selection(
 
     let dashboard = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(dashboard.contains("RECENT ACTIVITY · LAST 5"));
-    assert!(dashboard.contains("J18"));
-    assert!(!dashboard.contains("J12"), "dashboard should only show the latest five receipts");
+    assert!(dashboard.contains("Service"));
+    assert!(
+        dashboard.contains("+$1,575.00"),
+        "dashboard should include the newest retained receipt result"
+    );
+    assert!(
+        !dashboard.contains("+$1,137.50"),
+        "dashboard should only show the latest five receipts"
+    );
+    assert!(
+        !dashboard.contains("J18"),
+        "dashboard activity should prioritize Service context over receipt IDs"
+    );
     assert!(!dashboard.contains("JOURNEY HISTORY"));
     assert!(dashboard.contains("[H] History"));
     assert!(!dashboard.contains("[↑↓/JK] Receipt"));
@@ -205,11 +216,54 @@ fn wide_dashboard_aggregates_recent_service_performance() {
     assert!(dashboard.contains("Runs"));
     assert!(dashboard.contains("Positioning"));
     assert!(dashboard.contains("R1 ·"));
+    assert!(dashboard.contains("0 running · 1 unassigned"));
     assert!(dashboard.contains("$100.00"));
     assert!(dashboard.contains("$20.00"));
     assert!(dashboard.contains("+$80.00"));
     assert!(dashboard.contains("ATTENTION"));
     assert!(dashboard.contains("1 of the last 2 completed Journeys lost money."));
+}
+
+#[test]
+fn wide_dashboard_hides_empty_positioning_column_and_shows_service_activity() {
+    let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let station_ids = state
+        .region
+        .rail_authority
+        .rail_network
+        .rail_stations
+        .iter()
+        .take(2)
+        .map(|station| station.id)
+        .collect::<Vec<_>>();
+    let service_id = ServiceId::new(77);
+    state.player_company.passenger_services.push(PassengerService {
+        id: service_id,
+        name: "R7".into(),
+        custom_name: None,
+        direction_mode: ServiceDirectionMode::BothDirections,
+        forward_train_number: 701,
+        reverse_train_number: Some(702),
+        stop_station_ids: station_ids,
+        rail_line_ids: Vec::new(),
+    });
+
+    let mut revenue = receipt(7);
+    revenue.passengers_carried = Some(42);
+    revenue.service_id = Some(service_id);
+    revenue.service_code = Some("R7".into());
+    revenue.purpose = Some(JourneyPurpose::RevenueService);
+    state.financials.recent_journey_receipts = vec![revenue];
+
+    let mut shell = company_shell(&state);
+    let dashboard = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+
+    assert!(dashboard.contains("Service"));
+    assert!(dashboard.contains("R7"));
+    assert!(
+        !dashboard.contains("Positioning"),
+        "zero-only Positioning should not consume dashboard width"
+    );
 }
 
 #[test]
