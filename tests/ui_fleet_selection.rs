@@ -57,16 +57,17 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     assert!(wide.contains("ALLOCATION"));
     assert!(wide.contains("SEAT CAPACITY"));
     assert!(wide.contains("ASSET VALUE"));
+    assert!(wide.contains("ROLLING STOCK"));
+    assert!(wide.contains("SELECTED TRAIN"));
     assert!(wide.contains("Train"));
     assert!(wide.contains("EVN"));
     assert!(wide.contains("Helvetra R70"));
-    assert!(wide.contains("Propulsion"));
     assert!(wide.contains("Diesel"));
     assert!(wide.contains("JOURNEY"));
     assert!(wide.contains("Current leg"));
     assert!(wide.contains("SERVICE"));
-    assert!(wide.contains("CAPACITY"));
-    assert!(wide.contains("PERFORMANCE"));
+    assert!(wide.contains("CAPABILITY"));
+    assert!(wide.contains("IDENTITY"));
     assert!(wide.contains("TRAVELLING"));
     assert!(wide.contains("Remaining"));
     let travelling_row = wide
@@ -169,12 +170,13 @@ fn fleet_inspector_surfaces_state_specific_information() {
 
     let travelling = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     let selected_train = &state.player_company.fleet.trains[0];
-    let registration = selected_train.evn.marking(
-        &state.region.railway_registration.mark,
-        &state.player_company.vehicle_keeper_mark,
-    );
-    assert!(travelling.contains(&registration));
-    assert!(travelling.contains("STATUS"));
+    assert!(travelling.contains(&selected_train.evn.formatted()));
+    assert!(travelling.contains(&format!(
+        "{}-{}",
+        state.region.railway_registration.mark,
+        state.player_company.vehicle_keeper_mark.as_str(),
+    )));
+    assert!(travelling.contains("SELECTED TRAIN"));
     assert!(travelling.contains("TRAVELLING"));
     assert!(travelling.contains("JOURNEY"));
     assert!(travelling.contains("SERVICE"));
@@ -191,18 +193,22 @@ fn fleet_inspector_surfaces_state_specific_information() {
     assert!(travelling.contains("Fuel cost"));
     assert!(travelling.contains("Operating cost"));
     assert!(travelling.contains("Expected result"));
-    assert!(!travelling.contains("VALUE"));
+    assert!(travelling.contains("CAPABILITY"));
+    assert!(travelling.contains("IDENTITY"));
+    assert!(travelling.contains("EVN"));
+    assert!(!travelling.contains("ASSET VALUE"));
 
     press(&mut shell, &state, KeyCode::Down);
     let ready = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(ready.contains("READY"));
-    assert!(ready.contains("LOCATION"));
-    assert!(ready.contains("Ready for dispatch"));
-    assert!(ready.contains("CAPACITY"));
-    assert!(ready.contains("PERFORMANCE"));
-    assert!(ready.contains("VALUE"));
+    assert!(ready.contains("OPERATIONS"));
+    assert!(ready.contains("Assignment required"));
+    assert!(ready.contains("ASSIGNMENT"));
+    assert!(ready.contains("CAPABILITY"));
+    assert!(ready.contains("IDENTITY"));
+    assert!(ready.contains("ASSET VALUE"));
+    assert!(ready.contains("EVN"));
     assert!(!ready.contains("JOURNEY"));
-    assert!(!ready.contains("SERVICE"));
 }
 
 #[test]

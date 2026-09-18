@@ -1058,12 +1058,18 @@ fn render_wide_dashboard(
     dashboard::render_metrics(frame, metrics_area, state, now);
 
     let [list_area, inspector_area] =
-        Layout::horizontal([Constraint::Min(48), Constraint::Length(44)]).areas(fleet_area);
+        Layout::horizontal([Constraint::Min(48), Constraint::Length(48)]).areas(fleet_area);
     let list_area = horizontal_inset(list_area, 1);
-    let visible_items = usize::from(list_area.height.saturating_sub(2)).max(1);
+    let [list_heading_area, list_table_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(list_area);
+    frame.render_widget(
+        Paragraph::new(section_heading("ROLLING STOCK")).style(theme::panel()),
+        list_heading_area,
+    );
+    let visible_items = usize::from(list_table_area.height.saturating_sub(2)).max(1);
     selection.set_page_size(visible_items);
 
-    let show_service = list_area.width >= 72;
+    let show_service = list_table_area.width >= 72;
     let rows = state
         .player_company
         .fleet
@@ -1124,7 +1130,7 @@ fn render_wide_dashboard(
         .row_highlight_style(theme::selected_row())
         .highlight_symbol(FLEET_SELECTION_MARKER)
         .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
-    frame.render_stateful_widget(table, list_area, &mut selection.table_state);
+    frame.render_stateful_widget(table, list_table_area, &mut selection.table_state);
 
     let selected = selected_train(state, selection);
     render_train_inspector(frame, inspector_area, state, now, selected, false, true);
@@ -1271,74 +1277,50 @@ fn render_train_inspector(
 
     let mut lines = Vec::new();
     if embedded {
+        lines.push(section_heading("SELECTED TRAIN"));
         lines.push(Line::styled(title.clone(), theme::focused_title()));
-        lines.push(Line::styled(
-            train.evn.marking(
-                &state.region.railway_registration.mark,
-                &state.player_company.vehicle_keeper_mark,
-            ),
-            theme::secondary(),
-        ));
         lines.push(Line::styled(fields.model.clone(), theme::primary_value()));
-        lines.push(Line::from(""));
+        lines.push(selected_train_summary(state, train, journey));
     } else {
         lines.push(Line::from(vec![
             Span::styled(fields.model.clone(), theme::primary_value()),
             Span::styled(" · ", theme::secondary()),
             Span::styled(train.evn.formatted(), theme::secondary()),
         ]));
+        lines.push(selected_train_summary(state, train, journey));
     }
-
-    // READY Trains are primarily assets, so identity remains useful. A
-    // travelling Train is an active operation: spend the same space on the
-    // Journey instead of repeating static ownership facts.
-    if !dense_detail && matches!(&train.status, TrainStatus::Ready { .. }) {
-        lines.extend([
-            section_heading("IDENTITY"),
-            labelled_line("EVN", &train.evn.formatted()),
-            labelled_line(
-                "Keeper mark",
-                &format!(
-                    "{}-{}",
-                    state.region.railway_registration.mark,
-                    state.player_company.vehicle_keeper_mark.as_str(),
-                ),
-            ),
-            Line::from(""),
-        ]);
-    }
-
-    lines.push(section_heading("STATUS"));
-    lines.push(labelled_line_styled(
-        "State",
-        train_status_label(train),
-        train_status_style(train),
-    ));
 
     match (&train.status, journey) {
         (TrainStatus::Ready { at }, _) => {
             let (availability, availability_style) = ready_train_availability(state, train.id, *at);
+            inspector_section(&mut lines, "OPERATIONS", dense_detail);
+            lines.push(labelled_line_styled(
+                "State",
+                train_status_label(train),
+                train_status_style(train),
+            ));
             lines.push(labelled_line_styled(
                 "Availability",
                 availability,
                 availability_style,
             ));
-            inspector_section(&mut lines, "LOCATION", dense_detail);
             lines.push(labelled_line(
                 "Station",
                 &station_label_or_missing(state, *at),
             ));
 
-            inspector_section(&mut lines, "SERVICE", dense_detail);
+            inspector_section(&mut lines, "ASSIGNMENT", dense_detail);
             lines.push(labelled_line(
-                "Assigned",
+                "Service",
                 &assigned_service_label(state, train.id).unwrap_or_else(|| "Unassigned".into()),
             ));
+            lines.push(labelled_line(
+                "Route",
+                &assigned_service_route_label(state, train.id).unwrap_or_else(|| "—".into()),
+            ));
 
-            inspector_section(&mut lines, "CAPACITY", dense_detail);
+            inspector_section(&mut lines, "CAPABILITY", dense_detail);
             lines.push(labelled_line("Seats", &format_capacity(train)));
-
-            inspector_section(&mut lines, "PERFORMANCE", dense_detail);
             if dense_detail {
                 lines.push(Line::from(vec![
                     Span::styled(format!("{:<18}", "Technical"), theme::secondary()),
@@ -1355,7 +1337,18 @@ fn render_train_inspector(
                 lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
             }
 
-            inspector_section(&mut lines, "VALUE", dense_detail);
+            inspector_section(&mut lines, "IDENTITY", dense_detail);
+            lines.push(labelled_line("EVN", &train.evn.formatted()));
+            lines.push(labelled_line(
+                "Keeper mark",
+                &format!(
+                    "{}-{}",
+                    state.region.railway_registration.mark,
+                    state.player_company.vehicle_keeper_mark.as_str(),
+                ),
+            ));
+
+            inspector_section(&mut lines, "ASSET VALUE", dense_detail);
             if !dense_detail {
                 lines.push(labelled_line(
                     "Paid",
@@ -1371,6 +1364,11 @@ fn render_train_inspector(
         }
         (TrainStatus::Travelling { .. }, Some(journey)) => {
             inspector_section(&mut lines, "JOURNEY", dense_detail);
+            lines.push(labelled_line_styled(
+                "State",
+                train_status_label(train),
+                train_status_style(train),
+            ));
             lines.push(labelled_line(
                 "Current leg",
                 &journey_leg_label(state, journey),
@@ -1471,27 +1469,15 @@ fn render_train_inspector(
                 }
             }
 
-            if !dense_detail {
-                inspector_section(&mut lines, "PERFORMANCE", false);
-                lines.push(labelled_line("Top speed", &format_speed(train)));
-                lines.push(labelled_line("Propulsion", &format_propulsion(train)));
-                lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
-            }
-        }
-        (TrainStatus::Travelling { journey_id }, None) => {
-            lines.push(labelled_line("Availability", "Journey data unavailable"));
-            inspector_section(&mut lines, "JOURNEY", dense_detail);
-            lines.push(labelled_line("Journey", &journey_id.get().to_string()));
-            lines.push(labelled_line("Details", "Unavailable"));
-
-            inspector_section(&mut lines, "PERFORMANCE", dense_detail);
+            inspector_section(&mut lines, "CAPABILITY", dense_detail);
             if dense_detail {
                 lines.push(Line::from(vec![
                     Span::styled(format!("{:<18}", "Technical"), theme::secondary()),
                     Span::raw(format!(
-                        "{} · {}",
+                        "{} · {} · {}",
                         format_speed(train),
                         format_propulsion(train),
+                        format_fuel_rate(train),
                     )),
                 ]));
             } else {
@@ -1499,6 +1485,58 @@ fn render_train_inspector(
                 lines.push(labelled_line("Propulsion", &format_propulsion(train)));
                 lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
             }
+
+            inspector_section(&mut lines, "IDENTITY", dense_detail);
+            lines.push(labelled_line("EVN", &train.evn.formatted()));
+            lines.push(labelled_line(
+                "Keeper mark",
+                &format!(
+                    "{}-{}",
+                    state.region.railway_registration.mark,
+                    state.player_company.vehicle_keeper_mark.as_str(),
+                ),
+            ));
+        }
+        (TrainStatus::Travelling { journey_id }, None) => {
+            inspector_section(&mut lines, "OPERATIONS", dense_detail);
+            lines.push(labelled_line_styled(
+                "State",
+                train_status_label(train),
+                train_status_style(train),
+            ));
+            lines.push(labelled_line("Availability", "Journey data unavailable"));
+
+            inspector_section(&mut lines, "JOURNEY", dense_detail);
+            lines.push(labelled_line("Journey", &journey_id.get().to_string()));
+            lines.push(labelled_line("Details", "Unavailable"));
+
+            inspector_section(&mut lines, "CAPABILITY", dense_detail);
+            if dense_detail {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{:<18}", "Technical"), theme::secondary()),
+                    Span::raw(format!(
+                        "{} · {} · {}",
+                        format_speed(train),
+                        format_propulsion(train),
+                        format_fuel_rate(train),
+                    )),
+                ]));
+            } else {
+                lines.push(labelled_line("Top speed", &format_speed(train)));
+                lines.push(labelled_line("Propulsion", &format_propulsion(train)));
+                lines.push(labelled_line("Fuel cost", &format_fuel_rate(train)));
+            }
+
+            inspector_section(&mut lines, "IDENTITY", dense_detail);
+            lines.push(labelled_line("EVN", &train.evn.formatted()));
+            lines.push(labelled_line(
+                "Keeper mark",
+                &format!(
+                    "{}-{}",
+                    state.region.railway_registration.mark,
+                    state.player_company.vehicle_keeper_mark.as_str(),
+                ),
+            ));
         }
     }
 
@@ -1520,6 +1558,48 @@ fn render_train_inspector(
             progress_area,
         );
     }
+}
+
+fn selected_train_summary(
+    state: &GameState,
+    train: &Train,
+    journey: Option<&Journey>,
+) -> Line<'static> {
+    let place = match (&train.status, journey) {
+        (TrainStatus::Ready { at }, _) => station_label_or_missing(state, *at),
+        (TrainStatus::Travelling { .. }, Some(journey)) => journey_leg_label(state, journey),
+        (TrainStatus::Travelling { .. }, None) => "Journey details unavailable".into(),
+    };
+    Line::from(vec![
+        Span::styled(
+            train_status_label(train),
+            train_status_style(train).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", theme::secondary()),
+        Span::styled(place, theme::secondary()),
+    ])
+}
+
+fn assigned_service_route_label(state: &GameState, train_id: TrainId) -> Option<String> {
+    let service_id = state.player_company.fleet.assigned_service_id(train_id)?;
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)?;
+    let origin = service.origin_station_id()?;
+    let destination = service.destination_station_id()?;
+    let separator = if service.direction_mode == ServiceDirectionMode::BothDirections {
+        " ↔ "
+    } else {
+        " → "
+    };
+    Some(format!(
+        "{}{}{}",
+        station_label_or_missing(state, origin),
+        separator,
+        station_label_or_missing(state, destination),
+    ))
 }
 
 fn inspector_section(lines: &mut Vec<Line<'static>>, title: &str, compact: bool) {
