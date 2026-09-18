@@ -162,7 +162,7 @@ impl MapWorkspace {
                 self.movements_scroll_offset = self.movements_scroll_offset.saturating_add(1);
                 MovementsKeyAction::Continue
             }
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('m' | 'M') => {
                 self.movements_visible = false;
                 self.movements_scroll_offset = 0;
                 MovementsKeyAction::Closed
@@ -571,7 +571,13 @@ mod tests {
         assert_eq!(workspace.movements_scroll_offset, 0);
         assert_eq!(
             workspace.handle_movements_key(KeyCode::Char('m')),
-            MovementsKeyAction::Continue
+            MovementsKeyAction::Closed
+        );
+        assert!(!workspace.movements_visible());
+
+        assert_eq!(
+            workspace.handle_key(KeyCode::Char('m'), &state),
+            MapWorkspaceAction::ClearNotice
         );
         assert!(workspace.movements_visible());
         assert_eq!(

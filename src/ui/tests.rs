@@ -145,6 +145,17 @@ fn bulletin_shows_category_counts_and_contextual_view_controls() {
 }
 
 #[test]
+fn map_legend_identifies_the_keyboard_selection() {
+    let shell = Shell::new();
+    let state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
+
+    let rendered = capture_rendered_buffer(&shell, &state, 160, 40);
+    assert!(rendered.contains("◆ selected"));
+    assert!(rendered.contains("◉ ready"));
+    assert!(rendered.contains("● station"));
+}
+
+#[test]
 fn map_world_details_explains_the_region_registration_identity() {
     let mut shell = Shell::new();
     let state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
@@ -235,16 +246,19 @@ fn map_movements_overlay_shows_service_route_and_next_stop() {
             .clone()
     };
 
-    assert!(rendered.contains("Movements"));
-    assert!(rendered.contains("ARRIVAL"));
-    assert!(rendered.contains("SERVICE"));
+    assert!(rendered.contains("Network Movements"));
+    assert!(rendered.contains("LIVE OPERATIONS · 1 running · 0 ready"));
+    assert!(rendered.contains("RUNNING TRAINS · 1"));
+    assert!(rendered.contains("CURRENT LEG"));
     assert!(rendered.contains("NEXT STOP"));
-    assert!(rendered.contains("ETA"));
+    assert!(rendered.contains("ARRIVES"));
+    assert!(rendered.contains("TIME LEFT"));
     assert!(rendered.contains(&format!("T{:02}", train_id.get())));
+    assert!(rendered.contains("R1"));
     assert!(rendered.contains(&format!(
         "{} → {}",
         station_name(stops[0]),
-        station_name(stops[2])
+        station_name(stops[1])
     )));
     assert!(rendered.contains(&station_name(stops[1])));
     assert!(rendered.contains("[M/Esc] close"));
@@ -254,6 +268,33 @@ fn map_movements_overlay_shows_service_route_and_next_stop() {
         ShellAction::Continue
     );
     assert!(!shell.map_workspace.movements_visible());
+}
+
+#[test]
+fn map_movements_overlay_uses_compact_columns_on_narrow_terminals() {
+    let started_at = UtcSeconds::from_unix_seconds(13 * 3_600);
+    let mut shell = Shell::new();
+    let mut state = create_new_game(42, "One More Prime", started_at);
+    let stops = [RailStationId::new(1), RailStationId::new(2)];
+    let train_id = purchase_train(&mut state, 0, stops[0]).unwrap();
+    let service_id = create_service(&mut state, stops.to_vec()).unwrap();
+    dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
+
+    assert_eq!(
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+            &state,
+        ),
+        ShellAction::Continue
+    );
+
+    let rendered = capture_rendered_buffer(&shell, &state, 72, 24);
+    assert!(rendered.contains("Network Movements"));
+    assert!(rendered.contains("NEXT STOP"));
+    assert!(rendered.contains("TIME LEFT"));
+    assert!(!rendered.contains("CURRENT LEG"));
+    assert!(!rendered.contains("ARRIVES"));
+    assert!(rendered.contains("[M/Esc] close"));
 }
 
 #[test]
@@ -289,9 +330,12 @@ fn map_movements_overlay_lists_ready_trains_and_their_locations() {
         .unwrap()
         .name;
 
+    assert!(rendered.contains("NETWORK IDLE · 0 running · 1 ready"));
     assert!(rendered.contains("No trains are currently travelling."));
     assert!(rendered.contains("READY TRAINS · 1"));
     assert!(rendered.contains("LOCATION"));
+    assert!(rendered.contains("SERVICE"));
+    assert!(rendered.contains("Unassigned"));
     assert!(rendered.contains(&format!("T{:02}", train_id.get())));
     assert!(rendered.contains(station_name));
 }

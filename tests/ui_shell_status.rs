@@ -38,7 +38,7 @@ fn captures_company_status_at_wide_and_compact_sizes() -> Result<(), Box<dyn Err
 }
 
 #[test]
-fn map_header_separates_registration_from_the_marker_legend() {
+fn map_overview_integrates_registration_without_crowding_the_map_border() {
     let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
     let shell = Shell::new();
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
@@ -48,9 +48,13 @@ fn map_header_separates_registration_from_the_marker_legend() {
         state.region.railway_registration.mark
     );
 
-    assert!(rendered.contains("Network"));
-    assert!(rendered.contains("Registration ·"));
-    assert!(rendered.contains(&registration));
+    assert!(rendered.contains("NETWORK DEVELOPING"));
+    assert!(rendered.contains("stations"));
+    assert!(rendered.contains("rail links"));
+    assert!(rendered.contains("services"));
+    assert!(rendered.contains("projects"));
+    assert!(rendered.contains(&format!("registration {registration}")));
+    assert!(!rendered.contains("Registration ·"));
     let selected_station = state
         .region
         .rail_authority
@@ -77,18 +81,45 @@ fn map_header_separates_registration_from_the_marker_legend() {
 }
 
 #[test]
-fn map_station_inspector_uses_operational_sections_without_embedded_shortcuts() {
+fn map_overview_status_tracks_operating_state() -> Result<(), Box<dyn Error>> {
+    let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let shell = Shell::new();
+
+    let developing = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(developing.contains("NETWORK DEVELOPING"));
+
+    state.player_company.funds = Money::from_cents(1_000_000);
+    let train = purchase_train(&mut state, 0, RailStationId::new(1))?;
+    let service = find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))?;
+    let ready = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(ready.contains("NETWORK READY"));
+
+    dispatch_journey(&mut state, train, service, STARTED_AT)?;
+    let operating = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(operating.contains("NETWORK OPERATING"));
+    Ok(())
+}
+
+#[test]
+fn map_station_inspector_uses_selected_station_hierarchy_without_embedded_shortcuts() {
     let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
     let shell = Shell::new();
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
-    assert!(rendered.contains("OPERATIONS"));
-    assert!(rendered.contains("Ready here"));
-    assert!(rendered.contains("Arriving"));
-    assert!(rendered.contains("Services"));
+    assert!(rendered.contains("SELECTED STATION"));
+    assert!(rendered.contains("Station 01"));
+    assert!(rendered.contains("Population"));
+    assert!(rendered.contains("TRAFFIC"));
+    assert!(rendered.contains("Ready trains"));
+    assert!(rendered.contains("Inbound"));
+    assert!(rendered.contains("Next arrival"));
+    assert!(rendered.contains("SERVICES"));
+    assert!(rendered.contains("No passenger services"));
     assert!(rendered.contains("PASSENGERS"));
     assert!(rendered.contains("Waiting"));
     assert!(rendered.contains("Arrival rate"));
+    assert!(rendered.contains("PASSENGER MARKETS"));
+    assert!(!rendered.contains("TOP MARKETS"));
     assert!(!rendered.contains("DIRECT LINKS"));
     assert!(!rendered.contains("Direct links"));
     assert!(!rendered.contains("d Dispatch · all READY Trains"));
@@ -105,8 +136,11 @@ fn map_station_inspector_surfaces_the_next_arrival() -> Result<(), Box<dyn Error
     let shell = Shell::new();
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
-    assert!(rendered.contains("Arriving"));
-    assert!(rendered.contains("1 · next"));
+    assert!(rendered.contains("Inbound"));
+    assert!(rendered.contains("Next arrival"));
+    assert!(rendered.contains("Train 01 · R1"));
+    assert!(rendered.contains("SERVICES"));
+    assert!(!rendered.contains("No passenger services"));
     Ok(())
 }
 
@@ -121,4 +155,30 @@ fn map_footer_contains_actions_without_repeating_header_status() -> Result<(), B
     assert!(rendered.contains("│ [?] Help [Q] Quit"));
     assert!(!rendered.contains("Dispatch · 1 ready"));
     Ok(())
+}
+
+#[test]
+fn map_wide_legend_explains_infrastructure_visual_states() {
+    let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let shell = Shell::new();
+    let rendered = capture_rendered_buffer(&shell, &state, 180, 50);
+
+    assert!(rendered.contains("single"));
+    assert!(rendered.contains("double"));
+    assert!(rendered.contains("electric"));
+    assert!(rendered.contains("planned"));
+    assert!(rendered.contains("works"));
+}
+
+#[test]
+fn map_station_inspector_summarizes_physical_infrastructure() {
+    let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let shell = Shell::new();
+    let rendered = capture_rendered_buffer(&shell, &state, 160, 50);
+
+    assert!(rendered.contains("INFRASTRUCTURE"));
+    assert!(rendered.contains("Connections"));
+    assert!(rendered.contains("Track"));
+    assert!(rendered.contains("Electrified"));
+    assert!(rendered.contains("Speed limit"));
 }

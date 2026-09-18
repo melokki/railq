@@ -219,16 +219,16 @@ fn existing_services_are_listed_and_can_request_deletion() {
     assert!(rendered.contains("Service"));
     assert!(rendered.contains("Route"));
     assert!(rendered.contains("›"));
-    assert!(rendered.contains("STATUS"));
-    assert!(rendered.contains("IDLE"));
-    assert!(rendered.contains("ROUTE"));
+    assert!(rendered.contains("SERVICES PLANNED"));
+    assert!(rendered.contains("SELECTED SERVICE"));
+    assert!(rendered.contains("IDLE · no trains assigned"));
     assert!(rendered.contains("OPERATIONS"));
+    assert!(rendered.contains("ROUTE"));
+    assert!(rendered.contains("PASSENGERS"));
     assert!(rendered.contains("DEMAND"));
-    assert!(rendered.contains("TRAIN NUMBERS"));
-    assert!(rendered.contains("100  Oakridge → Fairford"));
-    assert!(rendered.contains("101  Fairford → Oakridge"));
+    assert!(rendered.contains("Train numbers"));
+    assert!(rendered.contains("100 / 101"));
     assert!(rendered.contains("Oakridge ↔ Fairford"));
-    assert!(rendered.contains("STOP PATTERN"));
     assert!(!rendered.contains("Service Details"));
 
     assert_eq!(
@@ -322,21 +322,28 @@ fn active_service_inspector_surfaces_live_operating_context() {
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
-    assert!(rendered.contains("LIVE"));
-    assert!(rendered.contains("1 assigned · 0 ready · 1 running"));
-    assert!(rendered.contains("Active trains"));
+    assert!(rendered.contains("SERVICES OPERATING"));
+    assert!(rendered.contains("1 train assigned"));
+    assert!(rendered.contains("1 running"));
+    assert!(rendered.contains("LIVE · 1 train running"));
+    assert!(rendered.contains("OPERATIONS"));
+    assert!(rendered.contains("Assigned"));
+    assert!(rendered.contains("Running"));
+    assert!(rendered.contains("Ready"));
     assert!(rendered.contains("Next arrival"));
     assert!(rendered.contains("Train 01"));
-    assert!(rendered.contains("RUNNING TRAINS"));
-    assert!(rendered.contains("Oakridge → Fairford"));
+    let next_arrival = rendered
+        .lines()
+        .find(|line| line.contains("Next arrival"))
+        .expect("selected Service should show the next arrival");
+    assert!(next_arrival.contains("Fairford"));
+    assert!(rendered.contains("PASSENGERS"));
     assert!(rendered.contains("Load"));
     assert!(rendered.contains("On board"));
-    assert!(rendered.contains("Carried"));
     assert!(rendered.contains("COMMERCIAL"));
     assert!(rendered.contains("Expected revenue"));
     assert!(rendered.contains("Access fee"));
     assert!(rendered.contains("Fuel cost"));
-    assert!(rendered.contains("Operating cost"));
     assert!(rendered.contains("Expected result"));
     assert!(!rendered.contains("STOP PATTERN"));
 }
@@ -362,8 +369,12 @@ fn reverse_service_inspector_shows_the_actual_next_leg() {
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
-    assert!(rendered.contains("Juniper → Fairford"));
-    assert!(!rendered.contains("Juniper → Oakridge"));
+    let next_arrival = rendered
+        .lines()
+        .find(|line| line.contains("Next arrival"))
+        .expect("selected Service should show the next arrival");
+    assert!(next_arrival.contains("Fairford"));
+    assert!(!next_arrival.contains("Oakridge"));
 }
 
 #[test]
@@ -479,11 +490,13 @@ fn service_inspector_surfaces_assigned_fleet_and_runnable_state() {
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
-    assert!(rendered.contains("READY"));
-    assert!(rendered.contains("1 assigned · 1 ready · 0 running"));
-    assert!(rendered.contains("ASSIGNED FLEET"));
-    assert!(rendered.contains("Train 01"));
-    assert!(rendered.contains("READY · Oakridge"));
+    assert!(rendered.contains("SERVICES READY"));
+    assert!(rendered.contains("1 train assigned"));
+    assert!(rendered.contains("1 ready"));
+    assert!(rendered.contains("READY · 1 train ready"));
+    assert!(rendered.contains("OPERATIONS"));
+    assert!(rendered.contains("Assigned"));
+    assert!(rendered.contains("Ready"));
 }
 
 #[test]

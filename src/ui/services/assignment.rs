@@ -8,7 +8,10 @@ use ratatui::{
     widgets::{Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
 };
 
-use crate::model::{GameState, ServiceDirectionMode, ServiceId, TrainId, TrainStatus};
+use crate::{
+    catalog::model_for_train,
+    model::{GameState, ServiceDirectionMode, ServiceId, Train, TrainId, TrainStatus},
+};
 
 use super::{modal, theme};
 
@@ -40,10 +43,7 @@ impl ServiceTrainAssignmentFlow {
             .iter()
             .any(|service| service.id == service_id)
         {
-            return Err(format!(
-                "Passenger Service R{} is no longer available.",
-                service_id.get()
-            ));
+            return Err("Passenger Service is no longer available.".to_owned());
         }
 
         let selected_index = state
@@ -190,7 +190,7 @@ pub(super) fn render(
         .find(|service| service.id == flow.service_id);
     let title = service
         .map(|service| format!("Assign Trains · {}", service.display_name()))
-        .unwrap_or_else(|| format!("Assign Trains · R{}", flow.service_id.get()));
+        .unwrap_or_else(|| "Assign Trains".to_owned());
     let (enter_action, enter_enabled, unassign_enabled) = flow
         .selected_train(state)
         .map(|train| {
@@ -280,9 +280,9 @@ pub(super) fn render(
                             format!("T{:02} is assigned here · U unassigns it.", train.id.get())
                         }
                         Some(service_id) => format!(
-                            "T{:02} is assigned to R{} · Enter reassigns it here.",
+                            "T{:02} is assigned to {} · Enter reassigns it here.",
                             train.id.get(),
-                            service_id.get()
+                            service_label(state, service_id)
                         ),
                         None => format!(
                             "T{:02} is unassigned · Enter assigns it here.",
@@ -317,8 +317,10 @@ pub(super) fn render(
         .iter()
         .map(|train| {
             let assignment = match state.player_company.fleet.assigned_service_id(train.id) {
-                Some(service_id) if service_id == flow.service_id => "Current".to_owned(),
-                Some(service_id) => format!("R{}", service_id.get()),
+                Some(service_id) if service_id == flow.service_id => {
+                    format!("{} · CURRENT", service_label(state, service_id))
+                }
+                Some(service_id) => service_label(state, service_id),
                 None => "Unassigned".to_owned(),
             };
             let (status, location) = match &train.status {
@@ -327,13 +329,7 @@ pub(super) fn render(
             };
             Row::new(vec![
                 Cell::from(format!("T{:02}", train.id.get())),
-                Cell::from(
-                    train
-                        .nickname
-                        .as_ref()
-                        .map(|nickname| nickname.as_str())
-                        .unwrap_or("—"),
-                ),
+                Cell::from(train_display_name(train)),
                 Cell::from(status),
                 Cell::from(location),
                 Cell::from(assignment),
@@ -347,12 +343,13 @@ pub(super) fn render(
             Constraint::Length(8),
             Constraint::Length(18),
             Constraint::Length(12),
-            Constraint::Min(18),
-            Constraint::Length(12),
+            Constraint::Min(14),
+            Constraint::Length(16),
         ],
     )
     .header(
-        Row::new(["Train", "Name", "State", "Location", "Assignment"]).style(theme::table_header()),
+        Row::new(["Train", "Model / name", "State", "Location", "Assignment"])
+            .style(theme::table_header()),
     )
     .style(theme::panel())
     .row_highlight_style(theme::selected_row())
@@ -363,6 +360,25 @@ pub(super) fn render(
         table_state.select(Some(flow.selected_index));
     }
     frame.render_stateful_widget(table, table_area, &mut table_state);
+}
+
+fn train_display_name(train: &Train) -> String {
+    train
+        .nickname
+        .as_ref()
+        .map(|nickname| nickname.as_str().to_owned())
+        .or_else(|| model_for_train(train).map(|model| model.name().to_owned()))
+        .unwrap_or_else(|| "Unknown model".to_owned())
+}
+
+fn service_label(state: &GameState, service_id: ServiceId) -> String {
+    state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+        .map(|service| service.name.clone())
+        .unwrap_or_else(|| "Unavailable".to_owned())
 }
 
 fn station_label(state: &GameState, station_id: crate::model::RailStationId) -> String {
@@ -399,7 +415,34 @@ mod tests {
         },
     };
 
-    use super::{ServiceTrainAssignmentAction, ServiceTrainAssignmentFlow};
+    use super::{
+        ServiceTrainAssignmentAction, ServiceTrainAssignmentFlow, service_label, train_display_name,
+    };
+
+    #[test]
+    fn assignment_labels_use_player_facing_service_and_model_names() {
+        let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+        state.player_company.funds = Money::from_cents(10_000_000);
+        let service_id = create_service(
+            &mut state,
+            vec![RailStationId::new(1), RailStationId::new(2)],
+        )
+        .unwrap();
+        let train_id = purchase_train(&mut state, 0, RailStationId::new(1)).unwrap();
+        let train = state
+            .player_company
+            .fleet
+            .trains
+            .iter()
+            .find(|train| train.id == train_id)
+            .unwrap();
+
+        assert_eq!(service_label(&state, service_id), "R1");
+        assert_eq!(
+            train_display_name(train),
+            crate::catalog::model_for_train(train).unwrap().name()
+        );
+    }
 
     #[test]
     fn service_assignment_can_assign_and_unassign_a_train() {
