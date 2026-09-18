@@ -19,7 +19,7 @@ use ratatui::{
     },
 };
 
-use analytics::RecentJourneyPerformance;
+use analytics::{ActiveJourneyExposure, RECENT_JOURNEY_WINDOW, RecentJourneyPerformance};
 
 use crate::{
     catalog::train_catalogue,
@@ -994,7 +994,7 @@ fn render_wide_dashboard(
     let [overview_area, metrics_area, operations_area, history_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(5),
-        Constraint::Length(4),
+        Constraint::Length(7),
         Constraint::Fill(1),
     ])
     .spacing(1)
@@ -1193,40 +1193,37 @@ fn recent_margin_context(recent: &RecentJourneyPerformance) -> String {
 }
 
 fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
-    let [fleet_area, services_area, network_area, costs_area] = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Fill(1),
-        Constraint::Fill(1),
-        Constraint::Fill(1),
+    let [operations_area, recent_area, costs_area] = Layout::horizontal([
+        Constraint::Fill(5),
+        Constraint::Fill(5),
+        Constraint::Length(24),
     ])
     .spacing(2)
     .areas(area);
 
     let trains = &state.player_company.fleet.trains;
-    render_dashboard_section(
-        frame,
-        fleet_area,
-        vec![
-            section_heading("FLEET"),
-            Line::styled(format!("{} trains", trains.len()), theme::primary_value()),
-            Line::from(vec![
-                Span::styled("Fleet value  ", theme::secondary()),
-                Span::styled(
-                    format_cents(fleet_value_cents(state)),
-                    theme::primary_value(),
-                ),
-            ]),
-        ],
-    );
-
     let defined_services = state.player_company.passenger_services.len();
     let active_services = active_service_count(state);
+    let served_settlements = served_settlement_count(state);
+    let connected_settlements = connected_settlement_count(state);
+    let active = ActiveJourneyExposure::from_state(state);
     render_dashboard_section(
         frame,
-        services_area,
+        operations_area,
         vec![
-            section_heading("SERVICES"),
-            Line::styled(
+            section_heading("OPERATIONS"),
+            dashboard_line(
+                "Fleet",
+                format!(
+                    "{} {} · {}",
+                    trains.len(),
+                    if trains.len() == 1 { "train" } else { "trains" },
+                    format_cents(fleet_value_cents(state))
+                ),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Services",
                 format!("{active_services} / {defined_services} active"),
                 if active_services > 0 {
                     theme::success()
@@ -1234,39 +1231,40 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
                     theme::primary_value()
                 },
             ),
-            Line::from(vec![
-                Span::styled("Idle  ", theme::secondary()),
-                Span::styled(
-                    defined_services.saturating_sub(active_services).to_string(),
-                    theme::primary_value(),
+            dashboard_line(
+                "Network",
+                settlement_coverage_label(served_settlements, connected_settlements),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Travelling",
+                format!(
+                    "{} {} · {} pax",
+                    active.journey_count,
+                    if active.journey_count == 1 {
+                        "train"
+                    } else {
+                        "trains"
+                    },
+                    active.onboard_passengers
                 ),
-            ]),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "In transit",
+                format_cents(active.revenue_in_transit_cents),
+                theme::primary_value(),
+            ),
         ],
     );
 
-    let served_settlements = served_settlement_count(state);
-    let connected_settlements = connected_settlement_count(state);
-    render_dashboard_section(
-        frame,
-        network_area,
-        vec![
-            section_heading("NETWORK"),
-            Line::styled(
-                format!("{served_settlements} / {connected_settlements} served"),
-                theme::primary_value(),
-            ),
-            Line::styled(
-                settlement_coverage_label(served_settlements, connected_settlements),
-                theme::secondary(),
-            ),
-        ],
-    );
+    render_recent_performance(frame, recent_area, state);
 
     render_dashboard_section(
         frame,
         costs_area,
         vec![
-            section_heading("COST MIX"),
+            section_heading("COST MIX · LIFETIME"),
             dashboard_line(
                 "Access",
                 format_money(state.financials.infrastructure_access_fees),
@@ -1277,6 +1275,59 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
                 format_money(state.financials.fuel_costs),
                 theme::primary_value(),
             ),
+            dashboard_line(
+                "Total",
+                format_cents(operating_costs_cents(state)),
+                theme::primary_value(),
+            ),
+        ],
+    );
+}
+
+fn render_recent_performance(frame: &mut Frame, area: Rect, state: &GameState) {
+    let recent = RecentJourneyPerformance::from_state(state);
+    let break_even = recent
+        .journey_count
+        .saturating_sub(recent.profitable_journeys + recent.loss_making_journeys);
+    let outcomes = if break_even == 0 {
+        format!(
+            "{}+ / {}-",
+            recent.profitable_journeys, recent.loss_making_journeys
+        )
+    } else {
+        format!(
+            "{}+ / {}- / {}=",
+            recent.profitable_journeys, recent.loss_making_journeys, break_even
+        )
+    };
+    let passengers = recent
+        .passengers_carried
+        .map_or_else(|| "—".into(), |passengers| passengers.to_string());
+
+    render_dashboard_section(
+        frame,
+        area,
+        vec![
+            section_heading(&format!(
+                "RECENT PERFORMANCE · {RECENT_JOURNEY_WINDOW} JOURNEYS"
+            )),
+            dashboard_line(
+                "Completed",
+                recent.journey_count.to_string(),
+                theme::primary_value(),
+            ),
+            dashboard_line("Passengers", passengers, theme::primary_value()),
+            dashboard_line(
+                "Revenue",
+                format_cents(recent.revenue_cents),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Result",
+                format_signed_cents(recent.result_cents),
+                result_style(recent.result_cents),
+            ),
+            dashboard_line("Outcomes", outcomes, theme::primary_value()),
         ],
     );
 }

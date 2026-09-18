@@ -21,6 +21,39 @@ pub(super) struct RecentJourneyPerformance {
     pub(super) passengers_carried: Option<u64>,
 }
 
+/// Live exposure for Journeys that have departed but have not yet completed.
+///
+/// Revenue in transit is booked passenger revenue that has not yet been
+/// credited to Company funds. It is intentionally separate from cash and from
+/// settled Journey performance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ActiveJourneyExposure {
+    pub(super) journey_count: usize,
+    pub(super) onboard_passengers: u64,
+    pub(super) revenue_in_transit_cents: i128,
+}
+
+impl ActiveJourneyExposure {
+    pub(super) fn from_state(state: &GameState) -> Self {
+        let mut exposure = Self {
+            journey_count: state.active_journeys.len(),
+            onboard_passengers: 0,
+            revenue_in_transit_cents: 0,
+        };
+
+        for journey in &state.active_journeys {
+            let booked = i128::from(journey.operating_revenue.cents());
+            let credited = i128::from(journey.credited_revenue.cents());
+            exposure.onboard_passengers = exposure
+                .onboard_passengers
+                .saturating_add(u64::from(journey.onboard_passengers()));
+            exposure.revenue_in_transit_cents += booked - credited;
+        }
+
+        exposure
+    }
+}
+
 impl RecentJourneyPerformance {
     pub(super) fn from_state(state: &GameState) -> Self {
         Self::from_receipts(&state.financials.recent_journey_receipts)
@@ -70,7 +103,7 @@ impl RecentJourneyPerformance {
 mod tests {
     use crate::model::{JourneyId, JourneyReceipt, Money};
 
-    use super::{RECENT_JOURNEY_WINDOW, RecentJourneyPerformance};
+    use super::{ActiveJourneyExposure, RECENT_JOURNEY_WINDOW, RecentJourneyPerformance};
 
     fn receipt(
         id: u64,
@@ -144,5 +177,60 @@ mod tests {
         let performance = RecentJourneyPerformance::from_receipts(&receipts);
 
         assert_eq!(performance.passengers_carried, None);
+    }
+
+    #[test]
+    fn active_exposure_tracks_booked_uncredited_revenue() {
+        use crate::{
+            model::{
+                MarketMaturity, MoneyPerKilometre, PassengerArrivalRate, RailStationId, UtcSeconds,
+            },
+            sim::{
+                fleet::purchase_train, journeys::dispatch_journey,
+                services::find_or_create_service, world::create_new_game,
+            },
+        };
+
+        let started_at = UtcSeconds::from_unix_seconds(1_700_000_000);
+        let origin = RailStationId::new(1);
+        let destination = RailStationId::new(2);
+        let mut state = create_new_game(42, "Exposure Test", started_at);
+        state.rules.balance = crate::balance::BalanceConfig::new(
+            MoneyPerKilometre::new(10).expect("fare rate is valid"),
+            MoneyPerKilometre::new(10).expect("access rate is valid"),
+            Money::from_cents(400_000),
+        );
+        state.player_company.funds = Money::from_cents(400_000);
+        for pool in &mut state.origin_destination_demand {
+            pool.waiting_passengers = 0;
+            pool.passenger_arrival_rate_per_hour =
+                PassengerArrivalRate::new(1).expect("demand rate is valid");
+            pool.market_maturity = MarketMaturity::full();
+            pool.fractional_passenger_seconds = 0;
+        }
+        state
+            .origin_destination_demand
+            .iter_mut()
+            .find(|pool| {
+                pool.origin_station_id == origin && pool.destination_station_id == destination
+            })
+            .expect("fixture route exists")
+            .waiting_passengers = 10;
+
+        let train_id = purchase_train(&mut state, 0, origin).expect("purchase succeeds");
+        let service_id =
+            find_or_create_service(&mut state, origin, destination).expect("service exists");
+        dispatch_journey(&mut state, train_id, service_id, started_at)
+            .expect("Journey departs");
+
+        let exposure = ActiveJourneyExposure::from_state(&state);
+        let journey = &state.active_journeys[0];
+        assert_eq!(exposure.journey_count, 1);
+        assert_eq!(exposure.onboard_passengers, 10);
+        assert_eq!(
+            exposure.revenue_in_transit_cents,
+            i128::from(journey.operating_revenue.cents())
+                - i128::from(journey.credited_revenue.cents())
+        );
     }
 }

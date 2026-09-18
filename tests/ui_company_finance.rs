@@ -21,7 +21,7 @@ const ORIGIN: RailStationId = RailStationId::new(1);
 const DESTINATION: RailStationId = RailStationId::new(2);
 const EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/06";
 
-fn finance_fixture(waiting_passengers: u32) -> GameState {
+fn journey_fixture(waiting_passengers: u32, settle: bool) -> GameState {
     let fare_rate = MoneyPerKilometre::new(10).expect("fixture fare rate is positive");
     let access_rate = MoneyPerKilometre::new(10).expect("fixture access rate is positive");
     let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
@@ -46,9 +46,15 @@ fn finance_fixture(waiting_passengers: u32) -> GameState {
         find_or_create_service(&mut state, ORIGIN, DESTINATION).expect("fixture service exists");
     dispatch_journey(&mut state, train_id, service_id, STARTED_AT)
         .expect("fixture Journey departs");
-    let arrives_at = state.active_journeys[0].arrives_at;
-    advance_time(&mut state, arrives_at).expect("fixture Journey settles");
+    if settle {
+        let arrives_at = state.active_journeys[0].arrives_at;
+        advance_time(&mut state, arrives_at).expect("fixture Journey settles");
+    }
     state
+}
+
+fn finance_fixture(waiting_passengers: u32) -> GameState {
+    journey_fixture(waiting_passengers, true)
 }
 
 fn company_shell(state: &GameState) -> Shell {
@@ -102,41 +108,33 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                 );
             }
             assert!(
-                rendered.contains("Fleet value"),
-                "{slug} should show Fleet value"
+                rendered.contains("Fleet value") || rendered.contains("OPERATIONS"),
+                "{slug} should show Fleet scale/value context"
             );
             if columns >= 100 {
                 assert!(
-                    rendered.contains("FLEET"),
-                    "{slug} should show Fleet section"
+                    rendered.contains("OPERATIONS"),
+                    "{slug} should show the compact operations panel"
                 );
                 assert!(
-                    rendered.contains("SERVICES"),
-                    "{slug} should show Services summary"
+                    rendered.contains("Fleet"),
+                    "{slug} should show Fleet scale and value"
                 );
                 assert!(
-                    rendered.contains("NETWORK"),
-                    "{slug} should show network summary"
-                );
-                assert!(
-                    rendered.contains("active"),
+                    rendered.contains("Services"),
                     "{slug} should show active service ratio"
                 );
                 assert!(
-                    rendered.contains("SERVICES"),
-                    "{slug} should show Services summary"
+                    rendered.contains("Network"),
+                    "{slug} should show network coverage"
                 );
                 assert!(
-                    rendered.contains("Idle"),
-                    "{slug} should show idle services"
+                    rendered.contains("Travelling"),
+                    "{slug} should show live Journey count"
                 );
                 assert!(
-                    rendered.contains("served"),
-                    "{slug} should show served settlements"
-                );
-                assert!(
-                    rendered.contains("served"),
-                    "{slug} should show connected-settlement denominator"
+                    rendered.contains("In transit"),
+                    "{slug} should distinguish booked uncredited revenue from cash"
                 );
                 assert!(
                     rendered.contains("%"),
@@ -146,16 +144,28 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                     rendered.contains("Rail "),
                     "{slug} should show compact Company identity"
                 );
+                assert!(
+                    rendered.contains("RECENT PERFORMANCE · 12 JOURNEYS"),
+                    "{slug} should show a dedicated recent-performance panel"
+                );
+                assert!(
+                    rendered.contains("Completed"),
+                    "{slug} should show recent completed Journey count"
+                );
+                assert!(
+                    rendered.contains("Outcomes"),
+                    "{slug} should show recent profitable/loss-making outcomes"
+                );
                 let financial_row = rendered
                     .lines()
                     .position(|line| line.contains("OPERATING RESULT"))
                     .expect("wide Company dashboard should show KPI cards");
-                let fleet_row = rendered
+                let operations_row = rendered
                     .lines()
-                    .position(|line| line.contains("FLEET"))
-                    .expect("wide Company dashboard should show Fleet summary");
+                    .position(|line| line.contains("OPERATIONS"))
+                    .expect("wide Company dashboard should show Operations summary");
                 assert!(
-                    financial_row < fleet_row,
+                    financial_row < operations_row,
                     "{slug} should prioritize KPI cards before operating footprint"
                 );
                 assert!(
@@ -275,6 +285,28 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
     assert_eq!(colors.1, theme::PANEL);
     assert_eq!(colors.0, theme::WARNING);
     Ok(())
+}
+
+#[test]
+fn wide_dashboard_separates_live_revenue_exposure_from_settled_performance() {
+    let state = journey_fixture(10, false);
+    let shell = company_shell(&state);
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+
+    assert!(rendered.contains("Travelling"));
+    assert!(rendered.contains("1 train · 10 pax"));
+    assert!(rendered.contains("In transit"));
+    assert!(rendered.contains("$10.00"));
+    assert!(
+        rendered
+            .lines()
+            .any(|line| line.contains("Completed") && line.contains('0'))
+    );
+    assert!(
+        rendered
+            .lines()
+            .any(|line| line.contains("Result") && line.contains("$0.00"))
+    );
 }
 
 #[test]
