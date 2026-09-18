@@ -289,13 +289,6 @@ pub(super) fn maturity_label(basis_points: u16) -> &'static str {
     }
 }
 
-pub(super) fn timestamp_line(label: &str, timestamp: UtcSeconds, now: UtcSeconds) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label}  "), theme::secondary()),
-        Span::styled(relative_time(timestamp, now), theme::primary_value()),
-    ])
-}
-
 pub(super) fn value_line(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label}  "), theme::secondary()),
@@ -331,25 +324,6 @@ pub(crate) fn access_discount_label(
         .try_into()
         .unwrap_or(0);
     format!("{percent}% · {} remaining", compact_duration(remaining))
-}
-
-pub(super) fn duration_line(label: &str, seconds: u64) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label}  "), theme::secondary()),
-        Span::styled(compact_duration(seconds), theme::primary_value()),
-    ])
-}
-
-pub(super) fn progress_line(label: &str, percent: u8) -> Line<'static> {
-    let percent = percent.min(100);
-    let filled = usize::from(percent).saturating_mul(10).saturating_add(50) / 100;
-    let empty = 10usize.saturating_sub(filled);
-    Line::from(vec![
-        Span::styled(format!("{label}  "), theme::secondary()),
-        Span::styled("█".repeat(filled), theme::warning()),
-        Span::styled("░".repeat(empty), theme::secondary()),
-        Span::styled(format!("  {percent}%"), theme::primary_value()),
-    ])
 }
 
 pub(super) fn format_project_timestamp(timestamp: UtcSeconds, now: UtcSeconds) -> String {

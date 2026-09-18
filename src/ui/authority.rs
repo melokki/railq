@@ -10,6 +10,7 @@ mod contribution;
 mod dashboard;
 mod format;
 mod programme;
+mod project;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{Frame, layout::Rect, widgets::TableState};
