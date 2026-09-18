@@ -32,6 +32,7 @@ use crate::{
 };
 
 const MAXIMUM_RECOVERY_OPTIONS_SHOWN: usize = 3;
+const RECENT_ACTIVITY_LIMIT: usize = 5;
 
 /// Presentation-only editor for the Player Company's Vehicle Keeper Mark.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -362,6 +363,7 @@ impl CompanyShortcut {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompanyWorkspace {
     receipt_selection: ReceiptSelection,
+    receipt_history_open: bool,
     receipt_details_open: bool,
     recovery_selection: RecoverySelection,
     recovery_review_open: bool,
@@ -371,6 +373,7 @@ pub struct CompanyWorkspace {
 impl CompanyWorkspace {
     /// Clears transient Company workflows when the primary view is reopened.
     pub fn activate(&mut self) {
+        self.receipt_history_open = false;
         self.receipt_details_open = false;
         self.recovery_review_open = false;
         self.vkm_editor = None;
@@ -383,7 +386,10 @@ impl CompanyWorkspace {
 
     /// Returns whether any Company-owned focused workflow is visible.
     pub fn has_modal(&self) -> bool {
-        self.vkm_editor.is_some() || self.recovery_review_open || self.receipt_details_open
+        self.vkm_editor.is_some()
+            || self.recovery_review_open
+            || self.receipt_history_open
+            || self.receipt_details_open
     }
 
     /// Returns whether the VKM editor must receive text input before global shortcuts.
@@ -394,6 +400,11 @@ impl CompanyWorkspace {
     /// Returns whether recovery navigation must be handled before global workspace shortcuts.
     pub fn recovery_review_open(&self) -> bool {
         self.recovery_review_open
+    }
+
+    /// Returns whether receipt history/detail owns navigation until it is closed.
+    pub fn receipt_browser_open(&self) -> bool {
+        self.receipt_history_open || self.receipt_details_open
     }
 
     /// Returns contextual footer actions for the currently focused Company state.
@@ -428,17 +439,22 @@ impl CompanyWorkspace {
             return vec![CompanyShortcut::enabled("Esc", "Back")];
         }
 
-        let mut items = Vec::new();
-        if !state.financials.recent_journey_receipts.is_empty() {
-            items.push(CompanyShortcut::enabled(
-                if compact { "↑↓" } else { "↑↓/JK" },
-                "Receipt",
-            ));
-            if wide {
-                items.push(CompanyShortcut::enabled("PgUp/PgDn", "Page"));
+        if self.receipt_history_open {
+            let mut items = vec![CompanyShortcut::enabled("Esc", "Back")];
+            if !state.financials.recent_journey_receipts.is_empty() {
+                items.push(CompanyShortcut::enabled(
+                    if compact { "↑↓" } else { "↑↓/JK" },
+                    "Receipt",
+                ));
+                if wide {
+                    items.push(CompanyShortcut::enabled("PgUp/PgDn", "Page"));
+                }
+                items.push(CompanyShortcut::enabled("Enter", "Inspect"));
             }
-            items.push(CompanyShortcut::enabled("Enter", "Inspect"));
+            return items;
         }
+
+        let mut items = vec![CompanyShortcut::enabled("H", "History")];
         items.push(CompanyShortcut::enabled("V", "Edit VKM"));
 
         let recovery_available =
@@ -480,21 +496,35 @@ impl CompanyWorkspace {
             return vec![
                 "Current · Journey Receipt".into(),
                 "Esc Back to Journey history".into(),
-                "1–6 Switch workspace".into(),
             ];
         }
 
-        let mut lines = vec!["Current · Company".into(), "v Edit Company VKM".into()];
+        if self.receipt_history_open {
+            let mut lines = vec![
+                "Current · Journey History".into(),
+                "Esc Back to Company dashboard".into(),
+            ];
+            if state.financials.recent_journey_receipts.is_empty() {
+                lines.push("No settled Journey receipts yet".into());
+            } else {
+                lines.extend([
+                    "↑↓ / jk Select Journey receipt".into(),
+                    "PgUp / PgDn Scroll history".into(),
+                    "Enter Inspect receipt".into(),
+                ]);
+            }
+            return lines;
+        }
+
+        let mut lines = vec![
+            "Current · Company".into(),
+            "h Open Journey history".into(),
+            "v Edit Company VKM".into(),
+        ];
         if state.financials.recent_journey_receipts.is_empty() {
             lines.extend([
                 "No settled Journey receipts yet".into(),
                 "1 Return to Map to operate your railway".into(),
-            ]);
-        } else {
-            lines.extend([
-                "↑↓ / jk Select Journey receipt".into(),
-                "PgUp / PgDn Scroll history".into(),
-                "Enter Details".into(),
             ]);
         }
         if let Ok(evaluation) = evaluate_financial_recovery(state) {
@@ -566,47 +596,69 @@ impl CompanyWorkspace {
             };
         }
 
+        if self.receipt_details_open {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.receipt_details_open = false;
+                    CompanyWorkspaceAction::Continue
+                }
+                _ => CompanyWorkspaceAction::Continue,
+            };
+        }
+
+        if self.receipt_history_open {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.receipt_history_open = false;
+                    CompanyWorkspaceAction::Continue
+                }
+                KeyCode::Enter => {
+                    if self.receipt_selection.has_selection(state) {
+                        self.receipt_details_open = true;
+                        CompanyWorkspaceAction::ClearNotice
+                    } else {
+                        CompanyWorkspaceAction::Continue
+                    }
+                }
+                KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Char('j' | 'J' | 'k' | 'K') => {
+                    self.receipt_selection.handle_key(key.code, state);
+                    CompanyWorkspaceAction::Continue
+                }
+                _ => CompanyWorkspaceAction::Continue,
+            };
+        }
+
         match key.code {
-            KeyCode::Char('v' | 'V') if !self.receipt_details_open => {
-                self.vkm_editor = Some(VkmEditor::start(state));
+            KeyCode::Char('h' | 'H') => {
+                self.receipt_history_open = true;
                 self.receipt_details_open = false;
                 self.recovery_review_open = false;
                 CompanyWorkspaceAction::ClearNotice
             }
-            KeyCode::Char('r' | 'R') if !self.receipt_details_open => {
+            KeyCode::Char('v' | 'V') => {
+                self.vkm_editor = Some(VkmEditor::start(state));
+                self.receipt_history_open = false;
+                self.receipt_details_open = false;
+                self.recovery_review_open = false;
+                CompanyWorkspaceAction::ClearNotice
+            }
+            KeyCode::Char('r' | 'R') => {
                 if self
                     .recovery_selection
                     .selected_destination(state)
                     .is_some()
                 {
                     self.recovery_review_open = true;
+                    self.receipt_history_open = false;
                     self.receipt_details_open = false;
                     CompanyWorkspaceAction::ClearNotice
                 } else {
                     CompanyWorkspaceAction::Continue
                 }
-            }
-            KeyCode::Enter => {
-                if self.receipt_selection.has_selection(state) {
-                    self.receipt_details_open = true;
-                    CompanyWorkspaceAction::ClearNotice
-                } else {
-                    CompanyWorkspaceAction::Continue
-                }
-            }
-            KeyCode::Esc if self.receipt_details_open => {
-                self.receipt_details_open = false;
-                CompanyWorkspaceAction::Continue
-            }
-            KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::PageUp
-            | KeyCode::PageDown
-            | KeyCode::Char('j' | 'J' | 'k' | 'K')
-                if !self.receipt_details_open =>
-            {
-                self.receipt_selection.handle_key(key.code, state);
-                CompanyWorkspaceAction::Continue
             }
             _ => CompanyWorkspaceAction::Continue,
         }
@@ -631,6 +683,8 @@ impl CompanyWorkspace {
             render_recovery_review(frame, area, state, &mut self.recovery_selection);
         } else if self.receipt_details_open {
             render_receipt_modal(frame, area, state, &mut self.receipt_selection);
+        } else if self.receipt_history_open {
+            render_receipt_history(frame, area, state, &mut self.receipt_selection);
         }
     }
 
@@ -646,8 +700,8 @@ impl CompanyWorkspace {
 }
 
 /// Renders the Company workspace as one operational dashboard. Wide layouts
-/// group status, Fleet, operations, identity, financial performance, and Journey
-/// history inside one focused shell; compact layouts preserve the same hierarchy.
+/// group status, Fleet, operations, identity, financial performance, and recent
+/// activity inside one focused shell; full Journey history is a separate browser.
 pub fn render_dashboard(
     frame: &mut Frame,
     area: Rect,
@@ -763,6 +817,44 @@ pub fn render_receipt_modal(
             .wrap(Wrap { trim: true }),
         modal_areas.body,
     );
+}
+
+/// Renders the complete retained receipt ledger as a focused browser. The
+/// Company dashboard itself only shows the latest activity rows.
+pub fn render_receipt_history(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    selection: &mut ReceiptSelection,
+) {
+    let card = modal::workflow_rect(area);
+    let compact = card.width < 76;
+    let footer = if state.financials.recent_journey_receipts.is_empty() {
+        modal::shortcut_line(&[modal::ModalShortcut::enabled(
+            "Esc",
+            modal::ModalAction::Close,
+        )])
+    } else if compact {
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Close),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Inspect),
+            modal::ModalShortcut::enabled("↑↓", modal::ModalAction::Scroll),
+        ])
+    } else {
+        modal::shortcut_line(&[
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Close),
+            modal::ModalShortcut::enabled("Enter", modal::ModalAction::Inspect),
+            modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Scroll),
+            modal::ModalShortcut::enabled("PgUp/PgDn", modal::ModalAction::Page),
+        ])
+    };
+    let title = format!(
+        "Journey History · {} receipts",
+        state.financials.recent_journey_receipts.len()
+    );
+    let modal_areas = modal::render_shell(frame, card, &title, footer);
+    selection.synchronize(state);
+    render_receipt_history_table(frame, modal_areas.body, state, selection, !compact);
 }
 
 fn recovery_evaluation(state: &GameState) -> Option<FinancialEvaluation> {
@@ -980,7 +1072,7 @@ fn render_wide_dashboard(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
-    selection: &mut ReceiptSelection,
+    _selection: &mut ReceiptSelection,
 ) {
     let evaluation = evaluate_financial_recovery(state);
 
@@ -1012,10 +1104,10 @@ fn render_wide_dashboard(
             Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
                 .spacing(2)
                 .areas(history_area);
-        render_receipts_table(frame, receipts_area, state, selection, true);
+        render_recent_activity(frame, receipts_area, state, true);
         render_recovery_panel(frame, recovery_area, state, &evaluation);
     } else {
-        render_receipts_table(frame, history_area, state, selection, true);
+        render_recent_activity(frame, history_area, state, true);
     }
 }
 
@@ -1397,7 +1489,7 @@ fn render_compact_dashboard(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
-    selection: &mut ReceiptSelection,
+    _selection: &mut ReceiptSelection,
 ) {
     let evaluation = evaluate_financial_recovery(state);
     let shell = components::panel_block("Company", true);
@@ -1409,7 +1501,7 @@ fn render_compact_dashboard(
             .spacing(2)
             .areas(shell_inner);
     render_compact_summary(frame, summary_area, state, &evaluation);
-    render_receipts_table(frame, history_area, state, selection, false);
+    render_recent_activity(frame, history_area, state, false);
 }
 
 fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
@@ -1452,7 +1544,86 @@ fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
     );
 }
 
-fn render_receipts_table(
+fn render_recent_activity(frame: &mut Frame, area: Rect, state: &GameState, wide: bool) {
+    let receipts = &state.financials.recent_journey_receipts;
+    let shown = receipts.len().min(RECENT_ACTIVITY_LIMIT);
+    let heading = if shown == 0 {
+        "RECENT ACTIVITY".to_owned()
+    } else {
+        format!("RECENT ACTIVITY · LAST {shown}")
+    };
+    let [heading_area, content_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(section_heading(&heading)).style(theme::panel()),
+        heading_area,
+    );
+
+    if receipts.is_empty() {
+        frame.render_widget(
+            Paragraph::new(
+                "No completed Journey activity yet. Journey receipts will appear here after Services reach their termini; press H for full history.",
+            )
+            .style(theme::secondary())
+            .wrap(Wrap { trim: true }),
+            content_area,
+        );
+        return;
+    }
+
+    let detailed = wide && content_area.width >= 74;
+    let rows = receipts.iter().rev().take(RECENT_ACTIVITY_LIMIT).map(|receipt| {
+        let result = receipt_result_cents(
+            receipt.revenue,
+            receipt.infrastructure_access_fee,
+            receipt.fuel_cost,
+        );
+        if detailed {
+            Row::new([
+                Cell::from(receipt_age_label(state, receipt)),
+                Cell::from(format!("J{:02}", receipt.journey_id.get())),
+                Cell::from(receipt_route_label(state, receipt)),
+                Cell::from(receipt_train_label(receipt)),
+                Cell::from(receipt_passenger_label(receipt)),
+                Cell::from(format_signed_cents(result)).style(result_style(result)),
+            ])
+        } else {
+            Row::new([
+                Cell::from(receipt_route_or_id_label(state, receipt)),
+                Cell::from(receipt_passenger_label(receipt)),
+                Cell::from(format_signed_cents(result)).style(result_style(result)),
+            ])
+        }
+    });
+    let (header, widths) = if detailed {
+        (
+            Row::new(["Completed", "ID", "Route", "Train", "Pax", "Result"]),
+            vec![
+                Constraint::Length(11),
+                Constraint::Length(6),
+                Constraint::Fill(3),
+                Constraint::Fill(2),
+                Constraint::Length(9),
+                Constraint::Length(14),
+            ],
+        )
+    } else {
+        (
+            Row::new(["Journey", "Pax", "Result"]),
+            vec![
+                Constraint::Fill(1),
+                Constraint::Length(9),
+                Constraint::Length(12),
+            ],
+        )
+    };
+    let table = Table::new(rows, widths)
+        .header(header.style(theme::table_header()).bottom_margin(1))
+        .style(theme::panel());
+    frame.render_widget(table, content_area);
+}
+
+fn render_receipt_history_table(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
@@ -1460,30 +1631,19 @@ fn render_receipts_table(
     wide: bool,
 ) {
     let receipts = &state.financials.recent_journey_receipts;
-    let [heading_area, content_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-    frame.render_widget(
-        Paragraph::new(section_heading(&format!(
-            "JOURNEY HISTORY · {} RECEIPTS",
-            receipts.len()
-        )))
-        .style(theme::panel()),
-        heading_area,
-    );
-
     if receipts.is_empty() {
         frame.render_widget(
             Paragraph::new("No retained Journey receipts yet. Operating Revenue is credited as passengers reach their stops; a Journey receipt is retained at the Service terminus.")
                 .style(theme::panel())
                 .wrap(Wrap { trim: true }),
-            content_area,
+            area,
         );
         return;
     }
 
-    let visible_items = usize::from(content_area.height.saturating_sub(2)).max(1);
+    let visible_items = usize::from(area.height.saturating_sub(2)).max(1);
     selection.set_page_size(visible_items);
-    let detailed = wide && content_area.width >= 86;
+    let detailed = wide && area.width >= 82;
     let rows = receipts.iter().rev().map(|receipt| {
         let result = receipt_result_cents(
             receipt.revenue,
@@ -1535,7 +1695,7 @@ fn render_receipts_table(
         .row_highlight_style(theme::selected_row())
         .highlight_symbol(theme::SELECTION_MARKER)
         .highlight_spacing(HighlightSpacing::Always);
-    frame.render_stateful_widget(table, content_area, &mut selection.table_state);
+    frame.render_stateful_widget(table, area, &mut selection.table_state);
 }
 
 fn render_recovery_panel(

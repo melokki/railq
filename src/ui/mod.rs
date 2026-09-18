@@ -416,7 +416,9 @@ impl Shell {
             }
         }
 
-        if self.company_workspace.recovery_review_open() {
+        if self.company_workspace.recovery_review_open()
+            || self.company_workspace.receipt_browser_open()
+        {
             return self.handle_company_key(key, state);
         }
 

@@ -7,7 +7,7 @@ use railq::{
     model::{GameState, JourneyId, JourneyReceipt, Money, UtcSeconds},
     sim::world::create_new_game,
     ui::{
-        Shell, ShellAction, capture_rendered_buffer, capture_rendered_buffer_mut,
+        Shell, ShellAction, capture_rendered_buffer_mut,
         capture_rendered_cell_colors, theme,
     },
 };
@@ -15,16 +15,25 @@ use railq::{
 const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_700_000_000);
 const EVIDENCE_DIR: &str = "tmp/ui-ux-plan/evidence/07";
 
+fn receipt(id: u64) -> JourneyReceipt {
+    JourneyReceipt {
+        journey_id: JourneyId::new(id),
+        revenue: Money::from_cents((id as i64) * 10_000),
+        infrastructure_access_fee: Money::from_cents((id as i64) * 1_000),
+        fuel_cost: Money::from_cents((id as i64) * 250),
+        train_id: None,
+        train_model_name: None,
+        origin_station_id: None,
+        destination_station_id: None,
+        passengers_carried: None,
+        passenger_capacity: None,
+        completed_at: None,
+    }
+}
+
 fn retained_receipts_fixture() -> GameState {
     let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
-    state.financials.recent_journey_receipts = (1..=18)
-        .map(|id| JourneyReceipt {
-            journey_id: JourneyId::new(id),
-            revenue: Money::from_cents((id as i64) * 10_000),
-            infrastructure_access_fee: Money::from_cents((id as i64) * 1_000),
-            fuel_cost: Money::from_cents((id as i64) * 250),
-        })
-        .collect();
+    state.financials.recent_journey_receipts = (1..=18).map(receipt).collect();
     state
 }
 
@@ -42,27 +51,40 @@ fn company_shell(state: &GameState) -> Shell {
 }
 
 #[test]
-fn retained_receipts_scroll_keep_the_selected_journey_across_arrivals_and_open_detail()
+fn dashboard_keeps_history_out_of_the_main_view_and_history_preserves_selection()
 -> Result<(), Box<dyn Error>> {
     let evidence_dir = Path::new(EVIDENCE_DIR);
     fs::create_dir_all(evidence_dir)?;
     let mut state = retained_receipts_fixture();
     let mut shell = company_shell(&state);
 
-    let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(wide.contains("JOURNEY HISTORY · 18 RECEIPTS"));
-    assert!(wide.contains("J18"));
-    assert!(wide.contains("Revenue"));
-    assert!(wide.contains("Access fees"));
-    assert!(wide.contains("Fuel"));
-    assert!(wide.contains("Result"));
+    let dashboard = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(dashboard.contains("RECENT ACTIVITY · LAST 5"));
+    assert!(dashboard.contains("J18"));
+    assert!(!dashboard.contains("J12"), "dashboard should only show the latest five receipts");
+    assert!(!dashboard.contains("JOURNEY HISTORY"));
+    assert!(dashboard.contains("[H] History"));
+    assert!(!dashboard.contains("[↑↓/JK] Receipt"));
+    fs::write(evidence_dir.join("dashboard-120x40.txt"), dashboard)?;
+
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Char('h')), &state),
+        ShellAction::Continue
+    );
+    let history = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(history.contains("Journey History · 18 receipts"));
+    assert!(history.contains("J18"));
+    assert!(history.contains("[Esc] close"));
+    assert!(history.contains("[Enter] inspect"));
+    assert!(history.contains("[↑↓/JK] scroll"));
+    assert!(history.contains("[PgUp/PgDn] page"));
     let (selected_x, selected_y) =
-        text_position(&wide, "J18").expect("selected receipt should be visible in Journey history");
+        text_position(&history, "J18").expect("latest receipt should be selected in history");
     let selected_colors =
         capture_rendered_cell_colors(&shell, &state, 120, 40, selected_x, selected_y)
             .expect("selected receipt should paint its Journey cell");
     assert_eq!(selected_colors, (theme::BACKGROUND, theme::ACCENT));
-    fs::write(evidence_dir.join("retained-120x40.txt"), wide)?;
+    fs::write(evidence_dir.join("history-120x40.txt"), history)?;
 
     assert_eq!(
         shell.handle_key(key(KeyCode::PageDown), &state),
@@ -70,80 +92,83 @@ fn retained_receipts_scroll_keep_the_selected_journey_across_arrivals_and_open_d
     );
     let scrolled = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(
-        scrolled.contains("J06"),
-        "PageDown must reach receipts past row five"
+        scrolled.contains("J01"),
+        "PageDown must move the selection toward older receipts"
     );
 
-    state
-        .financials
-        .recent_journey_receipts
-        .push(JourneyReceipt {
-            journey_id: JourneyId::new(19),
-            revenue: Money::from_cents(190_000),
-            infrastructure_access_fee: Money::from_cents(19_000),
-            fuel_cost: Money::from_cents(4_750),
-        });
+    state.financials.recent_journey_receipts.push(receipt(19));
     assert_eq!(
         shell.handle_key(key(KeyCode::Enter), &state),
         ShellAction::Continue
     );
     let detail = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(detail.contains("Journey Receipt · J06"));
-    assert!(detail.contains("Journey 6 · retained receipt"));
-    assert!(detail.contains("JOURNEY"));
-    assert!(detail.contains("FINANCIAL"));
-    assert!(detail.contains("$600.00"));
-    assert!(detail.contains("$60.00"));
-    assert!(detail.contains("$15.00"));
-    assert!(detail.contains("+$525.00"));
+    assert!(detail.contains("Journey Receipt · J01"));
+    assert!(detail.contains("Journey 1 · legacy"));
+    assert!(detail.contains("$100.00"));
+    assert!(detail.contains("$10.00"));
+    assert!(detail.contains("$2.50"));
+    assert!(detail.contains("+$87.50"));
     assert!(detail.contains("[Esc] close"));
     assert_eq!(
         capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
         Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),
         "Journey Receipt should mute the Company dashboard underneath it",
     );
-    assert!(!detail.contains("Esc returns to Journey history."));
     fs::write(evidence_dir.join("detail-120x40.txt"), detail)?;
 
     assert_eq!(
         shell.handle_key(key(KeyCode::Esc), &state),
         ShellAction::Continue
     );
-    let restored = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    let restored_history = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(restored_history.contains("Journey History · 19 receipts"));
     assert!(
-        restored.contains("> J06"),
-        "Esc must restore the selected receipt"
+        restored_history.contains("> J01"),
+        "Esc from a receipt must restore the selected history row"
     );
-
-    let compact = capture_rendered_buffer(&shell, &state, 80, 24);
-    assert!(compact.contains("JOURNEY HISTORY · 19 RECEIPTS"));
-    assert!(compact.contains("[↑↓] Receipt [Enter] Inspect"));
-    fs::write(evidence_dir.join("retained-80x24.txt"), compact)?;
 
     assert_eq!(
-        shell.handle_key(key(KeyCode::Enter), &state),
+        shell.handle_key(key(KeyCode::Esc), &state),
         ShellAction::Continue
     );
-    let compact_detail = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
-    assert!(compact_detail.contains("Journey Receipt · J06"));
-    assert!(compact_detail.contains("Journey 6 · retained receipt"));
-    assert!(compact_detail.contains("+$525.00"));
-    assert!(compact_detail.contains("[Esc] close"));
-    fs::write(evidence_dir.join("detail-80x24.txt"), compact_detail)?;
+    let restored_dashboard = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(restored_dashboard.contains("RECENT ACTIVITY · LAST 5"));
+    assert!(!restored_dashboard.contains("Journey History · 19 receipts"));
+
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Char('h')), &state),
+        ShellAction::Continue
+    );
+    let compact_history = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
+    assert!(compact_history.contains("Journey History · 19 receipts"));
+    assert!(compact_history.contains("[Esc] close"));
+    assert!(compact_history.contains("[Enter] inspect"));
+    assert!(compact_history.contains("[↑↓] scroll"));
+    fs::write(evidence_dir.join("history-80x24.txt"), compact_history)?;
     Ok(())
 }
 
 #[test]
-fn empty_retained_history_explains_when_a_receipt_is_created() {
+fn empty_dashboard_explains_activity_and_history_remains_available() {
     let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
-    let shell = company_shell(&state);
-    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+    let mut shell = company_shell(&state);
+    let dashboard = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
-    assert!(rendered.contains("JOURNEY HISTORY · 0 RECEIPTS"));
-    assert!(rendered.contains("No retained Journey receipts yet."));
-    assert!(rendered.contains("Operating Revenue"));
-    assert!(rendered.contains("arrives."));
-    assert!(!rendered.to_lowercase().contains("chart"));
+    assert!(dashboard.contains("RECENT ACTIVITY"));
+    assert!(dashboard.contains("No completed Journey activity yet."));
+    assert!(dashboard.contains("[H] History"));
+    assert!(!dashboard.contains("JOURNEY HISTORY"));
+
+    assert_eq!(
+        shell.handle_key(key(KeyCode::Char('h')), &state),
+        ShellAction::Continue
+    );
+    let history = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
+    assert!(history.contains("Journey History · 0 receipts"));
+    assert!(history.contains("No retained Journey receipts yet."));
+    assert!(history.contains("Operating Revenue"));
+    assert!(history.contains("[Esc] close"));
+    assert!(!history.contains("[Enter] inspect"));
 }
 
 fn text_position(rendered: &str, needle: &str) -> Option<(u16, u16)> {
