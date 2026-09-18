@@ -17,7 +17,7 @@ use super::{
 };
 
 #[test]
-fn routes_the_six_primary_views_by_number_and_keeps_non_map_letter_aliases() {
+fn routes_the_six_primary_views_by_number_and_keeps_remaining_letter_aliases() {
     let mut shell = Shell::new();
     let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
@@ -29,7 +29,6 @@ fn routes_the_six_primary_views_by_number_and_keeps_non_map_letter_aliases() {
         ('5', View::Authority),
         ('6', View::Bulletin),
         ('t', View::Trains),
-        ('c', View::Company),
         ('b', View::BuyTrains),
         ('a', View::Authority),
     ] {
@@ -226,6 +225,39 @@ fn map_movements_overlay_lists_ready_trains_and_their_locations() {
     assert!(rendered.contains("LOCATION"));
     assert!(rendered.contains(&format!("T{:02}", train_id.get())));
     assert!(rendered.contains(station_name));
+}
+
+#[test]
+fn company_workspace_uses_numeric_navigation_only() {
+    let mut shell = Shell::new();
+    let state = create_new_game(42, "Numeric Navigation", UtcSeconds::from_unix_seconds(0));
+
+    assert_eq!(
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            &state,
+        ),
+        ShellAction::Continue
+    );
+    assert_eq!(shell.active_view(), View::Map);
+
+    assert_eq!(
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('C'), KeyModifiers::NONE),
+            &state,
+        ),
+        ShellAction::Continue
+    );
+    assert_eq!(shell.active_view(), View::Map);
+
+    assert_eq!(
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE),
+            &state,
+        ),
+        ShellAction::Continue
+    );
+    assert_eq!(shell.active_view(), View::Company);
 }
 
 #[test]

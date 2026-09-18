@@ -9,7 +9,7 @@ use std::fmt::Write;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{
@@ -980,20 +980,15 @@ fn render_wide_dashboard(
 ) {
     let evaluation = evaluate_financial_recovery(state);
 
-    // Company is a dashboard rather than a collection of neighbouring windows.
-    // One focused shell owns the workspace; section headings create hierarchy
-    // without surrounding every group of values with another border.
+    // Company is an executive dashboard first and a ledger second. Keep the
+    // most important financial signals above the operating footprint so a
+    // player can understand the Company's state before scanning Journey detail.
     let shell = components::panel_block("Company", true);
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
-    let [
-        identity_area,
-        performance_area,
-        operations_area,
-        history_area,
-    ] = Layout::vertical([
-        Constraint::Length(3),
+    let [overview_area, metrics_area, operations_area, history_area] = Layout::vertical([
+        Constraint::Length(2),
         Constraint::Length(5),
         Constraint::Length(4),
         Constraint::Fill(1),
@@ -1001,11 +996,8 @@ fn render_wide_dashboard(
     .spacing(1)
     .areas(shell_inner);
 
-    // Financial health is the primary Company decision surface, so keep it
-    // directly below identity/status and ahead of the supporting operating
-    // footprint. The same information is retained; only its hierarchy changes.
-    render_company_identity(frame, identity_area, state, &evaluation);
-    render_financial_performance(frame, performance_area, state);
+    render_company_overview(frame, overview_area, state, &evaluation);
+    render_key_metrics(frame, metrics_area, state);
     render_operating_summary(frame, operations_area, state);
 
     let recovery_relevant = evaluation.as_ref().map_or(true, |evaluation| {
@@ -1023,14 +1015,12 @@ fn render_wide_dashboard(
     }
 }
 
-fn render_company_identity(
+fn render_company_overview(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
 ) {
-    // Current cash plus READY/TRAVELLING counts already belong to the global
-    // shell header, so this band concentrates on Company status and identity.
     let [status_area, identity_area] =
         Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
             .spacing(2)
@@ -1038,15 +1028,13 @@ fn render_company_identity(
 
     let status_lines = match evaluation {
         Ok(evaluation) => vec![
-            section_heading("STATUS"),
             Line::styled(
                 status_label(evaluation.status),
-                status_style(Some(evaluation.status)),
+                status_style(Some(evaluation.status)).bold(),
             ),
             Line::styled(status_explanation(evaluation.status), theme::secondary()),
         ],
         Err(error) => vec![
-            section_heading("STATUS"),
             Line::styled("[?] STATUS UNAVAILABLE", theme::error().bold()),
             Line::styled(
                 format!("Financial evaluation unavailable: {error}"),
@@ -1061,29 +1049,88 @@ fn render_company_identity(
         frame,
         identity_area,
         vec![
-            section_heading("COMPANY IDENTITY"),
             Line::from(vec![
-                Span::styled("VKM  ", theme::secondary()),
                 Span::styled(
                     state.player_company.vehicle_keeper_mark.as_str().to_owned(),
-                    theme::primary_value(),
+                    theme::primary_value().bold(),
                 ),
-                Span::styled("   Rail  ", theme::secondary()),
+                Span::styled("  ·  Rail ", theme::secondary()),
                 Span::styled(
                     format!("{} · {}", registration.display_code(), registration.mark),
                     theme::primary_value(),
                 ),
             ]),
-            Line::from(vec![
-                Span::styled("Region  ", theme::secondary()),
-                Span::styled(state.region.name.clone(), theme::primary_value()),
-            ]),
+            Line::styled(state.region.name.clone(), theme::secondary()),
         ],
     );
 }
 
+fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
+    let result = operating_result_cents(state);
+    let operating_costs = operating_costs_cents(state);
+    let [result_area, revenue_area, costs_area, margin_area] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+    ])
+    .spacing(1)
+    .areas(area);
+
+    render_key_metric_card(
+        frame,
+        result_area,
+        "OPERATING RESULT",
+        format_signed_cents(result),
+        result_style(result),
+    );
+    render_key_metric_card(
+        frame,
+        revenue_area,
+        "REVENUE",
+        format_money(state.financials.operating_revenue),
+        theme::primary_value(),
+    );
+    render_key_metric_card(
+        frame,
+        costs_area,
+        "OPERATING COSTS",
+        format_cents(operating_costs),
+        theme::primary_value(),
+    );
+    render_key_metric_card(
+        frame,
+        margin_area,
+        "MARGIN",
+        operating_margin_label(state),
+        result_style(result),
+    );
+}
+
+fn render_key_metric_card(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    value: String,
+    value_style: Style,
+) {
+    let block = components::panel_block(title, false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(value, value_style.bold()),
+            Line::styled("lifetime", theme::secondary()),
+        ])
+        .alignment(Alignment::Center)
+        .style(theme::panel()),
+        inner,
+    );
+}
+
 fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
-    let [fleet_area, services_area, network_area] = Layout::horizontal([
+    let [fleet_area, services_area, network_area, costs_area] = Layout::horizontal([
+        Constraint::Fill(1),
         Constraint::Fill(1),
         Constraint::Fill(1),
         Constraint::Fill(1),
@@ -1092,27 +1139,19 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
     .areas(area);
 
     let trains = &state.player_company.fleet.trains;
-    let model_count = trains
-        .iter()
-        .map(|train| train.model_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
     render_dashboard_section(
         frame,
         fleet_area,
         vec![
             section_heading("FLEET"),
-            dashboard_line(
-                "Owned trains",
-                trains.len().to_string(),
-                theme::primary_value(),
-            ),
-            dashboard_line("Models", model_count.to_string(), theme::primary_value()),
-            dashboard_line(
-                "Fleet value",
-                format_cents(fleet_value_cents(state)),
-                theme::primary_value(),
-            ),
+            Line::styled(format!("{} trains", trains.len()), theme::primary_value()),
+            Line::from(vec![
+                Span::styled("Fleet value  ", theme::secondary()),
+                Span::styled(
+                    format_cents(fleet_value_cents(state)),
+                    theme::primary_value(),
+                ),
+            ]),
         ],
     );
 
@@ -1123,25 +1162,21 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
         services_area,
         vec![
             section_heading("SERVICES"),
-            dashboard_line(
-                "Defined",
-                defined_services.to_string(),
-                theme::primary_value(),
-            ),
-            dashboard_line(
-                "Active",
-                active_services.to_string(),
+            Line::styled(
+                format!("{active_services} / {defined_services} active"),
                 if active_services > 0 {
                     theme::success()
                 } else {
                     theme::primary_value()
                 },
             ),
-            dashboard_line(
-                "Idle",
-                defined_services.saturating_sub(active_services).to_string(),
-                theme::primary_value(),
-            ),
+            Line::from(vec![
+                Span::styled("Idle  ", theme::secondary()),
+                Span::styled(
+                    defined_services.saturating_sub(active_services).to_string(),
+                    theme::primary_value(),
+                ),
+            ]),
         ],
     );
 
@@ -1151,20 +1186,31 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
         frame,
         network_area,
         vec![
-            section_heading("NETWORK FOOTPRINT"),
-            dashboard_line(
-                "Served",
-                format!("{served_settlements} settlements"),
+            section_heading("NETWORK"),
+            Line::styled(
+                format!("{served_settlements} / {connected_settlements} served"),
                 theme::primary_value(),
             ),
-            dashboard_line(
-                "Connected",
-                format!("{connected_settlements} settlements"),
-                theme::primary_value(),
-            ),
-            dashboard_line(
-                "Coverage",
+            Line::styled(
                 settlement_coverage_label(served_settlements, connected_settlements),
+                theme::secondary(),
+            ),
+        ],
+    );
+
+    render_dashboard_section(
+        frame,
+        costs_area,
+        vec![
+            section_heading("COST MIX"),
+            dashboard_line(
+                "Access",
+                format_money(state.financials.infrastructure_access_fees),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Fuel",
+                format_money(state.financials.fuel_costs),
                 theme::primary_value(),
             ),
         ],
@@ -1229,68 +1275,6 @@ fn render_dashboard_section(frame: &mut Frame, area: Rect, lines: Vec<Line<'stat
             .style(theme::panel())
             .wrap(Wrap { trim: true }),
         area,
-    );
-}
-
-fn render_financial_performance(frame: &mut Frame, area: Rect, state: &GameState) {
-    let [heading_area, content_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-    frame.render_widget(
-        Paragraph::new(section_heading("FINANCIAL PERFORMANCE · LIFETIME")).style(theme::panel()),
-        heading_area,
-    );
-
-    let result = operating_result_cents(state);
-    let operating_costs = operating_costs_cents(state);
-    let [performance_area, costs_area] =
-        Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
-            .spacing(3)
-            .areas(content_area);
-
-    render_dashboard_section(
-        frame,
-        performance_area,
-        vec![
-            section_heading("PERFORMANCE"),
-            dashboard_line(
-                "Revenue",
-                format_money(state.financials.operating_revenue),
-                theme::primary_value(),
-            ),
-            dashboard_line(
-                "Operating result",
-                format_signed_cents(result),
-                result_style(result),
-            ),
-            dashboard_line(
-                "Margin",
-                operating_margin_label(state),
-                result_style(result),
-            ),
-        ],
-    );
-
-    render_dashboard_section(
-        frame,
-        costs_area,
-        vec![
-            section_heading("COST BREAKDOWN"),
-            dashboard_line(
-                "Access fees",
-                format_money(state.financials.infrastructure_access_fees),
-                theme::primary_value(),
-            ),
-            dashboard_line(
-                "Fuel",
-                format_money(state.financials.fuel_costs),
-                theme::primary_value(),
-            ),
-            dashboard_line(
-                "Total costs",
-                format_cents(operating_costs),
-                theme::primary_value(),
-            ),
-        ],
     );
 }
 

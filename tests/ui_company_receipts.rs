@@ -35,7 +35,7 @@ fn key(code: KeyCode) -> KeyEvent {
 fn company_shell(state: &GameState) -> Shell {
     let mut shell = Shell::new();
     assert_eq!(
-        shell.handle_key(key(KeyCode::Char('c')), state),
+        shell.handle_key(key(KeyCode::Char('4')), state),
         ShellAction::Continue
     );
     shell

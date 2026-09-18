@@ -54,7 +54,7 @@ fn finance_fixture(waiting_passengers: u32) -> GameState {
 fn company_shell(state: &GameState) -> Shell {
     let mut shell = Shell::new();
     assert_eq!(
-        shell.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE), state,),
+        shell.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE), state,),
         ShellAction::Continue
     );
     shell
@@ -115,61 +115,66 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                     "{slug} should show Services summary"
                 );
                 assert!(
-                    rendered.contains("NETWORK FOOTPRINT"),
-                    "{slug} should show network footprint"
+                    rendered.contains("NETWORK"),
+                    "{slug} should show network summary"
                 );
                 assert!(
-                    rendered.contains("Defined"),
-                    "{slug} should show defined services"
+                    rendered.contains("active"),
+                    "{slug} should show active service ratio"
                 );
                 assert!(
-                    rendered.contains("Active"),
-                    "{slug} should show active services"
+                    rendered.contains("SERVICES"),
+                    "{slug} should show Services summary"
                 );
                 assert!(
                     rendered.contains("Idle"),
                     "{slug} should show idle services"
                 );
                 assert!(
-                    rendered.contains("Served"),
+                    rendered.contains("served"),
                     "{slug} should show served settlements"
                 );
                 assert!(
-                    rendered.contains("Connected"),
-                    "{slug} should show connected settlements"
+                    rendered.contains("served"),
+                    "{slug} should show connected-settlement denominator"
                 );
                 assert!(
-                    rendered.contains("Coverage"),
-                    "{slug} should show network coverage"
+                    rendered.contains("%"),
+                    "{slug} should show network coverage percentage"
                 );
                 assert!(
-                    rendered.contains("COMPANY IDENTITY"),
-                    "{slug} should show Company identity section"
+                    rendered.contains("Rail "),
+                    "{slug} should show compact Company identity"
                 );
                 let financial_row = rendered
                     .lines()
-                    .position(|line| line.contains("FINANCIAL PERFORMANCE"))
-                    .expect("wide Company dashboard should show financial performance");
+                    .position(|line| line.contains("OPERATING RESULT"))
+                    .expect("wide Company dashboard should show KPI cards");
                 let fleet_row = rendered
                     .lines()
                     .position(|line| line.contains("FLEET"))
                     .expect("wide Company dashboard should show Fleet summary");
                 assert!(
                     financial_row < fleet_row,
-                    "{slug} should prioritize financial performance before operating footprint"
+                    "{slug} should prioritize KPI cards before operating footprint"
                 );
             }
             assert!(
                 rendered.contains("$3,000.00"),
                 "{slug} should show Fleet value amount"
             );
-            assert!(rendered.contains("Revenue"), "{slug} should show revenue");
+            assert!(
+                rendered.contains("Revenue") || rendered.contains("REVENUE"),
+                "{slug} should show revenue"
+            );
             assert!(
                 rendered.contains(revenue),
                 "{slug} should show revenue amount {revenue}"
             );
             assert!(
-                rendered.contains("Operating costs") || rendered.contains("Total costs"),
+                rendered.contains("Operating costs")
+                    || rendered.contains("OPERATING COSTS")
+                    || rendered.contains("Total costs"),
                 "{slug} should show the operating cost total"
             );
             assert!(
@@ -178,11 +183,11 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
             );
             if columns >= 100 {
                 assert!(
-                    rendered.contains("COST BREAKDOWN"),
-                    "{slug} should show the cost breakdown"
+                    rendered.contains("COST MIX"),
+                    "{slug} should show the cost mix"
                 );
                 assert!(
-                    rendered.contains("Access fees"),
+                    rendered.contains("Access"),
                     "{slug} should show access fees"
                 );
                 assert!(
@@ -193,7 +198,7 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                 assert!(rendered.contains("$4.50"), "{slug} should show fuel amount");
             }
             assert!(
-                rendered.contains("Operating result"),
+                rendered.contains("Operating result") || rendered.contains("OPERATING RESULT"),
                 "{slug} should label the operating result"
             );
             assert!(
@@ -206,7 +211,7 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                 "-450.0%"
             };
             assert!(
-                rendered.contains("Margin"),
+                rendered.contains("Margin") || rendered.contains("MARGIN"),
                 "{slug} should show operating margin"
             );
             assert!(

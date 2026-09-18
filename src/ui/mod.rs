@@ -353,7 +353,7 @@ impl Shell {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
-                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B' | 'c' | 'C'
+                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'b' | 'B'
                 )
             );
             if navigation_key {
@@ -430,7 +430,7 @@ impl Shell {
                 self.service_workspace.close();
                 self.fleet_workspace.activate();
             }
-            KeyCode::Char('4' | 'c' | 'C') => {
+            KeyCode::Char('4') => {
                 self.active_view = View::Company;
                 self.service_workspace.close();
                 self.company_workspace.activate();
