@@ -218,11 +218,15 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     );
     let delivery = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     for expected in [
-        "1 Train → 2 Delivery Rail Station → 3 Review",
-        "Delivery Rail Stations",
-        "Selected delivery",
+        "Purchase Train",
+        "TRAIN ✓   DELIVERY ●   REVIEW ○",
+        "Delivery Station",
+        "Order",
         "Veltrian D121",
-        "Left / Backspace · model",
+        "EVN basis",
+        "Official EVN",
+        "[Enter] review",
+        "[←] train",
     ] {
         assert!(
             delivery.contains(expected),
@@ -276,10 +280,11 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
 
     let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     for expected in [
-        "Delivery Rail Stations",
-        "1 Train → 2 Delivery Rail Station → 3 Review",
-        "[Enter] Review",
-        "[←] Model",
+        "Purchase Train",
+        "Delivery Station",
+        "TRAIN ✓   DELIVERY ●   REVIEW ○",
+        "[Enter] review",
+        "[←] train",
     ] {
         assert!(
             compact.contains(expected),
@@ -300,7 +305,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     );
     let review = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(review.contains("Veltrian D121"));
-    assert!(review.contains("Confirm Train Purchase"));
+    assert!(review.contains("Purchase Train"));
     assert!(review.contains("[Enter] confirm"));
     fs::write(evidence_dir.join("delivery-review-120x40.txt"), review)?;
 
@@ -364,7 +369,7 @@ fn market_footer_keeps_unaffordable_buy_visible_but_disabled() {
     );
     let rejected = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(rejected.contains("Insufficient Company Funds for the selected Train."));
-    assert!(!rejected.contains("Delivery Rail Stations"));
+    assert!(!rejected.contains("Delivery Station"));
 }
 
 #[test]
@@ -414,17 +419,19 @@ fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
     fs::write(evidence_dir.join("purchase-review-120x40.txt"), &review)?;
     for expected in [
         "TRAIN ✓   DELIVERY ✓   REVIEW ●",
-        "Confirm Train Purchase",
+        "Purchase Train",
         "Helvetra R70",
-        "TRAIN",
+        "70 seats",
+        "118.8 km/h",
+        "Diesel",
+        "Order",
         "EVN type",
-        "Capacity",
-        "Top speed",
-        "Propulsion",
-        "DELIVERY",
-        "Station",
+        "EVN series",
+        "Keeper mark",
+        "Official EVN",
+        "Delivery",
         "Delivery fee",
-        "FINANCIAL",
+        "Financial",
         "Purchase price",
         "$3,000.00",
         "Cash after",
@@ -480,7 +487,7 @@ fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
         ShellAction::Continue
     );
     let returned = capture_rendered_buffer_mut(&mut shell, app.state(), 120, 40);
-    assert!(returned.contains("Delivery Rail Stations"));
+    assert!(returned.contains("Delivery Station"));
     assert!(returned.contains("> Pinewatch"));
     assert_eq!(
         press(&mut shell, app.state(), KeyCode::Enter),
@@ -609,7 +616,7 @@ fn delivery_selection_scrolls_and_recovers_when_its_station_disappears() {
     );
     let stale = capture_rendered_buffer_mut(&mut stale_shell, &stale_state, 120, 40);
     assert!(stale.contains("previously selected delivery Rail Station is no longer available"));
-    assert!(stale.contains("Delivery Rail Stations"));
+    assert!(stale.contains("Delivery Station"));
 
     let mut missing_state = create_new_game(42, "Missing Delivery", STARTED_AT);
     missing_state
