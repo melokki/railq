@@ -167,23 +167,6 @@ pub(super) fn status_style(status: InfrastructureProjectStatus) -> ratatui::styl
     }
 }
 
-pub(super) fn funding_percent(project: &InfrastructureProject) -> String {
-    let estimated = i128::from(project.funding.estimated_cost.cents()).max(0);
-    let committed = project
-        .funding
-        .total_funded()
-        .map(|money| i128::from(money.cents()).max(0))
-        .unwrap_or(0);
-    if estimated == 0 {
-        return "—".into();
-    }
-    let percent = committed
-        .saturating_mul(100)
-        .saturating_div(estimated)
-        .min(100);
-    format!("{percent}%")
-}
-
 pub(super) fn project_next(state: &GameState, project: &InfrastructureProject, now: UtcSeconds) -> String {
     match project.status {
         InfrastructureProjectStatus::Requested => planning_stage_next(

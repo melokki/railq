@@ -6,8 +6,8 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::Style,
-    text::{Line, Span, Text},
-    widgets::{Cell, HighlightSpacing, Paragraph, Row, Table, Wrap},
+    text::{Line, Span},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::{
@@ -30,10 +30,11 @@ use super::{
     format::{
         access_discount_label, construction_remaining_duration, deferred_next,
         difficulty_label, duration_line, electrification_label, format_project_timestamp,
-        funding_percent, maturity_label, maturity_percent, money_line, new_line_route_label,
+        maturity_label, maturity_percent, money_line, new_line_route_label,
         progress_line, project_next, project_scope, project_status, relative_time, schedule_line,
         settlement_name, short_uuid, status_style, timestamp_line, value_line,
     },
+    programme::{render_programme_pipeline, render_projects},
 };
 
 /// Renders the public Rail Authority as a dedicated read-only workspace.
@@ -67,9 +68,10 @@ fn render_wide(
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
-    let [overview_area, metrics_area, body_area] = Layout::vertical([
+    let [overview_area, metrics_area, pipeline_area, body_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(6),
+        Constraint::Length(2),
         Constraint::Fill(1),
     ])
     .spacing(1)
@@ -77,6 +79,7 @@ fn render_wide(
 
     render_authority_overview(frame, overview_area, state, now, snapshot);
     render_authority_metrics(frame, metrics_area, state, now, snapshot);
+    render_programme_pipeline(frame, pipeline_area, snapshot.programme);
 
     let [projects_area, inspector_area] =
         Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
@@ -395,104 +398,6 @@ fn render_finances(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSec
             .style(theme::panel()),
         area,
     );
-}
-
-fn render_projects(
-    frame: &mut Frame,
-    area: Rect,
-    state: &GameState,
-    now: UtcSeconds,
-    selection: &mut ProjectSelection,
-    compact: bool,
-) {
-    let projects = &state.region.rail_authority.infrastructure_projects;
-    if projects.is_empty() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::styled("No infrastructure projects yet.", theme::secondary()),
-                Line::styled(
-                    "Local councils will request connections as nearby rail adoption grows.",
-                    theme::secondary(),
-                ),
-            ])
-            .block(panel_block("Infrastructure Projects", false))
-            .style(theme::panel())
-            .wrap(Wrap { trim: true }),
-            area,
-        );
-        return;
-    }
-
-    let inner_height = area.height.saturating_sub(3);
-    selection.set_page_size(usize::from(inner_height).max(1));
-    selection.synchronize(state);
-
-    let rows = projects
-        .iter()
-        .enumerate()
-        .map(|(index, project)| {
-            let scope = project_scope(state, project);
-            let status = project_status(project.status);
-            let next = project_next(state, project, now);
-            if compact {
-                Row::new(vec![
-                    Cell::from(format!("{:02}", index + 1)),
-                    Cell::from(scope),
-                    Cell::from(status),
-                ])
-            } else {
-                Row::new(vec![
-                    Cell::from(format!("{:02}", index + 1)),
-                    Cell::from(scope),
-                    Cell::from(status).style(status_style(project.status)),
-                    Cell::from(
-                        Text::from(ui_format::money(project.funding.estimated_cost)).right_aligned(),
-                    ),
-                    Cell::from(Text::from(funding_percent(project)).right_aligned()),
-                    Cell::from(next),
-                ])
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let (header, widths) = if compact {
-        (
-            Row::new(["#", "Project", "Status"]).style(theme::table_header()),
-            vec![
-                Constraint::Length(3),
-                Constraint::Fill(1),
-                Constraint::Length(14),
-            ],
-        )
-    } else {
-        (
-            Row::new(vec![
-                Cell::from("#"),
-                Cell::from("Project"),
-                Cell::from("Status"),
-                Cell::from(Text::from("Cost").right_aligned()),
-                Cell::from(Text::from("Funded").right_aligned()),
-                Cell::from("Next milestone"),
-            ])
-            .style(theme::table_header()),
-            vec![
-                Constraint::Length(3),
-                Constraint::Fill(2),
-                Constraint::Length(14),
-                Constraint::Length(13),
-                Constraint::Length(8),
-                Constraint::Fill(1),
-            ],
-        )
-    };
-
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(panel_block("Infrastructure Projects", false))
-        .row_highlight_style(theme::selected_row())
-        .highlight_symbol(theme::SELECTION_MARKER)
-        .highlight_spacing(HighlightSpacing::Always);
-    frame.render_stateful_widget(table, area, &mut selection.table_state);
 }
 
 fn render_project_inspector(

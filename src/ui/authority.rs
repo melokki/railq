@@ -9,6 +9,7 @@ mod analytics;
 mod contribution;
 mod dashboard;
 mod format;
+mod programme;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{Frame, layout::Rect, widgets::TableState};
@@ -17,6 +18,8 @@ use crate::model::{
     GameState, InfrastructureProject, InfrastructureProjectId, InfrastructureProjectStatus, Money,
     UtcSeconds,
 };
+
+use programme::ordered_project_indices;
 
 pub use contribution::{ContributionReview, render_contribution_review};
 pub use dashboard::{render_dashboard, render_text as render};
@@ -33,7 +36,7 @@ pub struct ProjectSelection {
 impl ProjectSelection {
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
         self.synchronize(state);
-        let projects = &state.region.rail_authority.infrastructure_projects;
+        let project_count = ordered_project_indices(state).len();
         let Some(selected) = self.table_state.selected() else {
             return;
         };
@@ -42,11 +45,11 @@ impl ProjectSelection {
             KeyCode::Up | KeyCode::Char('k' | 'K') => selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j' | 'J') => selected
                 .saturating_add(1)
-                .min(projects.len().saturating_sub(1)),
+                .min(project_count.saturating_sub(1)),
             KeyCode::PageUp => selected.saturating_sub(page_size),
             KeyCode::PageDown => selected
                 .saturating_add(page_size)
-                .min(projects.len().saturating_sub(1)),
+                .min(project_count.saturating_sub(1)),
             _ => selected,
         };
         self.select_index(state, next);
@@ -54,24 +57,29 @@ impl ProjectSelection {
 
     fn synchronize(&mut self, state: &GameState) {
         let projects = &state.region.rail_authority.infrastructure_projects;
+        let order = ordered_project_indices(state);
         let previous_index = self.table_state.selected();
         let selected = self
             .selected_project_id
-            .and_then(|project_id| projects.iter().position(|project| project.id == project_id))
-            .or_else(|| previous_index.map(|index| index.min(projects.len().saturating_sub(1))))
+            .and_then(|project_id| {
+                order
+                    .iter()
+                    .position(|source_index| projects[*source_index].id == project_id)
+            })
+            .or_else(|| previous_index.map(|index| index.min(order.len().saturating_sub(1))))
             .or_else(|| {
-                projects.iter().position(|project| {
+                order.iter().position(|source_index| {
                     !matches!(
-                        project.status,
+                        projects[*source_index].status,
                         InfrastructureProjectStatus::Open
                             | InfrastructureProjectStatus::Rejected
                             | InfrastructureProjectStatus::Cancelled
                     )
                 })
             })
-            .or_else(|| (!projects.is_empty()).then_some(projects.len().saturating_sub(1)));
-        if let Some(index) = selected {
-            self.selected_project_id = Some(projects[index].id);
+            .or_else(|| (!order.is_empty()).then_some(0));
+        if let Some(display_index) = selected {
+            self.selected_project_id = Some(projects[order[display_index]].id);
         } else {
             self.selected_project_id = None;
             *self.table_state.offset_mut() = 0;
@@ -79,17 +87,14 @@ impl ProjectSelection {
         self.table_state.select(selected);
     }
 
-    fn select_index(&mut self, state: &GameState, index: usize) {
-        let Some(project) = state
-            .region
-            .rail_authority
-            .infrastructure_projects
-            .get(index)
-        else {
+    fn select_index(&mut self, state: &GameState, display_index: usize) {
+        let projects = &state.region.rail_authority.infrastructure_projects;
+        let order = ordered_project_indices(state);
+        let Some(source_index) = order.get(display_index).copied() else {
             return;
         };
-        self.selected_project_id = Some(project.id);
-        self.table_state.select(Some(index));
+        self.selected_project_id = Some(projects[source_index].id);
+        self.table_state.select(Some(display_index));
     }
 
     fn selected_project<'a>(
@@ -97,13 +102,15 @@ impl ProjectSelection {
         state: &'a GameState,
     ) -> Option<(usize, &'a InfrastructureProject)> {
         self.synchronize(state);
-        let index = self.table_state.selected()?;
+        let display_index = self.table_state.selected()?;
+        let order = ordered_project_indices(state);
+        let source_index = *order.get(display_index)?;
         state
             .region
             .rail_authority
             .infrastructure_projects
-            .get(index)
-            .map(|project| (index, project))
+            .get(source_index)
+            .map(|project| (source_index, project))
     }
 
     fn set_page_size(&mut self, page_size: usize) {
