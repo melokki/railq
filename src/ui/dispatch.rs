@@ -735,8 +735,8 @@ impl DispatchFlow {
                     output.push_str(&format!(
                         " {marker} {} — {} — {} waiting, {}, {}\n",
                         service_name(state, service.service_id),
-                        service_route_label(state, service.service_id),
-                        waiting_passengers_for_service(state, service.service_id),
+                        service_route_label_for_quote(state, &service.quote),
+                        waiting_passengers_for_quote(state, &service.quote),
                         format_distance(service.quote.distance.metres()),
                         format_duration(service.quote.duration.seconds()),
                     ));
@@ -748,12 +748,12 @@ impl DispatchFlow {
                 output.push_str(&format!(
                     "Passenger Service {}: {} ({} Rail Lines)\n",
                     service_name(state, *service_id),
-                    service_route_label(state, *service_id),
+                    service_route_label_for_quote(state, quote),
                     quote.rail_line_path.len(),
                 ));
                 output.push_str(&format!(
                     "Directional Demand: {} Waiting Passengers; {} boarding / {} capacity\n",
-                    waiting_passengers_for_service(state, quote.service_id),
+                    waiting_passengers_for_quote(state, quote),
                     quote.boarded_passengers,
                     train_capacity(state, quote.train_id),
                 ));
@@ -1086,7 +1086,7 @@ fn render_quote_review(
                     format!(
                         "{} · {}",
                         service_name(state, service_id),
-                        service_route_label(state, service_id),
+                        service_route_label_for_quote(state, quote),
                     ),
                     theme::primary_value(),
                 ),
@@ -1118,7 +1118,7 @@ fn render_quote_review(
     );
 
     let capacity = train_capacity(state, quote.train_id);
-    let waiting = waiting_passengers_for_service(state, quote.service_id);
+    let waiting = waiting_passengers_for_quote(state, quote);
     let occupancy_ratio = if capacity == 0 {
         0.0
     } else {
@@ -1630,11 +1630,11 @@ fn render_service_chooser(
         .iter()
         .map(|service| {
             let quote = &service.quote;
-            let demand = waiting_passengers_for_service(state, quote.service_id);
+            let demand = waiting_passengers_for_quote(state, quote);
             if wide_table {
                 Row::new([
                     Cell::from(service_name(state, service.service_id)),
-                    Cell::from(service_route_label(state, service.service_id)),
+                    Cell::from(service_route_label_for_quote(state, quote)),
                     Cell::from(format!("{demand} waiting")),
                     Cell::from(format_duration(quote.duration.seconds())),
                     Cell::from(format_signed_money(quote.journey_profitability)),
@@ -1642,7 +1642,7 @@ fn render_service_chooser(
             } else {
                 Row::new([
                     Cell::from(service_name(state, service.service_id)),
-                    Cell::from(service_destination_label(state, service.service_id)),
+                    Cell::from(service_destination_label_for_quote(state, quote)),
                     Cell::from(format!("{demand} waiting")),
                     Cell::from(format_signed_money(quote.journey_profitability)),
                 ])
@@ -1928,9 +1928,9 @@ fn render_service_inspector(
         return;
     };
     let quote = &service.quote;
-    let demand = waiting_passengers_for_service(state, quote.service_id);
+    let demand = waiting_passengers_for_quote(state, quote);
     let name = service_name(state, service.service_id);
-    let route = service_route_label(state, service.service_id);
+    let route = service_route_label_for_quote(state, quote);
     let result_style = if quote.journey_profitability.cents() >= 0 {
         theme::success()
     } else {
@@ -2415,6 +2415,18 @@ fn service_route_label(state: &GameState, service_id: ServiceId) -> String {
         .join(" → ")
 }
 
+fn service_route_label_for_quote(state: &GameState, quote: &JourneyQuote) -> String {
+    directional_service_stops(state, quote.service_id, quote.origin_station_id)
+        .map(|station_ids| {
+            station_ids
+                .into_iter()
+                .map(|station_id| station_label(state, station_id).to_owned())
+                .collect::<Vec<_>>()
+                .join(" → ")
+        })
+        .unwrap_or_else(|| service_route_label(state, quote.service_id))
+}
+
 fn service_stop_count(state: &GameState, service_id: ServiceId) -> usize {
     state
         .player_company
@@ -2424,15 +2436,11 @@ fn service_stop_count(state: &GameState, service_id: ServiceId) -> usize {
         .map_or(0, |service| service.stop_station_ids.len())
 }
 
-fn service_destination_label(state: &GameState, service_id: ServiceId) -> String {
-    state
-        .player_company
-        .passenger_services
-        .iter()
-        .find(|service| service.id == service_id)
-        .and_then(|service| service.destination_station_id())
+fn service_destination_label_for_quote(state: &GameState, quote: &JourneyQuote) -> String {
+    directional_service_stops(state, quote.service_id, quote.origin_station_id)
+        .and_then(|station_ids| station_ids.last().copied())
         .map(|station_id| station_label(state, station_id).to_owned())
-        .unwrap_or_else(|| "Unknown".into())
+        .unwrap_or_else(|| station_label(state, quote.destination_station_id).to_owned())
 }
 
 fn station_label(state: &GameState, station_id: RailStationId) -> &str {
@@ -2454,20 +2462,16 @@ fn station_label(state: &GameState, station_id: RailStationId) -> &str {
         .map_or("unknown Settlement", |settlement| settlement.name.as_str())
 }
 
-fn waiting_passengers_for_service(state: &GameState, service_id: ServiceId) -> u32 {
-    let Some(service) = state
-        .player_company
-        .passenger_services
-        .iter()
-        .find(|service| service.id == service_id)
+fn waiting_passengers_for_quote(state: &GameState, quote: &JourneyQuote) -> u32 {
+    let Some(station_ids) =
+        directional_service_stops(state, quote.service_id, quote.origin_station_id)
     else {
         return 0;
     };
-    let Some(origin_station_id) = service.origin_station_id() else {
+    let Some(origin_station_id) = station_ids.first().copied() else {
         return 0;
     };
-    service
-        .stop_station_ids
+    station_ids
         .iter()
         .skip(1)
         .filter_map(|destination_station_id| {
@@ -2479,6 +2483,30 @@ fn waiting_passengers_for_service(state: &GameState, service_id: ServiceId) -> u
         .fold(0_u32, |total, demand| {
             total.saturating_add(demand.waiting_passengers)
         })
+}
+
+fn directional_service_stops(
+    state: &GameState,
+    service_id: ServiceId,
+    origin_station_id: RailStationId,
+) -> Option<Vec<RailStationId>> {
+    let Some(service) = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+    else {
+        return None;
+    };
+    if service.stop_station_ids.first().copied() == Some(origin_station_id) {
+        return Some(service.stop_station_ids.clone());
+    }
+    if service.stop_station_ids.last().copied() == Some(origin_station_id)
+        && service.direction_mode == crate::model::ServiceDirectionMode::BothDirections
+    {
+        return Some(service.stop_station_ids.iter().rev().copied().collect());
+    }
+    None
 }
 
 fn format_path(state: &GameState, quote: &JourneyQuote) -> String {
@@ -2670,8 +2698,30 @@ mod tests {
         let (mut state, train_id) = game_with_ready_train(RailStationId::new(3));
         let service_id = add_service(
             &mut state,
-            vec![RailStationId::new(1), RailStationId::new(3)],
+            vec![
+                RailStationId::new(1),
+                RailStationId::new(2),
+                RailStationId::new(3),
+            ],
         );
+        for (origin, destination, waiting) in [(1, 2, 401), (1, 3, 409), (3, 2, 7), (3, 1, 11)] {
+            state
+                .origin_destination_demand
+                .iter_mut()
+                .find(|demand| {
+                    demand.origin_station_id == RailStationId::new(origin)
+                        && demand.destination_station_id == RailStationId::new(destination)
+                })
+                .unwrap()
+                .waiting_passengers = waiting;
+        }
+        let reverse_route = [3, 2, 1]
+            .into_iter()
+            .map(|station_id| {
+                super::station_label(&state, RailStationId::new(station_id)).to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join(" → ");
         let mut flow = DispatchFlow::start(&state).unwrap();
 
         assert_eq!(
@@ -2679,11 +2729,17 @@ mod tests {
             DispatchFlowAction::Continue
         );
         assert!(flow.is_selecting_service());
+        let service_picker = flow.render(&state);
+        assert!(service_picker.contains(&reverse_route));
+        assert!(service_picker.contains("18 waiting"));
         assert_eq!(
             flow.handle_key(key(KeyCode::Enter), &state),
             DispatchFlowAction::Continue
         );
         assert!(flow.is_confirming());
+        let review = flow.render(&state);
+        assert!(review.contains(&reverse_route));
+        assert!(review.contains("Directional Demand: 18 Waiting Passengers"));
         assert_eq!(
             flow.handle_key(key(KeyCode::Enter), &state),
             DispatchFlowAction::Confirm {
