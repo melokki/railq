@@ -39,6 +39,7 @@ use crate::{
 
 const MAXIMUM_RECOVERY_OPTIONS_SHOWN: usize = 3;
 const RECENT_ACTIVITY_LIMIT: usize = 5;
+const ATTENTION_SERVICE_LIMIT: usize = 2;
 
 /// Presentation-only editor for the Player Company's Vehicle Keeper Mark.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1130,19 +1131,12 @@ fn render_dashboard_activity(
     state: &GameState,
     evaluation: &Result<FinancialEvaluation, impl std::fmt::Display>,
 ) {
-    let recovery_relevant = evaluation.as_ref().map_or(true, |evaluation| {
-        evaluation.status != FinancialStatus::Operating
-    });
-    if recovery_relevant {
-        let [receipts_area, recovery_area] =
-            Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
-                .spacing(2)
-                .areas(area);
-        render_recent_activity(frame, receipts_area, state, true);
-        render_recovery_panel(frame, recovery_area, state, evaluation);
-    } else {
-        render_recent_activity(frame, area, state, true);
-    }
+    let [receipts_area, attention_area] =
+        Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
+            .spacing(2)
+            .areas(area);
+    render_recent_activity(frame, receipts_area, state, true);
+    render_attention_panel(frame, attention_area, state, evaluation);
 }
 
 fn render_company_overview(
@@ -1412,6 +1406,24 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
 
 fn render_recent_performance(frame: &mut Frame, area: Rect, state: &GameState) {
     let recent = RecentJourneyPerformance::from_state(state);
+    if recent.journey_count == 0 {
+        render_dashboard_section(
+            frame,
+            area,
+            vec![
+                section_heading("RECENT PERFORMANCE"),
+                Line::styled("No completed Journeys yet.", theme::secondary()),
+                Line::styled(
+                    format!(
+                        "The latest {RECENT_JOURNEY_WINDOW} completed Journeys will be summarized here."
+                    ),
+                    theme::hint(),
+                ),
+            ],
+        );
+        return;
+    }
+
     let break_even = recent
         .journey_count
         .saturating_sub(recent.profitable_journeys + recent.loss_making_journeys);
@@ -1429,13 +1441,19 @@ fn render_recent_performance(frame: &mut Frame, area: Rect, state: &GameState) {
     let passengers = recent
         .passengers_carried
         .map_or_else(|| "—".into(), |passengers| passengers.to_string());
+    let journey_label = if recent.journey_count == 1 {
+        "JOURNEY"
+    } else {
+        "JOURNEYS"
+    };
 
     render_dashboard_section(
         frame,
         area,
         vec![
             section_heading(&format!(
-                "RECENT PERFORMANCE · {RECENT_JOURNEY_WINDOW} JOURNEYS"
+                "RECENT PERFORMANCE · LAST {} {journey_label}",
+                recent.journey_count
             )),
             dashboard_line(
                 "Completed",
@@ -1657,11 +1675,20 @@ fn render_compact_dashboard(
     let shell_inner = shell.inner(area);
     frame.render_widget(shell, area);
 
-    let [summary_area, history_area] =
-        Layout::horizontal([Constraint::Percentage(48), Constraint::Fill(1)])
+    let [summary_area, right_area] =
+        Layout::horizontal([Constraint::Percentage(46), Constraint::Fill(1)])
             .spacing(2)
             .areas(shell_inner);
+    let attention_height = if right_area.height >= 17 { 7 } else { 5 };
+    let [attention_area, history_area] = Layout::vertical([
+        Constraint::Length(attention_height),
+        Constraint::Fill(1),
+    ])
+    .spacing(1)
+    .areas(right_area);
+
     render_compact_summary(frame, summary_area, state, &evaluation);
+    render_attention_panel(frame, attention_area, state, &evaluation);
     render_recent_activity(frame, history_area, state, false);
 }
 
@@ -1677,7 +1704,8 @@ fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
             status_label(evaluation.status).to_owned()
         });
     let result = operating_result_cents(state);
-    let lines = vec![
+    let recent = RecentJourneyPerformance::from_state(state);
+    let mut lines = vec![
         section_heading("STATUS"),
         Line::styled(
             status,
@@ -1697,6 +1725,26 @@ fn render_tiny_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
         ),
         dashboard_line("Result", format_signed_cents(result), result_style(result)),
     ];
+    if inner.height >= 12 {
+        lines.extend([
+            Line::from(""),
+            section_heading("RECENT"),
+            dashboard_line(
+                "Completed",
+                recent.journey_count.to_string(),
+                theme::primary_value(),
+            ),
+            dashboard_line(
+                "Result",
+                if recent.journey_count == 0 {
+                    "—".into()
+                } else {
+                    format_signed_cents(recent.result_cents)
+                },
+                result_style(recent.result_cents),
+            ),
+        ]);
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::panel())
@@ -1859,7 +1907,7 @@ fn render_receipt_history_table(
     frame.render_stateful_widget(table, area, &mut selection.table_state);
 }
 
-fn render_recovery_panel(
+fn render_attention_panel(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
@@ -1868,58 +1916,109 @@ fn render_recovery_panel(
     let [heading_area, content_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
     frame.render_widget(
-        Paragraph::new(section_heading("FINANCIAL WARNING")).style(theme::panel()),
+        Paragraph::new(section_heading("ATTENTION")).style(theme::panel()),
         heading_area,
     );
-    let lines = match evaluation {
-        Ok(evaluation) => {
-            let mut lines = vec![Line::styled(
+
+    let recent = RecentJourneyPerformance::from_state(state);
+    let services = ServicePerformanceSummary::from_state(state);
+    let mut lines = Vec::new();
+    let mut has_warning = false;
+
+    match evaluation {
+        Ok(evaluation) if evaluation.status != FinancialStatus::Operating => {
+            has_warning = true;
+            lines.push(Line::styled(
                 status_label(evaluation.status),
                 status_style(Some(evaluation.status)),
-            )];
-            match evaluation.status {
-                FinancialStatus::Operating => lines.push(Line::styled(
-                    "No recovery action is required.",
-                    theme::secondary(),
-                )),
-                FinancialStatus::BankruptcyDeferred => lines.push(Line::styled(
-                    "An active Journey may still settle revenue.",
-                    theme::secondary(),
-                )),
-                FinancialStatus::Insolvent => {
-                    lines.push(Line::styled(
-                        "Concrete recovery options:",
-                        theme::secondary(),
-                    ));
-                    lines.push(Line::styled(
-                        "Only routes affordable under the current rules are listed; review before acting.",
-                        theme::hint(),
-                    ));
-                    lines.extend(
-                        evaluation
-                            .recovery_options
-                            .iter()
-                            .take(MAXIMUM_RECOVERY_OPTIONS_SHOWN)
-                            .map(|option| {
-                                Line::styled(
-                                    format!("· {}", recovery_option_description(state, option)),
-                                    theme::primary_value(),
-                                )
-                            }),
-                    );
-                }
-                FinancialStatus::Bankruptcy => lines.push(Line::styled(
-                    "No finite recovery option remains.",
-                    theme::secondary(),
-                )),
+            ));
+            lines.push(Line::styled(
+                status_explanation(evaluation.status),
+                theme::secondary(),
+            ));
+            if evaluation.status == FinancialStatus::Insolvent
+                && !evaluation.recovery_options.is_empty()
+            {
+                lines.push(Line::styled(
+                    format!(
+                        "Concrete recovery options: {} {} · [R] review.",
+                        evaluation.recovery_options.len(),
+                        if evaluation.recovery_options.len() == 1 {
+                            "route"
+                        } else {
+                            "routes"
+                        }
+                    ),
+                    theme::warning(),
+                ));
             }
-            lines
         }
-        Err(error) => vec![Line::styled(
-            format!("Recovery unavailable: {error}"),
-            theme::error(),
-        )],
-    };
+        Err(error) => {
+            has_warning = true;
+            lines.push(Line::styled(
+                format!("[?] Financial status unavailable: {error}"),
+                theme::error(),
+            ));
+        }
+        Ok(_) => {}
+    }
+
+    if recent.journey_count == 0 {
+        if state.player_company.passenger_services.is_empty() {
+            lines.push(Line::styled(
+                "[~] No passenger Services are defined yet.",
+                theme::hint(),
+            ));
+        } else {
+            lines.push(Line::styled(
+                "[~] No completed Journey data yet.",
+                theme::hint(),
+            ));
+        }
+    } else if recent.loss_making_journeys > 0 {
+        has_warning = true;
+        lines.push(Line::styled(
+            format!(
+                "[!] {} of the last {} completed {} lost money.",
+                recent.loss_making_journeys,
+                recent.journey_count,
+                if recent.journey_count == 1 {
+                    "Journey"
+                } else {
+                    "Journeys"
+                }
+            ),
+            theme::warning(),
+        ));
+    }
+
+    for service in services
+        .services
+        .iter()
+        .filter(|service| service.result_cents < 0)
+        .take(ATTENTION_SERVICE_LIMIT)
+    {
+        has_warning = true;
+        let journeys = service.revenue_journeys + service.positioning_journeys;
+        lines.push(Line::styled(
+            format!(
+                "[!] {}: {} across {} recent {}.",
+                service.service_code,
+                format_signed_cents(service.result_cents),
+                journeys,
+                if journeys == 1 { "Journey" } else { "Journeys" }
+            ),
+            theme::warning(),
+        ));
+    }
+
+    if !has_warning && recent.journey_count > 0 {
+        lines.push(Line::styled(
+            "[OK] No issues requiring attention.",
+            theme::success(),
+        ));
+    }
+
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::panel())

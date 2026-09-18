@@ -206,6 +206,8 @@ fn wide_dashboard_aggregates_recent_service_performance() {
     assert!(dashboard.contains("$100.00"));
     assert!(dashboard.contains("$20.00"));
     assert!(dashboard.contains("+$80.00"));
+    assert!(dashboard.contains("ATTENTION"));
+    assert!(dashboard.contains("1 of the last 2 completed Journeys lost money."));
 }
 
 #[test]
@@ -216,6 +218,8 @@ fn empty_dashboard_explains_activity_and_history_remains_available() {
 
     assert!(dashboard.contains("RECENT ACTIVITY"));
     assert!(dashboard.contains("No completed Journey activity yet."));
+    assert!(dashboard.contains("ATTENTION"));
+    assert!(dashboard.contains("No passenger Services are defined yet."));
     assert!(dashboard.contains("[H] History"));
     assert!(!dashboard.contains("JOURNEY HISTORY"));
 

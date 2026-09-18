@@ -145,7 +145,7 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                     "{slug} should show compact Company identity"
                 );
                 assert!(
-                    rendered.contains("RECENT PERFORMANCE · 12 JOURNEYS"),
+                    rendered.contains("RECENT PERFORMANCE · LAST 1 JOURNEY"),
                     "{slug} should show a dedicated recent-performance panel"
                 );
                 assert!(
@@ -297,16 +297,8 @@ fn wide_dashboard_separates_live_revenue_exposure_from_settled_performance() {
     assert!(rendered.contains("1 train · 10 pax"));
     assert!(rendered.contains("In transit"));
     assert!(rendered.contains("$10.00"));
-    assert!(
-        rendered
-            .lines()
-            .any(|line| line.contains("Completed") && line.contains('0'))
-    );
-    assert!(
-        rendered
-            .lines()
-            .any(|line| line.contains("Result") && line.contains("$0.00"))
-    );
+    assert!(rendered.contains("RECENT PERFORMANCE"));
+    assert!(rendered.contains("No completed Journeys yet."));
 }
 
 #[test]
