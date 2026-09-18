@@ -13,9 +13,11 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::Style,
+    symbols,
     text::{Line, Span},
     widgets::{
-        Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
+        Axis, Cell, Chart, Dataset, GraphType, HighlightSpacing, List, ListItem, ListState,
+        Paragraph, Row, Table, TableState, Wrap,
     },
 };
 
@@ -1461,7 +1463,7 @@ fn render_wide_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
             Layout::vertical([
                 Constraint::Length(2),
                 Constraint::Length(5),
-                Constraint::Length(6),
+                Constraint::Length(8),
                 Constraint::Length(7),
                 Constraint::Fill(1),
             ])
@@ -1478,7 +1480,7 @@ fn render_wide_dashboard(frame: &mut Frame, area: Rect, state: &GameState) {
         let [overview_area, metrics_area, operations_area, history_area] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Length(5),
-            Constraint::Length(6),
+            Constraint::Length(8),
             Constraint::Fill(1),
         ])
         .spacing(1)
@@ -1556,10 +1558,9 @@ fn render_company_overview(
 }
 
 fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
-    let result = operating_result_cents(state);
-    let operating_costs = operating_costs_cents(state);
     let recent = RecentJourneyPerformance::from_state(state);
-    let [result_area, revenue_area, costs_area, margin_area] = Layout::horizontal([
+    let active = ActiveJourneyExposure::from_state(state);
+    let [cash_area, result_area, revenue_area, costs_area] = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Fill(1),
         Constraint::Fill(1),
@@ -1570,35 +1571,80 @@ fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
 
     render_key_metric_card(
         frame,
-        result_area,
-        "OPERATING RESULT",
-        format_signed_cents(result),
-        recent_result_context(&recent),
-        result_style(result),
+        cash_area,
+        "CASH",
+        format_money(state.player_company.funds),
+        "available".into(),
+        format!(
+            "{} pending revenue",
+            format_cents(active.revenue_in_transit_cents)
+        ),
+        theme::primary_value(),
     );
+
+    let (recent_result, recent_subtitle, recent_margin) = if recent.journey_count == 0 {
+        ("—".into(), "no completed journeys".into(), "margin —".into())
+    } else {
+        (
+            format_signed_cents(recent.result_cents),
+            recent_window_label(recent.journey_count),
+            format!(
+                "{} margin",
+                margin_label(recent.result_cents, recent.revenue_cents)
+            ),
+        )
+    };
+    render_key_metric_card(
+        frame,
+        result_area,
+        "RECENT RESULT",
+        recent_result,
+        recent_subtitle,
+        recent_margin,
+        result_style(recent.result_cents),
+    );
+
+    let revenue_context = if recent.journey_count == 0 {
+        "boardings —".into()
+    } else {
+        recent.passengers_carried.map_or_else(
+            || "boardings unavailable".into(),
+            |passengers| format!("{passengers} boardings"),
+        )
+    };
     render_key_metric_card(
         frame,
         revenue_area,
-        "REVENUE",
-        format_money(state.financials.operating_revenue),
-        recent_revenue_context(&recent),
+        "RECENT REVENUE",
+        if recent.journey_count == 0 {
+            "—".into()
+        } else {
+            format_cents(recent.revenue_cents)
+        },
+        recent_window_label(recent.journey_count),
+        revenue_context,
         theme::primary_value(),
     );
+
     render_key_metric_card(
         frame,
         costs_area,
-        "OPERATING COSTS",
-        format_cents(operating_costs),
-        recent_cost_context(&recent),
+        "RECENT COSTS",
+        if recent.journey_count == 0 {
+            "—".into()
+        } else {
+            format_cents(recent.operating_costs_cents)
+        },
+        recent_window_label(recent.journey_count),
+        if recent.journey_count == 0 {
+            "access + fuel".into()
+        } else {
+            format!(
+                "{} avg / journey",
+                format_cents(recent.operating_costs_cents / recent.journey_count as i128)
+            )
+        },
         theme::primary_value(),
-    );
-    render_key_metric_card(
-        frame,
-        margin_area,
-        "MARGIN",
-        operating_margin_label(state),
-        recent_margin_context(&recent),
-        result_style(result),
     );
 }
 
@@ -1607,7 +1653,8 @@ fn render_key_metric_card(
     area: Rect,
     title: &str,
     value: String,
-    recent_context: String,
+    subtitle: String,
+    context: String,
     value_style: Style,
 ) {
     let block = components::panel_block(title, false);
@@ -1616,8 +1663,8 @@ fn render_key_metric_card(
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(value, value_style.bold()),
-            Line::styled("lifetime", theme::secondary()),
-            Line::styled(recent_context, theme::hint()),
+            Line::styled(subtitle, theme::secondary()),
+            Line::styled(context, theme::hint()),
         ])
         .alignment(Alignment::Center)
         .style(theme::panel()),
@@ -1625,61 +1672,16 @@ fn render_key_metric_card(
     );
 }
 
-fn recent_result_context(recent: &RecentJourneyPerformance) -> String {
-    if recent.journey_count == 0 {
-        return "no completed journeys".into();
-    }
-    format!(
-        "{} recent · {}",
-        recent.journey_count,
-        format_signed_cents(recent.result_cents)
-    )
-}
-
-fn recent_revenue_context(recent: &RecentJourneyPerformance) -> String {
-    if recent.journey_count == 0 {
-        return "no completed journeys".into();
-    }
-    match recent.passengers_carried {
-        Some(passengers) => format!(
-            "{} · {} pax",
-            format_cents(recent.revenue_cents),
-            passengers
-        ),
-        None => format!("{} recent", format_cents(recent.revenue_cents)),
-    }
-}
-
-fn recent_cost_context(recent: &RecentJourneyPerformance) -> String {
-    if recent.journey_count == 0 {
-        return "no completed journeys".into();
-    }
-    format!("{} recent", format_cents(recent.operating_costs_cents))
-}
-
-fn recent_margin_context(recent: &RecentJourneyPerformance) -> String {
-    if recent.journey_count == 0 {
-        return "no completed journeys".into();
-    }
-    let break_even = recent
-        .journey_count
-        .saturating_sub(recent.profitable_journeys + recent.loss_making_journeys);
-    let margin = margin_label(recent.result_cents, recent.revenue_cents);
-    if break_even == 0 {
-        format!(
-            "{margin} · {}+ / {}-",
-            recent.profitable_journeys, recent.loss_making_journeys
-        )
-    } else {
-        format!(
-            "{margin} · {}+ / {}- / {}=",
-            recent.profitable_journeys, recent.loss_making_journeys, break_even
-        )
+fn recent_window_label(journey_count: usize) -> String {
+    match journey_count {
+        0 => "no completed journeys".into(),
+        1 => "last journey".into(),
+        count => format!("last {count} journeys"),
     }
 }
 
 fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
-    let [operations_area, recent_area, costs_area] = Layout::horizontal([
+    let [operations_area, trend_area, lifetime_area] = Layout::horizontal([
         Constraint::Fill(5),
         Constraint::Fill(5),
         Constraint::Length(24),
@@ -1723,9 +1725,9 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
                 theme::primary_value(),
             ),
             dashboard_line(
-                "Travelling",
+                "Running",
                 format!(
-                    "{} {} · {} pax",
+                    "{} {} · {} aboard",
                     active.journey_count,
                     if active.journey_count == 1 {
                         "train"
@@ -1736,110 +1738,181 @@ fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
                 ),
                 theme::primary_value(),
             ),
-            dashboard_line(
-                "In transit",
-                format_cents(active.revenue_in_transit_cents),
-                theme::primary_value(),
-            ),
         ],
     );
 
-    render_recent_performance(frame, recent_area, state);
+    render_recent_result_chart(frame, trend_area, state);
 
+    let lifetime_result = operating_result_cents(state);
     render_dashboard_section(
         frame,
-        costs_area,
+        lifetime_area,
         vec![
-            section_heading("COST MIX · LIFETIME"),
+            section_heading("LIFETIME"),
             dashboard_line(
-                "Access",
-                format_money(state.financials.infrastructure_access_fees),
+                "Revenue",
+                format_money(state.financials.operating_revenue),
                 theme::primary_value(),
             ),
             dashboard_line(
-                "Fuel",
-                format_money(state.financials.fuel_costs),
-                theme::primary_value(),
-            ),
-            dashboard_line(
-                "Total",
+                "Costs",
                 format_cents(operating_costs_cents(state)),
                 theme::primary_value(),
+            ),
+            dashboard_line(
+                "Result",
+                format_signed_cents(lifetime_result),
+                result_style(lifetime_result),
+            ),
+            dashboard_line(
+                "Margin",
+                operating_margin_label(state),
+                result_style(lifetime_result),
             ),
         ],
     );
 }
 
-fn render_recent_performance(frame: &mut Frame, area: Rect, state: &GameState) {
+fn render_recent_result_chart(frame: &mut Frame, area: Rect, state: &GameState) {
     let recent = RecentJourneyPerformance::from_state(state);
+    let [heading_area, chart_area, summary_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    frame.render_widget(
+        Paragraph::new(section_heading("RECENT JOURNEY RESULTS · OLDEST → NEWEST"))
+            .style(theme::panel()),
+        heading_area,
+    );
+
     if recent.journey_count == 0 {
-        render_dashboard_section(
-            frame,
-            area,
-            vec![
-                section_heading("RECENT PERFORMANCE"),
-                Line::styled("No completed Journeys yet.", theme::secondary()),
-                Line::styled(
-                    format!(
-                        "The latest {RECENT_JOURNEY_WINDOW} completed Journeys will be summarized here."
-                    ),
-                    theme::hint(),
-                ),
-            ],
+        frame.render_widget(
+            Paragraph::new(format!(
+                "The latest {RECENT_JOURNEY_WINDOW} completed Journeys will appear here."
+            ))
+            .style(theme::secondary())
+            .wrap(Wrap { trim: true }),
+            chart_area,
+        );
+        frame.render_widget(
+            Paragraph::new("No completed Journeys yet.").style(theme::hint()),
+            summary_area,
         );
         return;
     }
 
+    let points = recent_result_chart_points(state);
+    let x_max = (points.len().saturating_sub(1).max(1)) as f64;
+    let (y_min, y_max) = recent_result_chart_bounds(&points);
+    let zero_line = [(0.0, 0.0), (x_max, 0.0)];
+    let result_style = result_style(recent.result_cents);
+    let datasets = vec![
+        Dataset::default()
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(theme::secondary())
+            .data(&zero_line),
+        Dataset::default()
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(result_style)
+            .data(&points),
+    ];
+    let y_labels = recent_result_axis_labels(y_min, y_max);
+    let chart = Chart::new(datasets)
+        .style(theme::panel())
+        .legend_position(None)
+        .x_axis(
+            Axis::default()
+                .style(theme::secondary())
+                .bounds([0.0, x_max]),
+        )
+        .y_axis(
+            Axis::default()
+                .style(theme::secondary())
+                .bounds([y_min, y_max])
+                .labels(y_labels),
+        );
+    frame.render_widget(chart, chart_area);
+
     let break_even = recent
         .journey_count
         .saturating_sub(recent.profitable_journeys + recent.loss_making_journeys);
-    let outcomes = if break_even == 0 {
-        format!(
-            "{}+ / {}-",
-            recent.profitable_journeys, recent.loss_making_journeys
-        )
-    } else {
-        format!(
-            "{}+ / {}- / {}=",
-            recent.profitable_journeys, recent.loss_making_journeys, break_even
-        )
-    };
-    let passengers = recent
-        .passengers_carried
-        .map_or_else(|| "—".into(), |passengers| passengers.to_string());
-    let journey_label = if recent.journey_count == 1 {
-        "JOURNEY"
-    } else {
-        "JOURNEYS"
-    };
-
-    render_dashboard_section(
-        frame,
-        area,
-        vec![
-            section_heading(&format!(
-                "RECENT PERFORMANCE · LAST {} {journey_label}",
-                recent.journey_count
-            )),
-            dashboard_line("Passengers", passengers, theme::primary_value()),
-            dashboard_line(
-                "Revenue",
-                format_cents(recent.revenue_cents),
-                theme::primary_value(),
-            ),
-            dashboard_line(
-                "Result",
-                format_signed_cents(recent.result_cents),
-                result_style(recent.result_cents),
-            ),
-            dashboard_line("Outcomes", outcomes, theme::primary_value()),
-            dashboard_line(
-                "Old → new",
-                recent_outcome_sequence(state),
-                theme::primary_value(),
-            ),
-        ],
+    let mut summary = format!(
+        "{} total · {} profitable · {} loss-making",
+        format_signed_cents(recent.result_cents),
+        recent.profitable_journeys,
+        recent.loss_making_journeys
     );
+    if break_even > 0 {
+        write!(summary, " · {break_even} break-even").ok();
+    }
+    frame.render_widget(
+        Paragraph::new(summary)
+            .alignment(Alignment::Center)
+            .style(result_style),
+        summary_area,
+    );
+}
+
+fn recent_result_chart_points(state: &GameState) -> Vec<(f64, f64)> {
+    let receipts = &state.financials.recent_journey_receipts;
+    let start = receipts.len().saturating_sub(RECENT_JOURNEY_WINDOW);
+    receipts[start..]
+        .iter()
+        .enumerate()
+        .map(|(index, receipt)| {
+            let result = receipt_result_cents(
+                receipt.revenue,
+                receipt.infrastructure_access_fee,
+                receipt.fuel_cost,
+            );
+            (index as f64, result as f64)
+        })
+        .collect()
+}
+
+fn recent_result_chart_bounds(points: &[(f64, f64)]) -> (f64, f64) {
+    let (mut minimum, mut maximum) = points.iter().fold((0.0_f64, 0.0_f64), |bounds, point| {
+        (bounds.0.min(point.1), bounds.1.max(point.1))
+    });
+
+    if minimum == 0.0 && maximum == 0.0 {
+        return (-100.0, 100.0);
+    }
+
+    let span = (maximum - minimum).max(100.0);
+    let padding = span * 0.08;
+    if minimum < 0.0 {
+        minimum -= padding;
+    }
+    if maximum > 0.0 {
+        maximum += padding;
+    }
+    (minimum, maximum)
+}
+
+fn recent_result_axis_labels(minimum: f64, maximum: f64) -> Vec<String> {
+    let mut labels = vec![format_compact_chart_cents(minimum.round() as i128)];
+    if minimum < 0.0 && maximum > 0.0 {
+        labels.push("$0".into());
+    }
+    labels.push(format_compact_chart_cents(maximum.round() as i128));
+    labels
+}
+
+fn format_compact_chart_cents(cents: i128) -> String {
+    let sign = if cents < 0 { "−" } else { "" };
+    let absolute_dollars = cents.abs() as f64 / 100.0;
+    if absolute_dollars >= 1_000_000.0 {
+        format!("{sign}${:.1}m", absolute_dollars / 1_000_000.0)
+    } else if absolute_dollars >= 1_000.0 {
+        format!("{sign}${:.1}k", absolute_dollars / 1_000.0)
+    } else {
+        format!("{sign}${:.0}", absolute_dollars)
+    }
 }
 
 fn render_service_performance(frame: &mut Frame, area: Rect, state: &GameState) {
@@ -2701,29 +2774,6 @@ fn duration_label(seconds: u64) -> String {
         60..=3_599 => format!("{}m {}s", seconds / 60, seconds % 60),
         _ => format!("{}h {}m", seconds / 3_600, (seconds % 3_600) / 60),
     }
-}
-
-fn recent_outcome_sequence(state: &GameState) -> String {
-    let receipts = &state.financials.recent_journey_receipts;
-    let start = receipts.len().saturating_sub(RECENT_JOURNEY_WINDOW);
-    receipts[start..]
-        .iter()
-        .map(|receipt| {
-            let result = receipt_result_cents(
-                receipt.revenue,
-                receipt.infrastructure_access_fee,
-                receipt.fuel_cost,
-            );
-            if result > 0 {
-                "+"
-            } else if result < 0 {
-                "−"
-            } else {
-                "="
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn section_heading(title: &str) -> Line<'static> {
