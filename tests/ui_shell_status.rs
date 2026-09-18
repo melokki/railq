@@ -111,7 +111,9 @@ fn map_station_inspector_uses_selected_station_hierarchy_without_embedded_shortc
     assert!(rendered.contains("TRAFFIC"));
     assert!(rendered.contains("Ready trains"));
     assert!(rendered.contains("Inbound"));
-    assert!(rendered.contains("Services"));
+    assert!(rendered.contains("Next arrival"));
+    assert!(rendered.contains("SERVICES"));
+    assert!(rendered.contains("No passenger services"));
     assert!(rendered.contains("PASSENGERS"));
     assert!(rendered.contains("Waiting"));
     assert!(rendered.contains("Arrival rate"));
@@ -134,7 +136,10 @@ fn map_station_inspector_surfaces_the_next_arrival() -> Result<(), Box<dyn Error
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
     assert!(rendered.contains("Inbound"));
-    assert!(rendered.contains("1 · next"));
+    assert!(rendered.contains("Next arrival"));
+    assert!(rendered.contains("Train 01 · R1"));
+    assert!(rendered.contains("SERVICES"));
+    assert!(!rendered.contains("No passenger services"));
     Ok(())
 }
 

@@ -23,7 +23,10 @@ use super::geometry::{
 use super::network::{format_population, panel_block, ready_trains, station_name};
 use super::shared::{format_distance, format_duration, remaining_seconds};
 use crate::{
-    model::{GameState, Journey, RailLineId, RailStationId, SettlementId, TrainStatus, UtcSeconds},
+    model::{
+        GameState, Journey, PassengerService, RailLineId, RailStationId, ServiceDirectionMode,
+        SettlementId, TrainStatus, UtcSeconds,
+    },
     sim::{
         authority::{
             COUNCIL_REQUEST_MATURITY_THRESHOLD_BASIS_POINTS, local_rail_success_basis_points,
@@ -262,23 +265,18 @@ fn render_location_inspector(
             .iter()
             .filter(|journey| journey_next_stop_station_id(state, journey) == Some(station.id))
             .collect::<Vec<_>>();
-        let arriving_summary = arriving
-            .iter()
-            .min_by_key(|journey| journey.arrives_at)
-            .map(|journey| {
-                format!(
-                    "{} · next {}",
-                    arriving.len(),
-                    format_duration(remaining_seconds(journey, state.last_processed_at))
-                )
-            })
-            .unwrap_or_else(|| "0".into());
-        let service_count = state
+        let next_arrival = arriving.iter().min_by_key(|journey| journey.arrives_at).copied();
+        let next_arrival_summary = next_arrival
+            .map(|journey| station_arrival_summary(state, journey))
+            .unwrap_or_else(|| "—".into());
+        let mut station_services = state
             .player_company
             .passenger_services
             .iter()
             .filter(|service| service.stop_station_ids.contains(&station.id))
-            .count();
+            .collect::<Vec<_>>();
+        station_services.sort_by(|left, right| left.name.cmp(&right.name));
+        let service_count = station_services.len();
 
         let mut demand = state
             .origin_destination_demand
@@ -324,8 +322,11 @@ fn render_location_inspector(
                 "Ready",
                 &ready_count.to_string(),
                 "Inbound",
-                &arriving_summary,
+                &arriving.len().to_string(),
             ));
+            if next_arrival.is_some() {
+                lines.push(inspector_metric("Next arrival", &next_arrival_summary));
+            }
             lines.push(inspector_metric("Services", &service_count.to_string()));
             lines.push(inspector_compact_pair(
                 "Waiting",
@@ -341,8 +342,24 @@ fn render_location_inspector(
             lines.push(Line::from(""));
             lines.push(inspector_section("TRAFFIC"));
             lines.push(inspector_metric("Ready trains", &ready_count.to_string()));
-            lines.push(inspector_metric("Inbound", &arriving_summary));
-            lines.push(inspector_metric("Services", &service_count.to_string()));
+            lines.push(inspector_metric("Inbound", &arriving.len().to_string()));
+            lines.push(inspector_metric("Next arrival", &next_arrival_summary));
+
+            lines.push(Line::from(""));
+            lines.push(inspector_section("SERVICES"));
+            if station_services.is_empty() {
+                lines.push(Line::styled("No passenger services", theme::secondary()));
+            } else {
+                for service in station_services.iter().take(3) {
+                    lines.push(inspector_service_line(state, service, area.width));
+                }
+                if service_count > 3 {
+                    lines.push(Line::styled(
+                        format!("+{} more", service_count - 3),
+                        theme::secondary(),
+                    ));
+                }
+            }
 
             lines.push(Line::from(""));
             lines.push(inspector_section("PASSENGERS"));
@@ -359,7 +376,7 @@ fn render_location_inspector(
                 &market_maturity_summary(average_maturity_basis_points),
             ));
 
-            if !demand.is_empty() && area.height >= 24 {
+            if !demand.is_empty() && area.height >= 29 {
                 lines.push(Line::from(""));
                 lines.push(inspector_section("PASSENGER MARKETS"));
                 for (name, waiting, per_hour, maturity) in demand.into_iter().take(3) {
@@ -483,6 +500,47 @@ fn inspector_metric(label: &str, value: &str) -> Line<'static> {
         Span::styled(format!("{label:<15}"), theme::secondary()),
         Span::styled(value.to_owned(), theme::primary_value()),
     ])
+}
+
+fn inspector_service_line(
+    state: &GameState,
+    service: &PassengerService,
+    panel_width: u16,
+) -> Line<'static> {
+    let origin = service
+        .origin_station_id()
+        .map(|station_id| station_name(state, station_id))
+        .unwrap_or_else(|| "Unknown".into());
+    let destination = service
+        .destination_station_id()
+        .map(|station_id| station_name(state, station_id))
+        .unwrap_or_else(|| "Unknown".into());
+    let separator = match service.direction_mode {
+        ServiceDirectionMode::BothDirections => " ↔ ",
+        ServiceDirectionMode::ForwardOnly => " → ",
+    };
+    let route = format!("{origin}{separator}{destination}");
+    let route_width = usize::from(panel_width.saturating_sub(9).max(1));
+
+    Line::from(vec![
+        Span::styled(format!("{:<5}", service.name), theme::primary_value()),
+        Span::styled(truncate_label(&route, route_width), theme::secondary()),
+    ])
+}
+
+fn station_arrival_summary(state: &GameState, journey: &Journey) -> String {
+    let service = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == journey.service_id)
+        .map(|service| service.name.as_str())
+        .unwrap_or("—");
+    format!(
+        "Train {:02} · {service} · {}",
+        journey.train_id.get(),
+        format_duration(remaining_seconds(journey, state.last_processed_at))
+    )
 }
 
 fn inspector_destination_line(
