@@ -16,9 +16,10 @@ use ratatui::{
 
 use crate::{
     model::{
-        ConstructionDifficulty, Electrification, GameState, InfrastructureProject,
-        InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus, Money,
-        UtcSeconds,
+        ConstructionDifficulty, Electrification, GameState, InfrastructureAccessDiscount,
+        InfrastructureProject, InfrastructureProjectId, InfrastructureProjectKind,
+        InfrastructureProjectStatus, Money, PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS,
+        PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS, UtcSeconds,
     },
     sim::authority::{
         AUTHORITY_APPROVAL_SCORE_THRESHOLD, AUTHORITY_REJECTION_SCORE_THRESHOLD,
@@ -390,15 +391,7 @@ pub fn render_contribution_review(
         .remaining_operator_contribution_capacity()
         .map(format::money)
         .unwrap_or_else(|_| "—".into());
-    let mut projected_funding = project.funding.clone();
-    projected_funding.operator_contributed = projected_funding
-        .operator_contributed
-        .checked_add(review.amount)
-        .unwrap_or(projected_funding.operator_contributed);
-    let projected_credit = projected_funding
-        .operator_access_credit_value()
-        .map(format::money)
-        .unwrap_or_else(|_| "—".into());
+    let discount_percent = u32::from(PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS) / 100;
     let lines = vec![
         Line::from(vec![
             Span::styled("Project  ", theme::secondary()),
@@ -409,8 +402,14 @@ pub fn render_contribution_review(
         money_line("Contribution", review.amount),
         money_line("Already contributed", project.funding.operator_contributed),
         Line::from(vec![
-            Span::styled("Access credit after opening  ", theme::secondary()),
-            Span::styled(projected_credit, theme::success()),
+            Span::styled("Access discount after opening  ", theme::secondary()),
+            Span::styled(
+                format!(
+                    "{discount_percent}% for {} fiscal days",
+                    PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS
+                ),
+                theme::success(),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Contribution capacity  ", theme::secondary()),
@@ -420,9 +419,10 @@ pub fn render_contribution_review(
         Line::from("This is a 10% project-cost tranche, capped by the remaining funding gap,"),
         Line::from("the 20% operator cap, and current Company Funds."),
         Line::from("Contributing can close funding sooner but never shortens construction time."),
-        Line::from(
-            "After opening, 115% of contributed funds become finite access-fee credit on the project infrastructure.",
-        ),
+        Line::from(format!(
+            "After opening, contributed infrastructure receives a {discount_percent}% access-fee discount for {} fiscal days.",
+            PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS
+        )),
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -772,19 +772,31 @@ fn render_project_inspector(
             Span::styled(gap, theme::primary_value()),
         ]),
     ]);
-    if project.funding.access_fee_credit_awarded > Money::ZERO {
-        lines.push(money_line(
-            "Access credit awarded",
-            project.funding.access_fee_credit_awarded,
-        ));
-        lines.push(money_line(
-            "Access credit remaining",
-            project.funding.access_fee_credit_remaining,
-        ));
+    if let Some(discount) = project.funding.access_fee_discount {
+        let active = discount.is_active_at(now);
+        lines.push(Line::from(vec![
+            Span::styled("Access discount  ", theme::secondary()),
+            Span::styled(
+                access_discount_label(discount, now),
+                if active {
+                    theme::success()
+                } else {
+                    theme::secondary()
+                },
+            ),
+        ]));
     } else if project.funding.operator_contributed > Money::ZERO {
-        if let Ok(projected_credit) = project.funding.operator_access_credit_value() {
-            lines.push(money_line("Projected access credit", projected_credit));
-        }
+        let percent = u32::from(PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS) / 100;
+        lines.push(Line::from(vec![
+            Span::styled("Projected access discount  ", theme::secondary()),
+            Span::styled(
+                format!(
+                    "{percent}% for {} fiscal days",
+                    PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS
+                ),
+                theme::success(),
+            ),
+        ]));
     }
 
     append_project_scope_details(&mut lines, state, project);
@@ -1498,6 +1510,24 @@ fn schedule_line(label: &str, timestamp: UtcSeconds, now: UtcSeconds) -> Line<'s
     ])
 }
 
+pub(crate) fn access_discount_label(
+    discount: InfrastructureAccessDiscount,
+    now: UtcSeconds,
+) -> String {
+    let percent = u32::from(discount.basis_points) / 100;
+    if !discount.is_active_at(now) {
+        return format!("{percent}% · expired");
+    }
+
+    let remaining = discount
+        .expires_at
+        .unix_seconds()
+        .saturating_sub(now.unix_seconds())
+        .try_into()
+        .unwrap_or(0);
+    format!("{percent}% · {} remaining", compact_duration(remaining))
+}
+
 fn duration_line(label: &str, seconds: u64) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label}  "), theme::secondary()),
@@ -1685,8 +1715,9 @@ mod tests {
     };
 
     use super::{
-        AuthorityWorkspace, AuthorityWorkspaceAction, ProjectSelection, compact_duration,
-        construction_remaining_duration, format_project_timestamp, planning_stage_next, render,
+        AuthorityWorkspace, AuthorityWorkspaceAction, ProjectSelection, access_discount_label,
+        compact_duration, construction_remaining_duration, format_project_timestamp,
+        planning_stage_next, render,
     };
 
     fn establish_rail_markets(state: &mut crate::model::GameState) {
@@ -1786,6 +1817,26 @@ mod tests {
         assert_eq!(construction_remaining_duration(1_800), "30m 00s");
         assert_eq!(construction_remaining_duration(1_742), "29m 02s");
         assert_eq!(construction_remaining_duration(42), "42s");
+    }
+
+    #[test]
+    fn access_discount_labels_show_remaining_time_and_expiry_state() {
+        let discount = crate::model::InfrastructureAccessDiscount {
+            basis_points: 5_000,
+            expires_at: UtcSeconds::from_unix_seconds(8 * 86_400),
+        };
+
+        assert_eq!(
+            access_discount_label(
+                discount,
+                UtcSeconds::from_unix_seconds(2 * 86_400 + 11 * 3_600)
+            ),
+            "50% · 5d 13h remaining"
+        );
+        assert_eq!(
+            access_discount_label(discount, UtcSeconds::from_unix_seconds(8 * 86_400)),
+            "50% · expired"
+        );
     }
 
     #[test]

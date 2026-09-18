@@ -470,7 +470,7 @@ fn insert_infrastructure_project(
         .execute(
             "INSERT INTO infrastructure_projects(
                  id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
-                 operator_contributed_cents, access_fee_credit_awarded_cents, access_fee_credit_remaining_cents,
+                 operator_contributed_cents, access_fee_discount_basis_points, access_fee_discount_expires_at,
                  requested_at, review_started_at, proposed_at, approved_at, funding_completed_at, scheduled_start_at,
                  construction_started_at, planned_completion_at, completed_at, deferred_at, cancelled_at,
                  reconsideration_count, target_speed_limit_kmh, target_track_count
@@ -483,8 +483,15 @@ fn insert_infrastructure_project(
                 project.funding.estimated_cost.cents(),
                 project.funding.authority_committed.cents(),
                 project.funding.operator_contributed.cents(),
-                project.funding.access_fee_credit_awarded.cents(),
-                project.funding.access_fee_credit_remaining.cents(),
+                project
+                    .funding
+                    .access_fee_discount
+                    .map(|discount| i64::from(discount.basis_points))
+                    .unwrap_or(0),
+                project
+                    .funding
+                    .access_fee_discount
+                    .map(|discount| discount.expires_at.unix_seconds()),
                 timeline.requested_at.unix_seconds(),
                 timeline.review_started_at.map(UtcSeconds::unix_seconds),
                 timeline.proposed_at.map(UtcSeconds::unix_seconds),
@@ -612,7 +619,7 @@ fn load_infrastructure_projects(
     let rows = query_all(
         connection,
         "SELECT id, kind, status, estimated_cost_cents, authority_committed_cents,
-                operator_contributed_cents, access_fee_credit_awarded_cents, access_fee_credit_remaining_cents,
+                operator_contributed_cents, access_fee_discount_basis_points, access_fee_discount_expires_at,
                 requested_at, review_started_at, proposed_at, approved_at, funding_completed_at, scheduled_start_at,
                 construction_started_at, planned_completion_at, completed_at, deferred_at, cancelled_at,
                 reconsideration_count, target_speed_limit_kmh, target_track_count
@@ -633,12 +640,24 @@ fn load_infrastructure_projects(
                 )?,
                 kind: row.get(1)?,
                 status: row.get(2)?,
-                funding: InfrastructureProjectFunding {
-                    estimated_cost: Money::from_cents(row.get(3)?),
-                    authority_committed: Money::from_cents(row.get(4)?),
-                    operator_contributed: Money::from_cents(row.get(5)?),
-                    access_fee_credit_awarded: Money::from_cents(row.get(6)?),
-                    access_fee_credit_remaining: Money::from_cents(row.get(7)?),
+                funding: {
+                    let discount_basis_points = row.get::<_, i64>(6)?;
+                    let discount_expires_at = row.get::<_, Option<i64>>(7)?;
+                    let access_fee_discount = match (discount_basis_points, discount_expires_at) {
+                        (0, None) => None,
+                        (basis_points, Some(expires_at)) => Some(InfrastructureAccessDiscount {
+                            basis_points: u16::try_from(basis_points)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            expires_at: UtcSeconds::from_unix_seconds(expires_at),
+                        }),
+                        _ => return Err(rusqlite::Error::InvalidQuery),
+                    };
+                    InfrastructureProjectFunding {
+                        estimated_cost: Money::from_cents(row.get(3)?),
+                        authority_committed: Money::from_cents(row.get(4)?),
+                        operator_contributed: Money::from_cents(row.get(5)?),
+                        access_fee_discount,
+                    }
                 },
                 timeline: InfrastructureProjectTimeline {
                     requested_at: UtcSeconds::from_unix_seconds(row.get(8)?),

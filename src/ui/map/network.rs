@@ -29,7 +29,7 @@ use crate::{
         UtcSeconds,
     },
     sim::demand::effective_arrival_rate_per_hour,
-    ui::theme,
+    ui::{authority::access_discount_label, theme},
 };
 
 /// Presentation-only selection for the connected Rail Station list.
@@ -281,9 +281,9 @@ pub fn render_dashboard(
                 .spacing(1)
                 .areas(area);
         render_network_workspace(frame, network_area, state, selection);
-        render_station_inspector(frame, inspector_area, state, selection, false);
+        render_station_inspector(frame, inspector_area, state, now, selection, false);
     } else if details_open {
-        render_station_inspector(frame, area, state, selection, true);
+        render_station_inspector(frame, area, state, now, selection, true);
     } else {
         render_station_list(frame, area, state, selection, true);
     }
@@ -682,6 +682,7 @@ fn render_station_inspector(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
+    now: UtcSeconds,
     selection: &mut StationSelection,
     focused: bool,
 ) {
@@ -719,10 +720,10 @@ fn render_station_inspector(
                 theme::warning(),
             ));
         } else {
-            lines.extend(incident_lines.into_iter().map(|rail_line| {
+            for rail_line in incident_lines {
                 let first = station_name(state, rail_line.first_station_id);
                 let second = station_name(state, rail_line.second_station_id);
-                Line::from(vec![
+                lines.push(Line::from(vec![
                     Span::styled(
                         format!("Rail Line {:02}  ", rail_line.id.get()),
                         theme::secondary(),
@@ -731,8 +732,21 @@ fn render_station_inspector(
                         "{first} → {second} · {}",
                         format_distance(rail_line.distance.metres())
                     )),
-                ])
-            }));
+                ]));
+                if let Some(discount) = state
+                    .region
+                    .rail_authority
+                    .active_access_discount_for_line(rail_line.id, now)
+                {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("Access fee -{}", access_discount_label(discount, now)),
+                            theme::success(),
+                        ),
+                    ]));
+                }
+            }
         }
         lines.push(Line::from(""));
         let ready = ready_trains(state, station.id);

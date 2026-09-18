@@ -404,8 +404,6 @@ fn validate_infrastructure_projects(
         if project.funding.estimated_cost.cents() < 0
             || project.funding.authority_committed.cents() < 0
             || project.funding.operator_contributed.cents() < 0
-            || project.funding.access_fee_credit_awarded.cents() < 0
-            || project.funding.access_fee_credit_remaining.cents() < 0
         {
             return Err(SaveValidationError::InvalidValue {
                 field: "Infrastructure Project funding amount",
@@ -421,10 +419,17 @@ fn validate_infrastructure_projects(
                 reason: "Infrastructure Project operator contribution exceeds its cap",
             });
         }
-        if project.funding.access_fee_credit_remaining > project.funding.access_fee_credit_awarded {
-            return Err(SaveValidationError::ImpossibleState {
-                reason: "Infrastructure Project access credit remaining exceeds awarded credit",
-            });
+        if let Some(discount) = project.funding.access_fee_discount {
+            if discount.basis_points == 0 || discount.basis_points > 10_000 {
+                return Err(SaveValidationError::InvalidValue {
+                    field: "Infrastructure Project access discount basis points",
+                });
+            }
+            if project.funding.operator_contributed <= Money::ZERO {
+                return Err(SaveValidationError::ImpossibleState {
+                    reason: "Infrastructure Project access discount requires operator contribution",
+                });
+            }
         }
         if !matches!(
             project.status,

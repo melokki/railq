@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CalculationError, ConstructionDifficulty, DistanceMetres, Electrification,
+    CalculationError, ConstructionDifficulty, DistanceMetres, DurationSeconds, Electrification,
     InfrastructureProjectId, Money, MoneyPerKilometre, RailLineId, RailStationId, SettlementId,
     SpeedKilometresPerHour, TrackCount, UtcSeconds,
 };
@@ -55,9 +55,25 @@ pub struct InfrastructureProjectTimeline {
 /// can reserve part or all of the estimated cost from its investment budget.
 pub const PROVISIONAL_OPERATOR_CONTRIBUTION_CAP_PERCENT: u64 = 20;
 pub const PROVISIONAL_OPERATOR_CONTRIBUTION_TRANCHE_PERCENT: u64 = 10;
-/// Provisional access-fee credit granted when an operator-funded project opens.
-/// 115% gives the contribution a modest commercial return without creating ownership.
-pub const PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT: u64 = 115;
+/// Access-fee reduction granted on infrastructure helped by the operator.
+pub const PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS: u16 = 5_000;
+/// Number of Authority fiscal days for which the contribution discount applies.
+pub const PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS: u64 = 7;
+
+/// Time-limited infrastructure access-fee benefit earned by operator funding.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InfrastructureAccessDiscount {
+    /// Discount in basis points; 5_000 means 50%.
+    pub basis_points: u16,
+    /// First instant at which the discount no longer applies.
+    pub expires_at: UtcSeconds,
+}
+
+impl InfrastructureAccessDiscount {
+    pub fn is_active_at(self, now: UtcSeconds) -> bool {
+        self.basis_points > 0 && now < self.expires_at
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InfrastructureProjectFunding {
@@ -66,9 +82,7 @@ pub struct InfrastructureProjectFunding {
     #[serde(default)]
     pub operator_contributed: Money,
     #[serde(default)]
-    pub access_fee_credit_awarded: Money,
-    #[serde(default)]
-    pub access_fee_credit_remaining: Money,
+    pub access_fee_discount: Option<InfrastructureAccessDiscount>,
 }
 
 impl InfrastructureProjectFunding {
@@ -124,27 +138,35 @@ impl InfrastructureProjectFunding {
             .min(company_funds))
     }
 
-    pub fn operator_access_credit_value(&self) -> Result<Money, CalculationError> {
-        let cents = i128::from(self.operator_contributed.cents())
-            .checked_mul(i128::from(PROVISIONAL_OPERATOR_ACCESS_CREDIT_PERCENT))
-            .ok_or(CalculationError::Overflow {
-                operation: "operator infrastructure access credit",
-            })?
-            / 100;
-        let cents = i64::try_from(cents).map_err(|_| CalculationError::Overflow {
-            operation: "operator infrastructure access credit",
-        })?;
-        Ok(Money::from_cents(cents))
-    }
-
-    pub fn award_operator_access_credit(&mut self) -> Result<Money, CalculationError> {
-        if self.access_fee_credit_awarded > Money::ZERO {
-            return Ok(self.access_fee_credit_awarded);
+    /// Activates the operator contribution benefit when the project opens.
+    ///
+    /// Expiry follows the Authority's current UTC fiscal-day calendar: a project
+    /// opening part-way through a day receives the remainder of that fiscal day
+    /// plus six further complete fiscal days.
+    pub fn activate_operator_access_discount(
+        &mut self,
+        opened_at: UtcSeconds,
+    ) -> Result<Option<InfrastructureAccessDiscount>, CalculationError> {
+        if self.operator_contributed <= Money::ZERO {
+            self.access_fee_discount = None;
+            return Ok(None);
         }
-        let credit = self.operator_access_credit_value()?;
-        self.access_fee_credit_awarded = credit;
-        self.access_fee_credit_remaining = credit;
-        Ok(credit)
+        if let Some(discount) = self.access_fee_discount {
+            return Ok(Some(discount));
+        }
+
+        let first_midnight = next_utc_midnight_after(opened_at)?;
+        let remaining_full_days =
+            PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS.saturating_sub(1);
+        let expires_at = first_midnight.checked_add(DurationSeconds::from_seconds(
+            remaining_full_days.saturating_mul(24 * 60 * 60),
+        ))?;
+        let discount = InfrastructureAccessDiscount {
+            basis_points: PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS,
+            expires_at,
+        };
+        self.access_fee_discount = Some(discount);
+        Ok(Some(discount))
     }
 
     pub fn is_fully_funded(&self) -> bool {
@@ -291,8 +313,8 @@ impl InfrastructureProject {
         self.kind.conflicts_with(&other.kind)
     }
 
-    /// Whether an access-fee credit earned by this project applies to one Rail Line.
-    pub fn access_credit_covers_line(&self, rail_line_id: RailLineId) -> bool {
+    /// Whether an access-fee discount earned by this project applies to one Rail Line.
+    pub fn access_discount_covers_line(&self, rail_line_id: RailLineId) -> bool {
         match &self.kind {
             InfrastructureProjectKind::NewLine { planned_lines, .. } => {
                 planned_lines.iter().any(|line| line.id == rail_line_id)
@@ -309,6 +331,23 @@ impl InfrastructureProject {
 }
 
 impl RailAuthority {
+    /// Returns the strongest currently active operator-funded access discount
+    /// that applies to one Rail Line. Equal discounts prefer the later expiry
+    /// so presentation and charging agree on how long the effective benefit lasts.
+    pub fn active_access_discount_for_line(
+        &self,
+        rail_line_id: RailLineId,
+        now: UtcSeconds,
+    ) -> Option<InfrastructureAccessDiscount> {
+        self.infrastructure_projects
+            .iter()
+            .filter(|project| project.status == InfrastructureProjectStatus::Open)
+            .filter(|project| project.access_discount_covers_line(rail_line_id))
+            .filter_map(|project| project.funding.access_fee_discount)
+            .filter(|discount| discount.is_active_at(now))
+            .max_by_key(|discount| (discount.basis_points, discount.expires_at))
+    }
+
     /// Finds an active construction project that prevents `candidate` from
     /// starting work on the same infrastructure.
     pub fn blocking_construction_project(

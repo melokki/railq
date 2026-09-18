@@ -87,6 +87,8 @@ fn migrate_one_version(
         34 => migrate_v34_to_v35(connection, path),
         35 => migrate_v35_to_v36(connection, path),
         36 => migrate_v36_to_v37(connection, path),
+        37 => migrate_v37_to_v38(connection, path),
+        38 => migrate_v38_to_v39(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -2906,4 +2908,134 @@ fn migrate_v36_to_v37(connection: &Connection, path: &Path) -> Result<(), SaveSl
             Err(error)
         }
     }
+}
+
+fn migrate_v37_to_v38(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v37 to v38 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE infrastructure_projects
+                     ADD COLUMN access_fee_discount_basis_points INTEGER NOT NULL DEFAULT 0
+                     CHECK (access_fee_discount_basis_points BETWEEN 0 AND 10000);
+                 ALTER TABLE infrastructure_projects
+                     ADD COLUMN access_fee_discount_expires_at INTEGER;
+
+                 UPDATE infrastructure_projects
+                 SET access_fee_discount_basis_points = 5000,
+                     access_fee_discount_expires_at = (
+                         (COALESCE(
+                             (SELECT last_processed_at FROM game_meta WHERE singleton = 1),
+                             completed_at,
+                             requested_at
+                         ) / 86400 + 7) * 86400
+                     )
+                 WHERE status = 'open'
+                   AND operator_contributed_cents > 0
+                   AND access_fee_credit_remaining_cents > 0;",
+            )
+            .map_err(|source| {
+                db_error(
+                    "add operator access discounts during v38 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 38_u32)
+            .map_err(|source| db_error("write v38 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v37 to v38 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v38_to_v39(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             PRAGMA legacy_alter_table = ON;
+             BEGIN IMMEDIATE;",
+        )
+        .map_err(|source| db_error("begin v38 to v39 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        connection
+            .execute_batch(
+                "ALTER TABLE infrastructure_projects RENAME TO infrastructure_projects_v38;
+                 CREATE TABLE infrastructure_projects (
+                     id TEXT PRIMARY KEY,
+                     sequence INTEGER NOT NULL UNIQUE,
+                     kind TEXT NOT NULL CHECK (kind IN ('new_line', 'speed_upgrade', 'double_tracking', 'electrification', 'renewal', 'station_upgrade')),
+                     status TEXT NOT NULL CHECK (status IN ('requested', 'under_review', 'proposed', 'approved', 'deferred', 'rejected', 'funding', 'scheduled', 'construction', 'open', 'cancelled')),
+                     estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0),
+                     authority_committed_cents INTEGER NOT NULL DEFAULT 0 CHECK (authority_committed_cents >= 0),
+                     operator_contributed_cents INTEGER NOT NULL DEFAULT 0 CHECK (operator_contributed_cents >= 0),
+                     access_fee_discount_basis_points INTEGER NOT NULL DEFAULT 0 CHECK (access_fee_discount_basis_points BETWEEN 0 AND 10000),
+                     access_fee_discount_expires_at INTEGER,
+                     requested_at INTEGER NOT NULL,
+                     review_started_at INTEGER,
+                     proposed_at INTEGER,
+                     approved_at INTEGER,
+                     funding_completed_at INTEGER,
+                     scheduled_start_at INTEGER,
+                     construction_started_at INTEGER,
+                     planned_completion_at INTEGER,
+                     completed_at INTEGER,
+                     deferred_at INTEGER,
+                     cancelled_at INTEGER,
+                     reconsideration_count INTEGER NOT NULL DEFAULT 0 CHECK (reconsideration_count BETWEEN 0 AND 255),
+                     target_speed_limit_kmh INTEGER CHECK (target_speed_limit_kmh IS NULL OR target_speed_limit_kmh > 0),
+                     target_track_count INTEGER CHECK (target_track_count IS NULL OR target_track_count > 0)
+                 );
+                 INSERT INTO infrastructure_projects(
+                     id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
+                     operator_contributed_cents, access_fee_discount_basis_points, access_fee_discount_expires_at,
+                     requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
+                     scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
+                     deferred_at, cancelled_at, reconsideration_count, target_speed_limit_kmh, target_track_count
+                 )
+                 SELECT id, sequence, kind, status, estimated_cost_cents, authority_committed_cents,
+                        operator_contributed_cents, access_fee_discount_basis_points, access_fee_discount_expires_at,
+                        requested_at, review_started_at, proposed_at, approved_at, funding_completed_at,
+                        scheduled_start_at, construction_started_at, planned_completion_at, completed_at,
+                        deferred_at, cancelled_at, reconsideration_count, target_speed_limit_kmh, target_track_count
+                 FROM infrastructure_projects_v38;
+                 DROP TABLE infrastructure_projects_v38;",
+            )
+            .map_err(|source| {
+                db_error(
+                    "remove legacy infrastructure access credits during v39 migration in",
+                    path,
+                    source,
+                )
+            })?;
+        connection
+            .pragma_update(None, "user_version", 39_u32)
+            .map_err(|source| db_error("write v39 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    let result = match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v38 to v39 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    };
+    let _ = connection.execute_batch("PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;");
+    result
 }
