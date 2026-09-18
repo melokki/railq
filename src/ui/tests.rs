@@ -106,6 +106,8 @@ fn bulletin_badge_tracks_unread_entries_and_opening_preserves_the_visit_boundary
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
     assert!(!rendered.contains("6 Bulletin [1]"));
     assert!(rendered.contains("1 new"));
+    assert!(rendered.contains("LATEST DEVELOPMENT  ·  NEW"));
+    assert!(rendered.contains("NEW SINCE LAST VISIT"));
 }
 
 #[test]

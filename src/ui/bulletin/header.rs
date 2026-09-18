@@ -28,12 +28,8 @@ pub(super) fn render(
         return;
     }
 
-    let [overview_area, lead_area] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Fill(1),
-    ])
-    .spacing(1)
-    .areas(area);
+    let [overview_area, lead_area] =
+        Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).areas(area);
 
     render_overview(frame, overview_area, state, workspace);
     render_lead_development(frame, lead_area, state, now, workspace);
@@ -134,8 +130,11 @@ fn render_lead_development(
         Line::styled(entry.headline.clone(), theme::title()),
     ];
 
-    if area.height >= 5 {
-        lines.push(Line::styled(entry.detail.clone(), theme::secondary()));
+    if area.height >= 4 {
+        lines.push(Line::styled(
+            lead_summary(&entry.detail),
+            theme::secondary(),
+        ));
     }
 
     frame.render_widget(
@@ -144,6 +143,14 @@ fn render_lead_development(
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn lead_summary(detail: &str) -> String {
+    let trimmed = detail.trim();
+    let Some(sentence_end) = trimmed.find(". ") else {
+        return trimmed.to_owned();
+    };
+    trimmed[..=sentence_end].to_owned()
 }
 
 fn new_since_visit(state: &GameState, workspace: &BulletinWorkspace) -> u64 {
@@ -161,12 +168,21 @@ fn development_count_label(count: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::development_count_label;
+    use super::{development_count_label, lead_summary};
 
     #[test]
     fn development_count_uses_singular_and_plural_copy() {
         assert_eq!(development_count_label(0), "0 developments recorded");
         assert_eq!(development_count_label(1), "1 development recorded");
         assert_eq!(development_count_label(2), "2 developments recorded");
+    }
+
+    #[test]
+    fn lead_summary_keeps_only_the_first_sentence_when_detail_has_more_context() {
+        assert_eq!(
+            lead_summary("The station is open. Access-fee relief applies for seven days."),
+            "The station is open."
+        );
+        assert_eq!(lead_summary("Single sentence"), "Single sentence");
     }
 }
