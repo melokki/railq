@@ -365,7 +365,7 @@ fn format_remaining_time(seconds: u64) -> String {
     format::duration(seconds)
 }
 
-pub(super) fn tab_label(view: View, compact: bool) -> String {
+pub(super) fn tab_label(view: View, compact: bool, bulletin_unread: u64) -> String {
     let label = match (view, compact) {
         (View::Trains, true) => "Trn",
         (View::BuyTrains, true) => "Mkt",
@@ -376,7 +376,16 @@ pub(super) fn tab_label(view: View, compact: bool) -> String {
         (View::BuyTrains, false) => "Market",
         _ => view.label(),
     };
-    format!("{} {label}", view.number())
+    let mut title = format!("{} {label}", view.number());
+    if view == View::Bulletin && bulletin_unread > 0 {
+        let badge = if bulletin_unread > 9 {
+            "9+".into()
+        } else {
+            bulletin_unread.to_string()
+        };
+        title.push_str(&format!(" [{badge}]"));
+    }
+    title
 }
 
 fn shorten(value: &str, max_characters: usize) -> String {

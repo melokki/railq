@@ -3,7 +3,7 @@ use ratatui::{Terminal, backend::TestBackend};
 
 use crate::{
     app::AppCommand,
-    model::{Money, RailStationId, UtcSeconds},
+    model::{BulletinCategory, BulletinEntry, Money, RailStationId, UtcSeconds},
     sim::{
         fleet::purchase_train,
         journeys::dispatch_journey,
@@ -77,6 +77,35 @@ fn bulletin_uses_only_number_navigation_and_b_remains_available_for_contextual_a
         &state,
     );
     assert_eq!(shell.active_view(), View::Bulletin);
+}
+
+#[test]
+fn bulletin_badge_tracks_unread_entries_and_opening_preserves_the_visit_boundary() {
+    let mut shell = Shell::new();
+    let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+    state.region.bulletin.push(BulletinEntry {
+        occurred_at: UtcSeconds::from_unix_seconds(0),
+        category: BulletinCategory::Network,
+        headline: "Larkspur joins the rail network".into(),
+        detail: "The station is open for passenger operations.".into(),
+    });
+
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(rendered.contains("6 Bulletin [1]"));
+
+    assert_eq!(
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE),
+            &state,
+        ),
+        ShellAction::Player(AppCommand::AcknowledgeBulletin { seen_count: 1 })
+    );
+    assert_eq!(shell.active_view(), View::Bulletin);
+
+    state.bulletin_seen_count = 1;
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(!rendered.contains("6 Bulletin [1]"));
+    assert!(rendered.contains("1 new"));
 }
 
 #[test]

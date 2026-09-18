@@ -771,6 +771,7 @@ mod tests {
         let access_rate = crate::model::MoneyPerKilometre::new(5).unwrap();
         GameState {
             world_seed: 0,
+            bulletin_seen_count: 0,
             region: crate::model::Region {
                 name: "Fixture Region".into(),
                 railway_registration: crate::model::RailwayRegistration {

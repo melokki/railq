@@ -68,6 +68,8 @@ pub enum AppCommand {
         train_id: TrainId,
         nickname: Option<TrainNickname>,
     },
+    /// Persist that the player has opened the Bulletin through the current entry count.
+    AcknowledgeBulletin { seen_count: u64 },
 }
 
 /// The typed outcome of a successfully executed application command.
@@ -105,4 +107,6 @@ pub enum AppCommandResult {
     CompanyVkmUpdated,
     /// One Train nickname change was durably committed.
     TrainNicknameUpdated { train_id: TrainId },
+    /// The Bulletin read boundary was durably committed.
+    BulletinAcknowledged { seen_count: u64 },
 }

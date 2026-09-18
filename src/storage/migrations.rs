@@ -90,6 +90,7 @@ fn migrate_one_version(
         37 => migrate_v37_to_v38(connection, path),
         38 => migrate_v38_to_v39(connection, path),
         39 => migrate_v39_to_v40(connection, path),
+        40 => migrate_v40_to_v41(connection, path),
         found => Err(unsupported_version(path, found)),
     }
 }
@@ -3096,6 +3097,97 @@ fn migrate_v39_to_v40(connection: &Connection, path: &Path) -> Result<(), SaveSl
         Ok(()) => connection
             .execute_batch("COMMIT;")
             .map_err(|source| db_error("commit v39 to v40 migration for", path, source)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
+fn migrate_v40_to_v41(connection: &Connection, path: &Path) -> Result<(), SaveSlotError> {
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(|source| db_error("begin v40 to v41 migration for", path, source))?;
+
+    let migration = (|| -> Result<(), SaveSlotError> {
+        let game_meta_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'game_meta'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|source| {
+                db_error(
+                    "inspect game metadata during v41 migration in",
+                    path,
+                    source,
+                )
+            })?;
+
+        if game_meta_exists != 0 {
+            let seen_count_exists: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('game_meta') WHERE name = 'bulletin_seen_count'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|source| {
+                    db_error(
+                        "inspect Bulletin acknowledgement state in",
+                        path,
+                        source,
+                    )
+                })?;
+            if seen_count_exists == 0 {
+                connection
+                    .execute(
+                        "ALTER TABLE game_meta ADD COLUMN bulletin_seen_count INTEGER NOT NULL DEFAULT 0 CHECK (bulletin_seen_count >= 0)",
+                        [],
+                    )
+                    .map_err(|source| {
+                        db_error("add Bulletin acknowledgement state to", path, source)
+                    })?;
+            }
+
+            let bulletin_exists: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'bulletin_entries'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|source| {
+                    db_error(
+                        "inspect Bulletin history during v41 migration in",
+                        path,
+                        source,
+                    )
+                })?;
+            if bulletin_exists != 0 {
+                connection
+                    .execute(
+                        "UPDATE game_meta SET bulletin_seen_count = (SELECT COUNT(*) FROM bulletin_entries) WHERE singleton = 1",
+                        [],
+                    )
+                    .map_err(|source| {
+                        db_error(
+                            "acknowledge existing Bulletin history during v41 migration in",
+                            path,
+                            source,
+                        )
+                    })?;
+            }
+        }
+
+        connection
+            .pragma_update(None, "user_version", 41_u32)
+            .map_err(|source| db_error("write v41 schema version to", path, source))?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .map_err(|source| db_error("commit v40 to v41 migration for", path, source)),
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK;");
             Err(error)

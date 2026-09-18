@@ -62,9 +62,25 @@ pub struct BulletinWorkspace {
     filter: BulletinFilter,
     table_state: TableState,
     page_size: usize,
+    visit_seen_count: Option<u64>,
 }
 
 impl BulletinWorkspace {
+    /// Starts one Bulletin visit and returns the current entry count when new
+    /// developments need to be durably acknowledged.
+    pub fn begin_visit(&mut self, state: &GameState) -> Option<u64> {
+        let total = bulletin_count(state);
+        let seen = state.bulletin_seen_count.min(total);
+        self.visit_seen_count = Some(seen);
+        (total > seen).then_some(total)
+    }
+
+    pub(super) fn visit_seen_count(&self, state: &GameState) -> u64 {
+        self.visit_seen_count
+            .unwrap_or(state.bulletin_seen_count)
+            .min(bulletin_count(state))
+    }
+
     pub fn handle_key(&mut self, key: KeyCode, state: &GameState) {
         if matches!(key, KeyCode::Char('f' | 'F')) {
             self.filter = self.filter.next();
@@ -124,6 +140,15 @@ impl BulletinWorkspace {
         let selected = self.table_state.selected().unwrap_or(0).min(count - 1);
         self.table_state.select(Some(selected));
     }
+}
+
+pub(super) fn bulletin_count(state: &GameState) -> u64 {
+    u64::try_from(state.region.bulletin.len()).unwrap_or(u64::MAX)
+}
+
+pub(super) fn unread_count(state: &GameState) -> u64 {
+    let total = bulletin_count(state);
+    total.saturating_sub(state.bulletin_seen_count.min(total))
 }
 
 pub(super) fn visible_entries(

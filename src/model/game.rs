@@ -15,6 +15,9 @@ pub struct GameState {
     /// The seed that generated this game's Region. It is saved so a loaded
     /// game never needs to regenerate its world.
     pub world_seed: u64,
+    /// Number of persisted Bulletin entries the player has acknowledged by opening the workspace.
+    #[serde(default)]
+    pub bulletin_seen_count: u64,
     pub region: Region,
     pub player_company: PlayerCompany,
     pub origin_destination_demand: Vec<OriginDestinationDemand>,

@@ -7,7 +7,8 @@ pub(super) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS game_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     world_seed TEXT NOT NULL,
-    last_processed_at INTEGER NOT NULL
+    last_processed_at INTEGER NOT NULL,
+    bulletin_seen_count INTEGER NOT NULL DEFAULT 0 CHECK (bulletin_seen_count >= 0)
 );
 CREATE TABLE IF NOT EXISTS region (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),

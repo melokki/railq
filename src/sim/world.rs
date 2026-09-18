@@ -216,6 +216,7 @@ pub fn create_new_game(
     let vehicle_keeper_mark = VehicleKeeperMark::generated_from_company_name(&company_name);
     GameState {
         world_seed,
+        bulletin_seen_count: 0,
         origin_destination_demand: seed_directional_demand(&region, world_seed),
         region,
         player_company: PlayerCompany {

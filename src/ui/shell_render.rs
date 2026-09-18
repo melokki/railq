@@ -12,7 +12,7 @@ use ratatui::{
 use crate::{APPLICATION_NAME, model::GameState};
 
 use super::{
-    Shell, View,
+    Shell, View, bulletin,
     chrome::{render_footer, render_help_overlay, shell_status_line, tab_label},
     fleet, is_bankrupt, map, modal,
     overlays::{
@@ -72,9 +72,10 @@ pub(super) fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state:
         .position(|view| *view == shell.active_view)
         .unwrap_or(0);
     let compact_tabs = navigation_area.width <= 80;
+    let bulletin_unread = bulletin::unread_count(state);
     let titles = views
         .iter()
-        .map(|view| Line::from(tab_label(*view, compact_tabs)))
+        .map(|view| Line::from(tab_label(*view, compact_tabs, bulletin_unread)))
         .collect::<Vec<_>>();
     frame.render_widget(
         Tabs::new(titles)

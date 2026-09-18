@@ -451,8 +451,14 @@ impl Shell {
                 self.service_workspace.close();
             }
             KeyCode::Char('6') => {
+                let entering_bulletin = self.active_view != View::Bulletin;
                 self.active_view = View::Bulletin;
                 self.service_workspace.close();
+                if entering_bulletin {
+                    if let Some(seen_count) = self.bulletin_workspace.begin_visit(state) {
+                        return ShellAction::Player(AppCommand::AcknowledgeBulletin { seen_count });
+                    }
+                }
             }
             KeyCode::Enter
             | KeyCode::Up
@@ -714,6 +720,9 @@ impl Shell {
             AppCommandResult::TrainNicknameUpdated { .. } => {
                 self.confirm_train_nickname_saved(state)
             }
+            AppCommandResult::BulletinAcknowledged { .. } => {
+                self.notice = None;
+            }
         }
     }
 
@@ -756,6 +765,9 @@ impl Shell {
                 self.reject_infrastructure_contribution(error)
             }
             AppCommand::UpdateTrainNickname { .. } => self.reject_train_nickname_update(error),
+            AppCommand::AcknowledgeBulletin { .. } => {
+                self.notice = Some(format!("Could not save Bulletin read state: {error}"));
+            }
         }
     }
 

@@ -66,6 +66,9 @@ fn render_summary(
     let entries = visible_entries(state, workspace.filter());
     let visible = entries.len();
     let total = state.region.bulletin.len();
+    let new_since_visit = u64::try_from(total)
+        .unwrap_or(u64::MAX)
+        .saturating_sub(workspace.visit_seen_count(state));
     let latest = entries
         .first()
         .map(|(_, entry)| relative_time(entry.occurred_at, now))
@@ -75,6 +78,11 @@ fn render_summary(
             Span::styled("History  ", theme::secondary()),
             Span::styled(format!("{total} recorded"), theme::primary_value()),
             Span::styled(format!(" · {visible} shown"), theme::secondary()),
+            if new_since_visit > 0 {
+                Span::styled(format!(" · {new_since_visit} new"), theme::success())
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(vec![
             Span::styled("View  ", theme::secondary()),
