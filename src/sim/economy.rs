@@ -9,9 +9,9 @@ use std::{error::Error, fmt};
 use crate::{
     catalog::model_for_train,
     model::{
-        CalculationError, DistanceMetres, DurationSeconds, GameState, InfrastructureProjectId,
-        InfrastructureProjectStatus, Money, MoneyPerKilometre, PassengerService, RailLineId,
-        RailStationId, ServiceDirectionMode, ServiceId, SpeedMetresPerSecond, TrainId, TrainStatus,
+        CalculationError, DistanceMetres, DurationSeconds, GameState, InfrastructureProjectStatus,
+        Money, MoneyPerKilometre, PassengerService, RailLineId, RailStationId,
+        ServiceDirectionMode, ServiceId, SpeedMetresPerSecond, TrainId, TrainStatus, UtcSeconds,
     },
     sim::services::path_between_stations,
 };
@@ -24,12 +24,6 @@ pub struct PassengerBoardingQuote {
     pub passengers: u32,
     pub fare: Money,
     pub revenue: Money,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct InfrastructureAccessCreditUse {
-    pub project_id: InfrastructureProjectId,
-    pub amount: Money,
 }
 
 /// The current economic and operational terms for one possible Journey.
@@ -50,8 +44,8 @@ pub struct JourneyQuote {
     /// Through fare from Service origin to terminus.
     pub fare: Money,
     pub operating_revenue: Money,
-    pub infrastructure_access_fee_before_credit: Money,
-    pub infrastructure_access_fee_credit: Money,
+    pub infrastructure_access_fee_before_discount: Money,
+    pub infrastructure_access_fee_discount: Money,
     pub infrastructure_access_fee: Money,
     pub fuel_cost: Money,
     pub operating_cost: Money,
@@ -62,7 +56,6 @@ pub struct JourneyQuote {
     pub first_leg_duration: DurationSeconds,
     pub cash_after_cost: Money,
     pub boarding_groups: Vec<PassengerBoardingQuote>,
-    pub(crate) access_fee_credit_uses: Vec<InfrastructureAccessCreditUse>,
 }
 
 /// The current economic and operational terms for one empty positioning move.
@@ -74,14 +67,13 @@ pub struct PositioningQuote {
     pub destination_station_id: RailStationId,
     pub rail_line_path: Vec<RailLineId>,
     pub distance: DistanceMetres,
-    pub infrastructure_access_fee_before_credit: Money,
-    pub infrastructure_access_fee_credit: Money,
+    pub infrastructure_access_fee_before_discount: Money,
+    pub infrastructure_access_fee_discount: Money,
     pub infrastructure_access_fee: Money,
     pub fuel_cost: Money,
     pub operating_cost: Money,
     pub duration: DurationSeconds,
     pub cash_after_cost: Money,
-    pub(crate) access_fee_credit_uses: Vec<InfrastructureAccessCreditUse>,
 }
 
 /// Why a Journey cannot be quoted from the current state.
@@ -267,6 +259,15 @@ pub fn quote_journey(
     train_id: TrainId,
     service_id: ServiceId,
 ) -> Result<JourneyQuote, EconomyError> {
+    quote_journey_at(state, train_id, service_id, state.last_processed_at)
+}
+
+pub(crate) fn quote_journey_at(
+    state: &GameState,
+    train_id: TrainId,
+    service_id: ServiceId,
+    quoted_at: UtcSeconds,
+) -> Result<JourneyQuote, EconomyError> {
     let train = state
         .player_company
         .fleet
@@ -340,16 +341,15 @@ pub fn quote_journey(
         })?;
     let fare = fare_rate.checked_charge(distance)?;
     let access_fee_rate = state.rules.balance.access_fee_per_train_kilometre();
-    let infrastructure_access_fee_before_credit = access_fee_rate.checked_charge(distance)?;
-    let (infrastructure_access_fee_credit, access_fee_credit_uses) =
-        quote_infrastructure_access_credits(
-            state,
-            &service.rail_line_ids,
-            access_fee_rate,
-            infrastructure_access_fee_before_credit,
-        )?;
-    let infrastructure_access_fee =
-        infrastructure_access_fee_before_credit.checked_sub(infrastructure_access_fee_credit)?;
+    let infrastructure_access_fee_before_discount = access_fee_rate.checked_charge(distance)?;
+    let infrastructure_access_fee_discount = quote_infrastructure_access_discount(
+        state,
+        &service.rail_line_ids,
+        access_fee_rate,
+        quoted_at,
+    )?;
+    let infrastructure_access_fee = infrastructure_access_fee_before_discount
+        .checked_sub(infrastructure_access_fee_discount)?;
     let fuel_cost = train_model
         .fuel_cost_per_kilometre()
         .checked_charge(distance)?;
@@ -385,8 +385,8 @@ pub fn quote_journey(
         boarded_passengers,
         fare,
         operating_revenue,
-        infrastructure_access_fee_before_credit,
-        infrastructure_access_fee_credit,
+        infrastructure_access_fee_before_discount,
+        infrastructure_access_fee_discount,
         infrastructure_access_fee,
         fuel_cost,
         operating_cost,
@@ -395,7 +395,6 @@ pub fn quote_journey(
         first_leg_duration,
         cash_after_cost,
         boarding_groups,
-        access_fee_credit_uses,
     })
 }
 
@@ -407,6 +406,22 @@ pub fn quote_positioning_journey(
     train_id: TrainId,
     service_id: ServiceId,
     destination_station_id: RailStationId,
+) -> Result<PositioningQuote, EconomyError> {
+    quote_positioning_journey_at(
+        state,
+        train_id,
+        service_id,
+        destination_station_id,
+        state.last_processed_at,
+    )
+}
+
+pub(crate) fn quote_positioning_journey_at(
+    state: &GameState,
+    train_id: TrainId,
+    service_id: ServiceId,
+    destination_station_id: RailStationId,
+    quoted_at: UtcSeconds,
 ) -> Result<PositioningQuote, EconomyError> {
     let train = state
         .player_company
@@ -469,16 +484,11 @@ pub fn quote_positioning_journey(
     })?;
     let distance = distance_for_lines(state, &rail_line_path)?;
     let access_fee_rate = state.rules.balance.access_fee_per_train_kilometre();
-    let infrastructure_access_fee_before_credit = access_fee_rate.checked_charge(distance)?;
-    let (infrastructure_access_fee_credit, access_fee_credit_uses) =
-        quote_infrastructure_access_credits(
-            state,
-            &rail_line_path,
-            access_fee_rate,
-            infrastructure_access_fee_before_credit,
-        )?;
-    let infrastructure_access_fee =
-        infrastructure_access_fee_before_credit.checked_sub(infrastructure_access_fee_credit)?;
+    let infrastructure_access_fee_before_discount = access_fee_rate.checked_charge(distance)?;
+    let infrastructure_access_fee_discount =
+        quote_infrastructure_access_discount(state, &rail_line_path, access_fee_rate, quoted_at)?;
+    let infrastructure_access_fee = infrastructure_access_fee_before_discount
+        .checked_sub(infrastructure_access_fee_discount)?;
     let fuel_cost = train_model
         .fuel_cost_per_kilometre()
         .checked_charge(distance)?;
@@ -493,25 +503,24 @@ pub fn quote_positioning_journey(
         destination_station_id,
         rail_line_path,
         distance,
-        infrastructure_access_fee_before_credit,
-        infrastructure_access_fee_credit,
+        infrastructure_access_fee_before_discount,
+        infrastructure_access_fee_discount,
         infrastructure_access_fee,
         fuel_cost,
         operating_cost,
         duration,
         cash_after_cost,
-        access_fee_credit_uses,
     })
 }
 
-fn quote_infrastructure_access_credits(
+fn quote_infrastructure_access_discount(
     state: &GameState,
     rail_line_ids: &[RailLineId],
     rate: MoneyPerKilometre,
-    gross_fee: Money,
-) -> Result<(Money, Vec<InfrastructureAccessCreditUse>), EconomyError> {
-    let mut uses: Vec<InfrastructureAccessCreditUse> = Vec::new();
-    let mut total_credit = Money::ZERO;
+    quoted_at: UtcSeconds,
+) -> Result<Money, EconomyError> {
+    const BASIS_POINTS_PER_WHOLE: i128 = 10_000;
+    let mut total_discount = Money::ZERO;
 
     for rail_line_id in rail_line_ids {
         let line = state
@@ -524,54 +533,38 @@ fn quote_infrastructure_access_credits(
             .ok_or(EconomyError::RailLineNotFound {
                 rail_line_id: *rail_line_id,
             })?;
-        let mut eligible_fee = rate.checked_charge(line.distance)?;
-
-        for project in &state.region.rail_authority.infrastructure_projects {
-            if eligible_fee <= Money::ZERO {
-                break;
-            }
-            if project.status != InfrastructureProjectStatus::Open
-                || !project.access_credit_covers_line(*rail_line_id)
-                || project.funding.access_fee_credit_remaining <= Money::ZERO
-            {
-                continue;
-            }
-
-            let already_reserved = uses
-                .iter()
-                .filter(|usage| usage.project_id == project.id)
-                .try_fold(Money::ZERO, |total, usage| total.checked_add(usage.amount))?;
-            let available = project
-                .funding
-                .access_fee_credit_remaining
-                .checked_sub(already_reserved)?;
-            if available <= Money::ZERO {
-                continue;
-            }
-
-            let remaining_gross = gross_fee.checked_sub(total_credit)?;
-            if remaining_gross <= Money::ZERO {
-                break;
-            }
-            let applied = available.min(eligible_fee).min(remaining_gross);
-            if applied <= Money::ZERO {
-                continue;
-            }
-
-            if let Some(existing) = uses.iter_mut().find(|usage| usage.project_id == project.id) {
-                existing.amount = existing.amount.checked_add(applied)?;
-            } else {
-                uses.push(InfrastructureAccessCreditUse {
-                    project_id: project.id,
-                    amount: applied,
-                });
-            }
-            total_credit = total_credit.checked_add(applied)?;
-            eligible_fee = eligible_fee.checked_sub(applied)?;
+        let line_fee = rate.checked_charge(line.distance)?;
+        let best_basis_points = state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .iter()
+            .filter(|project| project.status == InfrastructureProjectStatus::Open)
+            .filter(|project| project.access_credit_covers_line(*rail_line_id))
+            .filter_map(|project| project.funding.access_fee_discount)
+            .filter(|discount| discount.is_active_at(quoted_at))
+            .map(|discount| discount.basis_points)
+            .max()
+            .unwrap_or(0);
+        if best_basis_points == 0 || line_fee <= Money::ZERO {
+            continue;
         }
+
+        let discount_cents = i128::from(line_fee.cents())
+            .checked_mul(i128::from(best_basis_points))
+            .ok_or(CalculationError::Overflow {
+                operation: "infrastructure access discount",
+            })?
+            / BASIS_POINTS_PER_WHOLE;
+        let discount_cents = i64::try_from(discount_cents).map_err(|_| {
+            CalculationError::Overflow {
+                operation: "infrastructure access discount",
+            }
+        })?;
+        total_discount = total_discount.checked_add(Money::from_cents(discount_cents))?;
     }
 
-    Ok((total_credit, uses))
+    Ok(total_discount)
 }
 
 /// Calculates boardings from one stop in the requested Service direction.
@@ -1109,8 +1102,9 @@ mod tests {
         assert_eq!(state, before);
     }
     #[test]
-    fn open_operator_funded_project_offsets_only_eligible_access_fee() {
+    fn active_operator_discount_reduces_only_eligible_access_fee() {
         let mut state = fixture();
+        state.last_processed_at = UtcSeconds::from_unix_seconds(1_000);
         state.region.rail_authority.infrastructure_projects.push(
             crate::model::InfrastructureProject {
                 id: crate::model::InfrastructureProjectId::new_v4(),
@@ -1139,7 +1133,10 @@ mod tests {
                     operator_contributed: Money::from_cents(100),
                     access_fee_credit_awarded: Money::from_cents(115),
                     access_fee_credit_remaining: Money::from_cents(115),
-                    access_fee_discount: None,
+                    access_fee_discount: Some(crate::model::InfrastructureAccessDiscount {
+                        basis_points: 5_000,
+                        expires_at: UtcSeconds::from_unix_seconds(2_000),
+                    }),
                 },
             },
         );
@@ -1147,10 +1144,56 @@ mod tests {
         let quote = quote_journey(&state, TRAIN_ID, SERVICE_ID).unwrap();
 
         assert_eq!(
-            quote.infrastructure_access_fee_before_credit,
+            quote.infrastructure_access_fee_before_discount,
             Money::from_cents(8)
         );
-        assert_eq!(quote.infrastructure_access_fee_credit, Money::from_cents(5));
-        assert_eq!(quote.infrastructure_access_fee, Money::from_cents(3));
+        assert_eq!(quote.infrastructure_access_fee_discount, Money::from_cents(2));
+        assert_eq!(quote.infrastructure_access_fee, Money::from_cents(6));
+    }
+
+    #[test]
+    fn expired_operator_discount_does_not_reduce_access_fee() {
+        let mut state = fixture();
+        state.last_processed_at = UtcSeconds::from_unix_seconds(2_000);
+        state.region.rail_authority.infrastructure_projects.push(
+            crate::model::InfrastructureProject {
+                id: crate::model::InfrastructureProjectId::new_v4(),
+                kind: crate::model::InfrastructureProjectKind::SpeedUpgrade {
+                    rail_line_ids: vec![FIRST_LINE],
+                    target_speed_limit: crate::model::SpeedKilometresPerHour::new(100).unwrap(),
+                },
+                status: crate::model::InfrastructureProjectStatus::Open,
+                timeline: crate::model::InfrastructureProjectTimeline {
+                    requested_at: UtcSeconds::from_unix_seconds(0),
+                    review_started_at: None,
+                    proposed_at: None,
+                    approved_at: None,
+                    funding_completed_at: None,
+                    scheduled_start_at: None,
+                    construction_started_at: None,
+                    planned_completion_at: None,
+                    completed_at: Some(UtcSeconds::from_unix_seconds(0)),
+                    deferred_at: None,
+                    cancelled_at: None,
+                    reconsideration_count: 0,
+                },
+                funding: crate::model::InfrastructureProjectFunding {
+                    estimated_cost: Money::from_cents(1_000),
+                    authority_committed: Money::from_cents(900),
+                    operator_contributed: Money::from_cents(100),
+                    access_fee_credit_awarded: Money::from_cents(115),
+                    access_fee_credit_remaining: Money::from_cents(115),
+                    access_fee_discount: Some(crate::model::InfrastructureAccessDiscount {
+                        basis_points: 5_000,
+                        expires_at: UtcSeconds::from_unix_seconds(2_000),
+                    }),
+                },
+            },
+        );
+
+        let quote = quote_journey(&state, TRAIN_ID, SERVICE_ID).unwrap();
+
+        assert_eq!(quote.infrastructure_access_fee_discount, Money::ZERO);
+        assert_eq!(quote.infrastructure_access_fee, Money::from_cents(8));
     }
 }

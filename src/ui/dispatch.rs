@@ -763,11 +763,11 @@ impl DispatchFlow {
                     format_duration(quote.duration.seconds()),
                     format_money(quote.operating_revenue),
                 ));
-                if quote.infrastructure_access_fee_credit > Money::ZERO {
+                if quote.infrastructure_access_fee_discount > Money::ZERO {
                     output.push_str(&format!(
-                        "Infrastructure Access Fee: {} - {} credit = {} | Fuel Cost: {} | Paid-now total: {}\n",
-                        format_money(quote.infrastructure_access_fee_before_credit),
-                        format_money(quote.infrastructure_access_fee_credit),
+                        "Infrastructure Access Fee: {} - {} discount = {} | Fuel Cost: {} | Paid-now total: {}\n",
+                        format_money(quote.infrastructure_access_fee_before_discount),
+                        format_money(quote.infrastructure_access_fee_discount),
                         format_money(quote.infrastructure_access_fee),
                         format_money(quote.fuel_cost),
                         format_money(quote.operating_cost),
@@ -1144,12 +1144,12 @@ fn render_quote_review(
     );
 
     let mut terms = vec![Line::styled("PAID AT DEPARTURE", theme::warning())];
-    if quote.infrastructure_access_fee_credit > Money::ZERO {
+    if quote.infrastructure_access_fee_discount > Money::ZERO {
         terms.push(money_pair_line(
-            "Access before credit",
-            quote.infrastructure_access_fee_before_credit,
-            "Access credit",
-            quote.infrastructure_access_fee_credit,
+            "Access before discount",
+            quote.infrastructure_access_fee_before_discount,
+            "Access discount",
+            quote.infrastructure_access_fee_discount,
         ));
     }
     terms.extend([

@@ -18,7 +18,8 @@ use crate::{
     model::{
         ConstructionDifficulty, Electrification, GameState, InfrastructureProject,
         InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus, Money,
-        UtcSeconds,
+        PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS,
+        PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS, UtcSeconds,
     },
     sim::authority::{
         AUTHORITY_APPROVAL_SCORE_THRESHOLD, AUTHORITY_REJECTION_SCORE_THRESHOLD,
@@ -390,15 +391,7 @@ pub fn render_contribution_review(
         .remaining_operator_contribution_capacity()
         .map(format::money)
         .unwrap_or_else(|_| "—".into());
-    let mut projected_funding = project.funding.clone();
-    projected_funding.operator_contributed = projected_funding
-        .operator_contributed
-        .checked_add(review.amount)
-        .unwrap_or(projected_funding.operator_contributed);
-    let projected_credit = projected_funding
-        .operator_access_credit_value()
-        .map(format::money)
-        .unwrap_or_else(|_| "—".into());
+    let discount_percent = u32::from(PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS) / 100;
     let lines = vec![
         Line::from(vec![
             Span::styled("Project  ", theme::secondary()),
@@ -409,8 +402,14 @@ pub fn render_contribution_review(
         money_line("Contribution", review.amount),
         money_line("Already contributed", project.funding.operator_contributed),
         Line::from(vec![
-            Span::styled("Access credit after opening  ", theme::secondary()),
-            Span::styled(projected_credit, theme::success()),
+            Span::styled("Access discount after opening  ", theme::secondary()),
+            Span::styled(
+                format!(
+                    "{discount_percent}% for {} fiscal days",
+                    PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS
+                ),
+                theme::success(),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Contribution capacity  ", theme::secondary()),
@@ -420,9 +419,10 @@ pub fn render_contribution_review(
         Line::from("This is a 10% project-cost tranche, capped by the remaining funding gap,"),
         Line::from("the 20% operator cap, and current Company Funds."),
         Line::from("Contributing can close funding sooner but never shortens construction time."),
-        Line::from(
-            "After opening, 115% of contributed funds become finite access-fee credit on the project infrastructure.",
-        ),
+        Line::from(format!(
+            "After opening, contributed infrastructure receives a {discount_percent}% access-fee discount for {} fiscal days.",
+            PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS
+        )),
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -772,19 +772,29 @@ fn render_project_inspector(
             Span::styled(gap, theme::primary_value()),
         ]),
     ]);
-    if project.funding.access_fee_credit_awarded > Money::ZERO {
-        lines.push(money_line(
-            "Access credit awarded",
-            project.funding.access_fee_credit_awarded,
-        ));
-        lines.push(money_line(
-            "Access credit remaining",
-            project.funding.access_fee_credit_remaining,
-        ));
+    if let Some(discount) = project.funding.access_fee_discount {
+        let percent = u32::from(discount.basis_points) / 100;
+        let status = if discount.is_active_at(now) {
+            format!("{percent}% · expires {}", format_project_timestamp(discount.expires_at, now))
+        } else {
+            format!("{percent}% · expired")
+        };
+        lines.push(Line::from(vec![
+            Span::styled("Access discount  ", theme::secondary()),
+            Span::styled(status, theme::success()),
+        ]));
     } else if project.funding.operator_contributed > Money::ZERO {
-        if let Ok(projected_credit) = project.funding.operator_access_credit_value() {
-            lines.push(money_line("Projected access credit", projected_credit));
-        }
+        let percent = u32::from(PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS) / 100;
+        lines.push(Line::from(vec![
+            Span::styled("Projected access discount  ", theme::secondary()),
+            Span::styled(
+                format!(
+                    "{percent}% for {} fiscal days",
+                    PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS
+                ),
+                theme::success(),
+            ),
+        ]));
     }
 
     append_project_scope_details(&mut lines, state, project);
