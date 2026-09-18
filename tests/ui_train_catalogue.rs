@@ -84,43 +84,42 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "Veltrian D121",
         "$3,000.00",
         "$4,400.00",
-        "IDENTITY",
-        "OWNERSHIP",
-        "Owned: 0",
-        "Ready: 0",
-        "Travelling: 0",
-        "CAPACITY",
-        "PERFORMANCE",
-        "ECONOMICS",
-        "RESERVE",
-        "70 passengers",
+        "SELECTED MODEL",
+        "ACQUISITION",
+        "OPERATING PROFILE",
+        "FLEET PRESENCE",
+        "REGISTRATION",
+        "READY TO ORDER",
+        "70 seats",
         "118.8 km/h",
         "Diesel",
         "$1.20/km",
         "Cash after",
+        "EVN type",
+        "EVN series",
+        "Keeper mark",
+        "Official EVN",
     ] {
         assert!(
             wide.contains(expected),
             "wide catalogue should show {expected}"
         );
     }
-    let economics = wide
-        .find("ECONOMICS")
-        .expect("economics section is visible");
-    let capacity = wide.find("CAPACITY").expect("capacity section is visible");
-    let performance = wide
-        .find("PERFORMANCE")
-        .expect("performance section is visible");
-    let ownership = wide
-        .find("OWNERSHIP")
-        .expect("ownership section is visible");
-    let identity = wide.find("IDENTITY").expect("identity section is visible");
+    let acquisition = wide
+        .find("ACQUISITION")
+        .expect("acquisition section is visible");
+    let operating = wide
+        .find("OPERATING PROFILE")
+        .expect("operating profile is visible");
+    let registration = wide
+        .find("REGISTRATION")
+        .expect("registration section is visible");
+    let fleet_presence = wide
+        .find("FLEET PRESENCE")
+        .expect("fleet presence section is visible");
     assert!(
-        economics < capacity
-            && capacity < performance
-            && performance < ownership
-            && ownership < identity,
-        "the Market inspector should lead with buying information and leave registration metadata last"
+        acquisition < operating && operating < registration && registration < fleet_presence,
+        "the Market inspector should lead with the purchase decision while keeping EVN details visible before secondary fleet statistics"
     );
     assert!(
         !wide.contains("Train Market ·"),
@@ -160,8 +159,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "Propulsion",
         "Fuel/km",
         "Owned",
-        "Status",
-        "AFFORDABLE",
+        "Price",
     ] {
         assert!(
             comparison.contains(expected),
@@ -169,6 +167,10 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         );
     }
     assert!(comparison.contains("Diesel"));
+    assert!(
+        !comparison.contains("AFFORDABLE"),
+        "normal affordability should not be repeated across catalogue rows"
+    );
 
     let compact = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     for expected in [
@@ -177,10 +179,10 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
         "Veltrian D121",
         "$3,000.00",
         "$4,400.00",
-        "70 passengers",
+        "70 seats",
         "118.8 km/h",
         "$1.20/km",
-        "EVN type",
+        "EVN basis",
     ] {
         assert!(
             compact.contains(expected),
@@ -335,7 +337,7 @@ fn market_footer_keeps_unaffordable_buy_visible_but_disabled() {
         ShellAction::Continue
     );
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(rendered.contains("UNAFFORDABLE"));
+    assert!(rendered.contains("INSUFFICIENT FUNDS"));
     assert!(rendered.contains("Company Funds are below this purchase price."));
     assert!(rendered.contains("Shortfall"));
     assert!(rendered.contains("[Enter] Buy"));
@@ -376,10 +378,10 @@ fn market_inspector_summarizes_owned_units_for_the_selected_model() {
         ShellAction::Continue
     );
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(rendered.contains("OWNERSHIP"));
-    assert!(rendered.contains("Owned: 1"));
-    assert!(rendered.contains("Ready: 1"));
-    assert!(rendered.contains("Travelling: 0"));
+    assert!(rendered.contains("FLEET PRESENCE"));
+    assert!(rendered.contains("Owned"));
+    assert!(rendered.contains("Ready"));
+    assert!(rendered.contains("Travelling"));
 }
 
 #[test]
