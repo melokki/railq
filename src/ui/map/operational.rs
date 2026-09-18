@@ -82,25 +82,76 @@ pub(super) fn render_operational_map(
     selection: &mut MapLocationSelection,
 ) {
     selection.synchronize(state);
-    if area.width >= 92 && area.height >= 14 {
-        let inspector_width = if area.width >= 120 { 40 } else { 36 };
+
+    let body_area = if area.height >= 5 {
+        let [overview_area, body_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+        render_network_overview(frame, overview_area, state);
+        body_area
+    } else {
+        area
+    };
+
+    if body_area.width >= 92 && body_area.height >= 14 {
+        let inspector_width = if body_area.width >= 120 { 40 } else { 36 };
         let [map_area, inspector_area] =
             Layout::horizontal([Constraint::Min(48), Constraint::Length(inspector_width)])
                 .spacing(1)
-                .areas(area);
+                .areas(body_area);
         render_operational_network(frame, map_area, state, selection);
         render_location_inspector(frame, inspector_area, state, selection);
-    } else if area.height >= 17 {
-        let inspector_height = area.height.min(10);
+    } else if body_area.height >= 17 {
+        let inspector_height = body_area.height.min(10);
         let [map_area, inspector_area] =
             Layout::vertical([Constraint::Min(7), Constraint::Length(inspector_height)])
                 .spacing(1)
-                .areas(area);
+                .areas(body_area);
         render_operational_network(frame, map_area, state, selection);
         render_location_inspector(frame, inspector_area, state, selection);
     } else {
-        render_operational_network(frame, area, state, selection);
+        render_operational_network(frame, body_area, state, selection);
     }
+}
+
+fn render_network_overview(frame: &mut Frame, area: Rect, state: &GameState) {
+    let network = &state.region.rail_authority.rail_network;
+    let station_count = network.rail_stations.len();
+    let link_count = network.rail_lines.len();
+    let service_count = state.player_company.passenger_services.len();
+    let registration = format!(
+        "{} {}",
+        state.region.railway_registration.display_code(),
+        state.region.railway_registration.mark
+    );
+
+    let (status, status_style) = if !state.active_journeys.is_empty() {
+        ("NETWORK OPERATING", theme::focused_title())
+    } else if service_count > 0 {
+        ("NETWORK READY", theme::success())
+    } else {
+        ("NETWORK DEVELOPING", theme::warning())
+    };
+
+    let summary = if area.width >= 96 {
+        format!(
+            " · {station_count} stations · {link_count} rail links · {service_count} services · registration {registration}"
+        )
+    } else if area.width >= 68 {
+        format!(
+            " · {station_count} stations · {service_count} services · registration {registration}"
+        )
+    } else {
+        format!(" · {station_count} stations · {service_count} services")
+    };
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(status, status_style.bold()),
+            Span::styled(summary, theme::secondary()),
+        ]))
+        .style(theme::panel()),
+        area,
+    );
 }
 
 fn render_operational_network(
@@ -110,7 +161,7 @@ fn render_operational_network(
     selection: &mut MapLocationSelection,
 ) {
     let selected = selection.selected_settlement_id(state);
-    let block = operational_network_block(state, area.width);
+    let block = operational_network_block(area.width);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(layout) = operational_layout(state) else {
@@ -135,31 +186,12 @@ fn render_operational_network(
     );
 }
 
-fn operational_network_block(state: &GameState, width: u16) -> Block<'static> {
-    let registration = format!(
-        "{} {}",
-        state.region.railway_registration.display_code(),
-        state.region.railway_registration.mark
-    );
-
+fn operational_network_block(width: u16) -> Block<'static> {
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::focused_border())
         .title_top(Line::styled(" Network ", theme::focused_title()).left_aligned())
         .style(theme::panel());
-
-    // Keep identity separate from the workspace name. The previous single title
-    // mixed registration and map-marker explanations into one long sentence,
-    // which made the panel harder to scan than the map itself.
-    if width >= 40 {
-        block = block.title_top(
-            Line::from(vec![
-                Span::styled(" Registration · ", theme::secondary()),
-                Span::styled(format!("{registration} "), theme::primary_value()),
-            ])
-            .right_aligned(),
-        );
-    }
 
     // Marker meanings are spatial information, so the map keeps only this
     // compact legend. The selected location is already identified by its map

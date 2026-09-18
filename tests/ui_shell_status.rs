@@ -38,7 +38,7 @@ fn captures_company_status_at_wide_and_compact_sizes() -> Result<(), Box<dyn Err
 }
 
 #[test]
-fn map_header_separates_registration_from_the_marker_legend() {
+fn map_overview_integrates_registration_without_crowding_the_map_border() {
     let state = create_new_game(42, "Northstar Passenger", STARTED_AT);
     let shell = Shell::new();
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
@@ -48,9 +48,12 @@ fn map_header_separates_registration_from_the_marker_legend() {
         state.region.railway_registration.mark
     );
 
-    assert!(rendered.contains("Network"));
-    assert!(rendered.contains("Registration ·"));
-    assert!(rendered.contains(&registration));
+    assert!(rendered.contains("NETWORK DEVELOPING"));
+    assert!(rendered.contains("stations"));
+    assert!(rendered.contains("rail links"));
+    assert!(rendered.contains("services"));
+    assert!(rendered.contains(&format!("registration {registration}")));
+    assert!(!rendered.contains("Registration ·"));
     let selected_station = state
         .region
         .rail_authority
@@ -74,6 +77,26 @@ fn map_header_separates_registration_from_the_marker_legend() {
     assert!(rendered.contains("○ settlement"));
     assert!(rendered.contains("▶ train"));
     assert!(!rendered.contains("● connected  ○ unconnected  ▶ travelling"));
+}
+
+#[test]
+fn map_overview_status_tracks_operating_state() -> Result<(), Box<dyn Error>> {
+    let mut state = create_new_game(42, "Northstar Passenger", STARTED_AT);
+    let shell = Shell::new();
+
+    let developing = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(developing.contains("NETWORK DEVELOPING"));
+
+    state.player_company.funds = Money::from_cents(1_000_000);
+    let train = purchase_train(&mut state, 0, RailStationId::new(1))?;
+    let service = find_or_create_service(&mut state, RailStationId::new(1), RailStationId::new(2))?;
+    let ready = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(ready.contains("NETWORK READY"));
+
+    dispatch_journey(&mut state, train, service, STARTED_AT)?;
+    let operating = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(operating.contains("NETWORK OPERATING"));
+    Ok(())
 }
 
 #[test]
