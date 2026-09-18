@@ -215,11 +215,9 @@ impl AuthorityWorkspace {
         if wide {
             items.push(AuthorityShortcut::enabled("PgUp/PgDn", "Page"));
         }
-        items.push(if self.can_contribute(state) {
-            AuthorityShortcut::enabled("F", "Contribute")
-        } else {
-            AuthorityShortcut::disabled("F", "Contribute")
-        });
+        if self.can_contribute(state) {
+            items.push(AuthorityShortcut::enabled("F", "Contribute"));
+        }
         items
     }
 
@@ -493,6 +491,7 @@ mod tests {
         assert_eq!(shortcuts.len(), 1);
         assert_eq!(shortcuts[0].key, "↑↓");
         assert!(!shortcuts[0].enabled);
+        assert!(!shortcuts.iter().any(|shortcut| shortcut.key == "F"));
 
         assert_eq!(
             workspace.handle_key(key(KeyCode::Down), &state),
@@ -518,6 +517,15 @@ mod tests {
             UtcSeconds::from_unix_seconds(0),
         )
         .unwrap();
+
+        let mut workspace = AuthorityWorkspace::default();
+        assert!(
+            !workspace
+                .shortcuts(&state, false, true)
+                .iter()
+                .any(|shortcut| shortcut.key == "F")
+        );
+
         let project = state
             .region
             .rail_authority
@@ -526,7 +534,6 @@ mod tests {
             .expect("planning should create an infrastructure project");
         project.status = crate::model::InfrastructureProjectStatus::Funding;
 
-        let mut workspace = AuthorityWorkspace::default();
         assert!(workspace.can_contribute(&state));
         assert!(
             workspace

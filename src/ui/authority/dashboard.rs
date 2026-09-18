@@ -19,8 +19,7 @@ use super::{
     ProjectSelection,
     analytics::AuthorityDashboardSnapshot,
     format::{
-        money_line, new_line_route_label, project_next, project_scope, project_status,
-        relative_time, schedule_line, value_line,
+        new_line_route_label, project_next, project_scope, project_status, relative_time,
     },
     programme::{render_programme_pipeline, render_projects},
     project::render_selected_project,
@@ -135,11 +134,15 @@ fn render_authority_overview(
     programme_lines.push(next_network_change_line(state, now, snapshot));
     render_dashboard_section(frame, programme_area, programme_lines);
 
+    let fiscal_context = snapshot.next_fiscal_period_at.map_or_else(
+        || "allocation schedule pending".into(),
+        |timestamp| format!("next allocation {}", relative_time(timestamp, now)),
+    );
     let identity_lines = vec![
         Line::styled(state.region.rail_authority.name.clone(), theme::title()),
         Line::from(vec![
             Span::styled(state.region.name.clone(), theme::secondary()),
-            Span::styled(" · public infrastructure programme", theme::hint()),
+            Span::styled(format!(" · {fiscal_context}"), theme::hint()),
         ]),
     ];
     render_dashboard_section(frame, identity_area, identity_lines);
@@ -164,24 +167,20 @@ fn render_authority_metrics(
         .available_investment
         .map(ui_format::money)
         .unwrap_or_else(|| "—".into());
-    let next_allocation = snapshot.next_fiscal_period_at.map_or_else(
-        || "Next allocation pending".into(),
-        |timestamp| {
-            format!(
-                "+{} {}",
-                ui_format::money(snapshot.public_allocation),
-                relative_time(timestamp, now)
-            )
-        },
-    );
     render_metric_card(
         frame,
         investment_area,
         "INVESTMENT CAPACITY",
-        available,
-        "available to invest".into(),
+        format!("{available} available"),
         format!("Treasury {}", ui_format::money(snapshot.treasury)),
-        next_allocation,
+        format!(
+            "Reserve {}",
+            ui_format::money(snapshot.maintenance_reserve)
+        ),
+        format!(
+            "Committed {}",
+            ui_format::money(snapshot.committed_investment)
+        ),
         theme::success(),
     );
 
@@ -383,29 +382,56 @@ fn render_finances(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSec
         .available_investment
         .map(ui_format::money)
         .unwrap_or_else(|| "—".into());
+    let next_allocation = snapshot.next_fiscal_period_at.map_or_else(
+        || "Scheduling pending".into(),
+        |timestamp| {
+            format!(
+                "+{} · {}",
+                ui_format::money(snapshot.public_allocation),
+                relative_time(timestamp, now)
+            )
+        },
+    );
 
     let lines = vec![
         Line::from(vec![
             Span::styled("Authority  ", theme::secondary()),
             Span::styled(authority.name.clone(), theme::title()),
         ]),
-        money_line("Treasury", snapshot.treasury),
         Line::from(vec![
-            Span::styled("Available investment  ", theme::secondary()),
-            Span::styled(available, theme::success()),
+            Span::styled("Available to invest  ", theme::secondary()),
+            Span::styled(available, theme::success().bold()),
         ]),
-        money_line("Maintenance reserve", snapshot.maintenance_reserve),
-        money_line("Committed projects", snapshot.committed_investment),
-        money_line("Daily public allocation", snapshot.public_allocation),
-        money_line("Access-fee revenue", snapshot.access_fee_revenue),
-        snapshot
-            .next_fiscal_period_at
-            .map(|timestamp| schedule_line("Next fiscal period", timestamp, now))
-            .unwrap_or_else(|| value_line("Next fiscal period", "Scheduling pending")),
+        Line::from(vec![
+            Span::styled("Treasury  ", theme::secondary()),
+            Span::styled(ui_format::money(snapshot.treasury), theme::primary_value()),
+        ]),
+        Line::from(vec![
+            Span::styled("Allocated  ", theme::secondary()),
+            Span::styled(
+                format!(
+                    "{} reserve · {} committed",
+                    ui_format::money(snapshot.maintenance_reserve),
+                    ui_format::money(snapshot.committed_investment)
+                ),
+                theme::primary_value(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Next public allocation  ", theme::secondary()),
+            Span::styled(next_allocation, theme::primary_value()),
+        ]),
+        Line::from(vec![
+            Span::styled("Access-fee revenue  ", theme::secondary()),
+            Span::styled(
+                ui_format::money(snapshot.access_fee_revenue),
+                theme::primary_value(),
+            ),
+        ]),
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel_block("Infrastructure Finances", false))
+            .block(panel_block("Investment Capacity", false))
             .style(theme::panel()),
         area,
     );
@@ -430,10 +456,27 @@ pub fn render_text(state: &GameState, now: UtcSeconds) -> String {
         ui_format::money(finances.maintenance_reserve)
     )
     .expect("writing to String cannot fail");
+    writeln!(
+        output,
+        "Committed projects: {}",
+        ui_format::money(finances.committed_investment)
+    )
+    .expect("writing to String cannot fail");
     if let Some(next) = finances.next_fiscal_period_at {
-        writeln!(output, "Next fiscal period: {}", relative_time(next, now))
-            .expect("writing to String cannot fail");
+        writeln!(
+            output,
+            "Next fiscal period: +{} · {}",
+            ui_format::money(finances.regional_public_allocation),
+            relative_time(next, now)
+        )
+        .expect("writing to String cannot fail");
     }
+    writeln!(
+        output,
+        "Access-fee revenue: {}",
+        ui_format::money(finances.infrastructure_access_fee_revenue)
+    )
+    .expect("writing to String cannot fail");
     writeln!(
         output,
         "Construction slots: {}/{} reserved",

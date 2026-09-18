@@ -409,13 +409,7 @@ fn append_funding_focus(
             },
         ));
     }
-    if let Ok(remaining) = project.funding.remaining_operator_contribution_capacity() {
-        lines.push(labelled_line(
-            "Contribution room",
-            &ui_format::money(remaining.max(Money::ZERO)),
-        ));
-    }
-    append_operator_benefit(lines, now, project);
+    append_operator_involvement(lines, now, project);
 }
 
 fn append_scheduled_focus(
@@ -437,7 +431,7 @@ fn append_scheduled_focus(
         lines.push(labelled_line("Starts", "Awaiting construction slot"));
     }
     append_financial_split(lines, project);
-    append_operator_benefit(lines, now, project);
+    append_operator_involvement(lines, now, project);
 }
 
 fn append_construction_focus(
@@ -464,7 +458,7 @@ fn append_construction_focus(
         ));
     }
     append_financial_split(lines, project);
-    append_operator_benefit(lines, now, project);
+    append_operator_involvement(lines, now, project);
 }
 
 fn append_open_focus(
@@ -485,7 +479,7 @@ fn append_open_focus(
         ));
     }
     append_financial_split(lines, project);
-    append_operator_benefit(lines, now, project);
+    append_operator_involvement(lines, now, project);
 }
 
 fn append_cancelled_focus(
@@ -510,6 +504,7 @@ fn append_cancelled_focus(
         ));
     }
     append_financial_split(lines, project);
+    append_operator_involvement(lines, now, project);
 }
 
 fn append_financial_split(lines: &mut Vec<Line<'static>>, project: &InfrastructureProject) {
@@ -518,20 +513,45 @@ fn append_financial_split(lines: &mut Vec<Line<'static>>, project: &Infrastructu
         &ui_format::money(project.funding.estimated_cost),
     ));
     lines.push(labelled_line(
-        "Authority",
+        "Authority funding",
         &ui_format::money(project.funding.authority_committed),
-    ));
-    lines.push(labelled_line(
-        "Operator",
-        &ui_format::money(project.funding.operator_contributed),
     ));
 }
 
-fn append_operator_benefit(
+fn append_operator_involvement(
     lines: &mut Vec<Line<'static>>,
     now: UtcSeconds,
     project: &InfrastructureProject,
 ) {
+    lines.push(Line::from(""));
+    lines.push(section_heading("YOUR INVOLVEMENT"));
+    lines.push(labelled_line(
+        "Contribution",
+        &ui_format::money(project.funding.operator_contributed),
+    ));
+
+    let contribution_room = project
+        .funding
+        .remaining_operator_contribution_capacity()
+        .ok()
+        .map(|remaining| remaining.max(Money::ZERO));
+    if project.status == InfrastructureProjectStatus::Funding {
+        if let Some(remaining) = contribution_room {
+            if remaining > Money::ZERO {
+                lines.push(labelled_line(
+                    "Contribution room",
+                    &ui_format::money(remaining),
+                ));
+            } else {
+                lines.push(labelled_line_styled(
+                    "Contribution limit",
+                    "Reached",
+                    theme::success(),
+                ));
+            }
+        }
+    }
+
     if let Some(discount) = project.funding.access_fee_discount {
         lines.push(labelled_line_styled(
             "Access benefit",
@@ -552,8 +572,19 @@ fn append_operator_benefit(
             ),
             theme::success(),
         ));
+    } else if project.status == InfrastructureProjectStatus::Funding
+        && contribution_room.is_some_and(|remaining| remaining > Money::ZERO)
+    {
+        let percent = u32::from(PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS) / 100;
+        lines.push(labelled_line(
+            "Potential benefit",
+            &format!(
+                "{percent}% · {} fiscal days after opening",
+                PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS
+            ),
+        ));
     } else {
-        lines.push(labelled_line("Operator funding", "No contribution"));
+        lines.push(labelled_line("Access fees", "Normal rates apply"));
     }
 }
 
