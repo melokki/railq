@@ -173,6 +173,7 @@ pub(super) fn render_projects(
                     Cell::from(format!("{:02}", source_index + 1)),
                     Cell::from(project_scope(state, project)),
                     Cell::from(stage_label(stage)).style(stage_style(stage)),
+                    Cell::from(stage_progress(project, now)),
                 ])
             } else {
                 Row::new(vec![
@@ -191,11 +192,12 @@ pub(super) fn render_projects(
 
     let (header, widths) = if compact {
         (
-            Row::new(["#", "Project", "Stage"]).style(theme::table_header()),
+            Row::new(["#", "Project", "Stage", "Progress"]).style(theme::table_header()),
             vec![
                 Constraint::Length(3),
                 Constraint::Fill(1),
                 Constraint::Length(10),
+                Constraint::Length(16),
             ],
         )
     } else {

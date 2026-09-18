@@ -118,6 +118,10 @@ impl ProjectSelection {
         self.page_size = page_size.max(1);
     }
 
+    fn has_multiple_pages(&self, state: &GameState) -> bool {
+        self.page_size >= 2 && ordered_project_indices(state).len() > self.page_size
+    }
+
     pub fn selected_project_id(&mut self, state: &GameState) -> Option<InfrastructureProjectId> {
         self.selected_project(state).map(|(_, project)| project.id)
     }
@@ -190,7 +194,7 @@ impl AuthorityWorkspace {
         &mut self,
         state: &GameState,
         compact: bool,
-        wide: bool,
+        _wide: bool,
     ) -> Vec<AuthorityShortcut> {
         if self.has_modal() {
             return vec![
@@ -212,7 +216,7 @@ impl AuthorityWorkspace {
             if compact { "↑↓" } else { "↑↓/JK" },
             "Project",
         )];
-        if wide {
+        if self.selection.has_multiple_pages(state) {
             items.push(AuthorityShortcut::enabled("PgUp/PgDn", "Page"));
         }
         if self.can_contribute(state) {
@@ -502,6 +506,51 @@ mod tests {
             AuthorityWorkspaceAction::Notice("Select an infrastructure project first.".into())
         );
         assert!(!workspace.has_modal());
+    }
+
+
+    #[test]
+    fn authority_shortcuts_only_advertise_page_navigation_when_the_programme_pages() {
+        let now = UtcSeconds::from_unix_seconds(0);
+        let mut state = create_new_game(42, "One More Prime", now);
+        let world_seed = state.world_seed;
+        establish_rail_markets(&mut state);
+        advance_rail_authority(
+            &mut state.region,
+            world_seed,
+            &state.origin_destination_demand,
+            &state.rules.authority,
+            now,
+        )
+        .unwrap();
+
+        let template = state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .first()
+            .expect("planning should create an infrastructure project")
+            .clone();
+        let mut workspace = AuthorityWorkspace::default();
+        workspace.selection.set_page_size(4);
+        assert!(
+            !workspace
+                .shortcuts(&state, false, true)
+                .iter()
+                .any(|shortcut| shortcut.key == "PgUp/PgDn")
+        );
+
+        state
+            .region
+            .rail_authority
+            .infrastructure_projects
+            .extend((0..5).map(|_| template.clone()));
+        assert!(
+            workspace
+                .shortcuts(&state, false, false)
+                .iter()
+                .any(|shortcut| shortcut.key == "PgUp/PgDn" && shortcut.enabled)
+        );
     }
 
     #[test]

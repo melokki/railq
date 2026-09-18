@@ -20,10 +20,28 @@ use super::{
     analytics::AuthorityDashboardSnapshot,
     format::{
         new_line_route_label, project_next, project_scope, project_status, relative_time,
+        status_style,
     },
     programme::{render_programme_pipeline, render_projects},
     project::render_selected_project,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthorityLayout {
+    Wide,
+    Compact,
+    Tiny,
+}
+
+fn authority_layout(area: Rect) -> AuthorityLayout {
+    if area.width >= 100 && area.height >= 24 {
+        AuthorityLayout::Wide
+    } else if area.width >= 72 && area.height >= 16 {
+        AuthorityLayout::Compact
+    } else {
+        AuthorityLayout::Tiny
+    }
+}
 
 /// Renders the public Rail Authority as a dedicated read-only workspace.
 pub fn render_dashboard(
@@ -35,12 +53,10 @@ pub fn render_dashboard(
 ) {
     selection.synchronize(state);
 
-    if area.width >= 100 && area.height >= 18 {
-        render_wide(frame, area, state, now, selection);
-    } else if area.height >= 14 {
-        render_compact(frame, area, state, now, selection);
-    } else {
-        render_tiny(frame, area, state, now);
+    match authority_layout(area) {
+        AuthorityLayout::Wide => render_wide(frame, area, state, now, selection),
+        AuthorityLayout::Compact => render_compact(frame, area, state, now, selection),
+        AuthorityLayout::Tiny => render_tiny(frame, area, state, now, selection),
     }
 }
 
@@ -283,6 +299,34 @@ fn next_network_change_line(
     ])
 }
 
+fn compact_network_change_line(
+    state: &GameState,
+    now: UtcSeconds,
+    snapshot: AuthorityDashboardSnapshot,
+) -> Line<'static> {
+    let Some(change) = snapshot.next_network_change else {
+        return Line::from(vec![
+            Span::styled("Next change  ", theme::table_header()),
+            Span::styled("No opening scheduled", theme::secondary()),
+        ]);
+    };
+    let Some(project) = project_by_id(state, change.project_id) else {
+        return Line::from(vec![
+            Span::styled("Next change  ", theme::table_header()),
+            Span::styled("Opening details unavailable", theme::secondary()),
+        ]);
+    };
+
+    Line::from(vec![
+        Span::styled("Next change  ", theme::table_header()),
+        Span::styled(network_change_label(state, project), theme::primary_value().bold()),
+        Span::styled(
+            format!(" · {}", relative_time(change.opens_at, now)),
+            theme::secondary(),
+        ),
+    ])
+}
+
 fn project_by_id(
     state: &GameState,
     project_id: crate::model::InfrastructureProjectId,
@@ -354,36 +398,51 @@ fn render_compact(
     now: UtcSeconds,
     selection: &mut ProjectSelection,
 ) {
-    let [summary_area, projects_area, inspector_area] = Layout::vertical([
-        Constraint::Length(9),
-        Constraint::Length(8),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
-    render_finances(frame, summary_area, state, now);
-    render_projects(frame, projects_area, state, now, selection, true);
-    render_selected_project(frame, inspector_area, state, now, selection);
-}
-
-fn render_tiny(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSeconds) {
-    frame.render_widget(
-        Paragraph::new(render_text(state, now))
-            .block(panel_block("Rail Authority", false))
-            .style(theme::panel())
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
-fn render_finances(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSeconds) {
-    let authority = &state.region.rail_authority;
     let snapshot = AuthorityDashboardSnapshot::from_state(state);
+    let shell = panel_block("Authority", true);
+    let inner = shell.inner(area);
+    frame.render_widget(shell, area);
+
+    if inner.height >= 20 {
+        let [summary_area, pipeline_area, projects_area, inspector_area] = Layout::vertical([
+            Constraint::Length(4),
+            Constraint::Length(2),
+            Constraint::Length(7),
+            Constraint::Fill(1),
+        ])
+        .spacing(1)
+        .areas(inner);
+        render_compact_summary(frame, summary_area, state, now, snapshot);
+        render_programme_pipeline(frame, pipeline_area, snapshot.programme);
+        render_projects(frame, projects_area, state, now, selection, true);
+        render_selected_project(frame, inspector_area, state, now, selection);
+    } else {
+        let [summary_area, pipeline_area, projects_area] = Layout::vertical([
+            Constraint::Length(4),
+            Constraint::Length(2),
+            Constraint::Fill(1),
+        ])
+        .spacing(1)
+        .areas(inner);
+        render_compact_summary(frame, summary_area, state, now, snapshot);
+        render_programme_pipeline(frame, pipeline_area, snapshot.programme);
+        render_projects(frame, projects_area, state, now, selection, true);
+    }
+}
+
+fn render_compact_summary(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    now: UtcSeconds,
+    snapshot: AuthorityDashboardSnapshot,
+) {
     let available = snapshot
         .available_investment
         .map(ui_format::money)
         .unwrap_or_else(|| "—".into());
     let next_allocation = snapshot.next_fiscal_period_at.map_or_else(
-        || "Scheduling pending".into(),
+        || "allocation pending".into(),
         |timestamp| {
             format!(
                 "+{} · {}",
@@ -393,47 +452,93 @@ fn render_finances(frame: &mut Frame, area: Rect, state: &GameState, now: UtcSec
         },
     );
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
-            Span::styled("Authority  ", theme::secondary()),
-            Span::styled(authority.name.clone(), theme::title()),
+            Span::styled(state.region.rail_authority.name.clone(), theme::title()),
+            Span::styled(format!(" · {}", state.region.name), theme::secondary()),
         ]),
         Line::from(vec![
-            Span::styled("Available to invest  ", theme::secondary()),
+            Span::styled("Available  ", theme::secondary()),
             Span::styled(available, theme::success().bold()),
-        ]),
-        Line::from(vec![
-            Span::styled("Treasury  ", theme::secondary()),
+            Span::styled("   Treasury  ", theme::secondary()),
             Span::styled(ui_format::money(snapshot.treasury), theme::primary_value()),
         ]),
         Line::from(vec![
-            Span::styled("Allocated  ", theme::secondary()),
+            Span::styled("Delivery  ", theme::secondary()),
             Span::styled(
                 format!(
-                    "{} reserve · {} committed",
-                    ui_format::money(snapshot.maintenance_reserve),
-                    ui_format::money(snapshot.committed_investment)
+                    "{}/{} slots",
+                    snapshot.reserved_construction, snapshot.construction_capacity
+                ),
+                if snapshot.free_construction == 0 && snapshot.construction_capacity > 0 {
+                    theme::warning()
+                } else {
+                    theme::primary_value()
+                },
+            ),
+            Span::styled("   Next allocation  ", theme::secondary()),
+            Span::styled(next_allocation, theme::primary_value()),
+        ]),
+    ];
+    lines.push(compact_network_change_line(state, now, snapshot));
+    render_dashboard_section(frame, area, lines);
+}
+
+fn render_tiny(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    now: UtcSeconds,
+    selection: &mut ProjectSelection,
+) {
+    let snapshot = AuthorityDashboardSnapshot::from_state(state);
+    selection.set_page_size(usize::MAX);
+    let shell = panel_block("Authority", true);
+    let inner = shell.inner(area);
+    frame.render_widget(shell, area);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let available = snapshot
+        .available_investment
+        .map(ui_format::money)
+        .unwrap_or_else(|| "—".into());
+    let mut lines = vec![
+        Line::styled(state.region.rail_authority.name.clone(), theme::title()),
+        Line::from(vec![
+            Span::styled("Available  ", theme::secondary()),
+            Span::styled(available, theme::success()),
+            Span::styled(" · ", theme::secondary()),
+            Span::styled(
+                format!(
+                    "{} projects",
+                    state.region.rail_authority.infrastructure_projects.len()
                 ),
                 theme::primary_value(),
             ),
         ]),
-        Line::from(vec![
-            Span::styled("Next public allocation  ", theme::secondary()),
-            Span::styled(next_allocation, theme::primary_value()),
-        ]),
-        Line::from(vec![
-            Span::styled("Access-fee revenue  ", theme::secondary()),
-            Span::styled(
-                ui_format::money(snapshot.access_fee_revenue),
-                theme::primary_value(),
-            ),
-        ]),
+        compact_network_change_line(state, now, snapshot),
     ];
+
+    if let Some((index, project)) = selection.selected_project(state) {
+        lines.push(Line::from(vec![
+            Span::styled(format!("PROJECT {:02}  ", index + 1), theme::table_header()),
+            Span::styled(project_scope(state, project), theme::primary_value()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(project_status(project.status), status_style(project.status)),
+            Span::styled(" · ", theme::secondary()),
+            Span::styled(project_next(state, project, now), theme::secondary()),
+        ]));
+    }
+
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel_block("Investment Capacity", false))
-            .style(theme::panel()),
-        area,
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        inner,
     );
 }
 
@@ -497,4 +602,35 @@ pub fn render_text(state: &GameState, now: UtcSeconds) -> String {
         .expect("writing to String cannot fail");
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::layout::Rect;
+
+    use super::{AuthorityLayout, authority_layout};
+
+    #[test]
+    fn authority_dashboard_uses_stable_responsive_breakpoints() {
+        assert_eq!(
+            authority_layout(Rect::new(0, 0, 120, 34)),
+            AuthorityLayout::Wide
+        );
+        assert_eq!(
+            authority_layout(Rect::new(0, 0, 96, 24)),
+            AuthorityLayout::Compact
+        );
+        assert_eq!(
+            authority_layout(Rect::new(0, 0, 72, 16)),
+            AuthorityLayout::Compact
+        );
+        assert_eq!(
+            authority_layout(Rect::new(0, 0, 71, 20)),
+            AuthorityLayout::Tiny
+        );
+        assert_eq!(
+            authority_layout(Rect::new(0, 0, 120, 15)),
+            AuthorityLayout::Tiny
+        );
+    }
 }

@@ -63,6 +63,21 @@ pub(super) fn render_selected_project(
         return;
     }
 
+    if inner.height < 10 {
+        render_project_summary(frame, inner, state, now, index, project);
+        return;
+    }
+
+    if inner.height < 14 {
+        let [header_area, stage_area] =
+            Layout::vertical([Constraint::Length(2), Constraint::Fill(1)])
+                .spacing(1)
+                .areas(inner);
+        render_project_header(frame, header_area, state, now, index, project);
+        render_stage_focus(frame, stage_area, state, now, project);
+        return;
+    }
+
     let [header_area, content_area, milestones_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Fill(1),
@@ -82,13 +97,60 @@ pub(super) fn render_selected_project(
         render_stage_focus(frame, stage_area, state, now, project);
     } else {
         let [stage_area, context_area] =
-            Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+            Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .spacing(1)
                 .areas(content_area);
         render_stage_focus(frame, stage_area, state, now, project);
         render_project_context(frame, context_area, state, project);
     }
 
     render_milestones(frame, milestones_area, now, project);
+}
+
+
+fn render_project_summary(
+    frame: &mut Frame,
+    area: Rect,
+    state: &GameState,
+    now: UtcSeconds,
+    index: usize,
+    project: &InfrastructureProject,
+) {
+    let mut lines = vec![
+        Line::styled(
+            format!("PROJECT {:02} · {}", index + 1, project_heading(state, project)),
+            theme::title(),
+        ),
+        Line::from(vec![
+            Span::styled(project_status(project.status), status_style(project.status).bold()),
+            Span::styled(" · ", theme::secondary()),
+            Span::styled(project_next(state, project, now), theme::primary_value()),
+        ]),
+    ];
+    if area.height >= 3 {
+        lines.push(Line::from(vec![
+            Span::styled("Budget  ", theme::secondary()),
+            Span::styled(
+                ui_format::money(project.funding.estimated_cost),
+                theme::primary_value(),
+            ),
+            Span::styled(" · Operator  ", theme::secondary()),
+            Span::styled(
+                ui_format::money(project.funding.operator_contributed),
+                if project.funding.operator_contributed > Money::ZERO {
+                    theme::success()
+                } else {
+                    theme::primary_value()
+                },
+            ),
+        ]));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 fn render_project_header(
@@ -102,13 +164,19 @@ fn render_project_header(
     let heading = project_heading(state, project);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(
+            Line::from({
+                let mut spans = vec![Span::styled(
                     format!("PROJECT {:02} · {heading}", index + 1),
                     theme::title(),
-                ),
-                Span::styled(format!("  {}", short_uuid(project.id)), theme::secondary()),
-            ]),
+                )];
+                if area.width >= 72 {
+                    spans.push(Span::styled(
+                        format!("  {}", short_uuid(project.id)),
+                        theme::secondary(),
+                    ));
+                }
+                spans
+            }),
             Line::from(vec![
                 Span::styled(project_status(project.status), status_style(project.status).bold()),
                 Span::styled(" · ", theme::secondary()),
