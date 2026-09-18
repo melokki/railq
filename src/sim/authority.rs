@@ -10,9 +10,9 @@ use crate::model::{
     DistanceMetres, DurationSeconds, Electrification, GameState, InfrastructureProject,
     InfrastructureProjectFunding, InfrastructureProjectId, InfrastructureProjectKind,
     InfrastructureProjectStatus, InfrastructureProjectTimeline, Money, MoneyPerKilometre,
-    OriginDestinationDemand, PlannedRailLine, PlannedRailStation, RailLine, RailLineId,
-    RailStation, RailStationId, Region, SettlementId, SpeedKilometresPerHour, TrackCount,
-    UtcSeconds,
+    OriginDestinationDemand, PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS, PlannedRailLine,
+    PlannedRailStation, RailLine, RailLineId, RailStation, RailStationId, Region, SettlementId,
+    SpeedKilometresPerHour, TrackCount, UtcSeconds,
 };
 
 /// One provisional new-line opportunity evaluated by the Rail Authority.
@@ -996,18 +996,27 @@ pub(crate) fn open_completed_infrastructure_projects(
 
         let target_name = project_target_settlement_name(region, index);
         let project = &mut region.rail_authority.infrastructure_projects[index];
-        project
+        let access_discount = project
             .funding
             .activate_operator_access_discount(completion)?;
         project.status = InfrastructureProjectStatus::Open;
         project.timeline.completed_at = Some(completion);
+        let detail = if let Some(discount) = access_discount {
+            let percent = u32::from(discount.basis_points) / 100;
+            format!(
+                "The new public railway connection and station are open for passenger operations. Operator-funded infrastructure receives a {percent}% access-fee discount for {} fiscal days.",
+                PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS
+            )
+        } else {
+            "The new public railway connection and station are open for passenger operations."
+                .into()
+        };
         push_bulletin(
             region,
             completion,
             BulletinCategory::Network,
             format!("{target_name} joins the rail network"),
-            "The new public railway connection and station are open for passenger operations."
-                .into(),
+            detail,
         );
     }
 
@@ -3346,6 +3355,12 @@ mod tests {
             crate::model::PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS
         );
         assert_eq!(discount.expires_at.unix_seconds(), 8 * 86_400);
+        let bulletin = region.bulletin_entries.last().unwrap();
+        assert!(
+            bulletin
+                .detail
+                .contains("50% access-fee discount for 7 fiscal days")
+        );
     }
 
     #[test]

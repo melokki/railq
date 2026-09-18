@@ -16,9 +16,9 @@ use ratatui::{
 
 use crate::{
     model::{
-        ConstructionDifficulty, Electrification, GameState, InfrastructureProject,
-        InfrastructureProjectId, InfrastructureProjectKind, InfrastructureProjectStatus, Money,
-        PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS,
+        ConstructionDifficulty, Electrification, GameState, InfrastructureAccessDiscount,
+        InfrastructureProject, InfrastructureProjectId, InfrastructureProjectKind,
+        InfrastructureProjectStatus, Money, PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS,
         PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_DURATION_DAYS, UtcSeconds,
     },
     sim::authority::{
@@ -773,18 +773,17 @@ fn render_project_inspector(
         ]),
     ]);
     if let Some(discount) = project.funding.access_fee_discount {
-        let percent = u32::from(discount.basis_points) / 100;
-        let status = if discount.is_active_at(now) {
-            format!(
-                "{percent}% · expires {}",
-                format_project_timestamp(discount.expires_at, now)
-            )
-        } else {
-            format!("{percent}% · expired")
-        };
+        let active = discount.is_active_at(now);
         lines.push(Line::from(vec![
             Span::styled("Access discount  ", theme::secondary()),
-            Span::styled(status, theme::success()),
+            Span::styled(
+                access_discount_label(discount, now),
+                if active {
+                    theme::success()
+                } else {
+                    theme::secondary()
+                },
+            ),
         ]));
     } else if project.funding.operator_contributed > Money::ZERO {
         let percent = u32::from(PROVISIONAL_OPERATOR_ACCESS_DISCOUNT_BASIS_POINTS) / 100;
@@ -1511,6 +1510,24 @@ fn schedule_line(label: &str, timestamp: UtcSeconds, now: UtcSeconds) -> Line<'s
     ])
 }
 
+pub(crate) fn access_discount_label(
+    discount: InfrastructureAccessDiscount,
+    now: UtcSeconds,
+) -> String {
+    let percent = u32::from(discount.basis_points) / 100;
+    if !discount.is_active_at(now) {
+        return format!("{percent}% · expired");
+    }
+
+    let remaining = discount
+        .expires_at
+        .unix_seconds()
+        .saturating_sub(now.unix_seconds())
+        .try_into()
+        .unwrap_or(0);
+    format!("{percent}% · {} remaining", compact_duration(remaining))
+}
+
 fn duration_line(label: &str, seconds: u64) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label}  "), theme::secondary()),
@@ -1698,8 +1715,9 @@ mod tests {
     };
 
     use super::{
-        AuthorityWorkspace, AuthorityWorkspaceAction, ProjectSelection, compact_duration,
-        construction_remaining_duration, format_project_timestamp, planning_stage_next, render,
+        AuthorityWorkspace, AuthorityWorkspaceAction, ProjectSelection, access_discount_label,
+        compact_duration, construction_remaining_duration, format_project_timestamp,
+        planning_stage_next, render,
     };
 
     fn establish_rail_markets(state: &mut crate::model::GameState) {
@@ -1799,6 +1817,26 @@ mod tests {
         assert_eq!(construction_remaining_duration(1_800), "30m 00s");
         assert_eq!(construction_remaining_duration(1_742), "29m 02s");
         assert_eq!(construction_remaining_duration(42), "42s");
+    }
+
+    #[test]
+    fn access_discount_labels_show_remaining_time_and_expiry_state() {
+        let discount = crate::model::InfrastructureAccessDiscount {
+            basis_points: 5_000,
+            expires_at: UtcSeconds::from_unix_seconds(8 * 86_400),
+        };
+
+        assert_eq!(
+            access_discount_label(
+                discount,
+                UtcSeconds::from_unix_seconds(2 * 86_400 + 11 * 3_600)
+            ),
+            "50% · 5d 13h remaining"
+        );
+        assert_eq!(
+            access_discount_label(discount, UtcSeconds::from_unix_seconds(8 * 86_400)),
+            "50% · expired"
+        );
     }
 
     #[test]

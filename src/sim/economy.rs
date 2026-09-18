@@ -9,9 +9,9 @@ use std::{error::Error, fmt};
 use crate::{
     catalog::model_for_train,
     model::{
-        CalculationError, DistanceMetres, DurationSeconds, GameState, InfrastructureProjectStatus,
-        Money, MoneyPerKilometre, PassengerService, RailLineId, RailStationId,
-        ServiceDirectionMode, ServiceId, SpeedMetresPerSecond, TrainId, TrainStatus, UtcSeconds,
+        CalculationError, DistanceMetres, DurationSeconds, GameState, Money, MoneyPerKilometre,
+        PassengerService, RailLineId, RailStationId, ServiceDirectionMode, ServiceId,
+        SpeedMetresPerSecond, TrainId, TrainStatus, UtcSeconds,
     },
     sim::services::path_between_stations,
 };
@@ -537,15 +537,8 @@ fn quote_infrastructure_access_discount(
         let best_basis_points = state
             .region
             .rail_authority
-            .infrastructure_projects
-            .iter()
-            .filter(|project| project.status == InfrastructureProjectStatus::Open)
-            .filter(|project| project.access_discount_covers_line(*rail_line_id))
-            .filter_map(|project| project.funding.access_fee_discount)
-            .filter(|discount| discount.is_active_at(quoted_at))
-            .map(|discount| discount.basis_points)
-            .max()
-            .unwrap_or(0);
+            .active_access_discount_for_line(*rail_line_id, quoted_at)
+            .map_or(0, |discount| discount.basis_points);
         if best_basis_points == 0 || line_fee <= Money::ZERO {
             continue;
         }

@@ -331,6 +331,23 @@ impl InfrastructureProject {
 }
 
 impl RailAuthority {
+    /// Returns the strongest currently active operator-funded access discount
+    /// that applies to one Rail Line. Equal discounts prefer the later expiry
+    /// so presentation and charging agree on how long the effective benefit lasts.
+    pub fn active_access_discount_for_line(
+        &self,
+        rail_line_id: RailLineId,
+        now: UtcSeconds,
+    ) -> Option<InfrastructureAccessDiscount> {
+        self.infrastructure_projects
+            .iter()
+            .filter(|project| project.status == InfrastructureProjectStatus::Open)
+            .filter(|project| project.access_discount_covers_line(rail_line_id))
+            .filter_map(|project| project.funding.access_fee_discount)
+            .filter(|discount| discount.is_active_at(now))
+            .max_by_key(|discount| (discount.basis_points, discount.expires_at))
+    }
+
     /// Finds an active construction project that prevents `candidate` from
     /// starting work on the same infrastructure.
     pub fn blocking_construction_project(
