@@ -752,13 +752,13 @@ impl DispatchFlow {
                     quote.rail_line_path.len(),
                 ));
                 output.push_str(&format!(
-                    "Directional Demand: {} Waiting Passengers; {} boarding / {} capacity\n",
+                    "Origin Demand: {} Waiting Passengers; {} boarding now / {} capacity\n",
                     waiting_passengers_for_quote(state, quote),
                     quote.boarded_passengers,
                     train_capacity(state, quote.train_id),
                 ));
                 output.push_str(&format!(
-                    "Route: {} | Duration: {} | Revenue booked at origin: {}\n",
+                    "Route: {} | Duration: {} | Revenue booked now: {}\n",
                     format_path(state, quote),
                     format_duration(quote.duration.seconds()),
                     format_money(quote.operating_revenue),
@@ -781,8 +781,13 @@ impl DispatchFlow {
                     ));
                 }
                 output.push_str(&format!(
-                    "Estimated profit: {} | Company Funds after departure: {}\n",
-                    format_money(quote.journey_profitability),
+                    "Snapshot projection: {} trip boardings | Revenue: {} | Result: {}\n",
+                    quote.projected_boarded_passengers,
+                    format_money(quote.projected_operating_revenue),
+                    format_signed_money(quote.projected_journey_profitability),
+                ));
+                output.push_str(&format!(
+                    "Company Funds after departure: {}\n",
                     format_money(quote.cash_after_cost),
                 ));
                 if quote.boarded_passengers == 0 {
@@ -1130,14 +1135,14 @@ fn render_quote_review(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
-                    .title("Passengers")
+                    .title("Origin Boarding")
                     .title_style(theme::title())
                     .style(theme::panel()),
             )
             .gauge_style(theme::focused_title())
             .ratio(occupancy_ratio)
             .label(format!(
-                "{} boarded / {} seats · {} waiting",
+                "{} boarding now / {} seats · {} waiting",
                 quote.boarded_passengers, capacity, waiting
             )),
         occupancy_area,
@@ -1165,12 +1170,26 @@ fn render_quote_review(
             "Funds after departure",
             quote.cash_after_cost,
         ),
-        Line::styled("BOOKED FROM ORIGIN", theme::success()),
+        Line::styled("BOOKED NOW", theme::success()),
+        Line::from(vec![
+            Span::styled("Origin boardings: ", theme::secondary()),
+            Span::styled(quote.boarded_passengers.to_string(), theme::primary_value()),
+            Span::styled("  Revenue: ", theme::secondary()),
+            Span::styled(format_money(quote.operating_revenue), theme::primary_value()),
+        ]),
+        Line::styled("SNAPSHOT PROJECTION", theme::focused_title()),
         money_pair_line(
             "Revenue",
-            quote.operating_revenue,
-            "Quoted result",
-            quote.journey_profitability,
+            quote.projected_operating_revenue,
+            "Result",
+            quote.projected_journey_profitability,
+        ),
+        Line::styled(
+            format!(
+                "{} trip boardings · current queues only; downstream demand may change.",
+                quote.projected_boarded_passengers
+            ),
+            theme::secondary(),
         ),
     ]);
     if quote.boarded_passengers == 0 {
@@ -1637,21 +1656,21 @@ fn render_service_chooser(
                     Cell::from(service_route_label_for_quote(state, quote)),
                     Cell::from(format!("{demand} waiting")),
                     Cell::from(format_duration(quote.duration.seconds())),
-                    Cell::from(format_signed_money(quote.journey_profitability)),
+                    Cell::from(format_signed_money(quote.projected_journey_profitability)),
                 ])
             } else {
                 Row::new([
                     Cell::from(service_name(state, service.service_id)),
                     Cell::from(service_destination_label_for_quote(state, quote)),
                     Cell::from(format!("{demand} waiting")),
-                    Cell::from(format_signed_money(quote.journey_profitability)),
+                    Cell::from(format_signed_money(quote.projected_journey_profitability)),
                 ])
             }
         })
         .collect::<Vec<_>>();
     let (headers, widths) = if wide_table {
         (
-            Row::new(["Service", "Stops", "Demand", "Time", "Est. result"]),
+            Row::new(["Service", "Stops", "Origin demand", "Time", "Proj. result"]),
             vec![
                 Constraint::Length(10),
                 Constraint::Percentage(38),
@@ -1662,7 +1681,7 @@ fn render_service_chooser(
         )
     } else {
         (
-            Row::new(["Service", "Destination", "Demand", "Est. result"]),
+            Row::new(["Service", "Destination", "Origin demand", "Proj. result"]),
             vec![
                 Constraint::Length(10),
                 Constraint::Percentage(34),
@@ -1931,7 +1950,7 @@ fn render_service_inspector(
     let demand = waiting_passengers_for_quote(state, quote);
     let name = service_name(state, service.service_id);
     let route = service_route_label_for_quote(state, quote);
-    let result_style = if quote.journey_profitability.cents() >= 0 {
+    let result_style = if quote.projected_journey_profitability.cents() >= 0 {
         theme::success()
     } else {
         theme::error()
@@ -1949,15 +1968,32 @@ fn render_service_inspector(
             ),
             Line::styled(format_distance(quote.distance.metres()), theme::secondary()),
             Line::from(""),
-            detail_line("Revenue", &format_money(quote.operating_revenue)),
-            detail_line("Cost", &format_money(quote.operating_cost)),
+            detail_line(
+                "Board now",
+                &format!(
+                    "{} / {}",
+                    quote.boarded_passengers,
+                    train_capacity(state, quote.train_id)
+                ),
+            ),
+            detail_line("Booked now", &format_money(quote.operating_revenue)),
+            detail_line("Trip cost", &format_money(quote.operating_cost)),
+            detail_line("Proj rev", &format_money(quote.projected_operating_revenue)),
             Line::from(vec![
-                Span::styled("Result    ", theme::secondary()),
+                Span::styled("Proj result", theme::secondary()),
+                Span::styled(" ", theme::secondary()),
                 Span::styled(
-                    format_signed_money(quote.journey_profitability),
+                    format_signed_money(quote.projected_journey_profitability),
                     result_style,
                 ),
             ]),
+            Line::styled(
+                format!(
+                    "{} trip boardings · snapshot queues",
+                    quote.projected_boarded_passengers
+                ),
+                theme::secondary(),
+            ),
         ])
         .style(theme::panel())
         .wrap(Wrap { trim: true }),
