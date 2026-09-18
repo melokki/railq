@@ -213,16 +213,19 @@ fn operational_network_block(width: u16) -> Block<'static> {
         .title_top(Line::styled(" Network ", theme::focused_title()).left_aligned())
         .style(theme::panel());
 
-    // Marker meanings are spatial information, so the map keeps only this
-    // compact legend. Wide maps also explain infrastructure lifecycle and
-    // electrification without consuming a separate panel.
-    if width >= 110 {
+    // The legend explains only symbols that are not self-evident from station
+    // labels. Keep the current selection visible in every legend density; it is
+    // the primary keyboard focus and therefore more important than background
+    // settlement state on constrained terminals.
+    if width >= 122 {
         block = block.title_bottom(
             Line::from(vec![
-                Span::styled(" ● ", theme::primary_value()),
-                Span::styled("station", theme::secondary()),
+                Span::styled(" ◆ ", theme::focused_title()),
+                Span::styled("selected", theme::secondary()),
                 Span::styled("   ◉ ", theme::success()),
                 Span::styled("ready", theme::secondary()),
+                Span::styled("   ● ", theme::primary_value()),
+                Span::styled("station", theme::secondary()),
                 Span::styled("   ○ ", theme::secondary()),
                 Span::styled("settlement", theme::secondary()),
                 Span::styled("   ─ ", theme::secondary()),
@@ -240,15 +243,15 @@ fn operational_network_block(width: u16) -> Block<'static> {
             ])
             .right_aligned(),
         );
-    } else if width >= 82 {
+    } else if width >= 84 {
         block = block.title_bottom(
             Line::from(vec![
-                Span::styled(" ● ", theme::primary_value()),
-                Span::styled("station", theme::secondary()),
+                Span::styled(" ◆ ", theme::focused_title()),
+                Span::styled("selected", theme::secondary()),
                 Span::styled("   ◉ ", theme::success()),
                 Span::styled("ready", theme::secondary()),
-                Span::styled("   ○ ", theme::secondary()),
-                Span::styled("settlement", theme::secondary()),
+                Span::styled("   ● ", theme::primary_value()),
+                Span::styled("station", theme::secondary()),
                 Span::styled("   ─ ", theme::secondary()),
                 Span::styled("single", theme::secondary()),
                 Span::styled("   ═ ", theme::secondary()),

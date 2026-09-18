@@ -83,7 +83,7 @@ pub(crate) fn render_movements_overlay(
         .min(hidden_ready);
 
     let footer = modal::shortcut_line(&[
-        modal::ModalShortcut::enabled("Esc", modal::ModalAction::Close),
+        modal::ModalShortcut::enabled("M/Esc", modal::ModalAction::Close),
         modal::ModalShortcut::enabled("↑↓/JK", modal::ModalAction::Scroll),
     ]);
     let modal_areas = modal::render_shell(frame, card, "Network Movements", footer);
@@ -174,46 +174,73 @@ fn render_running_trains(
         heading_area,
     );
 
+    let compact = table_area.width < 92;
     let rows = journeys.into_iter().skip(scroll_offset).map(|journey| {
         let next_stop_id = journey_next_stop_station_id(state, journey);
         let next_stop = next_stop_id
             .map(|station_id| station_name(state, station_id))
             .unwrap_or_else(|| "—".into());
-        let current_leg = current_leg_label(state, journey, next_stop_id);
 
-        Row::new([
-            Cell::from(format!("T{:02}", journey.train_id.get())),
-            Cell::from(service_label(state, journey)),
-            Cell::from(current_leg),
-            Cell::from(next_stop),
-            Cell::from(format::clock_time(journey.arrives_at)),
-            Cell::from(format::duration(remaining_seconds(journey, now))),
-        ])
+        if compact {
+            Row::new([
+                Cell::from(format!("T{:02}", journey.train_id.get())),
+                Cell::from(service_label(state, journey)),
+                Cell::from(next_stop),
+                Cell::from(format::duration(remaining_seconds(journey, now))),
+            ])
+        } else {
+            let current_leg = current_leg_label(state, journey, next_stop_id);
+            Row::new([
+                Cell::from(format!("T{:02}", journey.train_id.get())),
+                Cell::from(service_label(state, journey)),
+                Cell::from(current_leg),
+                Cell::from(next_stop),
+                Cell::from(format::clock_time(journey.arrives_at)),
+                Cell::from(format::duration(remaining_seconds(journey, now))),
+            ])
+        }
     });
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(8),
-            Constraint::Length(12),
-            Constraint::Percentage(32),
-            Constraint::Percentage(22),
-            Constraint::Length(9),
-            Constraint::Length(12),
-        ],
-    )
-    .header(
-        Row::new([
-            "TRAIN",
-            "SERVICE",
-            "CURRENT LEG",
-            "NEXT STOP",
-            "ARRIVES",
-            "TIME LEFT",
-        ])
-        .style(theme::table_header())
-        .bottom_margin(1),
-    )
+    let table = if compact {
+        Table::new(
+            rows,
+            [
+                Constraint::Length(7),
+                Constraint::Length(10),
+                Constraint::Min(12),
+                Constraint::Length(11),
+            ],
+        )
+        .header(
+            Row::new(["TRAIN", "SERVICE", "NEXT STOP", "TIME LEFT"])
+                .style(theme::table_header())
+                .bottom_margin(1),
+        )
+    } else {
+        Table::new(
+            rows,
+            [
+                Constraint::Length(8),
+                Constraint::Length(12),
+                Constraint::Percentage(32),
+                Constraint::Percentage(22),
+                Constraint::Length(9),
+                Constraint::Length(12),
+            ],
+        )
+        .header(
+            Row::new([
+                "TRAIN",
+                "SERVICE",
+                "CURRENT LEG",
+                "NEXT STOP",
+                "ARRIVES",
+                "TIME LEFT",
+            ])
+            .style(theme::table_header())
+            .bottom_margin(1),
+        )
+    }
     .style(theme::panel());
 
     frame.render_widget(table, table_area);

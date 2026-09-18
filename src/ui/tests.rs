@@ -145,6 +145,17 @@ fn bulletin_shows_category_counts_and_contextual_view_controls() {
 }
 
 #[test]
+fn map_legend_identifies_the_keyboard_selection() {
+    let shell = Shell::new();
+    let state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
+
+    let rendered = capture_rendered_buffer(&shell, &state, 160, 40);
+    assert!(rendered.contains("◆ selected"));
+    assert!(rendered.contains("◉ ready"));
+    assert!(rendered.contains("● station"));
+}
+
+#[test]
 fn map_world_details_explains_the_region_registration_identity() {
     let mut shell = Shell::new();
     let state = create_new_game(42, "One More Prime", UtcSeconds::from_unix_seconds(0));
@@ -257,6 +268,33 @@ fn map_movements_overlay_shows_service_route_and_next_stop() {
         ShellAction::Continue
     );
     assert!(!shell.map_workspace.movements_visible());
+}
+
+#[test]
+fn map_movements_overlay_uses_compact_columns_on_narrow_terminals() {
+    let started_at = UtcSeconds::from_unix_seconds(13 * 3_600);
+    let mut shell = Shell::new();
+    let mut state = create_new_game(42, "One More Prime", started_at);
+    let stops = [RailStationId::new(1), RailStationId::new(2)];
+    let train_id = purchase_train(&mut state, 0, stops[0]).unwrap();
+    let service_id = create_service(&mut state, stops.to_vec()).unwrap();
+    dispatch_journey(&mut state, train_id, service_id, started_at).unwrap();
+
+    assert_eq!(
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+            &state,
+        ),
+        ShellAction::Continue
+    );
+
+    let rendered = capture_rendered_buffer(&shell, &state, 72, 24);
+    assert!(rendered.contains("Network Movements"));
+    assert!(rendered.contains("NEXT STOP"));
+    assert!(rendered.contains("TIME LEFT"));
+    assert!(!rendered.contains("CURRENT LEG"));
+    assert!(!rendered.contains("ARRIVES"));
+    assert!(rendered.contains("[M/Esc] close"));
 }
 
 #[test]
