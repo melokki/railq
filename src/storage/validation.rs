@@ -50,6 +50,12 @@ impl From<CalculationError> for SaveValidationError {
 pub fn validate_game_state(state: &GameState) -> Result<(), SaveValidationError> {
     validate_rules(state)?;
 
+    if state.bulletin_seen_count > state.region.bulletin.len() as u64 {
+        return Err(SaveValidationError::InvalidValue {
+            field: "Bulletin seen count",
+        });
+    }
+
     let registration = &state.region.railway_registration;
     if !(10..=99).contains(&registration.numeric_code) {
         return Err(SaveValidationError::InvalidValue {

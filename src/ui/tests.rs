@@ -3,7 +3,7 @@ use ratatui::{Terminal, backend::TestBackend};
 
 use crate::{
     app::AppCommand,
-    model::{Money, RailStationId, UtcSeconds},
+    model::{BulletinCategory, BulletinEntry, Money, RailStationId, UtcSeconds},
     sim::{
         fleet::purchase_train,
         journeys::dispatch_journey,
@@ -17,7 +17,7 @@ use super::{
 };
 
 #[test]
-fn routes_the_six_primary_views_by_number_and_keeps_train_market_aliases() {
+fn routes_the_six_primary_views_by_number_and_keeps_train_alias() {
     let mut shell = Shell::new();
     let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
@@ -29,7 +29,6 @@ fn routes_the_six_primary_views_by_number_and_keeps_train_market_aliases() {
         ('5', View::Authority),
         ('6', View::Bulletin),
         ('t', View::Trains),
-        ('b', View::BuyTrains),
     ] {
         assert_eq!(
             shell.handle_key(
@@ -59,14 +58,14 @@ fn routes_the_six_primary_views_by_number_and_keeps_train_market_aliases() {
 }
 
 #[test]
-fn bulletin_has_no_letter_alias_so_u_remains_available_for_contextual_actions() {
+fn bulletin_uses_only_number_navigation_and_b_remains_available_for_contextual_actions() {
     let mut shell = Shell::new();
     let state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
 
     assert_eq!(shell.active_view(), View::Map);
     assert_eq!(
         shell.handle_key(
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
             &state
         ),
         ShellAction::Continue
@@ -78,6 +77,76 @@ fn bulletin_has_no_letter_alias_so_u_remains_available_for_contextual_actions() 
         &state,
     );
     assert_eq!(shell.active_view(), View::Bulletin);
+}
+
+#[test]
+fn bulletin_badge_tracks_unread_entries_and_opening_preserves_the_visit_boundary() {
+    let mut shell = Shell::new();
+    let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+    state.region.bulletin.push(BulletinEntry {
+        occurred_at: UtcSeconds::from_unix_seconds(0),
+        category: BulletinCategory::Network,
+        headline: "Larkspur joins the rail network".into(),
+        detail: "The station is open for passenger operations.".into(),
+    });
+
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(rendered.contains("6 Bulletin [1]"));
+
+    assert_eq!(
+        shell.handle_key(
+            KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE),
+            &state,
+        ),
+        ShellAction::Player(AppCommand::AcknowledgeBulletin { seen_count: 1 })
+    );
+    assert_eq!(shell.active_view(), View::Bulletin);
+
+    state.bulletin_seen_count = 1;
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(!rendered.contains("6 Bulletin [1]"));
+    assert!(rendered.contains("1 new"));
+    assert!(rendered.contains("LATEST DEVELOPMENT  ·  NEW"));
+    assert!(rendered.contains("NEW SINCE LAST VISIT"));
+}
+
+#[test]
+fn bulletin_shows_category_counts_and_contextual_view_controls() {
+    let mut shell = Shell::new();
+    let mut state = create_new_game(42, "Alden Passenger", UtcSeconds::from_unix_seconds(0));
+    state.region.bulletin = vec![
+        BulletinEntry {
+            occurred_at: UtcSeconds::from_unix_seconds(0),
+            category: BulletinCategory::Local,
+            headline: "Local development".into(),
+            detail: "Local detail".into(),
+        },
+        BulletinEntry {
+            occurred_at: UtcSeconds::from_unix_seconds(0),
+            category: BulletinCategory::Network,
+            headline: "Network development".into(),
+            detail: "Network detail".into(),
+        },
+    ];
+
+    shell.handle_key(
+        KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE),
+        &state,
+    );
+    let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(rendered.contains("[ALL 2]"));
+    assert!(rendered.contains("LOCAL 1"));
+    assert!(rendered.contains("NETWORK 1"));
+    assert!(rendered.contains("Development"));
+    assert!(rendered.contains("View · All"));
+
+    shell.handle_key(
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
+        &state,
+    );
+    let filtered = capture_rendered_buffer(&shell, &state, 120, 40);
+    assert!(filtered.contains("[LOCAL 1]"));
+    assert!(filtered.contains("View · Local"));
 }
 
 #[test]
@@ -503,7 +572,7 @@ fn buy_trains_routes_only_an_explicit_confirmation_to_the_application_boundary()
     let press =
         |shell: &mut Shell, key| shell.handle_key(KeyEvent::new(key, KeyModifiers::NONE), &state);
 
-    assert_eq!(press(&mut shell, KeyCode::Char('b')), ShellAction::Continue);
+    assert_eq!(press(&mut shell, KeyCode::Char('3')), ShellAction::Continue);
     assert_eq!(press(&mut shell, KeyCode::Down), ShellAction::Continue);
     assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);
     assert_eq!(press(&mut shell, KeyCode::Enter), ShellAction::Continue);

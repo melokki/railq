@@ -229,6 +229,7 @@ pub(super) fn decode_legacy_game_state(source: &str) -> Result<GameState, SaveCo
 
     let state = GameState {
         world_seed: legacy.world_seed,
+        bulletin_seen_count: 0,
         region,
         player_company: PlayerCompany {
             vehicle_keeper_mark: VehicleKeeperMark::generated_from_company_name(

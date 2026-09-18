@@ -279,18 +279,16 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
             })
             .collect()
     } else if shell.active_view == View::Bulletin {
-        let mut items = vec![FooterShortcut::enabled(
-            if compact { "↑↓" } else { "↑↓/JK" },
-            "Item",
-        )];
-        if wide {
-            items.push(FooterShortcut::enabled("PgUp/PgDn", "Page"));
-        }
-        items.push(FooterShortcut::enabled(
-            "F",
-            format!("Filter · {}", shell.bulletin_workspace.filter_label()),
-        ));
-        items
+        shell
+            .bulletin_workspace
+            .shortcuts(state, compact, wide)
+            .into_iter()
+            .map(|shortcut| FooterShortcut {
+                key: shortcut.key,
+                action: shortcut.action,
+                enabled: shortcut.enabled,
+            })
+            .collect()
     } else if shell.active_view == View::BuyTrains {
         shell
             .market_workspace
@@ -365,7 +363,7 @@ fn format_remaining_time(seconds: u64) -> String {
     format::duration(seconds)
 }
 
-pub(super) fn tab_label(view: View, compact: bool) -> String {
+pub(super) fn tab_label(view: View, compact: bool, bulletin_unread: u64) -> String {
     let label = match (view, compact) {
         (View::Trains, true) => "Trn",
         (View::BuyTrains, true) => "Mkt",
@@ -376,7 +374,16 @@ pub(super) fn tab_label(view: View, compact: bool) -> String {
         (View::BuyTrains, false) => "Market",
         _ => view.label(),
     };
-    format!("{} {label}", view.number())
+    let mut title = format!("{} {label}", view.number());
+    if view == View::Bulletin && bulletin_unread > 0 {
+        let badge = if bulletin_unread > 9 {
+            "9+".into()
+        } else {
+            bulletin_unread.to_string()
+        };
+        title.push_str(&format!(" [{badge}]"));
+    }
+    title
 }
 
 fn shorten(value: &str, max_characters: usize) -> String {
@@ -395,7 +402,7 @@ pub(super) fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     let mut lines = vec![
         "Navigation".into(),
         "1 Map   2 Trains   3 Market   4 Company   5 Authority   6 Bulletin".into(),
-        "t / b also switch to Trains / Market; Company and Authority use 4 / 5".into(),
+        "t also switches to Trains; Market, Company, Authority, and Bulletin use 3 / 4 / 5 / 6".into(),
         String::new(),
     ];
 
@@ -458,15 +465,7 @@ pub(super) fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
             lines.extend(shell.authority_workspace.help_lines());
         }
         View::Bulletin => {
-            lines.extend([
-                "Current · Railway Bulletin".into(),
-                "↑↓ / jk Select development".into(),
-                "PgUp / PgDn Scroll history".into(),
-                "f Cycle Local / Authority / Construction / Network filters".into(),
-                String::new(),
-                "The Bulletin records significant world developments, not routine Train movements."
-                    .into(),
-            ]);
+            lines.extend(shell.bulletin_workspace.help_lines());
         }
     }
 

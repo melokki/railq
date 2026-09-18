@@ -102,6 +102,7 @@ fn sqlite_round_trips_all_current_operating_state() {
         headline: "Alden connection approved".into(),
         detail: "The regional case passed formal review.".into(),
     });
+    state.bulletin_seen_count = 1;
     state.region.rail_authority.finances = RailAuthorityFinances {
         treasury: Money::from_cents(9_000_000),
         maintenance_reserve: Money::from_cents(1_500_000),
@@ -2124,4 +2125,48 @@ fn v39_migration_adds_journey_service_telemetry_without_inventing_history() {
     assert_eq!(version, SAVE_VERSION);
     assert_eq!(active_started_at, None);
     assert_eq!(receipt_telemetry, (None, None, None, None));
+}
+
+
+#[test]
+fn v40_migration_acknowledges_existing_bulletin_history() {
+    let directory = TestDirectory::new();
+    let path = directory.save_path();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE game_meta (
+                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 world_seed TEXT NOT NULL,
+                 last_processed_at INTEGER NOT NULL
+             );
+             CREATE TABLE bulletin_entries (
+                 sequence INTEGER PRIMARY KEY,
+                 occurred_at INTEGER NOT NULL,
+                 category TEXT NOT NULL,
+                 headline TEXT NOT NULL,
+                 detail TEXT NOT NULL
+             );
+             INSERT INTO game_meta(singleton, world_seed, last_processed_at) VALUES(1, '42', 1000);
+             INSERT INTO bulletin_entries VALUES(0, 100, 'authority', 'First', 'First detail');
+             INSERT INTO bulletin_entries VALUES(1, 200, 'network', 'Second', 'Second detail');
+             PRAGMA user_version = 40;",
+        )
+        .unwrap();
+
+    ensure_schema(&connection, &path).unwrap();
+
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    let seen_count: i64 = connection
+        .query_row(
+            "SELECT bulletin_seen_count FROM game_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(version, SAVE_VERSION);
+    assert_eq!(seen_count, 2);
 }

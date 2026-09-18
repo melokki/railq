@@ -256,6 +256,10 @@ impl<S: GameStore> App<S> {
                 self.update_train_nickname(train_id, nickname, now)?;
                 Ok(AppCommandResult::TrainNicknameUpdated { train_id })
             }
+            AppCommand::AcknowledgeBulletin { seen_count } => {
+                let seen_count = self.acknowledge_bulletin(seen_count, now)?;
+                Ok(AppCommandResult::BulletinAcknowledged { seen_count })
+            }
         }
     }
 
@@ -616,6 +620,21 @@ impl<S: GameStore> App<S> {
         self.transact(now, |state, _| {
             crate::sim::fleet::rename_train(state, train_id, nickname).map_err(AppError::Rename)?;
             Ok(())
+        })
+    }
+
+    /// Persists the monotonic Bulletin read boundary without changing simulation state.
+    pub fn acknowledge_bulletin(
+        &mut self,
+        seen_count: u64,
+        now: UtcSeconds,
+    ) -> Result<u64, AppError<S::Error>> {
+        self.transact(now, |state, _| {
+            let available = u64::try_from(state.region.bulletin.len()).unwrap_or(u64::MAX);
+            state.bulletin_seen_count = state
+                .bulletin_seen_count
+                .max(seen_count.min(available));
+            Ok(state.bulletin_seen_count)
         })
     }
 
@@ -1384,6 +1403,33 @@ mod tests {
             vehicle_keeper_mark
         );
         assert_eq!(app.state(), store.load().unwrap().as_ref().unwrap());
+    }
+
+    #[test]
+    fn bulletin_acknowledgement_is_persisted() {
+        let store = TestStore::default();
+        let mut state = new_game();
+        state.region.bulletin.push(crate::model::BulletinEntry {
+            occurred_at: STARTED_AT,
+            category: crate::model::BulletinCategory::Authority,
+            headline: "Funding secured".into(),
+            detail: "The Authority committed funding.".into(),
+        });
+        let mut app = App::start_new(store.clone(), state).unwrap();
+
+        let result = app
+            .execute(
+                AppCommand::AcknowledgeBulletin { seen_count: 1 },
+                STARTED_AT,
+            )
+            .unwrap();
+
+        assert_eq!(
+            result,
+            AppCommandResult::BulletinAcknowledged { seen_count: 1 }
+        );
+        assert_eq!(app.state().bulletin_seen_count, 1);
+        assert_eq!(store.load().unwrap(), Some(app.state().clone()));
     }
 
     #[test]

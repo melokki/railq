@@ -540,6 +540,7 @@ fn a_small_valid_game_state_fixture_builds() {
     let rate = MoneyPerKilometre::new(1).unwrap();
     let state = GameState {
         world_seed: 0,
+        bulletin_seen_count: 0,
         region: Region {
             name: "Varelia".into(),
             railway_registration: RailwayRegistration {

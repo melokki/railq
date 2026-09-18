@@ -735,7 +735,7 @@ impl CompanyWorkspace {
                     self.recovery_review_open = false;
                     CompanyWorkspaceAction::Navigate(RecoveryDestination::Fleet)
                 }
-                KeyCode::Char('3' | 'b' | 'B') => {
+                KeyCode::Char('3') => {
                     self.recovery_review_open = false;
                     CompanyWorkspaceAction::Navigate(RecoveryDestination::BuyTrains)
                 }

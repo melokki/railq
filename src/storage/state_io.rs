@@ -59,10 +59,12 @@ pub(super) fn insert_state(
 
     transaction
         .execute(
-            "INSERT INTO game_meta(singleton, world_seed, last_processed_at) VALUES(1, ?1, ?2)",
+            "INSERT INTO game_meta(singleton, world_seed, last_processed_at, bulletin_seen_count)
+             VALUES(1, ?1, ?2, ?3)",
             params![
                 state.world_seed.to_string(),
-                state.last_processed_at.unix_seconds()
+                state.last_processed_at.unix_seconds(),
+                db(state.bulletin_seen_count, "Bulletin seen count")?,
             ],
         )
         .map_err(|source| db_error("write game metadata to", path, source))?;
@@ -937,13 +939,20 @@ pub(super) fn load_state(
 ) -> Result<Option<GameState>, SaveSlotError> {
     let meta = connection
         .query_row(
-            "SELECT world_seed, last_processed_at FROM game_meta WHERE singleton = 1",
+            "SELECT world_seed, last_processed_at, bulletin_seen_count
+             FROM game_meta WHERE singleton = 1",
             [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
         )
         .optional()
         .map_err(|source| db_error("read game metadata from", path, source))?;
-    let Some((world_seed_text, last_processed_at)) = meta else {
+    let Some((world_seed_text, last_processed_at, bulletin_seen_count)) = meta else {
         return Ok(None);
     };
     let world_seed = world_seed_text
@@ -1469,6 +1478,8 @@ pub(super) fn load_state(
 
     let state = GameState {
         world_seed,
+        bulletin_seen_count: from_db_u64(bulletin_seen_count, "Bulletin seen count")
+            .map_err(|field| invalid_value(path, field))?,
         region: Region {
             name: region_name,
             railway_registration: RailwayRegistration {
