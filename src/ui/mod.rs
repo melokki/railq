@@ -68,7 +68,7 @@ impl View {
     const fn label(self) -> &'static str {
         match self {
             Self::Map => "Map",
-            Self::Trains => "Trains",
+            Self::Trains => "Fleet",
             Self::Company => "Company",
             Self::BuyTrains => "Market",
             Self::Authority => "Authority",
@@ -353,7 +353,7 @@ impl Shell {
             let navigation_key = matches!(
                 key.code,
                 KeyCode::Char(
-                    '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T'
+                    '1' | '2' | '3' | '4' | '5' | '6'
                 )
             );
             if navigation_key {
@@ -428,7 +428,7 @@ impl Shell {
                 self.active_view = View::Map;
                 self.service_workspace.close();
             }
-            KeyCode::Char('2' | 't' | 'T') => {
+            KeyCode::Char('2') => {
                 self.active_view = View::Trains;
                 self.service_workspace.close();
                 self.fleet_workspace.activate();

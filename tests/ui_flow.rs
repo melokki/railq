@@ -164,7 +164,7 @@ fn fresh_launch_buy_dispatch_arrive_return_and_resale_are_keyboard_reachable() {
     let (store, mut app) = dashboard_from_fresh_launch();
     let mut shell = Shell::new();
 
-    press(&mut shell, &mut app, KeyCode::Char('b'), STARTED_AT);
+    press(&mut shell, &mut app, KeyCode::Char('3'), STARTED_AT);
     assert_eq!(shell.active_view(), View::BuyTrains);
     buy_first_catalogue_train(&mut shell, &mut app, STARTED_AT);
     assert_eq!(app.state().player_company.fleet.trains.len(), 1);
@@ -215,7 +215,7 @@ fn fresh_launch_buy_dispatch_arrive_return_and_resale_are_keyboard_reachable() {
     press(
         &mut shell,
         &mut app,
-        KeyCode::Char('t'),
+        KeyCode::Char('2'),
         return_trip.arrives_at,
     );
     assert_eq!(shell.active_view(), View::Trains);
@@ -232,7 +232,7 @@ fn cancellation_and_rejected_error_paths_preserve_player_company_state() {
     let (_, mut app) = dashboard_from_fresh_launch();
     let mut shell = Shell::new();
 
-    press(&mut shell, &mut app, KeyCode::Char('b'), STARTED_AT);
+    press(&mut shell, &mut app, KeyCode::Char('3'), STARTED_AT);
     press(&mut shell, &mut app, KeyCode::Enter, STARTED_AT);
     let before_cancelled_purchase = app.state().clone();
     press(&mut shell, &mut app, KeyCode::Esc, STARTED_AT);
@@ -271,7 +271,7 @@ fn cancellation_and_rejected_error_paths_preserve_player_company_state() {
     assert_eq!(app.state(), &before_rejected_dispatch);
 
     press(&mut shell, &mut app, KeyCode::Esc, OUTBOUND_DEPARTURE);
-    press(&mut shell, &mut app, KeyCode::Char('t'), OUTBOUND_DEPARTURE);
+    press(&mut shell, &mut app, KeyCode::Char('2'), OUTBOUND_DEPARTURE);
     press(&mut shell, &mut app, KeyCode::Enter, OUTBOUND_DEPARTURE);
     let before_cancelled_resale = app.state().clone();
     press(&mut shell, &mut app, KeyCode::Esc, OUTBOUND_DEPARTURE);
@@ -292,7 +292,7 @@ fn failed_resale_save_keeps_the_review_open_without_a_success_notice() {
     let mut shell = Shell::new();
 
     assert_eq!(
-        shell.handle_key(key(KeyCode::Char('t')), app.state()),
+        shell.handle_key(key(KeyCode::Char('2')), app.state()),
         ShellAction::Continue
     );
     assert_eq!(
@@ -324,7 +324,7 @@ fn saved_purchase_feedback_is_non_blocking_and_details_are_optional() {
     let mut shell = Shell::new();
 
     assert_eq!(
-        shell.handle_key(key(KeyCode::Char('b')), app.state()),
+        shell.handle_key(key(KeyCode::Char('3')), app.state()),
         ShellAction::Continue
     );
     assert_eq!(

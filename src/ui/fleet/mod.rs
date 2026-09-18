@@ -578,7 +578,7 @@ impl FleetWorkspace {
             ];
         }
 
-        let mut lines = vec!["Current · Trains".into()];
+        let mut lines = vec!["Current · Fleet".into()];
         if state.player_company.fleet.trains.is_empty() {
             lines.extend([
                 "No trains owned yet".into(),
@@ -1778,7 +1778,7 @@ fn format_fuel_rate(train: &Train) -> String {
 
 /// Renders the Player Company's Fleet at the supplied time.
 pub fn render_at(state: &GameState, now: UtcSeconds) -> String {
-    let mut output = String::from("Trains\n");
+    let mut output = String::from("Fleet\n");
     writeln!(
         output,
         "Company Funds: {}",
@@ -2158,7 +2158,7 @@ mod tests {
             workspace
                 .help_lines(&state)
                 .iter()
-                .any(|line| line == "Current · Trains")
+                .any(|line| line == "Current · Fleet")
         );
 
         assert_eq!(

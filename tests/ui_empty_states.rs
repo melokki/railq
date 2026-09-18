@@ -26,9 +26,10 @@ fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) {
 fn empty_fleet_only_points_to_buy_when_a_catalogue_train_is_affordable() {
     let state = create_new_game(42, "Empty Fleet", STARTED_AT);
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
     let affordable = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
-    assert!(affordable.contains("Next useful action · B · Buy Trains"));
+    assert!(affordable.contains("Purchase your first Train from the Market."));
+    assert!(affordable.contains("[3] Market"));
 }
 
 #[test]
@@ -42,7 +43,7 @@ fn all_travelling_fleet_shows_nearest_arrival_and_empty_queue_explains_dispatch(
     dispatch_journey(&mut state, train_id, service_id, STARTED_AT)?;
 
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
     let fleet = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(fleet.contains("Next useful action · wait for"), "{fleet}");
     assert!(fleet.contains("ETA"));

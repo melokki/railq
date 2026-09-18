@@ -74,7 +74,7 @@ fn delivery_station_list_preserves_model_choice_and_reaches_existing_review()
     fs::create_dir_all(evidence_dir)?;
 
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Char('b')),
+        press(&mut shell, &state, KeyCode::Char('3')),
         ShellAction::Continue
     );
     let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
@@ -331,7 +331,7 @@ fn market_footer_keeps_unaffordable_buy_visible_but_disabled() {
     let mut shell = Shell::new();
 
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Char('b')),
+        press(&mut shell, &state, KeyCode::Char('3')),
         ShellAction::Continue
     );
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
@@ -372,7 +372,7 @@ fn market_inspector_summarizes_owned_units_for_the_selected_model() {
     let mut shell = Shell::new();
 
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Char('b')),
+        press(&mut shell, &state, KeyCode::Char('3')),
         ShellAction::Continue
     );
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
@@ -396,7 +396,7 @@ fn purchase_review_shows_reserve_consequences_and_commits_only_after_save()
     fs::create_dir_all(evidence_dir)?;
 
     assert_eq!(
-        press(&mut shell, app.state(), KeyCode::Char('b')),
+        press(&mut shell, app.state(), KeyCode::Char('3')),
         ShellAction::Continue
     );
     assert_eq!(
@@ -563,7 +563,7 @@ fn delivery_selection_scrolls_and_recovers_when_its_station_disappears() {
     let mut shell = Shell::new();
 
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Char('b')),
+        press(&mut shell, &state, KeyCode::Char('3')),
         ShellAction::Continue
     );
     assert_eq!(
@@ -588,7 +588,7 @@ fn delivery_selection_scrolls_and_recovers_when_its_station_disappears() {
     let mut stale_state = create_new_game(42, "Stale Delivery", STARTED_AT);
     let mut stale_shell = Shell::new();
     assert_eq!(
-        press(&mut stale_shell, &stale_state, KeyCode::Char('b')),
+        press(&mut stale_shell, &stale_state, KeyCode::Char('3')),
         ShellAction::Continue
     );
     assert_eq!(

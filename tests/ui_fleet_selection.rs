@@ -48,7 +48,7 @@ fn operating_fleet() -> railq::model::GameState {
 fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
     let mut state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
 
     let wide = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(wide.contains("Fleet"));
@@ -110,7 +110,7 @@ fn fleet_selection_is_keyboard_scrollable_and_survives_live_updates() {
 fn fleet_footer_owns_actions_and_mutes_unavailable_train_actions() {
     let state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
 
     let travelling = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(travelling.contains("[R] Rename"));
@@ -160,7 +160,7 @@ fn fleet_footer_owns_actions_and_mutes_unavailable_train_actions() {
 fn fleet_inspector_surfaces_state_specific_information() {
     let state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
 
     let travelling = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     let selected_train = &state.player_company.fleet.trains[0];
@@ -205,7 +205,7 @@ fn fleet_browser_states_missing_details_explicitly_and_captures_task_evidence()
 -> Result<(), Box<dyn Error>> {
     let state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
     for _ in 0..9 {
         press(&mut shell, &state, KeyCode::Down);
     }
@@ -230,14 +230,14 @@ fn fleet_browser_states_missing_details_explicitly_and_captures_task_evidence()
         at: RailStationId::new(99),
     };
     let mut missing_shell = Shell::new();
-    press(&mut missing_shell, &missing, KeyCode::Char('t'));
+    press(&mut missing_shell, &missing, KeyCode::Char('2'));
     let missing_render = capture_rendered_buffer(&missing_shell, &missing, 120, 40);
     assert!(missing_render.contains("Unknown model (missing-model)"));
     assert!(missing_render.contains("Missing Rail Station 99"));
 
     let empty = create_new_game(42, "Empty Fleet Passenger", STARTED_AT);
     let mut empty_shell = Shell::new();
-    press(&mut empty_shell, &empty, KeyCode::Char('t'));
+    press(&mut empty_shell, &empty, KeyCode::Char('2'));
     let empty_render = capture_rendered_buffer(&empty_shell, &empty, 80, 24);
     assert!(empty_render.contains("No Trains in the Fleet"));
     Ok(())
@@ -253,7 +253,7 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
             + (journey.arrives_at.unix_seconds() - journey.departed_at.unix_seconds()) / 2,
     );
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
     let _ = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
     press(&mut shell, &state, KeyCode::Enter);
@@ -307,7 +307,7 @@ fn fleet_details_preserve_identity_and_return_to_a_predictable_list_row()
 fn fleet_rename_uses_the_shared_focused_modal_treatment() {
     let state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
     press(&mut shell, &state, KeyCode::Char('r'));
 
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
@@ -325,7 +325,7 @@ fn fleet_rename_uses_the_shared_focused_modal_treatment() {
 fn fleet_focus_respects_the_visible_workspace_and_s_reviews_the_selected_ready_train() {
     let mut state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
 
     let _ = capture_rendered_buffer_mut(&mut shell, &state, 80, 24);
     press(&mut shell, &state, KeyCode::Tab);
@@ -369,7 +369,7 @@ fn resale_review_has_complete_themed_evidence_at_normal_and_compact_sizes()
 -> Result<(), Box<dyn Error>> {
     let state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
     press(&mut shell, &state, KeyCode::Down);
     press(&mut shell, &state, KeyCode::Char('s'));
 
@@ -420,7 +420,7 @@ fn resale_review_has_complete_themed_evidence_at_normal_and_compact_sizes()
 fn resale_review_explains_travelling_and_stale_selected_train_without_a_false_success() {
     let mut state = operating_fleet();
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('t'));
+    press(&mut shell, &state, KeyCode::Char('2'));
 
     press(&mut shell, &state, KeyCode::Char('s'));
     let travelling = capture_rendered_buffer(&shell, &state, 120, 40);
