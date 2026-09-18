@@ -75,6 +75,10 @@ fn manual_dispatch_moves_from_train_to_service_to_review() {
     assert!(service_step.contains(&registration));
     assert!(service_step.contains("R1"));
     assert!(service_step.contains("Service Preview"));
+    assert!(service_step.contains("DEPARTURE"));
+    assert!(service_step.contains("SNAPSHOT PROJECTION"));
+    assert!(service_step.contains("Booked revenue"));
+    assert!(service_step.contains("Trip cost"));
 
     assert_eq!(
         press(&mut shell, &state, KeyCode::Enter),
@@ -207,5 +211,5 @@ fn compact_service_chooser_remains_readable() {
     let compact = capture_rendered_buffer(&shell, &state, 80, 24);
     assert!(compact.contains("Choose Passenger Service"));
     assert!(compact.contains("Destination"));
-    assert!(compact.contains("Est. result"));
+    assert!(compact.contains("Projected"));
 }

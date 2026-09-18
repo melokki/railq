@@ -1722,9 +1722,9 @@ fn render_service_chooser(
     let show_inspector = body_area.width >= 78 && body_area.height >= 7;
     let (list_area, divider_area, inspector_area) = if show_inspector {
         let [list_area, divider_area, inspector_area] = Layout::horizontal([
-            Constraint::Min(43),
+            Constraint::Min(40),
             Constraint::Length(1),
-            Constraint::Length(31),
+            Constraint::Length(34),
         ])
         .areas(body_area);
         (list_area, Some(divider_area), Some(inspector_area))
@@ -1751,7 +1751,7 @@ fn render_service_chooser(
                 Row::new([
                     Cell::from(service_name(state, service.service_id)),
                     Cell::from(service_route_label_for_quote(state, quote)),
-                    Cell::from(format!("{demand} waiting")),
+                    Cell::from(demand.to_string()),
                     Cell::from(format_duration(quote.duration.seconds())),
                     Cell::from(format_signed_money(quote.projected_journey_profitability)),
                 ])
@@ -1759,7 +1759,7 @@ fn render_service_chooser(
                 Row::new([
                     Cell::from(service_name(state, service.service_id)),
                     Cell::from(service_destination_label_for_quote(state, quote)),
-                    Cell::from(format!("{demand} waiting")),
+                    Cell::from(demand.to_string()),
                     Cell::from(format_signed_money(quote.projected_journey_profitability)),
                 ])
             }
@@ -1767,27 +1767,28 @@ fn render_service_chooser(
         .collect::<Vec<_>>();
     let (headers, widths) = if wide_table {
         (
-            Row::new(["Service", "Stops", "Origin demand", "Time", "Proj. result"]),
+            Row::new(["Service", "Stops", "Waiting", "Time", "Projected"]),
             vec![
-                Constraint::Length(10),
-                Constraint::Percentage(38),
-                Constraint::Percentage(20),
+                Constraint::Length(8),
+                Constraint::Percentage(42),
+                Constraint::Length(8),
                 Constraint::Length(11),
-                Constraint::Length(14),
+                Constraint::Length(13),
             ],
         )
     } else {
         (
-            Row::new(["Service", "Destination", "Origin demand", "Proj. result"]),
+            Row::new(["Service", "Destination", "Waiting", "Projected"]),
             vec![
-                Constraint::Length(10),
-                Constraint::Percentage(34),
-                Constraint::Percentage(26),
-                Constraint::Length(14),
+                Constraint::Length(7),
+                Constraint::Min(10),
+                Constraint::Length(8),
+                Constraint::Length(13),
             ],
         )
     };
     let table = Table::new(rows, widths)
+        .column_spacing(1)
         .header(headers.style(theme::table_header()).bottom_margin(1))
         .row_highlight_style(theme::selected_row())
         .highlight_symbol("› ")
@@ -2046,56 +2047,135 @@ fn render_service_inspector(
     let quote = &service.quote;
     let demand = waiting_passengers_for_quote(state, quote);
     let name = service_name(state, service.service_id);
-    let route = service_route_label_for_quote(state, quote);
+    let route_summary = format!(
+        "{name} · {} → {}",
+        station_label(state, quote.origin_station_id),
+        station_label(state, quote.destination_station_id),
+    );
+    let via = directional_service_stops(state, quote.service_id, quote.origin_station_id)
+        .and_then(|station_ids| {
+            (station_ids.len() > 2).then(|| {
+                station_ids[1..station_ids.len() - 1]
+                    .iter()
+                    .map(|station_id| station_label(state, *station_id).to_owned())
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            })
+        });
     let result_style = if quote.projected_journey_profitability.cents() >= 0 {
         theme::success()
     } else {
         theme::error()
     };
-    frame.render_widget(
-        Paragraph::new(vec![
+    let capacity = train_capacity(state, quote.train_id);
+    let lines = if area.height >= 16 {
+        let mut lines = vec![
             Line::styled("Service Preview", theme::title()),
-            Line::styled(format!("{name} · {route}"), theme::focused_title()),
+            Line::styled(route_summary.clone(), theme::focused_title()),
+        ];
+        if let Some(via) = via.as_deref() {
+            lines.push(Line::styled(format!("via {via}"), theme::secondary()));
+        }
+        lines.extend([
             Line::styled(
                 format!(
-                    "{demand} waiting · {}",
+                    "{} · {}",
+                    format_distance(quote.distance.metres()),
                     format_duration(quote.duration.seconds())
                 ),
                 theme::secondary(),
             ),
-            Line::styled(format_distance(quote.distance.metres()), theme::secondary()),
             Line::from(""),
-            detail_line(
+            Line::styled("DEPARTURE", theme::secondary()),
+            service_preview_detail_line("Waiting now", &demand.to_string()),
+            service_preview_detail_line(
                 "Board now",
-                &format!(
-                    "{} / {}",
-                    quote.boarded_passengers,
-                    train_capacity(state, quote.train_id)
-                ),
+                &format!("{} / {capacity}", quote.boarded_passengers),
             ),
-            detail_line("Booked now", &format_money(quote.operating_revenue)),
-            detail_line("Trip cost", &format_money(quote.operating_cost)),
-            detail_line("Proj rev", &format_money(quote.projected_operating_revenue)),
-            Line::from(vec![
-                Span::styled("Proj result", theme::secondary()),
-                Span::styled(" ", theme::secondary()),
-                Span::styled(
-                    format_signed_money(quote.projected_journey_profitability),
-                    result_style,
-                ),
-            ]),
+            service_preview_detail_line(
+                "Booked revenue",
+                &format_money(quote.operating_revenue),
+            ),
+            Line::from(""),
+            Line::styled("SNAPSHOT PROJECTION", theme::secondary()),
+            service_preview_detail_line(
+                "Trip boardings",
+                &quote.projected_boarded_passengers.to_string(),
+            ),
+            service_preview_detail_line(
+                "Revenue",
+                &format_money(quote.projected_operating_revenue),
+            ),
+            service_preview_detail_line("Trip cost", &format_money(quote.operating_cost)),
+            service_preview_detail_line_styled(
+                "Result",
+                &format_signed_money(quote.projected_journey_profitability),
+                result_style,
+            ),
+            Line::styled("Current waiting queues only", theme::secondary()),
+        ]);
+        lines
+    } else {
+        vec![
+            Line::styled("Service Preview", theme::title()),
+            Line::styled(route_summary, theme::focused_title()),
             Line::styled(
                 format!(
-                    "{} trip boardings · snapshot queues",
+                    "{demand} waiting · {} / {capacity} board now",
+                    quote.boarded_passengers
+                ),
+                theme::secondary(),
+            ),
+            Line::styled(
+                format!(
+                    "{} · {}",
+                    format_distance(quote.distance.metres()),
+                    format_duration(quote.duration.seconds())
+                ),
+                theme::secondary(),
+            ),
+            Line::from(""),
+            service_preview_detail_line("Booked now", &format_money(quote.operating_revenue)),
+            service_preview_detail_line("Trip cost", &format_money(quote.operating_cost)),
+            service_preview_detail_line(
+                "Projected rev",
+                &format_money(quote.projected_operating_revenue),
+            ),
+            service_preview_detail_line_styled(
+                "Projected result",
+                &format_signed_money(quote.projected_journey_profitability),
+                result_style,
+            ),
+            Line::styled(
+                format!(
+                    "{} trip boardings · current queues",
                     quote.projected_boarded_passengers
                 ),
                 theme::secondary(),
             ),
-        ])
-        .style(theme::panel())
-        .wrap(Wrap { trim: true }),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn service_preview_detail_line(label: &str, value: &str) -> Line<'static> {
+    service_preview_detail_line_styled(label, value, theme::primary_value())
+}
+
+fn service_preview_detail_line_styled(
+    label: &str,
+    value: &str,
+    value_style: ratatui::style::Style,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<16}"), theme::secondary()),
+        Span::styled(value.to_owned(), value_style),
+    ])
 }
 
 fn detail_line(label: &str, value: &str) -> Line<'static> {
