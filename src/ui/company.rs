@@ -1005,9 +1005,9 @@ pub fn render_receipt_modal(
     let receipt = selection.selected_receipt(state);
     let title = receipt.map_or_else(
         || "Journey Receipt".to_owned(),
-        |receipt| format!("Journey Receipt · J{:02}", receipt.journey_id.get()),
+        |receipt| format!("Journey Receipt · {}", journey_reference_label(receipt.journey_id)),
     );
-    let card = modal::centered_rect(area, 76, 23);
+    let card = modal::centered_rect(area, 84, 24);
     let modal_areas = modal::render_shell(
         frame,
         card,
@@ -1034,8 +1034,8 @@ pub fn render_receipt_history(
     state: &GameState,
     selection: &mut ReceiptSelection,
 ) {
-    let card = modal::workflow_rect(area);
-    let compact = card.width < 76;
+    let card = modal::centered_rect(area, 118, 26);
+    let compact = card.width < 88;
     let footer = if state.financials.recent_journey_receipts.is_empty() {
         modal::shortcut_line(&[modal::ModalShortcut::enabled(
             "Esc",
@@ -1072,8 +1072,8 @@ pub fn render_service_performance_browser(
     selection: &mut ServicePerformanceSelection,
 ) {
     let summary = ServicePerformanceSummary::from_state(state);
-    let card = modal::workflow_rect(area);
-    let compact = card.width < 84;
+    let card = modal::centered_rect(area, 118, 26);
+    let compact = card.width < 96;
     let footer = if summary.services.is_empty() {
         modal::shortcut_line(&[modal::ModalShortcut::enabled(
             "Esc",
@@ -1251,7 +1251,7 @@ pub fn render_service_performance_detail(
         || "Service Performance".to_owned(),
         |service| format!("Service Performance · {}", service.service_code),
     );
-    let card = modal::centered_rect(area, 80, 24);
+    let card = modal::centered_rect(area, 88, 25);
     let modal_areas = modal::render_shell(
         frame,
         card,
@@ -2324,38 +2324,38 @@ fn render_recent_activity(frame: &mut Frame, area: Rect, state: &GameState, wide
         if detailed {
             Row::new([
                 Cell::from(receipt_age_label(state, receipt)),
-                Cell::from(format!("J{:02}", receipt.journey_id.get())),
+                Cell::from(journey_reference_label(receipt.journey_id)),
                 Cell::from(receipt_route_label(state, receipt)),
                 Cell::from(receipt_train_label(receipt)),
-                Cell::from(receipt_passenger_label(receipt)),
+                Cell::from(receipt_boardings_label(receipt)),
                 Cell::from(format_signed_cents(result)).style(result_style(result)),
             ])
         } else {
             Row::new([
                 Cell::from(receipt_route_or_id_label(state, receipt)),
-                Cell::from(receipt_passenger_label(receipt)),
+                Cell::from(receipt_boardings_label(receipt)),
                 Cell::from(format_signed_cents(result)).style(result_style(result)),
             ])
         }
     });
     let (header, widths) = if detailed {
         (
-            Row::new(["Completed", "ID", "Route", "Train", "Pax", "Result"]),
+            Row::new(["Completed", "ID", "Route", "Train", "Boardings", "Result"]),
             vec![
                 Constraint::Length(11),
-                Constraint::Length(6),
+                Constraint::Length(9),
                 Constraint::Fill(3),
                 Constraint::Fill(2),
-                Constraint::Length(9),
+                Constraint::Length(10),
                 Constraint::Length(14),
             ],
         )
     } else {
         (
-            Row::new(["Journey", "Pax", "Result"]),
+            Row::new(["Journey", "Boardings", "Result"]),
             vec![
                 Constraint::Fill(1),
-                Constraint::Length(9),
+                Constraint::Length(10),
                 Constraint::Length(12),
             ],
         )
@@ -2395,39 +2395,49 @@ fn render_receipt_history_table(
         );
         if detailed {
             Row::new([
-                Cell::from(format!("J{:02}", receipt.journey_id.get())),
+                Cell::from(journey_reference_label(receipt.journey_id)),
                 Cell::from(receipt_route_label(state, receipt)),
                 Cell::from(receipt_train_label(receipt)),
-                Cell::from(receipt_passenger_label(receipt)),
+                Cell::from(receipt_boardings_label(receipt)),
+                Cell::from(receipt_capacity_label(receipt)),
                 Cell::from(receipt_age_label(state, receipt)),
                 Cell::from(format_signed_cents(result)).style(result_style(result)),
             ])
         } else {
             Row::new([
                 Cell::from(receipt_route_or_id_label(state, receipt)),
-                Cell::from(receipt_passenger_label(receipt)),
+                Cell::from(receipt_boardings_label(receipt)),
                 Cell::from(format_signed_cents(result)).style(result_style(result)),
             ])
         }
     });
     let (header, widths) = if detailed {
         (
-            Row::new(["ID", "Route", "Train", "Pax", "Completed", "Result"]),
+            Row::new([
+                "ID",
+                "Route",
+                "Train",
+                "Boardings",
+                "Seats",
+                "Completed",
+                "Result",
+            ]),
             vec![
-                Constraint::Length(6),
+                Constraint::Length(9),
                 Constraint::Fill(3),
                 Constraint::Fill(2),
-                Constraint::Length(9),
+                Constraint::Length(10),
+                Constraint::Length(7),
                 Constraint::Length(11),
                 Constraint::Length(14),
             ],
         )
     } else {
         (
-            Row::new(["Journey", "Pax", "Result"]),
+            Row::new(["Journey", "Boardings", "Result"]),
             vec![
                 Constraint::Fill(1),
-                Constraint::Length(9),
+                Constraint::Length(10),
                 Constraint::Length(12),
             ],
         )
@@ -2710,6 +2720,11 @@ fn service_performance_detail_lines(
         Line::from(""),
         section_heading("OPERATIONS"),
         financial_line(
+            "Status",
+            service_operating_status_label(state, service.service_id).to_owned(),
+            service_operating_status_style(state, service.service_id),
+        ),
+        financial_line(
             "Revenue runs",
             service.revenue_journeys.to_string(),
             theme::primary_value(),
@@ -2719,7 +2734,7 @@ fn service_performance_detail_lines(
             service.positioning_journeys.to_string(),
             theme::primary_value(),
         ),
-        financial_line("Passengers", passengers, theme::primary_value()),
+        financial_line("Boardings", passengers, theme::primary_value()),
         Line::from(""),
         section_heading("FINANCIAL"),
         financial_line(
@@ -2787,8 +2802,8 @@ fn receipt_detail_lines(state: &GameState, receipt: Option<&JourneyReceipt>) -> 
             let mut lines = vec![
                 Line::styled(
                     format!(
-                        "Journey {} · {}",
-                        receipt.journey_id.get(),
+                        "{} · {}",
+                        receipt_route_label(state, receipt),
                         receipt_age_label(state, receipt)
                     ),
                     theme::title(),
@@ -2834,8 +2849,13 @@ fn receipt_detail_lines(state: &GameState, receipt: Option<&JourneyReceipt>) -> 
                         theme::primary_value(),
                     ),
                     financial_line(
-                        "Passengers",
-                        receipt_passenger_detail(receipt),
+                        "Boardings",
+                        receipt_boardings_label(receipt),
+                        theme::primary_value(),
+                    ),
+                    financial_line(
+                        "Capacity",
+                        receipt_capacity_label(receipt),
                         theme::primary_value(),
                     ),
                     Line::from(""),
@@ -3119,7 +3139,11 @@ fn render_receipts(output: &mut String, state: &GameState) {
             receipt.journey_id.get(),
             receipt_route_label(state, receipt),
             receipt_train_label(receipt),
-            receipt_passenger_label(receipt),
+            format!(
+                "{} boarded · {}",
+                receipt_boardings_label(receipt),
+                receipt_capacity_label(receipt)
+            ),
             format_money(receipt.revenue),
             format_money(receipt.infrastructure_access_fee),
             format_money(receipt.fuel_cost),
@@ -3313,7 +3337,20 @@ fn receipt_route_or_id_label(state: &GameState, receipt: &JourneyReceipt) -> Str
     if receipt.origin_station_id.is_some() && receipt.destination_station_id.is_some() {
         receipt_route_label(state, receipt)
     } else {
-        format!("Journey {}", receipt.journey_id.get())
+        journey_reference_label(receipt.journey_id)
+    }
+}
+
+fn journey_reference_label(journey_id: JourneyId) -> String {
+    const DISPLAY_MODULUS: u64 = 100_000_000;
+
+    let suffix = journey_id.get();
+    if suffix < 100 {
+        format!("J{suffix:02}")
+    } else if suffix < DISPLAY_MODULUS {
+        format!("J{suffix}")
+    } else {
+        format!("J{:08}", suffix % DISPLAY_MODULUS)
     }
 }
 
@@ -3326,16 +3363,16 @@ fn receipt_train_label(receipt: &JourneyReceipt) -> String {
     }
 }
 
-fn receipt_passenger_label(receipt: &JourneyReceipt) -> String {
-    match (receipt.passengers_carried, receipt.passenger_capacity) {
-        (Some(passengers), Some(capacity)) => format!("{passengers} boarded · {capacity} seats"),
-        (Some(passengers), None) => format!("{passengers} boarded"),
-        _ => "—".into(),
-    }
+fn receipt_boardings_label(receipt: &JourneyReceipt) -> String {
+    receipt
+        .passengers_carried
+        .map_or_else(|| "—".into(), |passengers| passengers.to_string())
 }
 
-fn receipt_passenger_detail(receipt: &JourneyReceipt) -> String {
-    receipt_passenger_label(receipt)
+fn receipt_capacity_label(receipt: &JourneyReceipt) -> String {
+    receipt
+        .passenger_capacity
+        .map_or_else(|| "—".into(), |capacity| format!("{capacity} seats"))
 }
 
 fn receipt_age_label(state: &GameState, receipt: &JourneyReceipt) -> String {

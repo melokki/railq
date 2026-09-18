@@ -81,6 +81,8 @@ fn dashboard_keeps_history_out_of_the_main_view_and_history_preserves_selection(
     let history = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(history.contains("Journey History · 18 receipts"));
     assert!(history.contains("J18"));
+    assert!(history.contains("Boardings"));
+    assert!(history.contains("Seats"));
     assert!(history.contains("[Esc] close"));
     assert!(history.contains("[Enter] inspect"));
     assert!(history.contains("[↑↓/JK] scroll"));
@@ -110,7 +112,7 @@ fn dashboard_keeps_history_out_of_the_main_view_and_history_preserves_selection(
     );
     let detail = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(detail.contains("Journey Receipt · J01"));
-    assert!(detail.contains("Journey 1 · legacy"));
+    assert!(detail.contains("Legacy receipt · legacy"));
     assert!(detail.contains("$100.00"));
     assert!(detail.contains("$10.00"));
     assert!(detail.contains("$2.50"));
