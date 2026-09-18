@@ -34,6 +34,7 @@ use crate::{
 };
 
 const FLEET_SELECTION_MARKER: &str = "› ";
+const SERVICE_COLUMN_MIN_WIDTH: u16 = 64;
 
 /// Persistent Fleet browsing state. The selected identity is a Train ID so a
 /// live arrival or a resale cannot accidentally move the player's focus to a
@@ -1071,7 +1072,7 @@ fn render_wide_dashboard(
     let visible_items = usize::from(list_table_area.height.saturating_sub(2)).max(1);
     selection.set_page_size(visible_items);
 
-    let show_service = list_table_area.width >= 72;
+    let show_service = show_service_column(list_table_area.width);
     let rows = state
         .player_company
         .fleet
@@ -1108,9 +1109,9 @@ fn render_wide_dashboard(
             vec![
                 Constraint::Min(18),
                 Constraint::Length(11),
-                Constraint::Length(18),
-                Constraint::Min(10),
-                Constraint::Length(9),
+                Constraint::Length(10),
+                Constraint::Min(12),
+                Constraint::Length(8),
             ],
         )
     } else {
@@ -1136,6 +1137,10 @@ fn render_wide_dashboard(
 
     let selected = selected_train(state, selection);
     render_train_inspector(frame, inspector_area, state, now, selected, false, true);
+}
+
+fn show_service_column(width: u16) -> bool {
+    width >= SERVICE_COLUMN_MIN_WIDTH
 }
 
 fn render_compact_dashboard(
@@ -2186,13 +2191,19 @@ mod tests {
 
     use super::{
         FleetFlow, FleetFlowAction, FleetWorkspace, FleetWorkspaceAction, TrainNicknameEditor,
-        TrainNicknameEditorAction, render_at,
+        TrainNicknameEditorAction, render_at, show_service_column,
     };
 
     const STARTED_AT: UtcSeconds = UtcSeconds::from_unix_seconds(1_000);
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn standard_wide_fleet_keeps_the_service_column_visible() {
+        assert!(!show_service_column(63));
+        assert!(show_service_column(64));
     }
 
     #[test]

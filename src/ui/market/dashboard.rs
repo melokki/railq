@@ -6,7 +6,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -84,7 +84,7 @@ pub(super) fn render_metrics(
             (operating_area, "OPERATING COST"),
             (presence_area, "FLEET PRESENCE"),
         ] {
-            render_metric_card(
+            components::render_metric_card(
                 frame,
                 card,
                 title,
@@ -106,7 +106,7 @@ pub(super) fn render_metrics(
             .unwrap_or_else(|_| "unavailable".into());
         format!("{shortfall} shortfall")
     };
-    render_metric_card(
+    components::render_metric_card(
         frame,
         acquisition_area,
         "ACQUISITION",
@@ -115,7 +115,7 @@ pub(super) fn render_metrics(
         acquisition_context,
     );
 
-    render_metric_card(
+    components::render_metric_card(
         frame,
         capacity_area,
         "CAPACITY",
@@ -127,7 +127,7 @@ pub(super) fn render_metrics(
     let sample_context = sample_trip(state, train)
         .map(|sample| format!("{} sample departure", format_money(sample.departure_cost)))
         .unwrap_or_else(|| "sample departure unavailable".into());
-    render_metric_card(
+    components::render_metric_card(
         frame,
         operating_area,
         "OPERATING COST",
@@ -140,7 +140,7 @@ pub(super) fn render_metrics(
     );
 
     let ownership = catalogue_ownership(state, train);
-    render_metric_card(
+    components::render_metric_card(
         frame,
         presence_area,
         "FLEET PRESENCE",
@@ -151,28 +151,5 @@ pub(super) fn render_metrics(
         } else {
             "already represented".into()
         },
-    );
-}
-
-fn render_metric_card(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    value: String,
-    subtitle: String,
-    context: String,
-) {
-    let block = components::panel_block(title, false);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(value, theme::primary_value().bold()),
-            Line::styled(subtitle, theme::secondary()),
-            Line::styled(context, theme::hint()),
-        ])
-        .alignment(Alignment::Center)
-        .style(theme::panel()),
-        inner,
     );
 }

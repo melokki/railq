@@ -22,7 +22,10 @@ use ratatui::{
 use crate::{
     catalog::{TrainModel, train_catalogue},
     model::{GameState, Money, RailLine, RailStationId, TrainStatus},
-    ui::{components::panel_block, modal, theme},
+    ui::{
+        components::{EmptyState, panel_block},
+        modal, theme,
+    },
 };
 
 /// Persistent catalogue focus. Catalogue records are saved with a game, so an
@@ -948,20 +951,16 @@ pub fn render_dashboard(
     selection.synchronize(state);
     let catalogue = train_catalogue().models();
     if catalogue.is_empty() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::styled("No Train models available", theme::title()),
-                Line::from(""),
-                Line::from("The rolling-stock catalogue is empty in this build."),
-                Line::styled(
-                    "There is nothing to purchase right now.",
-                    theme::secondary(),
-                ),
-            ])
-            .block(panel_block("Market", true))
-            .style(theme::panel()),
-            area,
-        );
+        let shell = panel_block("Market", true);
+        let inner = shell.inner(area);
+        frame.render_widget(shell, area);
+        EmptyState::temporary(
+            "Catalogue unavailable",
+            "No rolling-stock models are available in this build.",
+        )
+        .motif("╾━╼")
+        .hint("There is nothing to purchase until catalogue data becomes available.")
+        .render(frame, inner);
         return;
     }
 

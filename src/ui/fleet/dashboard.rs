@@ -6,7 +6,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -67,7 +67,7 @@ pub(super) fn render_metrics(
     let unassigned = total.saturating_sub(assigned);
     let service_count = assigned_service_count(state);
 
-    render_metric_card(
+    components::render_metric_card(
         frame,
         availability_area,
         "AVAILABILITY",
@@ -82,7 +82,7 @@ pub(super) fn render_metrics(
         },
     );
 
-    render_metric_card(
+    components::render_metric_card(
         frame,
         allocation_area,
         "ALLOCATION",
@@ -104,7 +104,7 @@ pub(super) fn render_metrics(
         }
         None => ("Unavailable".into(), "catalogue data incomplete".into()),
     };
-    render_metric_card(
+    components::render_metric_card(
         frame,
         capacity_area,
         "SEAT CAPACITY",
@@ -114,7 +114,7 @@ pub(super) fn render_metrics(
     );
 
     let (resale_value, acquisition_value) = fleet_values(state);
-    render_metric_card(
+    components::render_metric_card(
         frame,
         value_area,
         "ASSET VALUE",
@@ -123,29 +123,6 @@ pub(super) fn render_metrics(
             .unwrap_or_else(|| "Unavailable".into()),
         "resale value".into(),
         format!("{} acquisition cost", format_cents(acquisition_value)),
-    );
-}
-
-fn render_metric_card(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    value: String,
-    subtitle: String,
-    context: String,
-) {
-    let block = components::panel_block(title, false);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(value, theme::primary_value().bold()),
-            Line::styled(subtitle, theme::secondary()),
-            Line::styled(context, theme::hint()),
-        ])
-        .alignment(Alignment::Center)
-        .style(theme::panel()),
-        inner,
     );
 }
 
