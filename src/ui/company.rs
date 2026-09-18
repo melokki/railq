@@ -4,6 +4,8 @@
 //! recovery evaluation. It does not mutate the game state or authorise any
 //! recovery action.
 
+mod analytics;
+
 use std::fmt::Write;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -16,6 +18,8 @@ use ratatui::{
         Cell, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
     },
 };
+
+use analytics::RecentJourneyPerformance;
 
 use crate::{
     catalog::train_catalogue,
@@ -1068,6 +1072,7 @@ fn render_company_overview(
 fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
     let result = operating_result_cents(state);
     let operating_costs = operating_costs_cents(state);
+    let recent = RecentJourneyPerformance::from_state(state);
     let [result_area, revenue_area, costs_area, margin_area] = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Fill(1),
@@ -1082,6 +1087,7 @@ fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
         result_area,
         "OPERATING RESULT",
         format_signed_cents(result),
+        recent_result_context(&recent),
         result_style(result),
     );
     render_key_metric_card(
@@ -1089,6 +1095,7 @@ fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
         revenue_area,
         "REVENUE",
         format_money(state.financials.operating_revenue),
+        recent_revenue_context(&recent),
         theme::primary_value(),
     );
     render_key_metric_card(
@@ -1096,6 +1103,7 @@ fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
         costs_area,
         "OPERATING COSTS",
         format_cents(operating_costs),
+        recent_cost_context(&recent),
         theme::primary_value(),
     );
     render_key_metric_card(
@@ -1103,6 +1111,7 @@ fn render_key_metrics(frame: &mut Frame, area: Rect, state: &GameState) {
         margin_area,
         "MARGIN",
         operating_margin_label(state),
+        recent_margin_context(&recent),
         result_style(result),
     );
 }
@@ -1112,6 +1121,7 @@ fn render_key_metric_card(
     area: Rect,
     title: &str,
     value: String,
+    recent_context: String,
     value_style: Style,
 ) {
     let block = components::panel_block(title, false);
@@ -1121,11 +1131,65 @@ fn render_key_metric_card(
         Paragraph::new(vec![
             Line::styled(value, value_style.bold()),
             Line::styled("lifetime", theme::secondary()),
+            Line::styled(recent_context, theme::hint()),
         ])
         .alignment(Alignment::Center)
         .style(theme::panel()),
         inner,
     );
+}
+
+fn recent_result_context(recent: &RecentJourneyPerformance) -> String {
+    if recent.journey_count == 0 {
+        return "no completed journeys".into();
+    }
+    format!(
+        "{} recent · {}",
+        recent.journey_count,
+        format_signed_cents(recent.result_cents)
+    )
+}
+
+fn recent_revenue_context(recent: &RecentJourneyPerformance) -> String {
+    if recent.journey_count == 0 {
+        return "no completed journeys".into();
+    }
+    match recent.passengers_carried {
+        Some(passengers) => format!(
+            "{} · {} pax",
+            format_cents(recent.revenue_cents),
+            passengers
+        ),
+        None => format!("{} recent", format_cents(recent.revenue_cents)),
+    }
+}
+
+fn recent_cost_context(recent: &RecentJourneyPerformance) -> String {
+    if recent.journey_count == 0 {
+        return "no completed journeys".into();
+    }
+    format!("{} recent", format_cents(recent.operating_costs_cents))
+}
+
+fn recent_margin_context(recent: &RecentJourneyPerformance) -> String {
+    if recent.journey_count == 0 {
+        return "no completed journeys".into();
+    }
+    let break_even = recent
+        .journey_count
+        .saturating_sub(recent.profitable_journeys + recent.loss_making_journeys);
+    let margin = margin_label(recent.result_cents, recent.revenue_cents);
+    if break_even == 0 {
+        format!(
+            "{margin} · {}+ / {}-",
+            recent.profitable_journeys, recent.loss_making_journeys
+        )
+    } else {
+        format!(
+            "{margin} · {}+ / {}- / {}=",
+            recent.profitable_journeys, recent.loss_making_journeys, break_even
+        )
+    }
 }
 
 fn render_operating_summary(frame: &mut Frame, area: Rect, state: &GameState) {
@@ -1729,12 +1793,18 @@ fn operating_costs_cents(state: &GameState) -> i128 {
 }
 
 fn operating_margin_label(state: &GameState) -> String {
-    let revenue = i128::from(state.financials.operating_revenue.cents());
-    if revenue == 0 {
+    margin_label(
+        operating_result_cents(state),
+        i128::from(state.financials.operating_revenue.cents()),
+    )
+}
+
+fn margin_label(result_cents: i128, revenue_cents: i128) -> String {
+    if revenue_cents == 0 {
         return "—".into();
     }
 
-    let tenths = operating_result_cents(state).saturating_mul(1_000) / revenue;
+    let tenths = result_cents.saturating_mul(1_000) / revenue_cents;
     let absolute = tenths.abs();
     let sign = if tenths > 0 {
         "+"

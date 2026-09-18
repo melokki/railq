@@ -158,6 +158,24 @@ fn captures_profitable_and_loss_making_finances_at_wide_and_compact_sizes()
                     financial_row < fleet_row,
                     "{slug} should prioritize KPI cards before operating footprint"
                 );
+                assert!(
+                    rendered.contains("1 recent"),
+                    "{slug} should contextualize lifetime KPIs with the latest completed Journey"
+                );
+                let recent_outcome_mix = if slug == "profitable" {
+                    "1+ / 0-"
+                } else {
+                    "0+ / 1-"
+                };
+                assert!(
+                    rendered.contains(recent_outcome_mix),
+                    "{slug} should summarize recent profitable/loss-making Journeys"
+                );
+                let recent_passengers = if slug == "profitable" { "10 pax" } else { "1 pax" };
+                assert!(
+                    rendered.contains(recent_passengers),
+                    "{slug} should summarize recent passenger boardings"
+                );
             }
             assert!(
                 rendered.contains("$3,000.00"),
