@@ -296,8 +296,8 @@ pub(super) fn insert_state(
 
     for (sequence, journey) in state.active_journeys.iter().enumerate() {
         transaction.execute(
-            "INSERT INTO active_journeys(id, sequence, purpose, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_rate_cents_per_passenger_km, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            "INSERT INTO active_journeys(id, sequence, purpose, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_rate_cents_per_passenger_km, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, started_at, departed_at, arrives_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 journey.id.to_string(), i64::try_from(sequence).unwrap_or(i64::MAX), journey.purpose.as_str(),
                 journey.service_id.to_string(), journey.train_id.to_string(),
@@ -312,6 +312,7 @@ pub(super) fn insert_state(
                     path: path.to_path_buf(),
                     source: Box::new(SaveCodecError::InvalidValue { field: "Journey current stop index" }),
                 })?,
+                journey.started_at.map(UtcSeconds::unix_seconds),
                 journey.departed_at.unix_seconds(), journey.arrives_at.unix_seconds()
             ],
         ).map_err(|source| db_error("write active Journeys to", path, source))?;
@@ -338,14 +339,16 @@ pub(super) fn insert_state(
     ).map_err(|source| db_error("write financial totals to", path, source))?;
     for receipt in &state.financials.recent_journey_receipts {
         transaction.execute(
-            "INSERT OR REPLACE INTO journey_receipts(journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT OR REPLACE INTO journey_receipts(journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at, service_id, service_code, purpose, departed_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 receipt.journey_id.to_string(), receipt.revenue.cents(), receipt.infrastructure_access_fee.cents(), receipt.fuel_cost.cents(),
                 receipt.train_id.map(|id| id.to_string()), receipt.train_model_name.as_deref(),
                 receipt.origin_station_id.map(|id| id.to_string()),
                 receipt.destination_station_id.map(|id| id.to_string()),
-                receipt.passengers_carried.map(i64::from), receipt.passenger_capacity.map(i64::from), receipt.completed_at.map(UtcSeconds::unix_seconds)
+                receipt.passengers_carried.map(i64::from), receipt.passenger_capacity.map(i64::from), receipt.completed_at.map(UtcSeconds::unix_seconds),
+                receipt.service_id.map(|id| id.to_string()), receipt.service_code.as_deref(),
+                receipt.purpose.map(JourneyPurpose::as_str), receipt.departed_at.map(UtcSeconds::unix_seconds)
             ],
         ).map_err(|source| db_error("write Journey receipts to", path, source))?;
     }
@@ -1266,7 +1269,7 @@ pub(super) fn load_state(
 
     let mut active_journeys = query_all(
         connection,
-        "SELECT id, purpose, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_rate_cents_per_passenger_km, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, departed_at, arrives_at FROM active_journeys ORDER BY sequence",
+        "SELECT id, purpose, service_id, train_id, origin_station_id, destination_station_id, passengers_carried, fare_rate_cents_per_passenger_km, fare_cents, operating_revenue_cents, credited_revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, current_stop_index, started_at, departed_at, arrives_at FROM active_journeys ORDER BY sequence",
         path,
         |row| {
             Ok(Journey {
@@ -1294,8 +1297,11 @@ pub(super) fn load_state(
                 current_stop_index: usize::try_from(row.get::<_, i64>(13)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 passenger_groups: Vec::new(),
-                departed_at: UtcSeconds::from_unix_seconds(row.get(14)?),
-                arrives_at: UtcSeconds::from_unix_seconds(row.get(15)?),
+                started_at: row
+                    .get::<_, Option<i64>>(14)?
+                    .map(UtcSeconds::from_unix_seconds),
+                departed_at: UtcSeconds::from_unix_seconds(row.get(15)?),
+                arrives_at: UtcSeconds::from_unix_seconds(row.get(16)?),
             })
         },
     )?;
@@ -1342,9 +1348,9 @@ pub(super) fn load_state(
         .query_row("SELECT operating_revenue_cents, infrastructure_access_fees_cents, fuel_costs_cents FROM financials WHERE singleton = 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .map_err(|source| db_error("read financial totals from", path, source))?;
     let receipt_sql = format!(
-        "SELECT journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at
+        "SELECT journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at, service_id, service_code, purpose, departed_at
          FROM (
-             SELECT journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at
+             SELECT journey_id, revenue_cents, infrastructure_access_fee_cents, fuel_cost_cents, train_id, train_model_name, origin_station_id, destination_station_id, passengers_carried, passenger_capacity, completed_at, service_id, service_code, purpose, departed_at
              FROM journey_receipts
              ORDER BY completed_at DESC, journey_id DESC
              LIMIT {RECENT_RECEIPT_LIMIT}
@@ -1375,6 +1381,20 @@ pub(super) fn load_state(
             passenger_capacity: optional_row_u32(row, 9, "Journey receipt passenger capacity")?,
             completed_at: row
                 .get::<_, Option<i64>>(10)?
+                .map(UtcSeconds::from_unix_seconds),
+            service_id: optional_row_domain_id(
+                row,
+                11,
+                "Journey receipt Passenger Service ID",
+                ServiceId::parse,
+            )?,
+            service_code: row.get(12)?,
+            purpose: row
+                .get::<_, Option<String>>(13)?
+                .map(|value| JourneyPurpose::parse(&value).ok_or(rusqlite::Error::InvalidQuery))
+                .transpose()?,
+            departed_at: row
+                .get::<_, Option<i64>>(14)?
                 .map(UtcSeconds::from_unix_seconds),
         })
     })?;

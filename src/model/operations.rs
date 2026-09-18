@@ -188,6 +188,12 @@ pub struct Journey {
     /// Passenger groups still aboard the Train.
     #[serde(default)]
     pub passenger_groups: Vec<JourneyPassengerGroup>,
+    /// Original departure time of the complete Journey.
+    ///
+    /// Older saves may not have retained this separately from the current leg
+    /// departure, so `None` is preserved rather than inventing a timestamp.
+    #[serde(default)]
+    pub started_at: Option<UtcSeconds>,
     /// Departure time of the current leg.
     pub departed_at: UtcSeconds,
     /// Arrival time of the next Service stop.

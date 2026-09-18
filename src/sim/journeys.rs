@@ -200,6 +200,7 @@ pub fn dispatch_journey(
                 fare: group.fare,
             })
             .collect(),
+        started_at: Some(departed_at),
         departed_at,
         arrives_at,
     });
@@ -276,6 +277,7 @@ pub fn dispatch_positioning_journey(
         fuel_cost: quote.fuel_cost,
         current_stop_index: 0,
         passenger_groups: Vec::new(),
+        started_at: Some(departed_at),
         departed_at,
         arrives_at,
     });

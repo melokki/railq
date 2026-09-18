@@ -201,6 +201,7 @@ CREATE TABLE IF NOT EXISTS active_journeys (
     infrastructure_access_fee_cents INTEGER NOT NULL,
     fuel_cost_cents INTEGER NOT NULL,
     current_stop_index INTEGER NOT NULL,
+    started_at INTEGER,
     departed_at INTEGER NOT NULL,
     arrives_at INTEGER NOT NULL
 );
@@ -230,7 +231,11 @@ CREATE TABLE IF NOT EXISTS journey_receipts (
     destination_station_id TEXT,
     passengers_carried INTEGER,
     passenger_capacity INTEGER,
-    completed_at INTEGER
+    completed_at INTEGER,
+    service_id TEXT,
+    service_code TEXT,
+    purpose TEXT CHECK (purpose IS NULL OR purpose IN ('revenue', 'positioning')),
+    departed_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS game_rules (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),

@@ -29,7 +29,7 @@ fn captures_consistent_amounts_and_units_across_operating_views() -> Result<(), 
     for (key, name) in [
         (None, "map-120x40.txt"),
         (Some(KeyCode::Char('T')), "fleet-120x40.txt"),
-        (Some(KeyCode::Char('C')), "company-120x40.txt"),
+        (Some(KeyCode::Char('4')), "company-120x40.txt"),
         (Some(KeyCode::Char('B')), "market-120x40.txt"),
     ] {
         if let Some(key) = key {

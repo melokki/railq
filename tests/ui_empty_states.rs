@@ -86,7 +86,7 @@ fn empty_history_and_zero_passenger_dispatch_are_explained_without_profit_promis
         .for_each(|pool| pool.waiting_passengers = 0);
 
     let mut shell = Shell::new();
-    press(&mut shell, &state, KeyCode::Char('c'));
+    press(&mut shell, &state, KeyCode::Char('4'));
     let history = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(history.contains("No retained Journey receipts yet"));
     assert!(

@@ -36,7 +36,7 @@ fn recovery_review_lists_ordered_steps_and_only_navigates_to_a_review() -> Resul
     let mut shell = Shell::new();
 
     assert_eq!(
-        shell.handle_key(key(KeyCode::Char('c')), &state),
+        shell.handle_key(key(KeyCode::Char('4')), &state),
         ShellAction::Continue
     );
     assert_eq!(

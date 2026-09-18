@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::balance::BalanceConfig;
 
-use super::{DurationSeconds, JourneyId, Money, RailStationId, TrainId, UtcSeconds};
+use super::{
+    DurationSeconds, JourneyId, JourneyPurpose, Money, RailStationId, ServiceId, TrainId,
+    UtcSeconds,
+};
 
 /// Cumulative financial data and receipts for the current game.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -38,6 +41,18 @@ pub struct JourneyReceipt {
     pub passenger_capacity: Option<u32>,
     #[serde(default)]
     pub completed_at: Option<UtcSeconds>,
+    /// Passenger Service this Journey belonged to, when retained by the save.
+    #[serde(default)]
+    pub service_id: Option<ServiceId>,
+    /// Stable player-facing Service code (for example `R1`) captured with the receipt.
+    #[serde(default)]
+    pub service_code: Option<String>,
+    /// Whether this was a revenue Journey or an empty positioning movement.
+    #[serde(default)]
+    pub purpose: Option<JourneyPurpose>,
+    /// Original Journey departure timestamp.
+    #[serde(default)]
+    pub departed_at: Option<UtcSeconds>,
 }
 
 /// Per-save simulation rules. Static Train model definitions are build content
