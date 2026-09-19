@@ -26,12 +26,18 @@ fn captures_company_status_at_wide_and_compact_sizes() -> Result<(), Box<dyn Err
     for (columns, rows) in [(120, 40), (80, 24)] {
         let rendered = capture_rendered_buffer(&shell, &state, columns, rows);
         assert_eq!(rendered.lines().count(), usize::from(rows));
+        let header = rendered.lines().next().expect("render has a header row");
+        assert!(!header.contains('│'));
+        assert!(header.contains("RailQ  Northstar Passenger"));
         if columns >= 100 {
-            assert!(rendered.contains("Cash"));
-            assert!(rendered.contains("Next arrival"));
+            assert!(header.contains("Cash"));
+            assert!(header.contains("Fleet"));
+            assert!(header.contains("ready ·"));
+            assert!(header.contains("travelling"));
+            assert!(header.contains("Next"));
         } else {
-            assert!(rendered.contains("R0/T1"));
-            assert!(rendered.contains("Next"));
+            assert!(header.contains("R0/T1"));
+            assert!(header.contains("Next"));
         }
     }
     Ok(())

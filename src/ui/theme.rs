@@ -80,6 +80,26 @@ pub fn selected_row() -> Style {
     Style::default().fg(BACKGROUND).bg(ACCENT).bold()
 }
 
+/// Application identity at the far left of the global status bar.
+pub fn shell_brand() -> Style {
+    Style::default().fg(PRIMARY).bg(BACKGROUND).bold()
+}
+
+/// Company identity beside the application name.
+pub fn shell_identity() -> Style {
+    Style::default().fg(SECONDARY).bg(BACKGROUND)
+}
+
+/// Muted labels for global status metrics such as Cash and Fleet.
+pub fn shell_metric_label() -> Style {
+    Style::default().fg(SECONDARY).bg(BACKGROUND)
+}
+
+/// Primary values for global status metrics.
+pub fn shell_metric_value() -> Style {
+    Style::default().fg(PRIMARY).bg(BACKGROUND)
+}
+
 pub fn navigation() -> Style {
     Style::default().fg(SECONDARY).bg(BACKGROUND)
 }

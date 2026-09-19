@@ -312,7 +312,11 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
     actions
 }
 
-pub(super) fn shell_status_line(state: &GameState, now: UtcSeconds, width: u16) -> String {
+pub(super) fn shell_status_line(
+    state: &GameState,
+    now: UtcSeconds,
+    width: u16,
+) -> Line<'static> {
     let ready = state
         .player_company
         .fleet
@@ -330,18 +334,80 @@ pub(super) fn shell_status_line(state: &GameState, now: UtcSeconds, width: u16) 
     let next_arrival = nearest_eta(state, now).unwrap_or_else(|| "—".into());
 
     if width >= 100 {
-        format!(
-            "{APPLICATION_NAME}  │  {}  │  Cash {}  │  Fleet {ready} ready · {travelling} travelling  │  Next arrival {next_arrival}",
-            shorten(&state.player_company.name, 30),
-            format::money(state.player_company.funds),
-        )
+        shell_status_wide(state, ready, travelling, &next_arrival, width)
     } else {
-        format!(
-            "{APPLICATION_NAME}  │  {}  │  {}  │  R{ready}/T{travelling}  │  Next {next_arrival}",
-            shorten(&state.player_company.name, 16),
-            format::money(state.player_company.funds),
-        )
+        shell_status_compact(state, ready, travelling, &next_arrival, width)
     }
+}
+
+fn shell_status_wide(
+    state: &GameState,
+    ready: usize,
+    travelling: usize,
+    next_arrival: &str,
+    width: u16,
+) -> Line<'static> {
+    let company = shorten(&state.player_company.name, 30);
+    let cash = format::money(state.player_company.funds);
+    let fleet = format!("{ready} ready · {travelling} travelling");
+
+    let mut left = vec![
+        Span::styled(APPLICATION_NAME, theme::shell_brand()),
+        Span::raw("  "),
+        Span::styled(company, theme::shell_identity()),
+    ];
+    let right = vec![
+        Span::styled("Cash ", theme::shell_metric_label()),
+        Span::styled(cash, theme::shell_metric_value()),
+        Span::raw("   "),
+        Span::styled("Fleet ", theme::shell_metric_label()),
+        Span::styled(fleet, theme::shell_metric_value()),
+        Span::raw("   "),
+        Span::styled("Next ", theme::shell_metric_label()),
+        Span::styled(next_arrival.to_owned(), theme::shell_metric_value()),
+    ];
+
+    let left_width = Line::from(left.clone()).width();
+    let right_width = Line::from(right.clone()).width();
+    let available = usize::from(width);
+    let gap = available.saturating_sub(left_width + right_width).max(2);
+    left.push(Span::raw(" ".repeat(gap)));
+    left.extend(right);
+    Line::from(left)
+}
+
+fn shell_status_compact(
+    state: &GameState,
+    ready: usize,
+    travelling: usize,
+    next_arrival: &str,
+    width: u16,
+) -> Line<'static> {
+    let company = shorten(&state.player_company.name, 16);
+    let cash = format::money(state.player_company.funds);
+    let fleet = format!("R{ready}/T{travelling}");
+
+    let mut left = vec![
+        Span::styled(APPLICATION_NAME, theme::shell_brand()),
+        Span::raw("  "),
+        Span::styled(company, theme::shell_identity()),
+    ];
+    let right = vec![
+        Span::styled(cash, theme::shell_metric_value()),
+        Span::raw("   "),
+        Span::styled(fleet, theme::shell_metric_value()),
+        Span::raw("   "),
+        Span::styled("Next ", theme::shell_metric_label()),
+        Span::styled(next_arrival.to_owned(), theme::shell_metric_value()),
+    ];
+
+    let left_width = Line::from(left.clone()).width();
+    let right_width = Line::from(right.clone()).width();
+    let available = usize::from(width);
+    let gap = available.saturating_sub(left_width + right_width).max(2);
+    left.push(Span::raw(" ".repeat(gap)));
+    left.extend(right);
+    Line::from(left)
 }
 
 fn nearest_eta(state: &GameState, now: UtcSeconds) -> Option<String> {
