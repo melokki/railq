@@ -655,12 +655,11 @@ fn help_is_contextual_and_points_a_new_company_to_the_market() {
     assert!(shell.help_visible());
     let help = super::help_lines(&shell, &state).join("\n");
     for instruction in [
-        "1 Map",
-        "2 Fleet",
-        "3 Market",
-        "4 Company",
-        "Current · Map",
-        "3 Open Market and acquire your first passenger Train",
+        "[1] Map",
+        "[2] Fleet",
+        "[3] Market",
+        "[4] Company",
+        "[3] Open Market and acquire your first passenger Train",
     ] {
         assert!(help.contains(instruction));
     }
@@ -679,17 +678,15 @@ fn help_changes_with_the_active_workspace() {
         &state,
     );
     let trains_help = super::help_lines(&shell, &state).join("\n");
-    assert!(trains_help.contains("Current · Fleet"));
-    assert!(trains_help.contains("d Dispatch selected READY Train"));
-    assert!(trains_help.contains("r Rename selected Train"));
+    assert!(trains_help.contains("[D] Dispatch or position selected READY Train"));
+    assert!(trains_help.contains("[R] Rename selected Train"));
 
     shell.handle_key(
         KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE),
         &state,
     );
     let market_help = super::help_lines(&shell, &state).join("\n");
-    assert!(market_help.contains("Current · Market"));
-    assert!(market_help.contains("Enter Buy selected Train"));
+    assert!(market_help.contains("[Enter] Buy selected Train"));
 
     shell.handle_key(
         KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
@@ -700,8 +697,7 @@ fn help_changes_with_the_active_workspace() {
         &state,
     );
     let services_help = super::help_lines(&shell, &state).join("\n");
-    assert!(services_help.contains("Current · Passenger Services"));
-    assert!(services_help.contains("n Create the first Passenger Service"));
+    assert!(services_help.contains("[N] Create the first Passenger Service"));
 }
 
 #[test]

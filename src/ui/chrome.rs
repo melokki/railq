@@ -521,83 +521,244 @@ fn shorten(value: &str, max_characters: usize) -> String {
 
 pub(super) const HELP_PAGE_STEP: usize = 5;
 
-pub(super) fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
-    let mut lines = vec![
-        "Navigation".into(),
-        "1 Map   2 Fleet   3 Market   4 Company   5 Authority   6 Bulletin".into(),
-        "Primary workspaces use number keys only; letter keys remain available for contextual actions.".into(),
-        String::new(),
-    ];
+const HELP_KEY_COLUMN_WIDTH: usize = 18;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HelpDocument {
+    context: String,
+    lines: Vec<HelpLine>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum HelpLine {
+    Section(String),
+    Action {
+        key: String,
+        action: String,
+        enabled: bool,
+    },
+    WorkspaceRow(Vec<(String, String)>),
+    Text(String),
+    Spacer,
+}
+
+pub(super) fn help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
+    help_document(shell, state)
+        .lines
+        .into_iter()
+        .map(|line| match line {
+            HelpLine::Section(section) => section,
+            HelpLine::Action { key, action, .. } => format!("[{key}] {action}"),
+            HelpLine::WorkspaceRow(actions) => actions
+                .into_iter()
+                .map(|(key, action)| format!("[{key}] {action}"))
+                .collect::<Vec<_>>()
+                .join("   "),
+            HelpLine::Text(text) => text,
+            HelpLine::Spacer => String::new(),
+        })
+        .collect()
+}
+
+fn help_document(shell: &Shell, state: &GameState) -> HelpDocument {
+    let mut context_lines = contextual_help_lines(shell, state);
+    let context = context_lines
+        .first()
+        .and_then(|line| line.strip_prefix("Current · "))
+        .map(str::to_owned)
+        .unwrap_or_else(|| shell.active_view.label().to_owned());
+    if context_lines
+        .first()
+        .is_some_and(|line| line.starts_with("Current · "))
+    {
+        context_lines.remove(0);
+    }
+
+    let mut lines = Vec::new();
+    for line in context_lines {
+        append_help_line(&mut lines, line);
+    }
+    while matches!(lines.last(), Some(HelpLine::Spacer)) {
+        lines.pop();
+    }
+
+    if !lines.is_empty() {
+        lines.push(HelpLine::Spacer);
+    }
+    lines.extend([
+        HelpLine::Section("Workspaces".into()),
+        HelpLine::WorkspaceRow(vec![
+            ("1".into(), "Map".into()),
+            ("2".into(), "Fleet".into()),
+            ("3".into(), "Market".into()),
+        ]),
+        HelpLine::WorkspaceRow(vec![
+            ("4".into(), "Company".into()),
+            ("5".into(), "Authority".into()),
+            ("6".into(), "Bulletin".into()),
+        ]),
+        HelpLine::Text(
+            "Number keys switch workspaces; letter keys remain contextual.".into(),
+        ),
+        HelpLine::Spacer,
+        HelpLine::Section("Tip".into()),
+        HelpLine::Text(
+            "The footer is contextual: it only shows actions that matter right now.".into(),
+        ),
+    ]);
+
+    HelpDocument { context, lines }
+}
+
+fn contextual_help_lines(shell: &Shell, state: &GameState) -> Vec<String> {
     if shell.active_view == View::Company && shell.company_workspace.has_modal() {
-        lines.extend(shell.company_workspace.help_lines(state));
-        return lines;
+        return shell.company_workspace.help_lines(state);
     }
 
     if is_bankrupt(state) {
-        lines.extend([
+        return vec![
             "Current · Bankruptcy".into(),
             "r Review a safe restart".into(),
             "Enter Confirm restart when the review is open".into(),
             "Esc Cancel restart review".into(),
-        ]);
-        return lines;
+        ];
     }
 
     if shell.map_workspace.world_details_visible() {
-        lines.extend(shell.map_workspace.help_lines(state));
-        return lines;
+        return shell.map_workspace.help_lines(state);
     }
 
     if let Some(dispatch_lines) = shell.dispatch_workspace.help_lines() {
-        lines.extend(dispatch_lines);
-        return lines;
+        return dispatch_lines;
     }
 
     if shell.active_view == View::BuyTrains {
         if let Some(market_lines) = shell.market_workspace.help_lines() {
-            lines.extend(market_lines);
-            return lines;
+            return market_lines;
         }
     }
 
     if shell.active_view == View::Map && shell.service_workspace.is_open() {
-        lines.extend(shell.service_workspace.help_lines(state));
-        return lines;
+        return shell.service_workspace.help_lines(state);
     }
 
     match shell.active_view {
-        View::Map => lines.extend(shell.map_workspace.help_lines(state)),
-        View::Trains => {
-            lines.extend(shell.fleet_workspace.help_lines(state));
+        View::Map => shell.map_workspace.help_lines(state),
+        View::Trains => shell.fleet_workspace.help_lines(state),
+        View::BuyTrains => vec![
+            "Current · Market".into(),
+            "↑↓ / jk Select Train model".into(),
+            "Enter Buy selected Train".into(),
+            String::new(),
+            "Purchase price is not the whole decision: keep enough cash for access and fuel."
+                .into(),
+        ],
+        View::Company => shell.company_workspace.help_lines(state),
+        View::Authority => shell.authority_workspace.help_lines(),
+        View::Bulletin => shell.bulletin_workspace.help_lines(),
+    }
+}
+
+fn append_help_line(lines: &mut Vec<HelpLine>, line: String) {
+    if line.is_empty() {
+        lines.push(HelpLine::Spacer);
+        return;
+    }
+    if matches!(line.as_str(), "Next step" | "Tip") {
+        lines.push(HelpLine::Section(line));
+        return;
+    }
+
+    let segments = line.split("   ").collect::<Vec<_>>();
+    if segments.len() > 1 && segments.iter().all(|segment| parse_help_action(segment).is_some()) {
+        for segment in segments {
+            let (key, action) = parse_help_action(segment).expect("validated help action segment");
+            lines.push(HelpLine::Action {
+                key,
+                enabled: !action.to_ascii_lowercase().contains("unavailable"),
+                action,
+            });
         }
-        View::BuyTrains => {
-            lines.extend([
-                "Current · Market".into(),
-                "↑↓ / jk Select Train model".into(),
-                "Enter Buy selected Train".into(),
-                String::new(),
-                "Purchase price is not the whole decision: keep enough cash for access and fuel."
-                    .into(),
-            ]);
-        }
-        View::Company => {
-            lines.extend(shell.company_workspace.help_lines(state));
-        }
-        View::Authority => {
-            lines.extend(shell.authority_workspace.help_lines());
-        }
-        View::Bulletin => {
-            lines.extend(shell.bulletin_workspace.help_lines());
+        return;
+    }
+
+    if let Some((key, action)) = parse_help_action(&line) {
+        lines.push(HelpLine::Action {
+            key,
+            enabled: !action.to_ascii_lowercase().contains("unavailable"),
+            action,
+        });
+    } else {
+        lines.push(HelpLine::Text(line));
+    }
+}
+
+fn parse_help_action(line: &str) -> Option<(String, String)> {
+    const PREFIXES: &[(&str, &str)] = &[
+        ("↑↓←→ / hjkl ", "↑↓←→/HJKL"),
+        ("↑↓ / jk ", "↑↓/JK"),
+        ("PgUp / PgDn ", "PgUp/PgDn"),
+        ("← / Backspace ", "←/Backspace"),
+        ("w / Esc ", "W/Esc"),
+        ("m / Esc ", "M/Esc"),
+    ];
+    for (prefix, key) in PREFIXES {
+        if let Some(action) = line.strip_prefix(prefix) {
+            return Some(((*key).into(), action.into()));
         }
     }
 
-    lines.extend([
-        String::new(),
-        "Tip".into(),
-        "The footer is contextual: it only shows actions that matter right now.".into(),
-    ]);
-    lines
+    let (token, action) = line.split_once(' ')?;
+    let key = match token {
+        "Enter" | "Esc" | "Backspace" | "Del" | "Space" => token.to_owned(),
+        token if token.chars().count() == 1 && token.chars().all(|character| character.is_ascii_alphanumeric()) => {
+            token.to_ascii_uppercase()
+        }
+        _ => return None,
+    };
+    Some((key, action.into()))
+}
+
+fn render_help_line(line: HelpLine) -> Line<'static> {
+    match line {
+        HelpLine::Section(section) => Line::styled(section, theme::focused_title()),
+        HelpLine::Action {
+            key,
+            action,
+            enabled,
+        } => {
+            let keycap = format!("[{key}]");
+            let padding = " ".repeat(HELP_KEY_COLUMN_WIDTH.saturating_sub(keycap.chars().count()));
+            let key_style = if enabled {
+                theme::shortcut_key()
+            } else {
+                theme::shortcut_disabled()
+            };
+            let action_style = if enabled {
+                theme::shortcut_action()
+            } else {
+                theme::shortcut_disabled()
+            };
+            Line::from(vec![
+                Span::styled(keycap, key_style),
+                Span::styled(padding, theme::secondary()),
+                Span::styled(action, action_style),
+            ])
+        }
+        HelpLine::WorkspaceRow(actions) => {
+            let mut spans = Vec::new();
+            for (index, (key, action)) in actions.into_iter().enumerate() {
+                if index > 0 {
+                    spans.push(Span::styled("    ", theme::secondary()));
+                }
+                spans.push(Span::styled(format!("[{key}]"), theme::shortcut_key()));
+                spans.push(Span::styled(format!(" {action}"), theme::shortcut_action()));
+            }
+            Line::from(spans)
+        }
+        HelpLine::Text(text) => Line::styled(text, theme::secondary()),
+        HelpLine::Spacer => Line::from(""),
+    }
 }
 
 pub(super) fn render_help_overlay(
@@ -606,7 +767,8 @@ pub(super) fn render_help_overlay(
     shell: &Shell,
     state: &GameState,
 ) {
-    let card = modal::centered_rect(area, 96, 30);
+    let document = help_document(shell, state);
+    let card = modal::centered_rect(area, 88, 28);
     let footer = if card.width < 76 {
         modal::shortcut_line(&[
             modal::ModalShortcut::enabled("↑↓", modal::ModalAction::Scroll),
@@ -620,27 +782,18 @@ pub(super) fn render_help_overlay(
             modal::ModalShortcut::enabled("Q", modal::ModalAction::Quit),
         ])
     };
-    let modal_areas = modal::render_shell(frame, card, "Keyboard Help", footer);
+    let title = format!("Help · {}", document.context);
+    let modal_areas = modal::render_shell(frame, card, &title, footer);
 
-    let lines = help_lines(shell, state);
     let visible_lines = usize::from(modal_areas.body.height);
-    let max_offset = lines.len().saturating_sub(visible_lines.max(1));
+    let max_offset = document.lines.len().saturating_sub(visible_lines.max(1));
     let offset = shell.help_offset.min(max_offset);
-    let content = lines
+    let content = document
+        .lines
         .into_iter()
         .skip(offset)
         .take(visible_lines)
-        .map(|line| {
-            if line == "Navigation"
-                || line == "Next step"
-                || line == "Tip"
-                || line.starts_with("Current ·")
-            {
-                Line::styled(line, theme::focused_title())
-            } else {
-                Line::from(line)
-            }
-        })
+        .map(render_help_line)
         .collect::<Vec<_>>();
 
     frame.render_widget(

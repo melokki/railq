@@ -26,8 +26,8 @@ fn help_is_scrollable_and_uses_a_focused_page_when_compact() {
     );
 
     let wide = capture_rendered_buffer(&shell, &state, 120, 40);
-    assert!(wide.contains("Keyboard Help"));
-    assert!(wide.contains("Navigation"));
+    assert!(wide.contains("Help · Map"));
+    assert!(wide.contains("Workspaces"));
     assert!(wide.contains("[PgUp/PgDn] page"));
     assert!(wide.contains("[Esc/?] close"));
     assert_eq!(
@@ -36,13 +36,13 @@ fn help_is_scrollable_and_uses_a_focused_page_when_compact() {
         "Help should mute the application underneath it",
     );
     assert_eq!(
-        capture_rendered_cell_colors(&shell, &state, 120, 40, 12, 5),
+        capture_rendered_cell_colors(&shell, &state, 120, 40, 16, 6),
         Some((theme::ACCENT, theme::PANEL)),
         "Help should use the shared focused-modal border",
     );
     let compact_before = capture_rendered_buffer_mut(&mut shell, &state, 64, 16);
-    assert!(compact_before.contains("Keyboard Help"));
-    assert!(compact_before.contains("Navigation"));
+    assert!(compact_before.contains("Help · Map"));
+    assert!(compact_before.contains("[3] Open Market"));
     assert_eq!(
         press(&mut shell, &state, KeyCode::PageDown),
         ShellAction::Continue
