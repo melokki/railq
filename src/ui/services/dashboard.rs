@@ -14,7 +14,7 @@ use crate::{
     ui::components,
 };
 
-use super::service_operating_snapshot;
+use super::{format_passenger_count, service_operating_snapshot};
 
 pub(super) fn render_metrics(
     frame: &mut Frame,
@@ -68,44 +68,47 @@ pub(super) fn render_metrics(
         ),
     );
 
-    let Some(snapshot) = selected_service_id
-        .map(|service_id| service_operating_snapshot(state, service_id))
+    let Some(service) = selected_service_id
+        .and_then(|service_id| services.iter().find(|service| service.id == service_id))
     else {
         components::render_metric_card(
             frame,
             load_area,
-            "PASSENGER LOAD",
+            "SELECTED LOAD",
             "—".into(),
             "no service selected".into(),
             String::new(),
         );
         return;
     };
+    let snapshot = service_operating_snapshot(state, service.id);
 
     let onboard = if snapshot.total_capacity > 0 {
         format!(
             "{} / {} onboard",
-            snapshot.onboard_passengers, snapshot.total_capacity
+            format_passenger_count(snapshot.onboard_passengers),
+            format_passenger_count(snapshot.total_capacity),
         )
     } else {
-        format!("{} onboard", snapshot.onboard_passengers)
+        format!("{} onboard", format_passenger_count(snapshot.onboard_passengers))
     };
-    let context = if snapshot.total_capacity > 0 {
+    let load = if snapshot.total_capacity > 0 {
         let occupancy = u64::from(snapshot.onboard_passengers).saturating_mul(100)
             / u64::from(snapshot.total_capacity);
-        format!("{occupancy}% selected load")
-    } else if snapshot.assigned_trains > 0 {
-        "selected service not running".into()
+        format!("{} · {occupancy}%", service.name)
     } else {
-        "no train assigned".into()
+        format!("{} · —", service.name)
     };
     components::render_metric_card(
         frame,
         load_area,
-        "PASSENGER LOAD",
-        format!("{} waiting", snapshot.waiting_passengers),
+        "SELECTED LOAD",
+        load,
         onboard,
-        context,
+        format!(
+            "{} waiting",
+            format_passenger_count(snapshot.waiting_passengers)
+        ),
     );
 }
 

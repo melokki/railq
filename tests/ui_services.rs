@@ -222,7 +222,7 @@ fn existing_services_are_listed_and_can_request_deletion() {
     assert!(rendered.contains("SERVICES PLANNED"));
     assert!(rendered.contains("SERVICE NETWORK"));
     assert!(rendered.contains("FLEET ALLOCATION"));
-    assert!(rendered.contains("PASSENGER LOAD"));
+    assert!(rendered.contains("SELECTED LOAD"));
     assert!(rendered.contains("SERVICE OPERATIONS"));
     assert!(rendered.contains("SELECTED SERVICE"));
     assert!(rendered.contains("IDLE · no trains assigned"));
@@ -346,7 +346,7 @@ fn active_service_inspector_surfaces_live_operating_context() {
     assert!(rendered.contains("Load"));
     assert!(rendered.contains("On board"));
     assert!(rendered.contains("COMMERCIAL"));
-    assert!(rendered.contains("Expected revenue"));
+    assert!(rendered.contains("Revenue"));
     assert!(rendered.contains("Access fee"));
     assert!(rendered.contains("Fuel cost"));
     assert!(rendered.contains("Expected result"));

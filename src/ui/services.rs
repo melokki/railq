@@ -739,7 +739,7 @@ fn render_service_picker(
                     Cell::from(snapshot.assigned_trains.to_string()),
                     Cell::from(snapshot.runnable_assigned_trains.to_string()),
                     Cell::from(snapshot.active_trains.to_string()),
-                    Cell::from(snapshot.waiting_passengers.to_string()),
+                    Cell::from(format_passenger_count(snapshot.waiting_passengers)),
                 ])
             } else {
                 Row::new([service.display_name(), route])
@@ -760,7 +760,7 @@ fn render_service_picker(
                 Constraint::Length(8),
                 Constraint::Length(5),
                 Constraint::Length(7),
-                Constraint::Length(7),
+                Constraint::Length(9),
             ],
         )
     } else {
@@ -941,15 +941,16 @@ fn service_details(
     }
     lines.push(labelled_line(
         "Waiting",
-        &snapshot.waiting_passengers.to_string(),
+        &format_passenger_count(snapshot.waiting_passengers),
     ));
     let onboard = if snapshot.total_capacity > 0 {
         format!(
             "{} / {}",
-            snapshot.onboard_passengers, snapshot.total_capacity
+            format_passenger_count(snapshot.onboard_passengers),
+            format_passenger_count(snapshot.total_capacity),
         )
     } else {
-        snapshot.onboard_passengers.to_string()
+        format_passenger_count(snapshot.onboard_passengers)
     };
     lines.push(labelled_line("On board", &onboard));
     if !tight {
@@ -969,7 +970,8 @@ fn service_details(
             &truncate_display(&format!("→ {destination}"), 15),
             &format!(
                 "{} · +{}/h",
-                directional_demand.forward_waiting, directional_demand.forward_rate_per_hour
+                format_passenger_count(directional_demand.forward_waiting),
+                format_passenger_count(directional_demand.forward_rate_per_hour),
             ),
         ));
         if service.direction_mode == ServiceDirectionMode::BothDirections {
@@ -977,7 +979,8 @@ fn service_details(
                 &truncate_display(&format!("→ {origin}"), 15),
                 &format!(
                     "{} · +{}/h",
-                    directional_demand.reverse_waiting, directional_demand.reverse_rate_per_hour
+                    format_passenger_count(directional_demand.reverse_waiting),
+                    format_passenger_count(directional_demand.reverse_rate_per_hour),
                 ),
             ));
         }
@@ -987,7 +990,7 @@ fn service_details(
         inspector_section(&mut lines, "COMMERCIAL", dense);
         if density != ServiceInspectorDensity::Tight {
             lines.push(labelled_line(
-                "Expected revenue",
+                "Revenue",
                 &format_cents(snapshot.booked_revenue_cents),
             ));
             lines.push(labelled_line(
@@ -1341,6 +1344,18 @@ fn remaining_journey_seconds(state: &GameState, arrives_at: crate::model::UtcSec
     u64::try_from(remaining).unwrap_or(0)
 }
 
+fn format_passenger_count(count: u32) -> String {
+    let digits = count.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
+}
+
 fn format_cents(cents: i128) -> String {
     let formatted = format::signed_cents(cents);
     formatted.strip_prefix('+').unwrap_or(&formatted).to_owned()
@@ -1603,7 +1618,14 @@ fn station_label(state: &GameState, station_id: RailStationId) -> String {
 
 #[cfg(test)]
 mod route_summary_tests {
-    use super::format_via_summary;
+    use super::{format_passenger_count, format_via_summary};
+
+    #[test]
+    fn passenger_counts_use_thousands_separators() {
+        assert_eq!(format_passenger_count(999), "999");
+        assert_eq!(format_passenger_count(1_380), "1,380");
+        assert_eq!(format_passenger_count(12_345_678), "12,345,678");
+    }
 
     #[test]
     fn route_summary_keeps_short_stop_patterns_readable() {
