@@ -180,10 +180,10 @@ fn map_world_details_explains_the_region_registration_identity() {
     assert!(rendered.contains(&state.region.rail_authority.name));
     assert!(rendered.contains(&registration));
     assert!(rendered.contains("RAILWAY REGISTRATION"));
-    assert!(rendered.contains("fictional two-letter railway mark"));
+    assert!(rendered.contains("Meridia railway mark"));
     assert!(rendered.contains("Connected"));
     assert!(rendered.contains("Rail network"));
-    assert!(rendered.contains("[Esc/W] close"));
+    assert!(rendered.contains("[Esc] close"));
     assert!(!rendered.contains("w / Esc · return to Map"));
     assert_eq!(
         capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
@@ -191,10 +191,18 @@ fn map_world_details_explains_the_region_registration_identity() {
         "World Details should mute the application underneath it",
     );
     assert_eq!(
-        capture_rendered_cell_colors(&shell, &state, 120, 40, 17, 8),
+        capture_rendered_cell_colors(&shell, &state, 120, 40, 17, 9),
         Some((theme::ACCENT, theme::PANEL)),
         "World Details should use the shared focused-modal border",
     );
+
+    for code in [KeyCode::Char('w'), KeyCode::Char('2'), KeyCode::Char('q')] {
+        assert_eq!(
+            shell.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &state),
+            ShellAction::Continue
+        );
+        assert!(shell.map_workspace.world_details_visible());
+    }
 
     assert_eq!(
         shell.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state),

@@ -17,7 +17,7 @@ fn press(shell: &mut Shell, state: &railq::model::GameState, code: KeyCode) -> S
 }
 
 #[test]
-fn help_is_scrollable_and_uses_a_focused_page_when_compact() {
+fn help_is_content_sized_and_keeps_navigation_minimal() {
     let state = create_new_game(42, "Help Passenger", NOW);
     let mut shell = Shell::new();
     assert_eq!(
@@ -28,8 +28,9 @@ fn help_is_scrollable_and_uses_a_focused_page_when_compact() {
     let wide = capture_rendered_buffer(&shell, &state, 120, 40);
     assert!(wide.contains("Help · Map"));
     assert!(wide.contains("Workspaces"));
-    assert!(wide.contains("[PgUp/PgDn] page"));
-    assert!(wide.contains("[Esc/?] close"));
+    assert!(wide.contains("[Esc] close"));
+    assert!(!wide.contains("[PgUp/PgDn] page"));
+    assert!(!wide.contains("Tip"));
     assert!(
         wide.lines().last().is_some_and(|line| line.trim().is_empty()),
         "The global footer should stay geometrically present but hide its actions while Help owns input",
@@ -40,20 +41,21 @@ fn help_is_scrollable_and_uses_a_focused_page_when_compact() {
         "Help should mute the application underneath it",
     );
     assert_eq!(
-        capture_rendered_cell_colors(&shell, &state, 120, 40, 16, 6),
+        capture_rendered_cell_colors(&shell, &state, 120, 40, 16, 12),
         Some((theme::ACCENT, theme::PANEL)),
         "Help should use the shared focused-modal border",
     );
+
     let compact_before = capture_rendered_buffer_mut(&mut shell, &state, 64, 16);
     assert!(compact_before.contains("Help · Map"));
     assert!(compact_before.contains("[3] Open Market"));
+    assert!(compact_before.contains("[Esc] close"));
     assert_eq!(
         press(&mut shell, &state, KeyCode::PageDown),
         ShellAction::Continue
     );
     let compact_after = capture_rendered_buffer_mut(&mut shell, &state, 64, 16);
-    assert!(compact_after.contains("Tip"));
-    assert_ne!(compact_before, compact_after);
+    assert_eq!(compact_before, compact_after);
 }
 
 #[test]
@@ -76,7 +78,7 @@ fn help_isolates_input_and_restores_the_pending_purchase_proposal() {
     );
 
     assert_eq!(
-        press(&mut shell, &state, KeyCode::Char('h')),
+        press(&mut shell, &state, KeyCode::Char('?')),
         ShellAction::Continue
     );
     assert!(shell.help_visible());
@@ -119,15 +121,17 @@ fn help_isolates_input_and_restores_the_pending_purchase_proposal() {
 }
 
 #[test]
-fn help_keeps_global_exit_available() {
+fn help_owns_input_until_escape_while_control_c_remains_available() {
     let state = create_new_game(42, "Exit Passenger", NOW);
     let mut shell = Shell::new();
     press(&mut shell, &state, KeyCode::Char('?'));
 
-    assert_eq!(
-        press(&mut shell, &state, KeyCode::Char('q')),
-        ShellAction::Exit
-    );
+    for code in [KeyCode::Char('?'), KeyCode::Char('q'), KeyCode::Char('2')] {
+        assert_eq!(press(&mut shell, &state, code), ShellAction::Continue);
+        assert!(shell.help_visible());
+    }
+    assert_eq!(press(&mut shell, &state, KeyCode::Esc), ShellAction::Continue);
+    assert!(!shell.help_visible());
 
     let mut control_c_shell = Shell::new();
     press(&mut control_c_shell, &state, KeyCode::Char('?'));

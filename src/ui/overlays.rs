@@ -27,17 +27,6 @@ pub(super) fn render_world_details_overlay(
     area: Rect,
     state: &GameState,
 ) {
-    let card = modal::centered_rect(area, 86, 24);
-    let modal_areas = modal::render_shell(
-        frame,
-        card,
-        "World Details",
-        modal::shortcut_line(&[modal::ModalShortcut::enabled(
-            "Esc/W",
-            modal::ModalAction::Close,
-        )]),
-    );
-
     let region = &state.region;
     let registration = &region.railway_registration;
     let network = &region.rail_authority.rail_network;
@@ -76,16 +65,13 @@ pub(super) fn render_world_details_overlay(
             "Identity",
             &format!("{} · {}", registration.display_code(), registration.mark),
         ),
-        world_field(
-            &registration.display_code(),
-            "fictional numeric railway registration code for this Region",
-        ),
+        world_field(&registration.display_code(), "Regional numeric railway code"),
         world_field(
             &registration.mark,
-            &format!("fictional two-letter railway mark assigned to {territory}"),
+            &format!("{territory} railway mark"),
         ),
         Line::styled(
-            "Used in official RailQ EVNs; it remains stable for this world.",
+            "Used in official RailQ EVNs and stable for this world.",
             theme::secondary(),
         ),
         Line::from(""),
@@ -99,6 +85,20 @@ pub(super) fn render_world_details_overlay(
         world_field("Rail lines", &format!("{}", network.rail_lines.len())),
         world_field("Rail network", &format::distance(network_metres)),
     ];
+
+    let desired_height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(4);
+    let card = modal::centered_rect(area, 86, desired_height);
+    let modal_areas = modal::render_shell(
+        frame,
+        card,
+        "World Details",
+        modal::shortcut_line(&[modal::ModalShortcut::enabled(
+            "Esc",
+            modal::ModalAction::Close,
+        )]),
+    );
 
     frame.render_widget(
         Paragraph::new(lines)

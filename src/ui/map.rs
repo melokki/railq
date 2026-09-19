@@ -69,7 +69,6 @@ pub enum MapWorkspaceAction {
 pub enum WorldDetailsKeyAction {
     Continue,
     Closed,
-    ClosedForNavigation,
 }
 
 /// Result of routing a key while the Movements overlay owns focus.
@@ -136,16 +135,9 @@ impl MapWorkspace {
     /// Routes input while World Details is the focused informational overlay.
     pub fn handle_world_details_key(&mut self, key: KeyCode) -> WorldDetailsKeyAction {
         match key {
-            KeyCode::Esc | KeyCode::Char('w' | 'W') => {
+            KeyCode::Esc => {
                 self.world_details_visible = false;
                 WorldDetailsKeyAction::Closed
-            }
-            KeyCode::Char(
-                '1' | '2' | '3' | '4' | '5' | '6' | 't' | 'T' | 'c' | 'C' | 'a' | 'A'
-                | 'u' | 'U',
-            ) => {
-                self.world_details_visible = false;
-                WorldDetailsKeyAction::ClosedForNavigation
             }
             _ => WorldDetailsKeyAction::Continue,
         }
@@ -192,7 +184,7 @@ impl MapWorkspace {
     /// Returns the contextual controls owned by the Map workspace.
     pub fn shortcuts(&self, state: &GameState, compact: bool) -> Vec<MapShortcut> {
         if self.world_details_visible {
-            return vec![MapShortcut::enabled("W/Esc", "Close")];
+            return vec![MapShortcut::enabled("Esc", "Close")];
         }
         if self.movements_visible {
             return vec![MapShortcut::enabled("M/Esc", "Close")];
@@ -236,7 +228,7 @@ impl MapWorkspace {
         if self.world_details_visible {
             return vec![
                 "Current · World Details".into(),
-                "w / Esc Return to Map".into(),
+                "Esc Return to Map".into(),
                 "The railway registration belongs to the Region and remains stable for this save."
                     .into(),
             ];
@@ -599,7 +591,17 @@ mod tests {
         assert!(workspace.world_details_visible());
         assert_eq!(
             workspace.handle_world_details_key(KeyCode::Char('2')),
-            WorldDetailsKeyAction::ClosedForNavigation
+            WorldDetailsKeyAction::Continue
+        );
+        assert!(workspace.world_details_visible());
+        assert_eq!(
+            workspace.handle_world_details_key(KeyCode::Char('w')),
+            WorldDetailsKeyAction::Continue
+        );
+        assert!(workspace.world_details_visible());
+        assert_eq!(
+            workspace.handle_world_details_key(KeyCode::Esc),
+            WorldDetailsKeyAction::Closed
         );
         assert!(!workspace.world_details_visible());
     }
@@ -618,7 +620,7 @@ mod tests {
         workspace.handle_key(KeyCode::Char('w'), &state);
         let modal_shortcuts = workspace.shortcuts(&state, false);
         assert_eq!(modal_shortcuts.len(), 1);
-        assert_eq!(modal_shortcuts[0].key, "W/Esc");
+        assert_eq!(modal_shortcuts[0].key, "Esc");
         assert!(workspace.help_lines(&state)[0].contains("World Details"));
     }
 

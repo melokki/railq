@@ -195,16 +195,10 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
     let wide = width >= 104;
 
     if shell.help_visible {
-        let mut actions = vec![
-            FooterShortcut::enabled(if compact { "↑↓" } else { "↑↓/JK" }, "Scroll"),
-            FooterShortcut::enabled("PgUp/PgDn", "Page"),
-            FooterShortcut::enabled("?/Esc", "Close"),
-        ];
-        actions.push(FooterShortcut::enabled("Q", "Quit"));
-        return actions;
+        return vec![FooterShortcut::enabled("Esc", "Close")];
     }
     if shell.map_workspace.world_details_visible() {
-        let mut actions = shell
+        let actions = shell
             .map_workspace
             .shortcuts(state, compact)
             .into_iter()
@@ -214,8 +208,6 @@ fn contextual_controls(shell: &mut Shell, state: &GameState, width: u16) -> Vec<
                 enabled: shortcut.enabled,
             })
             .collect::<Vec<_>>();
-        actions.push(FooterShortcut::enabled("?", "Help"));
-        actions.push(FooterShortcut::enabled("Q", "Quit"));
         return actions;
     }
     if shell.active_view == View::Trains && shell.fleet_workspace.has_nickname_editor() {
@@ -516,8 +508,6 @@ fn shorten(value: &str, max_characters: usize) -> String {
     }
 }
 
-pub(super) const HELP_PAGE_STEP: usize = 5;
-
 const HELP_KEY_COLUMN_WIDTH: usize = 18;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -597,11 +587,6 @@ fn help_document(shell: &Shell, state: &GameState) -> HelpDocument {
         HelpLine::Text(
             "Number keys switch workspaces; letter keys remain contextual.".into(),
         ),
-        HelpLine::Spacer,
-        HelpLine::Section("Tip".into()),
-        HelpLine::Text(
-            "The footer is contextual: it only shows actions that matter right now.".into(),
-        ),
     ]);
 
     HelpDocument { context, lines }
@@ -661,7 +646,7 @@ fn append_help_line(lines: &mut Vec<HelpLine>, line: String) {
         lines.push(HelpLine::Spacer);
         return;
     }
-    if matches!(line.as_str(), "Next step" | "Tip") {
+    if line == "Next step" {
         lines.push(HelpLine::Section(line));
         return;
     }
@@ -696,7 +681,6 @@ fn parse_help_action(line: &str) -> Option<(String, String)> {
         ("↑↓ / jk ", "↑↓/JK"),
         ("PgUp / PgDn ", "PgUp/PgDn"),
         ("← / Backspace ", "←/Backspace"),
-        ("w / Esc ", "W/Esc"),
         ("m / Esc ", "M/Esc"),
     ];
     for (prefix, key) in PREFIXES {
@@ -761,35 +745,42 @@ fn render_help_line(line: HelpLine) -> Line<'static> {
 pub(super) fn render_help_overlay(
     frame: &mut ratatui::Frame,
     area: Rect,
-    shell: &Shell,
+    shell: &mut Shell,
     state: &GameState,
 ) {
     let document = help_document(shell, state);
-    let card = modal::centered_rect(area, 88, 28);
-    let footer = if card.width < 76 {
+    let desired_height = u16::try_from(document.lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(4)
+        .max(10);
+    let card = modal::centered_rect(area, 88, desired_height);
+    let visible_lines = usize::from(card.height.saturating_sub(4));
+    let overflow = document.lines.len() > visible_lines;
+    let footer = if overflow {
         modal::shortcut_line(&[
             modal::ModalShortcut::enabled("↑↓", modal::ModalAction::Scroll),
-            modal::ModalShortcut::enabled("Esc/?", modal::ModalAction::Close),
+            modal::ModalShortcut::enabled("Esc", modal::ModalAction::Close),
         ])
     } else {
-        modal::shortcut_line(&[
-            modal::ModalShortcut::enabled("↑↓", modal::ModalAction::Scroll),
-            modal::ModalShortcut::enabled("PgUp/PgDn", modal::ModalAction::Page),
-            modal::ModalShortcut::enabled("Esc/?", modal::ModalAction::Close),
-            modal::ModalShortcut::enabled("Q", modal::ModalAction::Quit),
-        ])
+        modal::shortcut_line(&[modal::ModalShortcut::enabled(
+            "Esc",
+            modal::ModalAction::Close,
+        )])
     };
     let title = format!("Help · {}", document.context);
     let modal_areas = modal::render_shell(frame, card, &title, footer);
 
-    let visible_lines = usize::from(modal_areas.body.height);
-    let max_offset = document.lines.len().saturating_sub(visible_lines.max(1));
-    let offset = shell.help_offset.min(max_offset);
+    shell.help_viewport_lines = usize::from(modal_areas.body.height);
+    let max_offset = document
+        .lines
+        .len()
+        .saturating_sub(shell.help_viewport_lines.max(1));
+    shell.help_offset = shell.help_offset.min(max_offset);
     let content = document
         .lines
         .into_iter()
-        .skip(offset)
-        .take(visible_lines)
+        .skip(shell.help_offset)
+        .take(shell.help_viewport_lines)
         .map(render_help_line)
         .collect::<Vec<_>>();
 

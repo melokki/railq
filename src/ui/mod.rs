@@ -26,7 +26,7 @@ pub mod layout;
 pub mod map;
 pub mod market;
 pub mod modal;
-use chrome::{HELP_PAGE_STEP, help_lines};
+use chrome::help_lines;
 mod overlays;
 use overlays::ActionOutcome;
 mod feedback;
@@ -119,6 +119,7 @@ pub struct Shell {
     outcome_details_open: bool,
     help_visible: bool,
     help_offset: usize,
+    help_viewport_lines: usize,
     restart_confirmation: bool,
 }
 
@@ -141,6 +142,7 @@ impl Shell {
             outcome_details_open: false,
             help_visible: false,
             help_offset: 0,
+            help_viewport_lines: 0,
             restart_confirmation: false,
         }
     }
@@ -175,37 +177,29 @@ impl Shell {
             return self.handle_company_key(key, state);
         }
 
-        if matches!(key.code, KeyCode::Char('q' | 'Q'))
-            || (matches!(key.code, KeyCode::Char('c' | 'C'))
-                && key.modifiers.contains(KeyModifiers::CONTROL))
+        // Ctrl-C remains an explicit terminal-level escape hatch. Focused
+        // informational overlays otherwise own input completely.
+        if matches!(key.code, KeyCode::Char('c' | 'C'))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
         {
             return ShellAction::Exit;
         }
 
         if self.help_visible {
             let help_line_count = help_lines(self, state).len();
+            let max_offset = help_line_count
+                .saturating_sub(self.help_viewport_lines.max(1));
             match key.code {
-                KeyCode::Esc | KeyCode::Char('?') => {
+                KeyCode::Esc => {
                     self.help_visible = false;
                     self.help_offset = 0;
+                    self.help_viewport_lines = 0;
                 }
                 KeyCode::Up | KeyCode::Char('k' | 'K') => {
                     self.help_offset = self.help_offset.saturating_sub(1);
                 }
                 KeyCode::Down | KeyCode::Char('j' | 'J') => {
-                    self.help_offset = self
-                        .help_offset
-                        .saturating_add(1)
-                        .min(help_line_count.saturating_sub(1));
-                }
-                KeyCode::PageUp => {
-                    self.help_offset = self.help_offset.saturating_sub(HELP_PAGE_STEP);
-                }
-                KeyCode::PageDown => {
-                    self.help_offset = self
-                        .help_offset
-                        .saturating_add(HELP_PAGE_STEP)
-                        .min(help_line_count.saturating_sub(1));
+                    self.help_offset = self.help_offset.saturating_add(1).min(max_offset);
                 }
                 _ => {}
             }
@@ -238,21 +232,12 @@ impl Shell {
             self.action_outcome = None;
         }
 
-        if matches!(key.code, KeyCode::Char('?')) {
-            self.help_visible = true;
-            self.help_offset = 0;
-            return ShellAction::Continue;
-        }
-
         if self.map_workspace.world_details_visible() {
             match self.map_workspace.handle_world_details_key(key.code) {
                 map::WorldDetailsKeyAction::Continue => return ShellAction::Continue,
                 map::WorldDetailsKeyAction::Closed => {
                     self.notice = None;
                     return ShellAction::Continue;
-                }
-                map::WorldDetailsKeyAction::ClosedForNavigation => {
-                    self.notice = None;
                 }
             }
         }
@@ -268,6 +253,17 @@ impl Shell {
                     self.notice = None;
                 }
             }
+        }
+
+        if matches!(key.code, KeyCode::Char('?')) {
+            self.help_visible = true;
+            self.help_offset = 0;
+            self.help_viewport_lines = 0;
+            return ShellAction::Continue;
+        }
+
+        if matches!(key.code, KeyCode::Char('q' | 'Q')) {
+            return ShellAction::Exit;
         }
 
         if is_bankrupt(state) {
