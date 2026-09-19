@@ -1,9 +1,9 @@
 //! Shared shell chrome: status line, navigation labels, footer shortcuts, and help overlay.
 
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     text::{Line, Span},
-    widgets::{Block, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use crate::{
@@ -38,47 +38,109 @@ impl FooterShortcut {
     }
 }
 
+pub(super) fn footer_height(shell: &Shell) -> u16 {
+    if shell.action_outcome.is_some() || shell.notice.is_some() {
+        3
+    } else {
+        2
+    }
+}
+
 pub(super) fn render_footer(
     frame: &mut ratatui::Frame,
     area: Rect,
     shell: &mut Shell,
     state: &GameState,
 ) {
-    let mut lines = Vec::new();
-    if let Some(outcome) = &shell.action_outcome {
-        lines.push(Line::styled(
-            format!("✓ {}", outcome.summary),
-            theme::success(),
-        ));
-    } else if let Some(notice) = &shell.notice {
-        lines.push(Line::styled(notice.clone(), theme::warning()));
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(theme::footer_border())
+        .style(theme::panel());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 {
+        return;
     }
 
-    let inner_width = area.width.saturating_sub(2);
+    let feedback = if let Some(outcome) = &shell.action_outcome {
+        Some(Line::styled(
+            format!("✓ {}", outcome.summary),
+            theme::success(),
+        ))
+    } else {
+        shell
+            .notice
+            .as_ref()
+            .map(|notice| Line::styled(notice.clone(), theme::warning()))
+    };
+
+    let action_y = inner.y.saturating_add(inner.height.saturating_sub(1));
+    if let Some(feedback) = feedback {
+        if inner.height >= 2 {
+            frame.render_widget(
+                Paragraph::new(feedback).style(theme::panel()),
+                Rect::new(inner.x, inner.y, inner.width, 1),
+            );
+        }
+    }
+
+    let action_area = Rect::new(inner.x, action_y, inner.width, 1);
     let outcome_shortcut = (shell.action_outcome.is_some() && !shell.outcome_details_open)
         .then(|| FooterShortcut::enabled("i", "Details"));
     let reserved = outcome_shortcut
         .as_ref()
         .map(|shortcut| shortcut_width(shortcut).saturating_add(1) as u16)
         .unwrap_or(0);
-    let mut shortcuts = contextual_controls(shell, state, inner_width.saturating_sub(reserved));
+    let mut shortcuts = contextual_controls(shell, state, inner.width.saturating_sub(reserved));
     if let Some(shortcut) = outcome_shortcut {
         shortcuts.insert(0, shortcut);
     }
-    lines.push(shortcut_line(&shortcuts));
 
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(theme::THIN_BORDERS)
-                    .border_style(theme::footer_border())
-                    .style(theme::panel()),
-            )
-            .style(theme::panel())
-            .wrap(Wrap { trim: true }),
-        area,
-    );
+    let (contextual, global): (Vec<_>, Vec<_>) = shortcuts
+        .into_iter()
+        .partition(|shortcut| !is_utility_shortcut(shortcut));
+    render_action_strip(frame, action_area, &contextual, &global);
+}
+
+fn render_action_strip(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    contextual: &[FooterShortcut],
+    global: &[FooterShortcut],
+) {
+    if area.width == 0 {
+        return;
+    }
+
+    let global_width = shortcut_line_width(global)
+        .min(usize::from(area.width)) as u16;
+    let contextual_width = if global.is_empty() {
+        area.width
+    } else {
+        area.width.saturating_sub(global_width.saturating_add(1))
+    };
+
+    if contextual_width > 0 && !contextual.is_empty() {
+        frame.render_widget(
+            Paragraph::new(shortcut_line(contextual)).style(theme::panel()),
+            Rect::new(area.x, area.y, contextual_width, 1),
+        );
+    }
+
+    if global_width > 0 && !global.is_empty() {
+        frame.render_widget(
+            Paragraph::new(shortcut_line(global))
+                .style(theme::panel())
+                .alignment(Alignment::Right),
+            Rect::new(
+                area.x.saturating_add(area.width.saturating_sub(global_width)),
+                area.y,
+                global_width,
+                1,
+            ),
+        );
+    }
 }
 
 fn shortcut_width(shortcut: &FooterShortcut) -> usize {
@@ -111,12 +173,7 @@ fn shortcut_line(shortcuts: &[FooterShortcut]) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, shortcut) in shortcuts.iter().enumerate() {
         if index > 0 {
-            let separates_utilities =
-                is_utility_shortcut(shortcut) && !is_utility_shortcut(&shortcuts[index - 1]);
-            spans.push(Span::styled(
-                if separates_utilities { " │ " } else { " " },
-                theme::shortcut_action(),
-            ));
+            spans.push(Span::styled(" ", theme::shortcut_action()));
         }
         let key_style = if shortcut.enabled {
             theme::shortcut_key()

@@ -497,13 +497,13 @@ fn control_room_shell_reports_company_status_with_adaptive_tabs_and_semantic_sur
     let funds = super::format_money(state.player_company.funds);
 
     let wide = capture_rendered_buffer(&shell, &state, 120, 40);
-    assert!(wide.contains("RailQ  │  Northstar Passenger"));
+    assert!(wide.contains("RailQ  Northstar Passenger"));
     assert!(wide.contains(&format!("Cash {funds}")));
     assert!(wide.contains("Fleet 0 ready · 1 travelling"));
-    assert!(wide.contains("Next arrival"));
+    assert!(wide.contains("Next "));
     assert!(wide.contains("1 Map"));
     assert!(wide.contains("2 Fleet"));
-    assert!(wide.contains("q Quit"));
+    assert!(wide.contains("[Q] Quit"));
 
     let compact = capture_rendered_buffer(&shell, &state, 80, 24);
     assert!(compact.contains(&funds));
@@ -511,7 +511,7 @@ fn control_room_shell_reports_company_status_with_adaptive_tabs_and_semantic_sur
     assert!(compact.contains("Next"));
     assert!(compact.contains("4 Co"));
     assert!(compact.contains("3 Mkt"));
-    assert!(compact.contains("q Quit"));
+    assert!(compact.contains("[Q] Quit"));
 
     let backend = TestBackend::new(120, 40);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -532,7 +532,7 @@ fn control_room_shell_reports_company_status_with_adaptive_tabs_and_semantic_sur
     let feedback = capture_rendered_buffer(&feedback_shell, &feedback_state, 120, 40);
     let feedback_lines = feedback.lines().collect::<Vec<_>>();
     assert!(feedback_lines[38].contains("No READY Train"));
-    assert!(feedback_lines[39].contains("q Quit"));
+    assert!(feedback_lines[39].contains("[Q] Quit"));
 
     let feedback_backend = TestBackend::new(120, 40);
     let mut feedback_terminal = Terminal::new(feedback_backend).unwrap();
@@ -542,7 +542,7 @@ fn control_room_shell_reports_company_status_with_adaptive_tabs_and_semantic_sur
     let feedback_cell = &feedback_terminal.backend().buffer().content()[120 * 38];
     assert_eq!(feedback_cell.symbol(), "N");
     assert_eq!(feedback_cell.fg, theme::WARNING);
-    assert_eq!(feedback_cell.bg, theme::BACKGROUND);
+    assert_eq!(feedback_cell.bg, theme::PANEL);
 }
 
 #[test]

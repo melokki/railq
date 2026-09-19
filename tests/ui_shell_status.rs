@@ -158,7 +158,10 @@ fn map_footer_contains_actions_without_repeating_header_status() -> Result<(), B
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
 
     assert!(rendered.contains("[D] Dispatch"));
-    assert!(rendered.contains("│ [?] Help [Q] Quit"));
+    let footer = rendered.lines().last().expect("render has a footer row");
+    assert!(footer.contains("[?] Help [Q] Quit"));
+    assert!(footer.trim_end().ends_with("[?] Help [Q] Quit"));
+    assert!(!footer.contains('│'));
     assert!(!rendered.contains("Dispatch · 1 ready"));
     Ok(())
 }

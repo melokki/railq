@@ -155,7 +155,8 @@ pub fn empty_state_hint() -> Style {
     Style::default().fg(SECONDARY).bg(PANEL)
 }
 
-/// The footer is a first-class control surface, so its frame uses the accent.
+/// Quiet divider above the global action strip. Keycaps carry the accent,
+/// while the shell boundary stays secondary so it does not compete with content.
 pub fn footer_border() -> Style {
-    Style::default().fg(ACCENT).bg(PANEL)
+    Style::default().fg(SECONDARY).bg(PANEL)
 }

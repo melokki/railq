@@ -13,7 +13,7 @@ use crate::{APPLICATION_NAME, model::GameState};
 
 use super::{
     Shell, View, bulletin,
-    chrome::{render_footer, render_help_overlay, shell_status_line, tab_label},
+    chrome::{footer_height, render_footer, render_help_overlay, shell_status_line, tab_label},
     fleet, is_bankrupt, map, modal,
     overlays::{
         bankruptcy_text, render_bankruptcy_restart_confirmation, render_outcome_overlay,
@@ -49,7 +49,7 @@ pub(super) fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state:
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(7),
-        Constraint::Length(4),
+        Constraint::Length(footer_height(shell)),
     ])
     .areas(area);
 
