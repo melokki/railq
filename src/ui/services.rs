@@ -915,19 +915,23 @@ fn service_details(
     if !tight {
         inspector_section(&mut lines, "ROUTE", dense);
         lines.push(Line::styled(
-            service_stop_strip(state, service, width),
+            format!(
+                "{} · {}",
+                count_label(service.stop_station_ids.len(), "stop", "stops"),
+                format::distance(distance),
+            ),
             theme::primary_value(),
+        ));
+        lines.push(Line::styled(
+            service_via_summary(state, service, width),
+            theme::secondary(),
         ));
         let train_numbers = service
             .reverse_train_number
             .map(|reverse| format!("{} / {reverse}", service.forward_train_number))
             .unwrap_or_else(|| service.forward_train_number.to_string());
         lines.push(Line::styled(
-            format!(
-                "{} · {} · trains {train_numbers}",
-                format::distance(distance),
-                count_label(service.stop_station_ids.len(), "stop", "stops"),
-            ),
+            format!("Trains {train_numbers}"),
             theme::secondary(),
         ));
     }
@@ -1010,89 +1014,65 @@ fn service_details(
         ));
     }
 
-    if density == ServiceInspectorDensity::Full
-        && snapshot.active_trains == 0
-        && service.stop_station_ids.len() > 2
-    {
-        inspector_section(&mut lines, "STOP PATTERN", false);
-        const MAX_VISIBLE_STOPS: usize = 5;
-        lines.extend(
-            service
-                .stop_station_ids
-                .iter()
-                .take(MAX_VISIBLE_STOPS)
-                .enumerate()
-                .map(|(index, station_id)| {
-                    Line::from(format!(
-                        "{}. {}",
-                        index + 1,
-                        station_label(state, *station_id)
-                    ))
-                }),
-        );
-        if service.stop_station_ids.len() > MAX_VISIBLE_STOPS {
-            lines.push(Line::styled(
-                format!(
-                    "… +{} more stops",
-                    service.stop_station_ids.len() - MAX_VISIBLE_STOPS
-                ),
-                theme::secondary(),
-            ));
-        }
-    }
-
     lines
 }
 
-fn service_stop_strip(state: &GameState, service: &PassengerService, width: usize) -> String {
-    let stops = service
+fn service_via_summary(state: &GameState, service: &PassengerService, width: usize) -> String {
+    let intermediate_stops = service
         .stop_station_ids
         .iter()
+        .skip(1)
+        .take(service.stop_station_ids.len().saturating_sub(2))
         .map(|station_id| station_label(state, *station_id))
         .collect::<Vec<_>>();
-    if stops.is_empty() {
-        return "—".into();
-    }
-    if stops.len() == 1 {
-        return truncate_display(&stops[0], width);
+    format_via_summary(&intermediate_stops, width)
+}
+
+fn format_via_summary(intermediate_stops: &[String], width: usize) -> String {
+    if intermediate_stops.is_empty() {
+        return "Direct service".into();
     }
 
-    let connector = match service.direction_mode {
-        ServiceDirectionMode::BothDirections => " ━━ ",
-        ServiceDirectionMode::ForwardOnly => " ━▶ ",
-    };
-    let connector_width = UnicodeWidthStr::width(connector);
-    let minimum_width = connector_width
-        .saturating_mul(stops.len().saturating_sub(1))
-        .saturating_add(stops.len().saturating_mul(3));
+    let all_stops = format!("via {}", intermediate_stops.join(" · "));
+    if intermediate_stops.len() <= 3 && UnicodeWidthStr::width(all_stops.as_str()) <= width {
+        return all_stops;
+    }
 
-    if minimum_width > width {
-        let hidden = stops.len().saturating_sub(2);
-        let middle = format!("{connector}… +{hidden} stops …{connector}");
-        let middle_width = UnicodeWidthStr::width(middle.as_str());
-        let endpoint_width = width.saturating_sub(middle_width) / 2;
-        return format!(
-            "{}{}{}",
-            truncate_display(&stops[0], endpoint_width.max(1)),
-            middle,
-            truncate_display(
-                stops
-                    .last()
-                    .expect("a multi-stop Service has a last stop"),
-                endpoint_width.max(1),
-            ),
+    if intermediate_stops.len() >= 2 {
+        let hidden = intermediate_stops.len().saturating_sub(2);
+        let first = intermediate_stops
+            .first()
+            .expect("an intermediate stop list has a first stop");
+        let last = intermediate_stops
+            .last()
+            .expect("an intermediate stop list has a last stop");
+        let condensed = if hidden == 0 {
+            format!("via {first} · {last}")
+        } else {
+            format!("via {first} · +{hidden} more · {last}")
+        };
+        if UnicodeWidthStr::width(condensed.as_str()) <= width {
+            return condensed;
+        }
+
+        let first_only = format!(
+            "via {first} · +{} more",
+            intermediate_stops.len().saturating_sub(1)
         );
+        if UnicodeWidthStr::width(first_only.as_str()) <= width {
+            return first_only;
+        }
     }
 
-    let connector_budget = connector_width.saturating_mul(stops.len().saturating_sub(1));
-    let name_budget = width.saturating_sub(connector_budget);
-    let per_stop = (name_budget / stops.len()).max(3);
-
-    stops
-        .iter()
-        .map(|stop| truncate_display(stop, per_stop))
-        .collect::<Vec<_>>()
-        .join(connector)
+    format!(
+        "via {} intermediate {}",
+        intermediate_stops.len(),
+        if intermediate_stops.len() == 1 {
+            "stop"
+        } else {
+            "stops"
+        }
+    )
 }
 
 fn service_state_summary(state_label: &str, snapshot: &ServiceOperatingSnapshot) -> String {
@@ -1619,4 +1599,47 @@ fn station_label(state: &GameState, station_id: RailStationId) -> String {
         .find(|settlement| settlement.id == station.settlement_id)
         .map(|settlement| settlement.name.clone())
         .unwrap_or_else(|| format!("Station {}", station_id.get()))
+}
+
+#[cfg(test)]
+mod route_summary_tests {
+    use super::format_via_summary;
+
+    #[test]
+    fn route_summary_keeps_short_stop_patterns_readable() {
+        let stops = vec![
+            "Juniper".to_owned(),
+            "Fairford".to_owned(),
+            "Oakridge".to_owned(),
+        ];
+        assert_eq!(
+            format_via_summary(&stops, 48),
+            "via Juniper · Fairford · Oakridge"
+        );
+    }
+
+    #[test]
+    fn route_summary_compacts_long_stop_patterns_without_truncating_names() {
+        let stops = vec![
+            "Juniper".to_owned(),
+            "Fairford".to_owned(),
+            "Oakridge".to_owned(),
+            "Alden".to_owned(),
+            "Dunmere".to_owned(),
+            "Glenhaven".to_owned(),
+        ];
+        assert_eq!(
+            format_via_summary(&stops, 48),
+            "via Juniper · +4 more · Glenhaven"
+        );
+    }
+
+    #[test]
+    fn route_summary_falls_back_to_a_count_when_station_names_do_not_fit() {
+        let stops = vec![
+            "Very Long Intermediate Station".to_owned(),
+            "Another Very Long Intermediate Station".to_owned(),
+        ];
+        assert_eq!(format_via_summary(&stops, 34), "via 2 intermediate stops");
+    }
 }

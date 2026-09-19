@@ -230,8 +230,9 @@ fn existing_services_are_listed_and_can_request_deletion() {
     assert!(rendered.contains("ROUTE"));
     assert!(rendered.contains("PASSENGERS"));
     assert!(rendered.contains("DEMAND"));
-    assert!(rendered.contains("Oakridge ━━ Fairford"));
-    assert!(rendered.contains("10 km · 2 stops · trains 100 / 101"));
+    assert!(rendered.contains("2 stops · 10 km"));
+    assert!(rendered.contains("Direct service"));
+    assert!(rendered.contains("Trains 100 / 101"));
     assert!(rendered.contains("Oakridge ↔ Fairford"));
     assert!(!rendered.contains("Service Details"));
 
