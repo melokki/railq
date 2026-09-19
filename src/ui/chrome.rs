@@ -38,19 +38,14 @@ impl FooterShortcut {
     }
 }
 
-pub(super) fn footer_height(shell: &Shell) -> u16 {
-    if shell.action_outcome.is_some() || shell.notice.is_some() {
-        3
-    } else {
-        2
-    }
-}
+pub(super) const FOOTER_HEIGHT: u16 = 3;
 
 pub(super) fn render_footer(
     frame: &mut ratatui::Frame,
     area: Rect,
     shell: &mut Shell,
     state: &GameState,
+    show_contents: bool,
 ) {
     let block = Block::default()
         .borders(Borders::TOP)
@@ -59,7 +54,7 @@ pub(super) fn render_footer(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if inner.height == 0 {
+    if inner.height == 0 || !show_contents {
         return;
     }
 
@@ -414,13 +409,13 @@ fn shell_status_wide(
         Span::styled(company, theme::shell_identity()),
     ];
     let right = vec![
-        Span::styled("Cash ", theme::shell_metric_label()),
+        Span::styled("CASH ", theme::shell_metric_label()),
         Span::styled(cash, theme::shell_metric_value()),
         Span::raw("   "),
-        Span::styled("Fleet ", theme::shell_metric_label()),
+        Span::styled("FLEET ", theme::shell_metric_label()),
         Span::styled(fleet, theme::shell_metric_value()),
         Span::raw("   "),
-        Span::styled("Next ", theme::shell_metric_label()),
+        Span::styled("NEXT ", theme::shell_metric_label()),
         Span::styled(next_arrival.to_owned(), theme::shell_metric_value()),
     ];
 
@@ -450,11 +445,13 @@ fn shell_status_compact(
         Span::styled(company, theme::shell_identity()),
     ];
     let right = vec![
+        Span::styled("CASH ", theme::shell_metric_label()),
         Span::styled(cash, theme::shell_metric_value()),
         Span::raw("   "),
+        Span::styled("FLEET ", theme::shell_metric_label()),
         Span::styled(fleet, theme::shell_metric_value()),
         Span::raw("   "),
-        Span::styled("Next ", theme::shell_metric_label()),
+        Span::styled("NEXT ", theme::shell_metric_label()),
         Span::styled(next_arrival.to_owned(), theme::shell_metric_value()),
     ];
 
@@ -497,7 +494,7 @@ pub(super) fn tab_label(view: View, compact: bool, bulletin_unread: u64) -> Stri
         (View::BuyTrains, false) => "Market",
         _ => view.label(),
     };
-    let mut title = format!("{} {label}", view.number());
+    let mut title = format!("[{}] {label}", view.number());
     if view == View::Bulletin && bulletin_unread > 0 {
         let badge = if bulletin_unread > 9 {
             "9+".into()

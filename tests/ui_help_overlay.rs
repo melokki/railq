@@ -30,6 +30,10 @@ fn help_is_scrollable_and_uses_a_focused_page_when_compact() {
     assert!(wide.contains("Workspaces"));
     assert!(wide.contains("[PgUp/PgDn] page"));
     assert!(wide.contains("[Esc/?] close"));
+    assert!(
+        wide.lines().last().is_some_and(|line| line.trim().is_empty()),
+        "The global footer should stay geometrically present but hide its actions while Help owns input",
+    );
     assert_eq!(
         capture_rendered_cell_colors(&shell, &state, 120, 40, 0, 0),
         Some((theme::MODAL_BACKDROP_TEXT, theme::MODAL_BACKDROP)),

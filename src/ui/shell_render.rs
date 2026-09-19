@@ -13,7 +13,7 @@ use crate::{APPLICATION_NAME, model::GameState};
 
 use super::{
     Shell, View, bulletin,
-    chrome::{footer_height, render_footer, render_help_overlay, shell_status_line, tab_label},
+    chrome::{FOOTER_HEIGHT, render_footer, render_help_overlay, shell_status_line, tab_label},
     fleet, is_bankrupt, map, modal,
     overlays::{
         bankruptcy_text, render_bankruptcy_restart_confirmation, render_outcome_overlay,
@@ -49,7 +49,7 @@ pub(super) fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state:
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(7),
-        Constraint::Length(footer_height(shell)),
+        Constraint::Length(FOOTER_HEIGHT),
     ])
     .areas(area);
 
@@ -158,7 +158,14 @@ pub(super) fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state:
         );
     }
 
-    render_footer(frame, footer_area, shell, state);
+    let modal_layer_visible = modal_layer_visible(shell, state);
+    render_footer(
+        frame,
+        footer_area,
+        shell,
+        state,
+        !modal_layer_visible,
+    );
 
     // Focused workflows are a separate presentation layer. The entire app is
     // first muted, then the modal is painted with the normal palette so input
@@ -189,6 +196,14 @@ pub(super) fn render_frame(frame: &mut ratatui::Frame, shell: &mut Shell, state:
             render_outcome_overlay(frame, area, outcome);
         }
     }
+}
+
+fn modal_layer_visible(shell: &Shell, state: &GameState) -> bool {
+    focused_modal_visible(shell, state)
+        || shell.map_workspace.world_details_visible()
+        || shell.map_workspace.movements_visible()
+        || shell.help_visible
+        || shell.outcome_details_open
 }
 
 fn focused_modal_visible(shell: &Shell, state: &GameState) -> bool {

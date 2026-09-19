@@ -30,14 +30,14 @@ fn captures_company_status_at_wide_and_compact_sizes() -> Result<(), Box<dyn Err
         assert!(!header.contains('│'));
         assert!(header.contains("RailQ  Northstar Passenger"));
         if columns >= 100 {
-            assert!(header.contains("Cash"));
-            assert!(header.contains("Fleet"));
+            assert!(header.contains("CASH"));
+            assert!(header.contains("FLEET"));
             assert!(header.contains("ready ·"));
             assert!(header.contains("travelling"));
-            assert!(header.contains("Next"));
+            assert!(header.contains("NEXT"));
         } else {
             assert!(header.contains("R0/T1"));
-            assert!(header.contains("Next"));
+            assert!(header.contains("NEXT"));
         }
     }
     Ok(())

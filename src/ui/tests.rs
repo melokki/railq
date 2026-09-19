@@ -86,7 +86,7 @@ fn bulletin_badge_tracks_unread_entries_and_opening_preserves_the_visit_boundary
     });
 
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
-    assert!(rendered.contains("6 Bulletin [1]"));
+    assert!(rendered.contains("[6] Bulletin [1]"));
 
     assert_eq!(
         shell.handle_key(
@@ -99,7 +99,7 @@ fn bulletin_badge_tracks_unread_entries_and_opening_preserves_the_visit_boundary
 
     state.bulletin_seen_count = 1;
     let rendered = capture_rendered_buffer(&shell, &state, 120, 40);
-    assert!(!rendered.contains("6 Bulletin [1]"));
+    assert!(!rendered.contains("[6] Bulletin [1]"));
     assert!(rendered.contains("1 new"));
     assert!(rendered.contains("LATEST DEVELOPMENT  ·  NEW"));
     assert!(rendered.contains("NEW SINCE LAST VISIT"));
@@ -498,19 +498,19 @@ fn control_room_shell_reports_company_status_with_adaptive_tabs_and_semantic_sur
 
     let wide = capture_rendered_buffer(&shell, &state, 120, 40);
     assert!(wide.contains("RailQ  Northstar Passenger"));
-    assert!(wide.contains(&format!("Cash {funds}")));
-    assert!(wide.contains("Fleet 0 ready · 1 travelling"));
-    assert!(wide.contains("Next "));
-    assert!(wide.contains("1 Map"));
-    assert!(wide.contains("2 Fleet"));
+    assert!(wide.contains(&format!("CASH {funds}")));
+    assert!(wide.contains("FLEET 0 ready · 1 travelling"));
+    assert!(wide.contains("NEXT "));
+    assert!(wide.contains("[1] Map"));
+    assert!(wide.contains("[2] Fleet"));
     assert!(wide.contains("[Q] Quit"));
 
     let compact = capture_rendered_buffer(&shell, &state, 80, 24);
     assert!(compact.contains(&funds));
     assert!(compact.contains("R0/T1"));
-    assert!(compact.contains("Next"));
-    assert!(compact.contains("4 Co"));
-    assert!(compact.contains("3 Mkt"));
+    assert!(compact.contains("NEXT"));
+    assert!(compact.contains("[4] Co"));
+    assert!(compact.contains("[3] Mkt"));
     assert!(compact.contains("[Q] Quit"));
 
     let backend = TestBackend::new(120, 40);
