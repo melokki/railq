@@ -733,12 +733,13 @@ impl DispatchFlow {
                         ' '
                     };
                     output.push_str(&format!(
-                        " {marker} {} — {} — {} waiting, {}, {}\n",
+                        " {marker} {} — {} — {} waiting, {}, {}, projected {}\n",
                         service_name(state, service.service_id),
-                        service_route_label(state, service.service_id),
-                        waiting_passengers_for_service(state, service.service_id),
+                        service_route_label_for_quote(state, &service.quote),
+                        waiting_passengers_for_quote(state, &service.quote),
                         format_distance(service.quote.distance.metres()),
                         format_duration(service.quote.duration.seconds()),
+                        format_signed_money(service.quote.projected_journey_profitability),
                     ));
                 }
             }
@@ -748,17 +749,17 @@ impl DispatchFlow {
                 output.push_str(&format!(
                     "Passenger Service {}: {} ({} Rail Lines)\n",
                     service_name(state, *service_id),
-                    service_route_label(state, *service_id),
+                    service_route_label_for_quote(state, quote),
                     quote.rail_line_path.len(),
                 ));
                 output.push_str(&format!(
-                    "Directional Demand: {} Waiting Passengers; {} boarding / {} capacity\n",
-                    waiting_passengers_for_service(state, quote.service_id),
+                    "Origin Demand: {} Waiting Passengers; {} boarding now / {} capacity\n",
+                    waiting_passengers_for_quote(state, quote),
                     quote.boarded_passengers,
                     train_capacity(state, quote.train_id),
                 ));
                 output.push_str(&format!(
-                    "Route: {} | Duration: {} | Revenue booked at origin: {}\n",
+                    "Route: {} | Duration: {} | Revenue booked now: {}\n",
                     format_path(state, quote),
                     format_duration(quote.duration.seconds()),
                     format_money(quote.operating_revenue),
@@ -781,8 +782,13 @@ impl DispatchFlow {
                     ));
                 }
                 output.push_str(&format!(
-                    "Estimated profit: {} | Company Funds after departure: {}\n",
-                    format_money(quote.journey_profitability),
+                    "Snapshot projection: {} trip boardings | Revenue: {} | Result: {}\n",
+                    quote.projected_boarded_passengers,
+                    format_money(quote.projected_operating_revenue),
+                    format_signed_money(quote.projected_journey_profitability),
+                ));
+                output.push_str(&format!(
+                    "Company Funds after departure: {}\n",
                     format_money(quote.cash_after_cost),
                 ));
                 if quote.boarded_passengers == 0 {
@@ -1047,8 +1053,14 @@ fn render_quote_review(
     rejection: Option<&str>,
     service_preselected: bool,
 ) {
+    let compact = area.height <= 12;
     let insufficient_funds = quote.cash_after_cost < Money::ZERO;
-    let status_rows = u16::from(insufficient_funds) + u16::from(rejection.is_some());
+    let status_rows = if compact {
+        u16::from(insufficient_funds || rejection.is_some())
+    } else {
+        u16::from(insufficient_funds) + u16::from(rejection.is_some())
+    };
+    let route_rows = if compact { 2 } else { 3 };
     let [
         context_area,
         route_area,
@@ -1057,9 +1069,9 @@ fn render_quote_review(
         status_area,
     ] = Layout::vertical([
         Constraint::Length(2),
+        Constraint::Length(route_rows),
         Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Min(3),
+        Constraint::Min(4),
         Constraint::Length(status_rows),
     ])
     .areas(area);
@@ -1073,8 +1085,37 @@ fn render_quote_review(
         context_area,
     );
 
-    frame.render_widget(
-        Paragraph::new(vec![
+    let route_lines = if compact {
+        vec![
+            Line::from(vec![
+                Span::styled("TRAIN  ", theme::secondary()),
+                Span::styled(
+                    format!("Train {:02}", quote.train_id.get()),
+                    theme::primary_value(),
+                ),
+                Span::styled("   SERVICE  ", theme::secondary()),
+                Span::styled(
+                    format!(
+                        "{} · {} → {}",
+                        service_name(state, service_id),
+                        station_label(state, quote.origin_station_id),
+                        station_label(state, quote.destination_station_id),
+                    ),
+                    theme::primary_value(),
+                ),
+            ]),
+            Line::styled(
+                format!(
+                    "{} · {} · {} stops",
+                    format_distance(quote.distance.metres()),
+                    format_duration(quote.duration.seconds()),
+                    service_stop_count(state, service_id),
+                ),
+                theme::secondary(),
+            ),
+        ]
+    } else {
+        vec![
             Line::from(vec![
                 Span::styled("TRAIN  ", theme::secondary()),
                 Span::styled(
@@ -1086,7 +1127,7 @@ fn render_quote_review(
                     format!(
                         "{} · {}",
                         service_name(state, service_id),
-                        service_route_label(state, service_id),
+                        service_route_label_for_quote(state, quote),
                     ),
                     theme::primary_value(),
                 ),
@@ -1111,14 +1152,17 @@ fn render_quote_review(
                 ),
                 theme::secondary(),
             ),
-        ])
-        .style(theme::panel())
-        .wrap(Wrap { trim: true }),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(route_lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
         route_area,
     );
 
     let capacity = train_capacity(state, quote.train_id);
-    let waiting = waiting_passengers_for_service(state, quote.service_id);
+    let waiting = waiting_passengers_for_quote(state, quote);
     let occupancy_ratio = if capacity == 0 {
         0.0
     } else {
@@ -1130,50 +1174,109 @@ fn render_quote_review(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
-                    .title("Passengers")
+                    .title("Origin Boarding")
                     .title_style(theme::title())
                     .style(theme::panel()),
             )
             .gauge_style(theme::focused_title())
             .ratio(occupancy_ratio)
             .label(format!(
-                "{} boarded / {} seats · {} waiting",
+                "{} boarding now / {} seats · {} waiting",
                 quote.boarded_passengers, capacity, waiting
             )),
         occupancy_area,
     );
 
-    let mut terms = vec![Line::styled("PAID AT DEPARTURE", theme::warning())];
-    if quote.infrastructure_access_fee_discount > Money::ZERO {
-        terms.push(money_pair_line(
-            "Access before discount",
-            quote.infrastructure_access_fee_before_discount,
-            "Access discount",
-            quote.infrastructure_access_fee_discount,
-        ));
-    }
-    terms.extend([
-        money_pair_line(
-            "Access",
-            quote.infrastructure_access_fee,
-            "Fuel",
-            quote.fuel_cost,
-        ),
-        money_pair_line(
-            "Total cost",
-            quote.operating_cost,
-            "Funds after departure",
-            quote.cash_after_cost,
-        ),
-        Line::styled("BOOKED FROM ORIGIN", theme::success()),
-        money_pair_line(
-            "Revenue",
-            quote.operating_revenue,
-            "Quoted result",
-            quote.journey_profitability,
-        ),
-    ]);
-    if quote.boarded_passengers == 0 {
+    let mut terms = if compact {
+        let result_style = if quote.projected_journey_profitability.cents() >= 0 {
+            theme::success()
+        } else {
+            theme::error()
+        };
+        vec![
+            Line::from(vec![
+                Span::styled("COST NOW  ", theme::warning()),
+                Span::styled(format_money(quote.operating_cost), theme::primary_value()),
+                Span::styled(" · funds after ", theme::secondary()),
+                Span::styled(format_money(quote.cash_after_cost), theme::primary_value()),
+            ]),
+            Line::from(vec![
+                Span::styled("BOOKED NOW  ", theme::success()),
+                Span::styled(
+                    format!("{} boardings · ", quote.boarded_passengers),
+                    theme::secondary(),
+                ),
+                Span::styled(format_money(quote.operating_revenue), theme::primary_value()),
+            ]),
+            Line::from(vec![
+                Span::styled("SNAPSHOT  ", theme::focused_title()),
+                Span::styled(
+                    format!("{} trip boardings · ", quote.projected_boarded_passengers),
+                    theme::secondary(),
+                ),
+                Span::styled(
+                    format_money(quote.projected_operating_revenue),
+                    theme::primary_value(),
+                ),
+                Span::styled(" revenue", theme::secondary()),
+            ]),
+            Line::from(vec![
+                Span::styled("PROJECTED RESULT  ", theme::focused_title()),
+                Span::styled(
+                    format_signed_money(quote.projected_journey_profitability),
+                    result_style,
+                ),
+                Span::styled(" · current queues only", theme::secondary()),
+            ]),
+        ]
+    } else {
+        let mut detailed = vec![Line::styled("PAID AT DEPARTURE", theme::warning())];
+        if quote.infrastructure_access_fee_discount > Money::ZERO {
+            detailed.push(money_pair_line(
+                "Access before discount",
+                quote.infrastructure_access_fee_before_discount,
+                "Access discount",
+                quote.infrastructure_access_fee_discount,
+            ));
+        }
+        detailed.extend([
+            money_pair_line(
+                "Access",
+                quote.infrastructure_access_fee,
+                "Fuel",
+                quote.fuel_cost,
+            ),
+            money_pair_line(
+                "Total cost",
+                quote.operating_cost,
+                "Funds after departure",
+                quote.cash_after_cost,
+            ),
+            Line::styled("BOOKED NOW", theme::success()),
+            Line::from(vec![
+                Span::styled("Origin boardings: ", theme::secondary()),
+                Span::styled(quote.boarded_passengers.to_string(), theme::primary_value()),
+                Span::styled("  Revenue: ", theme::secondary()),
+                Span::styled(format_money(quote.operating_revenue), theme::primary_value()),
+            ]),
+            Line::styled("SNAPSHOT PROJECTION", theme::focused_title()),
+            money_pair_line(
+                "Revenue",
+                quote.projected_operating_revenue,
+                "Result",
+                quote.projected_journey_profitability,
+            ),
+            Line::styled(
+                format!(
+                    "{} trip boardings · current queues only; downstream demand may change.",
+                    quote.projected_boarded_passengers
+                ),
+                theme::secondary(),
+            ),
+        ]);
+        detailed
+    };
+    if !compact && quote.boarded_passengers == 0 {
         let message = if service_stop_count(state, service_id) > 2 {
             "NO ORIGIN BOARDING · later Service stops may still board passengers."
         } else {
@@ -1181,7 +1284,7 @@ fn render_quote_review(
         };
         terms.push(Line::styled(message, theme::warning()));
     }
-    if service_stop_count(state, service_id) > 2 {
+    if !compact && service_stop_count(state, service_id) > 2 {
         terms.push(Line::styled(
             "STOP-BY-STOP · passengers alight and new OD demand may board at each intermediate stop.",
             theme::secondary(),
@@ -1195,16 +1298,29 @@ fn render_quote_review(
     );
 
     if status_rows > 0 {
-        let mut status = Vec::new();
-        if insufficient_funds {
-            status.push(Line::styled(
-                "INSUFFICIENT FUNDS · departure costs exceed current Company Funds.",
-                theme::error(),
-            ));
-        }
-        if let Some(rejection) = rejection {
-            status.push(Line::styled(rejection, theme::error()));
-        }
+        let status = if compact {
+            let message = match (insufficient_funds, rejection) {
+                (true, Some(rejection)) => format!("INSUFFICIENT FUNDS · {rejection}"),
+                (true, None) => {
+                    "INSUFFICIENT FUNDS · departure costs exceed current Company Funds.".into()
+                }
+                (false, Some(rejection)) => rejection.to_owned(),
+                (false, None) => String::new(),
+            };
+            vec![Line::styled(message, theme::error())]
+        } else {
+            let mut status = Vec::new();
+            if insufficient_funds {
+                status.push(Line::styled(
+                    "INSUFFICIENT FUNDS · departure costs exceed current Company Funds.",
+                    theme::error(),
+                ));
+            }
+            if let Some(rejection) = rejection {
+                status.push(Line::styled(rejection, theme::error()));
+            }
+            status
+        };
         frame.render_widget(
             Paragraph::new(status)
                 .style(theme::panel())
@@ -1606,9 +1722,9 @@ fn render_service_chooser(
     let show_inspector = body_area.width >= 78 && body_area.height >= 7;
     let (list_area, divider_area, inspector_area) = if show_inspector {
         let [list_area, divider_area, inspector_area] = Layout::horizontal([
-            Constraint::Min(43),
+            Constraint::Min(40),
             Constraint::Length(1),
-            Constraint::Length(31),
+            Constraint::Length(34),
         ])
         .areas(body_area);
         (list_area, Some(divider_area), Some(inspector_area))
@@ -1630,48 +1746,49 @@ fn render_service_chooser(
         .iter()
         .map(|service| {
             let quote = &service.quote;
-            let demand = waiting_passengers_for_service(state, quote.service_id);
+            let demand = waiting_passengers_for_quote(state, quote);
             if wide_table {
                 Row::new([
                     Cell::from(service_name(state, service.service_id)),
-                    Cell::from(service_route_label(state, service.service_id)),
-                    Cell::from(format!("{demand} waiting")),
+                    Cell::from(service_route_label_for_quote(state, quote)),
+                    Cell::from(demand.to_string()),
                     Cell::from(format_duration(quote.duration.seconds())),
-                    Cell::from(format_signed_money(quote.journey_profitability)),
+                    Cell::from(format_signed_money(quote.projected_journey_profitability)),
                 ])
             } else {
                 Row::new([
                     Cell::from(service_name(state, service.service_id)),
-                    Cell::from(service_destination_label(state, service.service_id)),
-                    Cell::from(format!("{demand} waiting")),
-                    Cell::from(format_signed_money(quote.journey_profitability)),
+                    Cell::from(service_destination_label_for_quote(state, quote)),
+                    Cell::from(demand.to_string()),
+                    Cell::from(format_signed_money(quote.projected_journey_profitability)),
                 ])
             }
         })
         .collect::<Vec<_>>();
     let (headers, widths) = if wide_table {
         (
-            Row::new(["Service", "Stops", "Demand", "Time", "Est. result"]),
+            Row::new(["Service", "Stops", "Waiting", "Time", "Projected"]),
             vec![
-                Constraint::Length(10),
-                Constraint::Percentage(38),
-                Constraint::Percentage(20),
+                Constraint::Length(8),
+                Constraint::Percentage(42),
+                Constraint::Length(8),
                 Constraint::Length(11),
-                Constraint::Length(14),
+                Constraint::Length(13),
             ],
         )
     } else {
         (
-            Row::new(["Service", "Destination", "Demand", "Est. result"]),
+            Row::new(["Service", "Destination", "Waiting", "Projected"]),
             vec![
-                Constraint::Length(10),
-                Constraint::Percentage(34),
-                Constraint::Percentage(26),
-                Constraint::Length(14),
+                Constraint::Length(7),
+                Constraint::Min(10),
+                Constraint::Length(8),
+                Constraint::Length(13),
             ],
         )
     };
     let table = Table::new(rows, widths)
+        .column_spacing(1)
         .header(headers.style(theme::table_header()).bottom_margin(1))
         .row_highlight_style(theme::selected_row())
         .highlight_symbol("› ")
@@ -1928,41 +2045,137 @@ fn render_service_inspector(
         return;
     };
     let quote = &service.quote;
-    let demand = waiting_passengers_for_service(state, quote.service_id);
+    let demand = waiting_passengers_for_quote(state, quote);
     let name = service_name(state, service.service_id);
-    let route = service_route_label(state, service.service_id);
-    let result_style = if quote.journey_profitability.cents() >= 0 {
+    let route_summary = format!(
+        "{name} · {} → {}",
+        station_label(state, quote.origin_station_id),
+        station_label(state, quote.destination_station_id),
+    );
+    let via = directional_service_stops(state, quote.service_id, quote.origin_station_id)
+        .and_then(|station_ids| {
+            (station_ids.len() > 2).then(|| {
+                station_ids[1..station_ids.len() - 1]
+                    .iter()
+                    .map(|station_id| station_label(state, *station_id).to_owned())
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            })
+        });
+    let result_style = if quote.projected_journey_profitability.cents() >= 0 {
         theme::success()
     } else {
         theme::error()
     };
-    frame.render_widget(
-        Paragraph::new(vec![
+    let capacity = train_capacity(state, quote.train_id);
+    let lines = if area.height >= 16 {
+        let mut lines = vec![
             Line::styled("Service Preview", theme::title()),
-            Line::styled(format!("{name} · {route}"), theme::focused_title()),
+            Line::styled(route_summary.clone(), theme::focused_title()),
+        ];
+        if let Some(via) = via.as_deref() {
+            lines.push(Line::styled(format!("via {via}"), theme::secondary()));
+        }
+        lines.extend([
             Line::styled(
                 format!(
-                    "{demand} waiting · {}",
+                    "{} · {}",
+                    format_distance(quote.distance.metres()),
                     format_duration(quote.duration.seconds())
                 ),
                 theme::secondary(),
             ),
-            Line::styled(format_distance(quote.distance.metres()), theme::secondary()),
             Line::from(""),
-            detail_line("Revenue", &format_money(quote.operating_revenue)),
-            detail_line("Cost", &format_money(quote.operating_cost)),
-            Line::from(vec![
-                Span::styled("Result    ", theme::secondary()),
-                Span::styled(
-                    format_signed_money(quote.journey_profitability),
-                    result_style,
+            Line::styled("DEPARTURE", theme::secondary()),
+            service_preview_detail_line("Waiting now", &demand.to_string()),
+            service_preview_detail_line(
+                "Board now",
+                &format!("{} / {capacity}", quote.boarded_passengers),
+            ),
+            service_preview_detail_line(
+                "Booked revenue",
+                &format_money(quote.operating_revenue),
+            ),
+            Line::from(""),
+            Line::styled("SNAPSHOT PROJECTION", theme::secondary()),
+            service_preview_detail_line(
+                "Trip boardings",
+                &quote.projected_boarded_passengers.to_string(),
+            ),
+            service_preview_detail_line(
+                "Revenue",
+                &format_money(quote.projected_operating_revenue),
+            ),
+            service_preview_detail_line("Trip cost", &format_money(quote.operating_cost)),
+            service_preview_detail_line_styled(
+                "Result",
+                &format_signed_money(quote.projected_journey_profitability),
+                result_style,
+            ),
+            Line::styled("Current waiting queues only", theme::secondary()),
+        ]);
+        lines
+    } else {
+        vec![
+            Line::styled("Service Preview", theme::title()),
+            Line::styled(route_summary, theme::focused_title()),
+            Line::styled(
+                format!(
+                    "{demand} waiting · {} / {capacity} board now",
+                    quote.boarded_passengers
                 ),
-            ]),
-        ])
-        .style(theme::panel())
-        .wrap(Wrap { trim: true }),
+                theme::secondary(),
+            ),
+            Line::styled(
+                format!(
+                    "{} · {}",
+                    format_distance(quote.distance.metres()),
+                    format_duration(quote.duration.seconds())
+                ),
+                theme::secondary(),
+            ),
+            Line::from(""),
+            service_preview_detail_line("Booked now", &format_money(quote.operating_revenue)),
+            service_preview_detail_line("Trip cost", &format_money(quote.operating_cost)),
+            service_preview_detail_line(
+                "Projected rev",
+                &format_money(quote.projected_operating_revenue),
+            ),
+            service_preview_detail_line_styled(
+                "Projected result",
+                &format_signed_money(quote.projected_journey_profitability),
+                result_style,
+            ),
+            Line::styled(
+                format!(
+                    "{} trip boardings · current queues",
+                    quote.projected_boarded_passengers
+                ),
+                theme::secondary(),
+            ),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn service_preview_detail_line(label: &str, value: &str) -> Line<'static> {
+    service_preview_detail_line_styled(label, value, theme::primary_value())
+}
+
+fn service_preview_detail_line_styled(
+    label: &str,
+    value: &str,
+    value_style: ratatui::style::Style,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<16}"), theme::secondary()),
+        Span::styled(value.to_owned(), value_style),
+    ])
 }
 
 fn detail_line(label: &str, value: &str) -> Line<'static> {
@@ -2415,6 +2628,18 @@ fn service_route_label(state: &GameState, service_id: ServiceId) -> String {
         .join(" → ")
 }
 
+fn service_route_label_for_quote(state: &GameState, quote: &JourneyQuote) -> String {
+    directional_service_stops(state, quote.service_id, quote.origin_station_id)
+        .map(|station_ids| {
+            station_ids
+                .into_iter()
+                .map(|station_id| station_label(state, station_id).to_owned())
+                .collect::<Vec<_>>()
+                .join(" → ")
+        })
+        .unwrap_or_else(|| service_route_label(state, quote.service_id))
+}
+
 fn service_stop_count(state: &GameState, service_id: ServiceId) -> usize {
     state
         .player_company
@@ -2424,15 +2649,11 @@ fn service_stop_count(state: &GameState, service_id: ServiceId) -> usize {
         .map_or(0, |service| service.stop_station_ids.len())
 }
 
-fn service_destination_label(state: &GameState, service_id: ServiceId) -> String {
-    state
-        .player_company
-        .passenger_services
-        .iter()
-        .find(|service| service.id == service_id)
-        .and_then(|service| service.destination_station_id())
+fn service_destination_label_for_quote(state: &GameState, quote: &JourneyQuote) -> String {
+    directional_service_stops(state, quote.service_id, quote.origin_station_id)
+        .and_then(|station_ids| station_ids.last().copied())
         .map(|station_id| station_label(state, station_id).to_owned())
-        .unwrap_or_else(|| "Unknown".into())
+        .unwrap_or_else(|| station_label(state, quote.destination_station_id).to_owned())
 }
 
 fn station_label(state: &GameState, station_id: RailStationId) -> &str {
@@ -2454,20 +2675,16 @@ fn station_label(state: &GameState, station_id: RailStationId) -> &str {
         .map_or("unknown Settlement", |settlement| settlement.name.as_str())
 }
 
-fn waiting_passengers_for_service(state: &GameState, service_id: ServiceId) -> u32 {
-    let Some(service) = state
-        .player_company
-        .passenger_services
-        .iter()
-        .find(|service| service.id == service_id)
+fn waiting_passengers_for_quote(state: &GameState, quote: &JourneyQuote) -> u32 {
+    let Some(station_ids) =
+        directional_service_stops(state, quote.service_id, quote.origin_station_id)
     else {
         return 0;
     };
-    let Some(origin_station_id) = service.origin_station_id() else {
+    let Some(origin_station_id) = station_ids.first().copied() else {
         return 0;
     };
-    service
-        .stop_station_ids
+    station_ids
         .iter()
         .skip(1)
         .filter_map(|destination_station_id| {
@@ -2479,6 +2696,30 @@ fn waiting_passengers_for_service(state: &GameState, service_id: ServiceId) -> u
         .fold(0_u32, |total, demand| {
             total.saturating_add(demand.waiting_passengers)
         })
+}
+
+fn directional_service_stops(
+    state: &GameState,
+    service_id: ServiceId,
+    origin_station_id: RailStationId,
+) -> Option<Vec<RailStationId>> {
+    let Some(service) = state
+        .player_company
+        .passenger_services
+        .iter()
+        .find(|service| service.id == service_id)
+    else {
+        return None;
+    };
+    if service.stop_station_ids.first().copied() == Some(origin_station_id) {
+        return Some(service.stop_station_ids.clone());
+    }
+    if service.stop_station_ids.last().copied() == Some(origin_station_id)
+        && service.direction_mode == crate::model::ServiceDirectionMode::BothDirections
+    {
+        return Some(service.stop_station_ids.iter().rev().copied().collect());
+    }
+    None
 }
 
 fn format_path(state: &GameState, quote: &JourneyQuote) -> String {
@@ -2527,6 +2768,7 @@ fn format_money(money: Money) -> String {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
 
     use crate::{
         model::{RailStationId, TrainStatus, UtcSeconds},
@@ -2543,6 +2785,36 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn render_panel(
+        flow: &mut DispatchFlow,
+        state: &crate::model::GameState,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                flow.render_panel(frame, area, state);
+            })
+            .unwrap();
+
+        let mut rendered = String::new();
+        for row in terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(usize::from(width))
+        {
+            for cell in row {
+                rendered.push_str(cell.symbol());
+            }
+            rendered.push('\n');
+        }
+        rendered
     }
 
     fn game_with_ready_train(
@@ -2654,8 +2926,9 @@ mod tests {
         let rendered = flow.render(&state);
         assert!(rendered.contains("Passenger Service"));
         assert!(rendered.contains("R1"));
-        assert!(rendered.contains("Directional Demand:"));
+        assert!(rendered.contains("Origin Demand:"));
         assert!(rendered.contains("Waiting Passengers"));
+        assert!(rendered.contains("Snapshot projection:"));
         assert_eq!(
             flow.handle_key(key(KeyCode::Enter), &state),
             DispatchFlowAction::Confirm {
@@ -2670,8 +2943,37 @@ mod tests {
         let (mut state, train_id) = game_with_ready_train(RailStationId::new(3));
         let service_id = add_service(
             &mut state,
-            vec![RailStationId::new(1), RailStationId::new(3)],
+            vec![
+                RailStationId::new(1),
+                RailStationId::new(2),
+                RailStationId::new(3),
+            ],
         );
+        for (origin, destination, waiting) in [(1, 2, 401), (1, 3, 409), (3, 2, 7), (3, 1, 11)] {
+            state
+                .origin_destination_demand
+                .iter_mut()
+                .find(|demand| {
+                    demand.origin_station_id == RailStationId::new(origin)
+                        && demand.destination_station_id == RailStationId::new(destination)
+                })
+                .unwrap()
+                .waiting_passengers = waiting;
+        }
+        let reverse_route = [3, 2, 1]
+            .into_iter()
+            .map(|station_id| {
+                super::station_label(&state, RailStationId::new(station_id)).to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join(" → ");
+        let projected_result = super::service_options(&state, train_id)
+            .into_iter()
+            .find(|option| option.service_id == service_id)
+            .map(|option| {
+                super::format_signed_money(option.quote.projected_journey_profitability)
+            })
+            .unwrap();
         let mut flow = DispatchFlow::start(&state).unwrap();
 
         assert_eq!(
@@ -2679,11 +2981,20 @@ mod tests {
             DispatchFlowAction::Continue
         );
         assert!(flow.is_selecting_service());
+        let service_picker = flow.render(&state);
+        assert!(service_picker.contains(&reverse_route));
+        assert!(service_picker.contains("18 waiting"));
+        assert!(service_picker.contains(&format!("projected {projected_result}")));
         assert_eq!(
             flow.handle_key(key(KeyCode::Enter), &state),
             DispatchFlowAction::Continue
         );
         assert!(flow.is_confirming());
+        let review = flow.render(&state);
+        assert!(review.contains(&reverse_route));
+        assert!(review.contains("Origin Demand: 18 Waiting Passengers"));
+        assert!(review.contains("Snapshot projection:"));
+        assert!(review.contains(&projected_result));
         assert_eq!(
             flow.handle_key(key(KeyCode::Enter), &state),
             DispatchFlowAction::Confirm {
@@ -2691,6 +3002,38 @@ mod tests {
                 service_id,
             }
         );
+    }
+
+    #[test]
+    fn compact_review_keeps_snapshot_economics_visible() {
+        let (mut state, _) = game_with_ready_train(RailStationId::new(1));
+        add_service(
+            &mut state,
+            vec![
+                RailStationId::new(1),
+                RailStationId::new(2),
+                RailStationId::new(3),
+            ],
+        );
+        let mut flow = DispatchFlow::start(&state).unwrap();
+
+        assert_eq!(
+            flow.handle_key(key(KeyCode::Enter), &state),
+            DispatchFlowAction::Continue
+        );
+        assert_eq!(
+            flow.handle_key(key(KeyCode::Enter), &state),
+            DispatchFlowAction::Continue
+        );
+        assert!(flow.is_confirming());
+
+        // 74x16 matches the Manual Dispatch workflow geometry inside an 80x24
+        // terminal after the shell chrome has taken its rows.
+        let rendered = render_panel(&mut flow, &state, 74, 16);
+        assert!(rendered.contains("BOOKED NOW"), "{rendered}");
+        assert!(rendered.contains("SNAPSHOT"), "{rendered}");
+        assert!(rendered.contains("PROJECTED RESULT"), "{rendered}");
+        assert!(rendered.contains("current queues only"), "{rendered}");
     }
 
     #[test]

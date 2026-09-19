@@ -31,7 +31,9 @@ pub struct PassengerBoardingQuote {
 /// Operating costs cover the complete Service run and are paid at initial
 /// dispatch. `operating_revenue` contains only revenue from passengers that can
 /// board at the origin now; later Service stops may add more passengers and
-/// revenue while the same Journey remains active.
+/// revenue while the same Journey remains active. Projection fields simulate
+/// the complete run against the current waiting queues only. They do not reserve
+/// passengers or predict demand arrivals or competing trains.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JourneyQuote {
     pub service_id: ServiceId,
@@ -44,12 +46,20 @@ pub struct JourneyQuote {
     /// Through fare from Service origin to terminus.
     pub fare: Money,
     pub operating_revenue: Money,
+    /// Total boardings over the complete Service run if current waiting queues
+    /// were frozen until this Train reached each stop.
+    pub projected_boarded_passengers: u32,
+    /// Revenue from those snapshot-projected boardings.
+    pub projected_operating_revenue: Money,
     pub infrastructure_access_fee_before_discount: Money,
     pub infrastructure_access_fee_discount: Money,
     pub infrastructure_access_fee: Money,
     pub fuel_cost: Money,
     pub operating_cost: Money,
+    /// Result using only revenue already bookable at the departure origin.
     pub journey_profitability: Money,
+    /// Result using current waiting queues at every stop on this Service run.
+    pub projected_journey_profitability: Money,
     /// Total duration of the complete Service path at this Train's speed.
     pub duration: DurationSeconds,
     /// Duration to the first Service stop after the origin.
@@ -339,6 +349,16 @@ pub(crate) fn quote_journey_at(
         .try_fold(Money::ZERO, |total, group| {
             total.checked_add(group.revenue).map_err(EconomyError::from)
         })?;
+    let (projected_boarded_passengers, projected_operating_revenue) =
+        quote_projected_service_boardings(
+            state,
+            service,
+            origin_stop_index,
+            destination_stop_index,
+            direction,
+            train_model.passenger_capacity().passengers(),
+            fare_rate,
+        )?;
     let fare = fare_rate.checked_charge(distance)?;
     let access_fee_rate = state.rules.balance.access_fee_per_train_kilometre();
     let infrastructure_access_fee_before_discount = access_fee_rate.checked_charge(distance)?;
@@ -355,6 +375,8 @@ pub(crate) fn quote_journey_at(
         .checked_charge(distance)?;
     let operating_cost = infrastructure_access_fee.checked_add(fuel_cost)?;
     let journey_profitability = operating_revenue.checked_sub(operating_cost)?;
+    let projected_journey_profitability =
+        projected_operating_revenue.checked_sub(operating_cost)?;
     let duration = service_duration(state, service, train_model.speed())?;
     let first_leg_stop_index = if direction > 0 {
         origin_stop_index + 1
@@ -385,12 +407,15 @@ pub(crate) fn quote_journey_at(
         boarded_passengers,
         fare,
         operating_revenue,
+        projected_boarded_passengers,
+        projected_operating_revenue,
         infrastructure_access_fee_before_discount,
         infrastructure_access_fee_discount,
         infrastructure_access_fee,
         fuel_cost,
         operating_cost,
         journey_profitability,
+        projected_journey_profitability,
         duration,
         first_leg_duration,
         cash_after_cost,
@@ -623,6 +648,63 @@ pub(crate) fn quote_boarding_at_stop_in_direction(
     }
 
     Ok(groups)
+}
+
+fn quote_projected_service_boardings(
+    state: &GameState,
+    service: &PassengerService,
+    origin_stop_index: usize,
+    destination_stop_index: usize,
+    direction: i32,
+    capacity: u32,
+    fare_rate: MoneyPerKilometre,
+) -> Result<(u32, Money), EconomyError> {
+    let mut stop_index = origin_stop_index;
+    let mut onboard_groups = Vec::<PassengerBoardingQuote>::new();
+    let mut projected_boardings = 0_u32;
+    let mut projected_revenue = Money::ZERO;
+
+    while stop_index != destination_stop_index {
+        let station_id = service.stop_station_ids[stop_index];
+        onboard_groups.retain(|group| group.destination_station_id != station_id);
+        let onboard = onboard_groups.iter().try_fold(0_u32, |total, group| {
+            total
+                .checked_add(group.passengers)
+                .ok_or(CalculationError::Overflow {
+                    operation: "Projected Journey onboard passengers",
+                })
+                .map_err(EconomyError::from)
+        })?;
+        let available_capacity = capacity.saturating_sub(onboard);
+        let boarding_groups = quote_boarding_at_stop_in_direction(
+            state,
+            service,
+            stop_index,
+            direction,
+            available_capacity,
+            fare_rate,
+        )?;
+        for group in &boarding_groups {
+            projected_boardings = projected_boardings
+                .checked_add(group.passengers)
+                .ok_or(CalculationError::Overflow {
+                    operation: "Projected Journey passenger boardings",
+                })?;
+            projected_revenue = projected_revenue.checked_add(group.revenue)?;
+        }
+        onboard_groups.extend(boarding_groups);
+
+        stop_index = if direction > 0 {
+            stop_index.checked_add(1)
+        } else {
+            stop_index.checked_sub(1)
+        }
+        .ok_or(EconomyError::InvalidServiceStops {
+            service_id: service.id,
+        })?;
+    }
+
+    Ok((projected_boardings, projected_revenue))
 }
 
 fn service_duration(
@@ -922,10 +1004,13 @@ mod tests {
         assert_eq!(quote.boarded_passengers, 3);
         assert_eq!(quote.fare, Money::from_cents(17));
         assert_eq!(quote.operating_revenue, Money::from_cents(51));
+        assert_eq!(quote.projected_boarded_passengers, 3);
+        assert_eq!(quote.projected_operating_revenue, Money::from_cents(51));
         assert_eq!(quote.infrastructure_access_fee, Money::from_cents(8));
         assert_eq!(quote.fuel_cost, Money::from_cents(58));
         assert_eq!(quote.operating_cost, Money::from_cents(66));
         assert_eq!(quote.journey_profitability, Money::from_cents(-15));
+        assert_eq!(quote.projected_journey_profitability, Money::from_cents(-15));
         assert_eq!(quote.duration, DurationSeconds::from_seconds(78));
         assert_eq!(quote.first_leg_duration, DurationSeconds::from_seconds(78));
         assert_eq!(quote.cash_after_cost, Money::from_cents(9_934));
@@ -959,6 +1044,44 @@ mod tests {
                 .unwrap()
                 .boarded_passengers,
             70
+        );
+    }
+
+    #[test]
+    fn snapshot_projection_respects_reverse_direction_and_seat_reuse() {
+        let mut state = fixture();
+        let middle = RailStationId::new(2);
+        state.player_company.passenger_services[0].stop_station_ids =
+            vec![ORIGIN, middle, DESTINATION];
+        state.player_company.fleet.trains[0].status = TrainStatus::Ready { at: DESTINATION };
+        state.origin_destination_demand = vec![
+            OriginDestinationDemand {
+                origin_station_id: DESTINATION,
+                destination_station_id: middle,
+                waiting_passengers: 70,
+                market_maturity: MarketMaturity::full(),
+                passenger_arrival_rate_per_hour: PassengerArrivalRate::new(1).unwrap(),
+                fractional_passenger_seconds: 0,
+            },
+            OriginDestinationDemand {
+                origin_station_id: middle,
+                destination_station_id: ORIGIN,
+                waiting_passengers: 70,
+                market_maturity: MarketMaturity::full(),
+                passenger_arrival_rate_per_hour: PassengerArrivalRate::new(1).unwrap(),
+                fractional_passenger_seconds: 0,
+            },
+        ];
+
+        let quote = quote_journey(&state, TRAIN_ID, SERVICE_ID).unwrap();
+
+        assert_eq!(quote.boarded_passengers, 70);
+        assert_eq!(quote.operating_revenue, Money::from_cents(420));
+        assert_eq!(quote.projected_boarded_passengers, 140);
+        assert_eq!(quote.projected_operating_revenue, Money::from_cents(1_190));
+        assert_eq!(
+            quote.projected_journey_profitability,
+            Money::from_cents(1_124)
         );
     }
 

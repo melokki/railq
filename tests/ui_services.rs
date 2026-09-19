@@ -220,14 +220,19 @@ fn existing_services_are_listed_and_can_request_deletion() {
     assert!(rendered.contains("Route"));
     assert!(rendered.contains("›"));
     assert!(rendered.contains("SERVICES PLANNED"));
+    assert!(rendered.contains("SERVICE NETWORK"));
+    assert!(rendered.contains("FLEET ALLOCATION"));
+    assert!(rendered.contains("SELECTED LOAD"));
+    assert!(rendered.contains("SERVICE OPERATIONS"));
     assert!(rendered.contains("SELECTED SERVICE"));
     assert!(rendered.contains("IDLE · no trains assigned"));
     assert!(rendered.contains("OPERATIONS"));
     assert!(rendered.contains("ROUTE"));
     assert!(rendered.contains("PASSENGERS"));
     assert!(rendered.contains("DEMAND"));
-    assert!(rendered.contains("Train numbers"));
-    assert!(rendered.contains("100 / 101"));
+    assert!(rendered.contains("2 stops · 10 km"));
+    assert!(rendered.contains("Direct service"));
+    assert!(rendered.contains("Trains 100 / 101"));
     assert!(rendered.contains("Oakridge ↔ Fairford"));
     assert!(!rendered.contains("Service Details"));
 
@@ -341,7 +346,7 @@ fn active_service_inspector_surfaces_live_operating_context() {
     assert!(rendered.contains("Load"));
     assert!(rendered.contains("On board"));
     assert!(rendered.contains("COMMERCIAL"));
-    assert!(rendered.contains("Expected revenue"));
+    assert!(rendered.contains("Revenue"));
     assert!(rendered.contains("Access fee"));
     assert!(rendered.contains("Fuel cost"));
     assert!(rendered.contains("Expected result"));
@@ -416,6 +421,7 @@ fn bidirectional_service_waiting_summary_includes_reverse_demand() {
     press(&mut shell, &state, KeyCode::Char('s'));
     let rendered = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
 
+    assert!(rendered.contains("Oakridge ━━ Fairford ━━ Juniper"));
     assert!(rendered.contains("→ Juniper"));
     assert!(rendered.contains("41 · +"));
     assert!(rendered.contains("→ Oakridge"));
@@ -443,6 +449,7 @@ fn compact_service_workspace_prioritizes_live_summary_without_clipping() {
     assert!(rendered.contains("Next arrival"));
     assert!(rendered.contains("On board"));
     assert!(rendered.contains("Expected result"));
+    assert!(!rendered.contains("SERVICE NETWORK"));
     assert!(
         !rendered.contains("RUNNING TRAINS"),
         "the tight inspector should preserve the summary instead of overflowing with train detail",

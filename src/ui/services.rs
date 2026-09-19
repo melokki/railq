@@ -21,9 +21,13 @@ use crate::{
     sim::demand::effective_arrival_rate_per_hour,
 };
 
-use super::{components::EmptyState, format, modal, theme};
+use super::{
+    components::{self, EmptyState},
+    format, modal, theme,
+};
 
 mod assignment;
+mod dashboard;
 mod editor;
 
 use assignment::{ServiceTrainAssignmentAction, ServiceTrainAssignmentFlow};
@@ -569,12 +573,32 @@ fn render_service_list(frame: &mut Frame, area: Rect, state: &GameState, selecte
     }
 
     let selected_index = selected_index.min(services.len().saturating_sub(1));
-    let [overview_area, workspace_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-    ])
-    .areas(content);
-    render_services_overview(frame, overview_area, state);
+    let show_metrics = content.width >= 96 && content.height >= 30;
+    let workspace_area = if show_metrics {
+        let [overview_area, metrics_area, workspace_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(5),
+            Constraint::Fill(1),
+        ])
+        .spacing(1)
+        .areas(content);
+        render_services_overview(frame, overview_area, state);
+        dashboard::render_metrics(
+            frame,
+            metrics_area,
+            state,
+            services.get(selected_index).map(|service| service.id),
+        );
+        workspace_area
+    } else {
+        let [overview_area, workspace_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .areas(content);
+        render_services_overview(frame, overview_area, state);
+        workspace_area
+    };
 
     if workspace_area.width >= 96 && workspace_area.height >= 18 {
         render_wide_service_workspace(frame, workspace_area, state, selected_index);
@@ -648,7 +672,7 @@ fn render_wide_service_workspace(
     let [list_area, divider_area, inspector_area] = Layout::horizontal([
         Constraint::Min(40),
         Constraint::Length(1),
-        Constraint::Length(46),
+        Constraint::Length(50),
     ])
     .areas(area);
 
@@ -692,6 +716,16 @@ fn render_service_picker(
     selected_index: usize,
     wide: bool,
 ) {
+    let [heading_area, table_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    frame.render_widget(
+        Paragraph::new(components::section_heading("SERVICE OPERATIONS")).style(theme::panel()),
+        heading_area,
+    );
+
     let services = &state.player_company.passenger_services;
     let rows = services
         .iter()
@@ -705,7 +739,7 @@ fn render_service_picker(
                     Cell::from(snapshot.assigned_trains.to_string()),
                     Cell::from(snapshot.runnable_assigned_trains.to_string()),
                     Cell::from(snapshot.active_trains.to_string()),
-                    Cell::from(snapshot.waiting_passengers.to_string()),
+                    Cell::from(format_passenger_count(snapshot.waiting_passengers)),
                 ])
             } else {
                 Row::new([service.display_name(), route])
@@ -726,7 +760,7 @@ fn render_service_picker(
                 Constraint::Length(8),
                 Constraint::Length(5),
                 Constraint::Length(7),
-                Constraint::Length(7),
+                Constraint::Length(9),
             ],
         )
     } else {
@@ -745,7 +779,7 @@ fn render_service_picker(
         .highlight_spacing(HighlightSpacing::Always);
     let mut table_state = TableState::default();
     table_state.select(Some(selected_index));
-    frame.render_stateful_widget(table, area, &mut table_state);
+    frame.render_stateful_widget(table, table_area, &mut table_state);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -880,16 +914,26 @@ fn service_details(
 
     if !tight {
         inspector_section(&mut lines, "ROUTE", dense);
-        lines.push(labelled_line("Distance", &format::distance(distance)));
-        lines.push(labelled_line(
-            "Stops",
-            &service.stop_station_ids.len().to_string(),
+        lines.push(Line::styled(
+            format!(
+                "{} · {}",
+                count_label(service.stop_station_ids.len(), "stop", "stops"),
+                format::distance(distance),
+            ),
+            theme::primary_value(),
+        ));
+        lines.push(Line::styled(
+            service_via_summary(state, service, width),
+            theme::secondary(),
         ));
         let train_numbers = service
             .reverse_train_number
             .map(|reverse| format!("{} / {reverse}", service.forward_train_number))
             .unwrap_or_else(|| service.forward_train_number.to_string());
-        lines.push(labelled_line("Train numbers", &train_numbers));
+        lines.push(Line::styled(
+            format!("Trains {train_numbers}"),
+            theme::secondary(),
+        ));
     }
 
     if !tight {
@@ -897,15 +941,16 @@ fn service_details(
     }
     lines.push(labelled_line(
         "Waiting",
-        &snapshot.waiting_passengers.to_string(),
+        &format_passenger_count(snapshot.waiting_passengers),
     ));
     let onboard = if snapshot.total_capacity > 0 {
         format!(
             "{} / {}",
-            snapshot.onboard_passengers, snapshot.total_capacity
+            format_passenger_count(snapshot.onboard_passengers),
+            format_passenger_count(snapshot.total_capacity),
         )
     } else {
-        snapshot.onboard_passengers.to_string()
+        format_passenger_count(snapshot.onboard_passengers)
     };
     lines.push(labelled_line("On board", &onboard));
     if !tight {
@@ -925,7 +970,8 @@ fn service_details(
             &truncate_display(&format!("→ {destination}"), 15),
             &format!(
                 "{} · +{}/h",
-                directional_demand.forward_waiting, directional_demand.forward_rate_per_hour
+                format_passenger_count(directional_demand.forward_waiting),
+                format_passenger_count(directional_demand.forward_rate_per_hour),
             ),
         ));
         if service.direction_mode == ServiceDirectionMode::BothDirections {
@@ -933,7 +979,8 @@ fn service_details(
                 &truncate_display(&format!("→ {origin}"), 15),
                 &format!(
                     "{} · +{}/h",
-                    directional_demand.reverse_waiting, directional_demand.reverse_rate_per_hour
+                    format_passenger_count(directional_demand.reverse_waiting),
+                    format_passenger_count(directional_demand.reverse_rate_per_hour),
                 ),
             ));
         }
@@ -941,9 +988,9 @@ fn service_details(
 
     if snapshot.active_trains > 0 {
         inspector_section(&mut lines, "COMMERCIAL", dense);
-        if density == ServiceInspectorDensity::Full {
+        if density != ServiceInspectorDensity::Tight {
             lines.push(labelled_line(
-                "Expected revenue",
+                "Revenue",
                 &format_cents(snapshot.booked_revenue_cents),
             ));
             lines.push(labelled_line(
@@ -970,38 +1017,65 @@ fn service_details(
         ));
     }
 
-    if density == ServiceInspectorDensity::Full
-        && snapshot.active_trains == 0
-        && service.stop_station_ids.len() > 2
-    {
-        inspector_section(&mut lines, "STOP PATTERN", false);
-        const MAX_VISIBLE_STOPS: usize = 5;
-        lines.extend(
-            service
-                .stop_station_ids
-                .iter()
-                .take(MAX_VISIBLE_STOPS)
-                .enumerate()
-                .map(|(index, station_id)| {
-                    Line::from(format!(
-                        "{}. {}",
-                        index + 1,
-                        station_label(state, *station_id)
-                    ))
-                }),
+    lines
+}
+
+fn service_via_summary(state: &GameState, service: &PassengerService, width: usize) -> String {
+    let intermediate_stops = service
+        .stop_station_ids
+        .iter()
+        .skip(1)
+        .take(service.stop_station_ids.len().saturating_sub(2))
+        .map(|station_id| station_label(state, *station_id))
+        .collect::<Vec<_>>();
+    format_via_summary(&intermediate_stops, width)
+}
+
+fn format_via_summary(intermediate_stops: &[String], width: usize) -> String {
+    if intermediate_stops.is_empty() {
+        return "Direct service".into();
+    }
+
+    let all_stops = format!("via {}", intermediate_stops.join(" · "));
+    if intermediate_stops.len() <= 3 && UnicodeWidthStr::width(all_stops.as_str()) <= width {
+        return all_stops;
+    }
+
+    if intermediate_stops.len() >= 2 {
+        let hidden = intermediate_stops.len().saturating_sub(2);
+        let first = intermediate_stops
+            .first()
+            .expect("an intermediate stop list has a first stop");
+        let last = intermediate_stops
+            .last()
+            .expect("an intermediate stop list has a last stop");
+        let condensed = if hidden == 0 {
+            format!("via {first} · {last}")
+        } else {
+            format!("via {first} · +{hidden} more · {last}")
+        };
+        if UnicodeWidthStr::width(condensed.as_str()) <= width {
+            return condensed;
+        }
+
+        let first_only = format!(
+            "via {first} · +{} more",
+            intermediate_stops.len().saturating_sub(1)
         );
-        if service.stop_station_ids.len() > MAX_VISIBLE_STOPS {
-            lines.push(Line::styled(
-                format!(
-                    "… +{} more stops",
-                    service.stop_station_ids.len() - MAX_VISIBLE_STOPS
-                ),
-                theme::secondary(),
-            ));
+        if UnicodeWidthStr::width(first_only.as_str()) <= width {
+            return first_only;
         }
     }
 
-    lines
+    format!(
+        "via {} intermediate {}",
+        intermediate_stops.len(),
+        if intermediate_stops.len() == 1 {
+            "stop"
+        } else {
+            "stops"
+        }
+    )
 }
 
 fn service_state_summary(state_label: &str, snapshot: &ServiceOperatingSnapshot) -> String {
@@ -1270,6 +1344,18 @@ fn remaining_journey_seconds(state: &GameState, arrives_at: crate::model::UtcSec
     u64::try_from(remaining).unwrap_or(0)
 }
 
+fn format_passenger_count(count: u32) -> String {
+    let digits = count.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
+}
+
 fn format_cents(cents: i128) -> String {
     let formatted = format::signed_cents(cents);
     formatted.strip_prefix('+').unwrap_or(&formatted).to_owned()
@@ -1528,4 +1614,54 @@ fn station_label(state: &GameState, station_id: RailStationId) -> String {
         .find(|settlement| settlement.id == station.settlement_id)
         .map(|settlement| settlement.name.clone())
         .unwrap_or_else(|| format!("Station {}", station_id.get()))
+}
+
+#[cfg(test)]
+mod route_summary_tests {
+    use super::{format_passenger_count, format_via_summary};
+
+    #[test]
+    fn passenger_counts_use_thousands_separators() {
+        assert_eq!(format_passenger_count(999), "999");
+        assert_eq!(format_passenger_count(1_380), "1,380");
+        assert_eq!(format_passenger_count(12_345_678), "12,345,678");
+    }
+
+    #[test]
+    fn route_summary_keeps_short_stop_patterns_readable() {
+        let stops = vec![
+            "Juniper".to_owned(),
+            "Fairford".to_owned(),
+            "Oakridge".to_owned(),
+        ];
+        assert_eq!(
+            format_via_summary(&stops, 48),
+            "via Juniper · Fairford · Oakridge"
+        );
+    }
+
+    #[test]
+    fn route_summary_compacts_long_stop_patterns_without_truncating_names() {
+        let stops = vec![
+            "Juniper".to_owned(),
+            "Fairford".to_owned(),
+            "Oakridge".to_owned(),
+            "Alden".to_owned(),
+            "Dunmere".to_owned(),
+            "Glenhaven".to_owned(),
+        ];
+        assert_eq!(
+            format_via_summary(&stops, 48),
+            "via Juniper · +4 more · Glenhaven"
+        );
+    }
+
+    #[test]
+    fn route_summary_falls_back_to_a_count_when_station_names_do_not_fit() {
+        let stops = vec![
+            "Very Long Intermediate Station".to_owned(),
+            "Another Very Long Intermediate Station".to_owned(),
+        ];
+        assert_eq!(format_via_summary(&stops, 34), "via 2 intermediate stops");
+    }
 }

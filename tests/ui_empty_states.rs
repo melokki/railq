@@ -29,6 +29,7 @@ fn empty_fleet_only_points_to_buy_when_a_catalogue_train_is_affordable() {
     press(&mut shell, &state, KeyCode::Char('2'));
     let affordable = capture_rendered_buffer_mut(&mut shell, &state, 120, 40);
     assert!(affordable.contains("No rolling stock"));
+    assert!(affordable.contains("o==[##]==o"));
     assert!(affordable.contains("[3] Open Market"));
     assert!(affordable.contains("Purchase your first passenger Train"));
 }

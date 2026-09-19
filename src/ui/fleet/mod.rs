@@ -1213,7 +1213,7 @@ fn render_empty_fleet(frame: &mut Frame, area: Rect, state: &GameState) {
         )
         .hint("No catalogue Train is currently affordable with available Company cash.")
     }
-    .motif("╾━╼");
+    .motif("o==[##]==o");
 
     empty_state.render(frame, inner);
 }
